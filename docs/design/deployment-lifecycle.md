@@ -2,7 +2,7 @@
 
 **What this explains.** Everything that happens between `spi up` exiting and a healthy OSDU cluster serving requests, broken into three phases with concrete timings.
 
-**Why it matters.** A `spi up` of the default profile takes ~45-50 minutes in `centralus`, dominated by AKS Automatic provisioning. If you do not know what phase you are in, a long wait on what looks like silence feels like a bug. This doc lays out the phases so you can watch the right signals.
+**Why it matters.** A `spi up` of the default profile takes ~45-50 minutes, dominated by AKS Automatic provisioning. If you do not know what phase you are in, a long wait on what looks like silence feels like a bug. This doc lays out the phases so you can watch the right signals.
 
 > **Companion docs.** [Bicep architecture](bicep-architecture.md) covers what each Bicep deployment lands. [Flux reconciliation](flux-reconciliation.md) covers the layer DAG from the reconcile-loop perspective. Read this for "where am I in the spi up wait."
 
@@ -22,19 +22,19 @@ Phase 1 is the long pole: AKS Automatic provisioning alone takes ~30 min, with t
 
 The CLI is doing the minimum work needed to hand off to Flux. Every `az` and `kubectl` command it runs is printed in a Rich panel before execution so you can copy-paste it and re-run manually.
 
-The sequence inside `azure_infra.deploy()` is:
+The sequence inside `deploy.deploy_azure()` is:
 
 1. **Config resolution.** `Config.from_env()` takes `--env`, `--profile`, `--partition`, `--ingress-mode`, and applies defaults (region, derived cluster name, profile-driven layer wiring). Pure Python, no external calls.
-2. **Prerequisite check.** `check_prerequisites()` runs each tool in the registry (`az`, `bicep`, `kubectl`, `flux`, `helm`) and fails fast if anything is missing.
+2. **Prerequisite check.** `check_prerequisites()` runs each tool in the registry (`az`, `bicep`, `kubectl`, `kubelogin`, `flux`, `helm`) and fails fast if anything is missing.
 3. **Resource group.** `az group create --name spi-stack-<env> --location <region>`. The one thing Bicep cannot do itself.
 4. **Key Vault soft-delete recovery.** If a prior `spi down` left a soft-deleted Key Vault with the same name, `az keyvault recover` brings it back so the upcoming Bicep deploy does not collide.
-5. **`infra/aks.bicep` deploy.** AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio. Via the AVM `container-service/managed-cluster` module. This is the slowest single step (~30 min in `centralus`).
+5. **`infra/aks.bicep` deploy.** AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio. Via the AVM `container-service/managed-cluster` module. This is the slowest single step (~30 min).
 6. **`az aks get-credentials`** merges the kubeconfig.
 7. **`az aks mesh enable-istio-cni`.** The one Istio knob AVM v0.13.0 types out of the managed-cluster schema; the CLI patches it imperatively. See [ADR-008](../decisions/008-bicep-for-azure-provisioning.md).
-8. **`infra/main.bicep` deploy.** Identity, RBAC, Key Vault (with Bicep-resolved secrets), ACR, Cosmos DB Gremlin, per-partition (Cosmos SQL + Service Bus + Storage), common Storage, optional `external-dns-*` and `vnet` for `dns` ingress.
-9. **K8s bootstrap.** `kubectl apply` for namespaces, StorageClasses, `workload-identity-sa`, the `osdu-config` ConfigMap, the `spi-ingress-config` ConfigMap, the `osdu-image-lock` ConfigMap (resolved live from the OSDU community registry per [ADR-017](../decisions/017-osdu-image-lock.md)), the `spi-init-values` ConfigMap, and the Istio JWT projection resources from [ADR-016](../decisions/016-istio-jwt-projection.md).
+8. **`infra/main.bicep` deploy.** Identity, RBAC, Key Vault (with Bicep-resolved secrets), ACR, Cosmos DB Gremlin, per-partition (Cosmos SQL + Service Bus + Storage), common Storage, optional `external-dns-*` for `dns` ingress. (The VNet is provisioned by `aks.bicep`, not here.)
+9. **K8s bootstrap.** `kubectl apply` for namespaces, StorageClasses, the middleware secret seed (`spi-secrets`) plus the `platform`/`osdu` credential Secrets, `workload-identity-sa` (in `platform` and `osdu`), the `osdu-config` ConfigMap, the `spi-ingress-config` ConfigMap, the `osdu-image-lock` ConfigMap (resolved live from the OSDU community registry per [ADR-017](../decisions/017-osdu-image-lock.md)), the `spi-init-values` ConfigMap, and the Istio JWT projection resources from [ADR-016](../decisions/016-istio-jwt-projection.md).
 10. **`infra/flux.bicep` deploy.** Activates the AKS Flux extension and creates the `fluxConfigurations` resource with two top-level Kustomizations: `stack` (pointing at `./software/stacks/osdu/profiles/<profile>`) and `ingress` (pointing at `./software/stacks/osdu/ingress/<mode>`).
-11. **Wait for middleware Ready.** The CLI polls Elasticsearch and Redis until their Kubernetes Secrets exist, then writes the runtime Key Vault secrets (per-partition Elasticsearch credentials, Redis hostname/password, `tbl-storage-endpoint`). See [ADR-010](../decisions/010-keyvault-secret-management.md).
+11. **Runtime Key Vault secrets.** The CLI writes the in-cluster middleware secrets to Key Vault (per-partition Elasticsearch credentials, Redis hostname/password) directly from the generated seed passwords — no wait for middleware Ready, since the values are known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md).
 12. **Suspend pin.** `_pin_gitops_source()` waits up to 120s for `gitrepository/osdu-spi-stack-system` to reach `Ready=True`, then `kubectl patch spec.suspend: true`. See [ADR-014](../decisions/014-suspend-gitops-after-deploy.md).
 13. **Next-steps panel.** The CLI prints `spi status --watch`, `spi info`, and the matching `spi down` command with flags pre-filled.
 
@@ -138,7 +138,7 @@ Milestones to watch for in the CLI output:
 2. **"AKS deployment complete"** -- Phase 1 step 5. The cluster exists.
 3. **"PaaS deployment complete"** -- Phase 1 step 8. Cosmos, Service Bus, Storage, Key Vault, ACR are live.
 4. **"Flux extension activated"** -- Phase 1 step 10. Flux is running in `flux-system`.
-5. **"Middleware Ready, writing runtime KV secrets"** -- Phase 1 step 11. Elasticsearch and Redis are up.
+5. **"Writing runtime KV secrets"** -- Phase 1 step 11. Redis/Elasticsearch credentials are written to Key Vault from the seed.
 6. **"GitRepository suspended"** -- Phase 1 step 12. CLI is about to exit.
 
 Switch to another terminal:
@@ -164,11 +164,12 @@ returns the gateway hostname / IP and (with `--show-secrets`) the Workload Ident
 
 ## Source files
 
-- `src/spi/cli.py` -- `up`, `down`, `reconcile`, `status`, `info` commands
-- `src/spi/azure_infra.py` -- top-level orchestrator for Phase 1
+- `src/spi/cli.py` -- `up`, `down`, `reconcile`, `status`, `info`, `check`, `update` commands
+- `src/spi/deploy.py` -- Phase 1 orchestrator (`deploy_azure`); `osdu-config` ConfigMap, workload-identity ServiceAccounts, Istio JWT projection, runtime KV writes, `_pin_gitops_source()`
+- `src/spi/azure_infra.py` -- Azure infra provisioning (`provision_azure_infra`: RG, AKS, `main.bicep`, KV recovery)
 - `src/spi/bicep.py` -- `az deployment group create` wrapper
-- `src/spi/bootstrap.py` -- K8s bootstrap (namespaces, ConfigMaps, ServiceAccount, JWT projection)
+- `src/spi/bootstrap.py` -- K8s bootstrap (namespaces, StorageClasses, Gateway API CRDs)
+- `src/spi/secrets.py` -- middleware secret seed + `platform`/`osdu` credential Secrets
 - `src/spi/images.py` -- resolves and renders `osdu-image-lock`
-- `src/spi/deploy.py` -- `_pin_gitops_source()`
 - `infra/aks.bicep`, `infra/main.bicep`, `infra/flux.bicep` -- the three Bicep entrypoints
 - `software/stacks/osdu/profiles/core/stack.yaml` -- the layer DAG

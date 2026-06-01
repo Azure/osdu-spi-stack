@@ -26,20 +26,19 @@ This project is currently optimized for Azure dev/test environments and is still
 
 ## Install
 
-The only tool you need is [`uv`](https://docs.astral.sh/uv/). Install the
-latest released `spi` binary directly from a GitHub Release:
-
-```bash
-uv tool install https://github.com/Azure/osdu-spi-stack/releases/latest/download/spi-latest-py3-none-any.whl
-spi --version
-```
-
-Pin to a specific version (recommended for reproducibility) by replacing
-`latest` with `vX.Y.Z` and the wheel name accordingly:
+The only tool you need is [`uv`](https://docs.astral.sh/uv/). Each
+[GitHub Release](https://github.com/Azure/osdu-spi-stack/releases) publishes a
+versioned `spi` wheel (`spi-X.Y.Z-py3-none-any.whl`). Install a specific version
+by its wheel URL (recommended for reproducibility):
 
 ```bash
 uv tool install https://github.com/Azure/osdu-spi-stack/releases/download/v0.1.0/spi-0.1.0-py3-none-any.whl
+spi --version
 ```
+
+To install the newest release, copy its wheel URL from the
+[latest release](https://github.com/Azure/osdu-spi-stack/releases/latest) and
+substitute it above.
 
 After install the `spi` binary is on PATH; no `uv run` prefix.
 
@@ -125,7 +124,7 @@ After that handoff, **Flux owns steady-state reconciliation** and continuously c
 4. **K8s Bootstrap**: Namespaces, StorageClasses, secrets, ConfigMap, ServiceAccount
 5. **GitOps**: AKS native Flux extension pointing to this repo
 
-A full `spi up` typically takes ~45-50 minutes in `centralus`, dominated by AKS Automatic provisioning (~30 min). Other regions may vary.
+A full `spi up` typically takes ~45-50 minutes, dominated by AKS Automatic provisioning (~30 min). Exact times vary by region.
 
 </details>
 
@@ -173,7 +172,7 @@ Everything is discovered by the CLI:
 uv run spi check
 ```
 
-**Required tools**: az, kubectl, flux, helm
+**Required tools**: az, bicep, kubectl, kubelogin, flux, helm
 
 **System requirements**: Azure subscription with permissions to create resource groups and AKS clusters.
 

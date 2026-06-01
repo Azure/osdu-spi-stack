@@ -55,9 +55,9 @@ The deployment pipeline has two phases: the CLI's Bicep-driven bootstrap (top) a
 | 3. Azure PaaS | Bicep (`infra/main.bicep`) | Managed Identity + federated credentials, Key Vault + static metadata secrets, ACR, Cosmos DB Gremlin + per-partition SQL, per-partition Service Bus (topics + subscriptions), common + per-partition Storage, RBAC role assignments |
 | 4. K8s bootstrap | `kubectl apply` | Namespaces, StorageClasses, `workload-identity-sa`, `osdu-config` ConfigMap, `spi-ingress-config` ConfigMap |
 | 5. Flux activation | Bicep (`infra/flux.bicep`) | AKS Flux extension + `fluxConfigurations` with two Kustomizations (stack profile, ingress mode) |
-| 6. Runtime KV secrets | `az keyvault secret set` | Per-partition Elasticsearch credentials, Redis hostname and password, common-storage table endpoint (runs after middleware is Ready) |
+| 6. Runtime KV secrets | `az keyvault secret set` | Per-partition Elasticsearch credentials, Redis hostname and password, written from the generated seed (no wait for middleware) |
 
-A full `spi up` typically takes ~45-50 minutes in `centralus`, dominated by AKS Automatic provisioning (~30 min) with PaaS Bicep (~3 min), K8s bootstrap (~1 min), and the Flux extension Bicep (~10-15 min) filling the remainder. `spi up --dry-run` runs `az deployment group what-if` against both Bicep templates and skips everything after phase 1.
+A full `spi up` typically takes ~45-50 minutes, dominated by AKS Automatic provisioning (~30 min) with PaaS Bicep (~3 min), K8s bootstrap (~1 min), and the Flux extension Bicep (~10-15 min) filling the remainder. `spi up --dry-run` runs `az deployment group what-if` against both Bicep templates and skips everything after phase 1.
 
 ## Runtime Architecture
 
@@ -277,7 +277,7 @@ Redis and Elasticsearch TLS CAs live as Secrets in `platform`. trust-manager (in
 | Resource | Purpose | Sizing |
 |----------|---------|--------|
 | Cosmos DB SQL | Operational data | 4000 RU/s autoscale, 24 containers |
-| Service Bus | Async messaging | Standard SKU, 14 topics, ~16 subscriptions |
+| Service Bus | Async messaging | Standard SKU, 14 topics, 14 subscriptions |
 | Storage account | Blob and table storage | Standard LRS, 5 containers |
 
 ### In-cluster (per environment)

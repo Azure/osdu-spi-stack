@@ -12,7 +12,7 @@
 |---|---|---|---|
 | Azure PaaS credentials | Cosmos DB, Service Bus, Storage, Key Vault | Entra ID (token broker) | Workload Identity; no stored material |
 | PaaS metadata + secret values | Cosmos endpoints, Storage account names, Service Bus namespace, tenant ID | Azure Key Vault | SDK reads via Workload Identity (or CSI) |
-| In-cluster middleware passwords | Redis, Elasticsearch, PostgreSQL (Airflow) | Kubernetes Secrets in `platform` / `osdu` | Operator-issued, fanned out per service |
+| In-cluster middleware passwords | Redis, Elasticsearch, PostgreSQL (Airflow) | Kubernetes Secrets in `platform` / `osdu` | CLI-generated seed (`spi-secrets`), consumed by the operators |
 
 This split is the decision in [ADR-010](../decisions/010-keyvault-secret-management.md). The next sections walk each class.
 
@@ -28,31 +28,30 @@ Two writers contribute to Key Vault:
 
 ### Writer A: Bicep (deploy time)
 
-Most KV secrets are declared in Bicep modules, where the source value is Azure itself. `infra/modules/keyvault.bicep` and `infra/modules/partition.bicep` write the bulk of them at `az deployment group create` time.
+Most KV secrets are declared in Bicep, where the source value is Azure itself. The top-level `infra/main.bicep` declares the account-wide secrets and `infra/modules/partition.bicep` declares the per-partition ones, all at `az deployment group create` time. (`infra/modules/keyvault.bicep` declares only the vault, not its secrets.)
 
-| Secret pattern | Source | Module |
+| Secret pattern | Source | Declared in |
 |---|---|---|
-| `entra-tenant-id`, `subscription-id` | Bicep parameter | `keyvault.bicep` |
-| `gremlin-endpoint`, `gremlin-primary-key` | `listKeys()` on Cosmos | `cosmos-gremlin.bicep` |
-| `{p}-cosmos-endpoint`, `{p}-storage-account-blob-endpoint` | Resource `.properties` | `partition.bicep` |
-| `{p}-cosmos-connection`, `{p}-storage-account-key`, `{p}-sb-connection` | `"DISABLED"` placeholder by default, or real SAS for indexer-queue carve-out | `partition.bicep` |
-| `acr-endpoint`, `keyvault-uri` | Resource `.properties` | `keyvault.bicep` |
+| `tenant-id`, `subscription-id`, `osdu-identity-id`, `keyvault-uri`, `system-storage` | `tenant()` / `subscription()` / resource outputs | `main.bicep` |
+| `graph-db-endpoint` / `graph-db-primary-key` | Cosmos Gremlin endpoint / `listKeys()` | `main.bicep` / `cosmos-gremlin.bicep` |
+| `{p}-cosmos-endpoint`, `{p}-storage`, `{p}-sb-namespace` | Resource outputs | `main.bicep` |
+| `{p}-cosmos-primary-key`, `{p}-storage-account-blob-endpoint` | `listKeys()` / resource `.properties` | `partition.bicep` |
+| `{p}-cosmos-connection`, `{p}-storage-account-key`, `{p}-sb-connection` | `"DISABLED"` placeholder by default, or real SAS for the indexer-queue carve-out | `partition.bicep` |
 
 Bicep writes are atomic with the rest of the deploy: the KV secret either lands with the resource or the whole deploy fails. ARM is idempotent on secret writes (a re-deploy with the same value is a no-op).
 
 ### Writer B: the CLI (post-handoff)
 
-A small set of values originates in-cluster and is only knowable after Flux brings middleware to `Ready`:
+A small set of KV secrets covers the in-cluster middleware. The CLI knows all of these as soon as infra is up: the passwords come from the generated seed (`spi-secrets`, see Class 3) and the endpoints are the fixed in-cluster service DNS names.
 
-| Secret | Source | Why post-handoff |
-|---|---|---|
-| `{p}-elastic-endpoint`, `{p}-elastic-username`, `{p}-elastic-password` | ECK-issued credentials in `platform`-namespace Secrets | ECK generates these when the Elasticsearch CR reaches Ready |
-| `redis-hostname`, `redis-password` | Bitnami chart-generated | Helm renders the password during install |
-| `tbl-storage-endpoint` | Derived from the common Storage account | Easier to compose in Python than in Bicep template syntax |
+| Secret | Source |
+|---|---|
+| `{p}-elastic-endpoint`, `{p}-elastic-username`, `{p}-elastic-password` | Fixed ES service DNS + generated `elastic_password` |
+| `redis-hostname`, `redis-password` | Fixed Redis service DNS + generated `redis_password` |
 
-The CLI waits up to a few minutes for the relevant K8s Secrets to appear, reads them with `kubectl get secret -o jsonpath`, and writes their values to KV with `az keyvault secret set`. This is Phase 1 step 11 in [deployment-lifecycle](deployment-lifecycle.md).
+`src/spi/deploy.py` (`_write_keyvault_bootstrap_secrets`) writes these with `az keyvault secret set` during Phase 6 of `spi up`. Because every value is already known from the seed, there is no wait for middleware to reach `Ready`.
 
-Re-running `spi up` against a live cluster re-runs the post-handoff writes idempotently; KV is fine with rewrites of the same value.
+Re-running `spi up` against a live cluster re-runs these writes idempotently; KV is fine with rewrites of the same value.
 
 ### Reader: the services
 
@@ -60,13 +59,13 @@ Services read their KV secrets via the Azure SDK using Workload Identity. The OS
 
 ## Class 3: In-cluster middleware passwords
 
-Three middleware systems, each with its own credential mechanism:
+The CLI generates all three middleware passwords (`src/spi/secrets.py`, `_generate_password`), stores them in a seed Secret `spi-secrets` in `flux-system`, and pre-creates the Kubernetes Secrets the operators consume. The operators read these pre-created Secrets rather than minting their own:
 
-- **Elasticsearch.** ECK issues per-user credentials. The CLI never generates these. ECK exposes them as Secrets in `platform`; the CLI mirrors them into Key Vault (Writer B above) so services that need ES credentials read them through the same Workload Identity path as everything else.
-- **Redis.** The Bitnami Helm chart generates the master password during install. The chart exposes it as `redis-master-password` Secret in `platform`; the CLI mirrors `redis-password` and `redis-hostname` into Key Vault.
-- **PostgreSQL (Airflow).** CNPG generates per-cluster credentials and exposes them as Secrets in `platform`. Airflow reads them directly via the CNPG-issued ServiceAccount; no Key Vault round-trip.
+- **Elasticsearch.** The CLI creates `elasticsearch-es-elastic-user` in `platform`; ECK adopts it as the elastic-user credential.
+- **Redis.** The CLI creates `redis-credentials` in `platform`; the Bitnami chart consumes it via `existingSecret` (`software/components/redis/release.yaml`).
+- **PostgreSQL (Airflow).** The CLI creates `postgresql-superuser-credentials` and `postgresql-airflow-credentials` in `platform`; CNPG consumes them via `superuserSecret` / the owner secret.
 
-The CLI does not generate these passwords. The operators do, deterministically per environment.
+The same generated passwords are mirrored into Key Vault by the CLI (Writer B above), so OSDU services in `osdu` read Elasticsearch and Redis credentials through the same Workload Identity path as everything else.
 
 ## CA distribution via trust-manager
 
@@ -83,24 +82,21 @@ trust-manager is locked down: `secretTargets.authorizedSecrets` is pinned to the
 
 The same Kustomization (`spi-bootstrap`, Layer 4b) also applies a static Istio `DestinationRule` (`redis-disable-mtls`) that turns off Istio mTLS to the in-cluster Redis master. Lettuce already speaks TLS directly to Redis, and Istio's automatic mTLS wraps that connection in a second TLS layer Lettuce cannot unwind.
 
-## Worked example: rotating the Redis master password
+## Worked example: rotating the Redis password
 
-The Redis password is Bitnami chart-generated and mirrored into Key Vault. Rotating it has two ends to keep in sync.
+The Redis password is CLI-generated, stored in the seed (`spi-secrets`) and the `redis-credentials` Secret the chart consumes, and mirrored into Key Vault. Rotating it means updating those copies in sync.
 
-1. **Delete the existing Secret** so the chart re-renders it on next reconcile.
+1. **Update the Secret the chart consumes** with a new password, then restart Redis.
    ```bash
-   kubectl delete secret redis-master-password -n platform
-   flux reconcile helmrelease redis -n platform
+   NEW=$(openssl rand -base64 18)
+   kubectl create secret generic redis-credentials -n platform \
+     --from-literal=password="$NEW" --dry-run=client -o yaml | kubectl apply -f -
+   flux reconcile helmrelease redis -n platform   # Redis restarts with the new password
    ```
-   The HelmRelease re-renders the Secret with a new password. Redis restarts to pick up the new password.
-2. **Re-run the CLI's runtime KV writes** so KV picks up the new value.
-   ```bash
-   uv run spi reconcile --refresh-images   # closest existing command; also re-runs runtime secrets
-   ```
-   (or invoke just the relevant function directly if you prefer)
+2. **Write the new value to Key Vault** so services resolve it (`az keyvault secret set --name redis-password ...`), and update the seed so future `spi up` runs stay consistent.
 3. **Roll the consumers.** `kubectl rollout restart deploy -n osdu`. Each service re-reads its credentials from KV at start.
 
-Three steps, atomic per system. The same shape works for Elasticsearch credentials.
+The same shape works for the Elasticsearch credentials (`elasticsearch-es-elastic-user` / `{p}-elastic-password`).
 
 ## Worked example: trace where `cosmos-endpoint` for partition `opendes` lives
 
@@ -136,10 +132,11 @@ The fact that the partition record value is the bare suffix and the KV secret na
 
 ## Source files
 
-- `infra/modules/keyvault.bicep` -- KV resource + static secrets
-- `infra/modules/partition.bicep` -- per-partition secrets
-- `src/spi/secrets.py` -- post-handoff KV writes
-- `src/spi/bootstrap.py` -- `osdu-config` and ServiceAccount bootstrap
+- `infra/main.bicep` -- account-wide static KV secrets
+- `infra/modules/keyvault.bicep` -- KV resource only
+- `infra/modules/partition.bicep` -- per-partition KV secrets
+- `src/spi/secrets.py` -- generates middleware passwords (seed + `platform`/`osdu` K8s Secrets)
+- `src/spi/deploy.py` -- runtime KV writes (`_write_keyvault_bootstrap_secrets`), `osdu-config` ConfigMap, and workload-identity ServiceAccounts
 - `software/stacks/osdu/bootstrap/ca-bundles.yaml` -- trust-manager Bundles + Redis DestinationRule
-- `software/charts/osdu-spi-service/templates/init-containers.yaml` -- `import-ca-certs` init container
+- `software/charts/osdu-spi-service/templates/deployment.yaml` -- `import-ca-certs` init container
 - `software/charts/osdu-spi-init/templates/partition-record.yaml` -- the bare-suffix template

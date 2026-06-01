@@ -12,8 +12,9 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   names (storage, Key Vault, ACR, Cosmos, Service Bus). Persisted as the
   `spi-name-suffix` tag on the resource group so subsequent runs reuse it;
   legacy (pre-suffix) deployments keep unsuffixed names. (`ee45a65`)
-- `CODE_OF_CONDUCT.md` and `SUPPORT.md`; `CODEOWNERS` and `AGENTS.md`
-  updated with ownership and deployment notes. (`836a623`)
+- `CODE_OF_CONDUCT.md` and `SUPPORT.md`; `CODEOWNERS` and
+  `.github/copilot-instructions.md` updated with ownership and deployment
+  notes. (`836a623`)
 - Prime Copilot skill. (`480a9d8`)
 
 ### Fixed

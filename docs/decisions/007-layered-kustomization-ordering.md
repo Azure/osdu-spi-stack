@@ -10,7 +10,7 @@ Flux Kustomizations with explicit `dependsOn` let us encode those constraints on
 
 ## Decision
 
-The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines eight ordered layers plus a schema-load one-shot. Kustomizations within the same layer reconcile in parallel when they have no mutual dependency.
+The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines a set of ordered layers (0a through 6) wired by explicit `dependsOn`, including two one-shot Jobs (`spi-osdu-init`, `spi-osdu-schema-load`). Kustomizations within the same layer reconcile in parallel when they have no mutual dependency.
 
 | Layer | Kustomization(s) | Depends on |
 |---|---|---|
@@ -22,7 +22,8 @@ The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines eight
 | 4a | `spi-osdu-config` | 0a |
 | 4b | `spi-bootstrap` (trust-manager Bundles + Redis DestinationRule, ADR-011) | trust-manager, ES, Redis, osdu-config |
 | 5 | `spi-osdu-services` (core services) | 4b, 0b |
-| 5b | `spi-osdu-schema-load` (one-shot Job, ADR-013) | 5 |
+| 5a | `spi-osdu-init` (partition + entitlements bootstrap, ADR-015) | `spi-osdu-services` |
+| 5b | `spi-osdu-schema-load` (one-shot Job, ADR-013) | `spi-osdu-init` |
 | 6 | `spi-osdu-reference` (reference services) | 5, 5b |
 
 The ingress profile (`software/stacks/osdu/ingress/<mode>/stack.yaml`, ADR-012) attaches additional Kustomizations at Layer 1 (cert issuers, ExternalDNS, TLS overlays) and Layer 6 (HTTPRoutes). The two profiles reconcile independently under one `fluxConfigurations` resource (ADR-009).

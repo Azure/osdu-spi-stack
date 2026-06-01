@@ -21,7 +21,7 @@ Each mode is a self-contained Flux Kustomization tree under `software/stacks/osd
 Some pieces are in every mode and live under `software/components/`:
 
 - **Managed Istio** from AKS Automatic (ADR-002). Provides the Gateway API implementation and the ingress LoadBalancer service.
-- **`Gateway` resource** in the `platform` namespace. The Gateway listens on HTTP:80; the HTTPS listener is added by the mode-specific Kustomization (since it needs a cert that depends on the hostname).
+- **`Gateway` resource** in the `aks-istio-ingress` namespace. The Gateway listens on HTTP:80; the HTTPS listener is added by the mode-specific Kustomization (since it needs a cert that depends on the hostname).
 - **cert-manager** for any mode that issues TLS (`azure`, `dns`).
 - **`spi-ingress-config` ConfigMap** in `flux-system`, written by the CLI during K8s bootstrap. Carries `GATEWAY_HOSTNAME`, `GATEWAY_LABEL`, `DNS_ZONE`, and similar values consumed by Flux `postBuild.substituteFrom`.
 
@@ -46,7 +46,7 @@ This mode requires zero Azure outside the resource group: no DNS zone, no public
 
 Two more pieces in addition to `azure`'s setup:
 
-1. **A second UAMI (`external-dns-identity`)** scoped `DNS Zone Contributor` on the zone's resource group. Provisioned by `infra/modules/external-dns-identity.bicep` and `infra/modules/external-dns-role.bicep`, conditional on a non-empty `dnsZoneName` parameter. The CLI requires `SPI_INGRESS_DNS_ZONE` (or `--dns-zone`) when mode is `dns`.
+1. **A second UAMI (`<cluster>-external-dns`)** scoped `DNS Zone Contributor` on the DNS zone (the role assignment binds to the zone; the module deploys into the zone's resource group). Provisioned by `infra/modules/external-dns-identity.bicep` and `infra/modules/external-dns-role.bicep`, conditional on a non-empty `dnsZoneName` parameter. The CLI requires `SPI_INGRESS_DNS_ZONE` (or `--dns-zone`) when mode is `dns`.
 2. **ExternalDNS deployment** in `software/stacks/osdu/ingress/dns/`. Reads HTTPRoute hostnames and writes A and TXT records to the Azure DNS zone. Pod runs as the second UAMI via Workload Identity.
 
 Hostname layout:
@@ -102,7 +102,7 @@ You curl `https://<label>.<region>.cloudapp.azure.com/api/partition/v1/partition
 Five things to check in order:
 
 1. **DNS resolves.** `dig <label>.<region>.cloudapp.azure.com`. If empty, the AKS LB Service does not have the DNS label annotation; check `kubectl get svc -n aks-istio-ingress -o yaml`.
-2. **TLS handshake completes.** `curl -vI https://<label>...`. If TLS errors, cert-manager has not issued. `kubectl describe certificate -n platform` shows the ACME state.
+2. **TLS handshake completes.** `curl -vI https://<label>...`. If TLS errors, cert-manager has not issued. `kubectl describe certificate -n aks-istio-ingress` shows the ACME state.
 3. **The HTTPRoute exists and is accepted.** `kubectl get httproute -n osdu`. The `Accepted` condition should be `True`. If the Gateway rejected it (hostname mismatch), the message tells you which field is wrong.
 4. **The backend Service has endpoints.** `kubectl get endpoints -n osdu`. If the service has no ready pods, the 404 is actually a 503 wearing 404 clothing.
 5. **The path matches what the service expects.** OSDU APIs live under `/api/<service>/v1/...`. The HTTPRoute is path-prefix-based, not regex, so a typo in the path is a 404.
@@ -111,13 +111,13 @@ Most 404s are item 3 or item 5. Item 1 catches mode switches; item 2 catches Let
 
 ## Worked example: debug a 404 in `dns` mode
 
-Same drill, plus one: **ExternalDNS wrote the A record.** `kubectl logs deploy/external-dns -n platform | tail` shows what it did. If it has not written anything, the HTTPRoute hostname is not in the form ExternalDNS expects (`<sub>.<zone>` with the zone exactly matching `--dns-zone`).
+Same drill, plus one: **ExternalDNS wrote the A record.** `kubectl logs deploy/external-dns -n foundation | tail` shows what it did. If it has not written anything, the HTTPRoute hostname is not in the form ExternalDNS expects (`<sub>.<zone>` with the zone exactly matching `--dns-zone`).
 
 ## Related ADRs
 
 - [ADR-002](../decisions/002-aks-automatic.md) -- AKS Automatic (managed Istio + Gateway)
 - [ADR-005](../decisions/005-workload-identity.md) -- Workload Identity (second UAMI for ExternalDNS)
-- [ADR-006](../decisions/006-three-namespace-model.md) -- Three-namespace model (Gateway in `platform`)
+- [ADR-006](../decisions/006-three-namespace-model.md) -- Three-namespace model (Gateway in `aks-istio-ingress`)
 - [ADR-012](../decisions/012-ingress-profiles.md) -- Three Ingress Profiles
 
 ## Source files

@@ -12,10 +12,10 @@
 
 Five steps from Azure to a usable bearer token inside a pod:
 
-1. **The UAMI exists.** `infra/modules/identity.bicep` creates `osdu-identity` (a `Microsoft.ManagedIdentity/userAssignedIdentities` resource). The UAMI has a `client_id`, a `tenant_id`, and a `principal_id`.
-2. **The federated credential binds the UAMI to a ServiceAccount.** The same module creates a `federatedIdentityCredentials` subresource. Its `subject` is `system:serviceaccount:osdu:workload-identity-sa`; its `issuer` is the AKS cluster's OIDC discovery URL (a property of the cluster, populated by AKS automatically).
+1. **The UAMI exists.** `infra/modules/identity.bicep` creates the OSDU UAMI (`<cluster>-osdu-identity`, a `Microsoft.ManagedIdentity/userAssignedIdentities` resource). The UAMI has a `client_id`, a `tenant_id`, and a `principal_id`.
+2. **The federated credentials bind the UAMI to the ServiceAccount.** The same module creates one `federatedIdentityCredentials` subresource per namespace in the fixed OSDU set (`default`, `osdu-core`, `airflow`, `osdu-system`, `osdu-auth`, `osdu-reference`, `osdu`, `platform`), each with `subject` `system:serviceaccount:<ns>:workload-identity-sa`; the `issuer` is the AKS cluster's OIDC discovery URL (a property of the cluster, populated by AKS automatically).
 3. **The RBAC bindings make the UAMI useful.** `infra/modules/rbac.bicep` assigns six roles scoped per resource: `Key Vault Secrets User`, `Storage Blob Data Contributor`, `Storage Table Data Contributor`, `Service Bus Data Sender`, `Service Bus Data Receiver`, `AcrPull`. Per [ADR-005](../decisions/005-workload-identity.md), the SPI stack uses one shared identity rather than per-service identities.
-4. **The ServiceAccount carries the link annotations.** During K8s bootstrap (`src/spi/bootstrap.py`), the CLI creates `workload-identity-sa` in the `osdu` namespace with two annotations: `azure.workload.identity/client-id: <UAMI client_id>` and `azure.workload.identity/tenant-id: <tenant>`. Pods that mount this ServiceAccount inherit the annotations.
+4. **The ServiceAccount carries the link annotations.** During K8s bootstrap (`src/spi/deploy.py`, `_create_osdu_config`), the CLI creates `workload-identity-sa` in the `platform` and `osdu` namespaces with two annotations: `azure.workload.identity/client-id: <UAMI client_id>` and `azure.workload.identity/tenant-id: <tenant>`. Pods that mount this ServiceAccount inherit the annotations.
 5. **The pod opts in with a label.** A service pod includes `azure.workload.identity/use: "true"` in its labels. The AKS webhook sees the label, looks at the ServiceAccount annotations, mounts a projected SA token at `/var/run/secrets/azure/tokens/token`, and injects three env vars: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`.
 
 At runtime, the Azure SDK in the service (or the OSDU `core-lib-azure`) reads the projected token, exchanges it with Entra ID's `oauth/v2.0/token` endpoint, and gets an AAD bearer scoped to whatever audience the SDK asks for. The token is short-lived and refreshed automatically; nothing is stored on disk.
@@ -43,11 +43,11 @@ Workload Identity gets the bearer **into** the pod. ADR-016 is about what happen
 
 The Azure-provider OSDU service images (`*-service-azure:*`) include an in-process Spring filter that reads the caller's application identity from a request header, not from the bearer directly. The header has to be populated by the Istio sidecar before the request reaches Java. With no Istio policy in place, the header is absent and authorization fails before any business logic runs.
 
-The SPI Stack CLI applies three Istio resources during K8s bootstrap (Phase 4, step 9 in [deployment-lifecycle](deployment-lifecycle.md)):
+The SPI Stack CLI applies three Istio resources during K8s bootstrap (Phase 1, step 9 in [deployment-lifecycle](deployment-lifecycle.md)):
 
-- **`RequestAuthentication`** validates the bearer against both AAD v1 and v2 issuers, with audiences `{client_id}` and `https://management.azure.com[/]`. Configured with `outputPayloadToHeader: x-payload` so the decoded JWT lands in Envoy dynamic metadata.
-- **`EnvoyFilter` `microsoft-identity-filter`** on `SIDECAR_INBOUND`. Lua reads the JWT metadata and writes `x-app-id` / `x-user-id`. The branch that special-cases `aud == https://management.azure.com/` writes the OSDU UAMI client_id into both headers (so bootstrap Jobs with management-scope bearers land with the right `app-id`).
-- **`PeerAuthentication` `mtls-config`** in `PERMISSIVE` mode in `osdu`. Defensive against managed-mesh defaults that could otherwise break the init Jobs.
+- **`RequestAuthentication` `spi-osdu-jwt-authn`** validates the bearer against both AAD v1 and v2 issuers, with audiences `{client_id}` and `https://management.azure.com[/]`. Configured with `outputPayloadToHeader: x-payload` so the decoded JWT lands in Envoy dynamic metadata.
+- **`EnvoyFilter` `spi-osdu-identity-filter`** on `SIDECAR_INBOUND`. Lua reads the JWT metadata and writes `x-app-id` / `x-user-id`. The branch that special-cases `aud == https://management.azure.com/` writes the OSDU UAMI client_id into both headers (so bootstrap Jobs with management-scope bearers land with the right `app-id`).
+- **`PeerAuthentication` `spi-osdu-mtls`** in `PERMISSIVE` mode in `osdu`. Defensive against managed-mesh defaults that could otherwise break the init Jobs.
 
 Because the projection runs inside the sidecar, the same path serves bootstrap Jobs, steady-state service-to-service calls, and external client calls through the gateway. The Spring filter does not care where the header came from; it just needs `x-app-id` populated.
 
@@ -58,7 +58,7 @@ ADR-016 calls this out as the most common failure mode. The `RequestAuthenticati
 - The bootstrap Jobs use `aud=https://management.azure.com/`. That audience is in the default list.
 - `core-lib-azure.getWIToken` uses scope `${aadClientId}/.default`. By default `aadClientId` is the UAMI client_id, which is in the audience list. If the operator overrides `AAD_CLIENT_ID` to a separate OSDU AAD app registration, the appid of that registration must also be in the audience list.
 
-`istio_auth_resources()` in `src/spi/bootstrap.py` accepts both `entra_client_id` (UAMI) and `aad_client_id` and emits both, deduped when they match. When the override is in play, both end up in the audience list.
+`istio_auth_resources()` in `src/spi/templates.py` accepts both `entra_client_id` (UAMI) and `aad_client_id` and emits both, deduped when they match. When the override is in play, both end up in the audience list.
 
 The symptom of a missing audience is identical to "Workload Identity broken": empty `app-id=` in the service's request log, 403 from partition or 401 from entitlements. The cure is to verify the audience list, not to debug the federation chain.
 
@@ -77,7 +77,7 @@ Step by step:
 1. **Confirm the bearer is reaching the sidecar.** `kubectl logs <pod> -c istio-proxy -n osdu | grep jwt_authn` should show a `jwt_authn` admit. If it shows a reject, the bearer is invalid; check audience and issuer.
 2. **Confirm `x-payload` is being projected.** The `RequestAuthentication` writes the decoded JWT to `x-payload`. If `x-payload` is missing from the request the service sees, the Lua filter is not firing; check that the `EnvoyFilter` is present (`kubectl get envoyfilter -n osdu`).
 3. **Confirm the Lua mapping.** The Lua reads `envoy.filters.http.jwt_authn` dynamic metadata. If the audience does not match one of the branches in the Lua, `x-app-id` is left empty even though `x-payload` was projected.
-4. **Confirm the audience list.** `kubectl get requestauthentication -n osdu -o yaml | grep -A5 audiences`. If `AAD_CLIENT_ID` is overridden and the AAD appid is missing here, that is the bug. Fix `bootstrap.py`'s call to `istio_auth_resources()`, re-run the CLI step (or `kubectl apply` the generated RA manually), and retry.
+4. **Confirm the audience list.** `kubectl get requestauthentication -n osdu -o yaml | grep -A5 audiences`. If `AAD_CLIENT_ID` is overridden and the AAD appid is missing here, that is the bug. Fix `deploy.py`'s `_create_istio_auth()` (which calls `istio_auth_resources()`), re-run the CLI step (or `kubectl apply` the generated RA manually), and retry.
 
 Three checks, each with a definitive answer. The full chain is small once you can name each link.
 
@@ -102,6 +102,6 @@ No change to the federation chain, no change to the ServiceAccount, no change to
 
 - `infra/modules/identity.bicep` -- UAMI + federated credential
 - `infra/modules/rbac.bicep` -- role assignments
-- `src/spi/bootstrap.py` -- `osdu-config` ConfigMap, `workload-identity-sa`, `istio_auth_resources()`
-- `src/spi/templates.py` -- ServiceAccount template
+- `src/spi/deploy.py` -- `osdu-config` ConfigMap, `workload-identity-sa`, Istio JWT projection (`_create_osdu_config`, `_create_istio_auth`)
+- `src/spi/templates.py` -- `osdu_config_configmap()`, `workload_identity_sa()`, `istio_auth_resources()` templates
 - `software/charts/osdu-spi-service/templates/deployment.yaml` -- the `azure.workload.identity/use` label and ServiceAccount binding

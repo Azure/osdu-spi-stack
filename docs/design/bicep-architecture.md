@@ -24,7 +24,7 @@ Each deploys via `az deployment group create` against the same resource group. T
 
 A single template would work, but the three boundaries match three different lifecycles:
 
-- **`aks.bicep`** is the slowest piece (~5-7 min) and almost never changes after first deploy.
+- **`aks.bicep`** is the slowest piece (~30 min) and almost never changes after first deploy.
 - **`main.bicep`** changes when you add a partition, swap a PaaS sku, or wire a new identity. It deploys in ~2-3 min and re-runs idempotently.
 - **`flux.bicep`** changes whenever you change profile or ingress mode (`--profile`, `--ingress-mode`). It deploys in seconds.
 
@@ -42,16 +42,16 @@ The full rationale is in [ADR-008](../decisions/008-bicep-for-azure-provisioning
 
 | Module | Resources | Notes |
 |---|---|---|
-| `identity.bicep` | UAMI `osdu-identity`, federated credential | Federated to `workload-identity-sa` in `osdu` namespace |
-| `keyvault.bicep` | Key Vault, RBAC role assignments for UAMI, static secrets (endpoints, IDs, derived values) | `listKeys()` on Cosmos accounts; runtime secrets land later via CLI |
+| `identity.bicep` | UAMI `<cluster>-osdu-identity`, federated credentials | Federated to `workload-identity-sa` across the fixed OSDU namespace set (8, incl. `osdu` and `platform`) |
+| `keyvault.bicep` | Key Vault resource only | RBAC lives in `rbac.bicep`; secret values are declared in `main.bicep` (runtime secrets land later via CLI) |
 | `acr.bicep` | Container Registry (Basic SKU) | UAMI gets `AcrPull` |
 | `cosmos-gremlin.bicep` | Cosmos DB Gremlin account + graph DB | Entitlements graph; shared across partitions |
-| `partition.bicep` | Per-partition: Cosmos SQL account + 24 containers, Service Bus namespace + 14 topics + ~16 subscriptions, Storage account + 5 containers + tables, per-partition KV secrets (`{p}-cosmos-endpoint`, `{p}-storage-account-blob-endpoint`, `{p}-sb-connection`, etc.) | Looped from `main.bicep` over `dataPartitions` |
+| `partition.bicep` | Per-partition: Cosmos SQL account + 24 containers, Service Bus namespace + 14 topics + 14 subscriptions, Storage account + 5 containers, per-partition KV secrets (`{p}-storage-account-blob-endpoint`, `{p}-cosmos-primary-key`, `{p}-sb-connection`, etc.) | Looped from `main.bicep` over `dataPartitions` |
 | `storage-common.bicep` | Common Storage account (legal tags, cross-partition data) | One per environment, not per partition |
 | `rbac.bicep` | RBAC role assignments scoped per resource | Key Vault Secrets User, Storage Blob/Table Data Contributor, Service Bus Data Sender/Receiver, AcrPull |
-| `vnet.bicep` | VNet + private subnet + NAT gateway | Conditional; only present when policy or `dns` ingress requires it |
-| `external-dns-identity.bicep` | Second UAMI (`external-dns-identity`) + federated credential to ExternalDNS SA | Conditional on `--ingress-mode dns` |
-| `external-dns-role.bicep` | `DNS Zone Contributor` role on the zone's RG | Conditional on `--ingress-mode dns` |
+| `vnet.bicep` | VNet + private subnet + NAT gateway | Consumed by `aks.bicep` (BYO VNet for AKS egress), not `main.bicep` |
+| `external-dns-identity.bicep` | Second UAMI (`<cluster>-external-dns`) + federated credential to ExternalDNS SA | Conditional on `--ingress-mode dns` |
+| `external-dns-role.bicep` | `DNS Zone Contributor` role on the DNS zone | Deploys into the zone's RG; the role binds to the zone. Conditional on `--ingress-mode dns` |
 
 `partition.bicep` is the only looped module today. Adding a partition is `spi up --env <env> --partition p1 --partition p2`; `main.bicep` renders one partition module per name.
 
@@ -63,7 +63,7 @@ Five things Bicep cannot or will not do; the CLI handles them with `az`:
 2. **Soft-delete Key Vault recovery.** `az keyvault list-deleted | jq` + `az keyvault recover`. ARM cannot branch on a live query, so the CLI checks before submitting `main.bicep` and runs `recover` if needed.
 3. **`az aks get-credentials`.** Kubeconfig merge is a client-side operation, not a resource.
 4. **`az aks mesh enable-istio-cni`.** AVM v0.13.0 types `proxyRedirectionMechanism` out of `IstioComponents`. The CLI patches it imperatively after `aks.bicep` lands; pin a newer AVM version when the parameter becomes available.
-5. **Runtime Key Vault secrets.** A small set of values originates in-cluster (Elasticsearch ECK-issued credentials, Bitnami-issued Redis password, the common Storage table endpoint). The CLI waits for middleware Ready, then writes those values to Key Vault with `az keyvault secret set`. See [ADR-010](../decisions/010-keyvault-secret-management.md) and the [secret lifecycle](secret-lifecycle.md) doc for the full handoff.
+5. **Runtime Key Vault secrets.** The in-cluster middleware secrets (`redis-*`, `{p}-elastic-*`) are not declarable in Bicep. The CLI writes them with `az keyvault secret set` from the generated seed passwords — no wait for middleware Ready, since the values are known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md) and the [secret lifecycle](secret-lifecycle.md) doc for the full handoff.
 
 These seams are explicit and small. Adding to them is a smell: most "Bicep cannot do this" answers turn out to be "I have not read the AVM changelog yet."
 
@@ -73,12 +73,12 @@ These seams are explicit and small. Adding to them is a smell: most "Bicep canno
 spi up --env <env>
    │
    ├── az group create
-   ├── (KV recovery if needed)
    │
    ├── az deployment group create  --template-file infra/aks.bicep
    ├── az aks get-credentials
    ├── az aks mesh enable-istio-cni
    │
+   ├── (KV recovery if needed)
    ├── az deployment group create  --template-file infra/main.bicep
    │       --parameters dataPartitions=[...] ingressMode=<mode>
    │
@@ -87,7 +87,7 @@ spi up --env <env>
    ├── az deployment group create  --template-file infra/flux.bicep
    │       --parameters profile=<profile> ingressMode=<mode>
    │
-   └── az keyvault secret set  (runtime secrets, post-middleware-Ready)
+   └── az keyvault secret set  (runtime secrets, from seed)
 ```
 
 `spi up --dry-run` stops after the `what-if` on `aks.bicep` and `main.bicep`. Everything below that line only runs in a real deploy.
@@ -99,7 +99,7 @@ Suppose you want to add an Azure Cache for Redis to support a new service.
 1. **Write the module.** Create `infra/modules/redis-cache.bicep` declaring the `Microsoft.Cache/redis` resource and any KV secrets the cluster needs (`redis-cache-host`, `redis-cache-key`).
 2. **Wire it into `main.bicep`.** Add the `module redisCache 'modules/redis-cache.bicep' = {...}` block with the parameters you need.
 3. **Wire RBAC if relevant.** If services need data-plane access via Workload Identity, extend `rbac.bicep` with the new role assignments scoped to the resource.
-4. **Plumb the config.** If consumers read it from `osdu-config`, extend `templates.py`'s `osdu_config()` function. If they read it from Key Vault, the secret you declared in step 1 is enough.
+4. **Plumb the config.** If consumers read it from `osdu-config`, extend `templates.py`'s `osdu_config_configmap()` function. If they read it from Key Vault, the secret you declared in step 1 is enough.
 5. **Preview.** `spi up --env dev1 --dry-run` shows the ARM-level diff. If it looks right, run without `--dry-run`.
 
 The CLI does not need to learn the resource. That is the point of declarative provisioning.
@@ -124,7 +124,7 @@ Output snippet:
    ~ Modify: Microsoft.Storage/storageAccounts/spistackdev1common
 ```
 
-The dry-run does not touch the cluster. It does land the resource group (Bicep needs an RG target) and recovers a soft-deleted Key Vault if one exists; the CLI documents both as pre-conditions.
+The dry-run does not touch the cluster. It does land the resource group (Bicep needs an RG target), but it skips soft-deleted Key Vault recovery — that runs only on a real deploy (`if not dry_run` in `azure_infra.py`).
 
 ## Related ADRs
 
@@ -141,4 +141,5 @@ The dry-run does not touch the cluster. It does land the resource group (Bicep n
 - `infra/modules/*.bicep` -- per-resource modules
 - `infra/params/default.bicepparam`, `infra/params/multi.bicepparam` -- parameter examples
 - `src/spi/bicep.py` -- `az deployment group create` wrapper used by the CLI
-- `src/spi/azure_infra.py` -- the imperative seams (RG, KV recovery, mesh CNI, runtime secrets)
+- `src/spi/azure_infra.py` -- the imperative seams (RG, KV recovery, mesh CNI)
+- `src/spi/deploy.py` -- runtime KV secret writes (`_write_keyvault_bootstrap_secrets`)

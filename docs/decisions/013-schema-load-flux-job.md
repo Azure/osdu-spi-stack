@@ -14,7 +14,7 @@ Load schemas with a Flux-managed Kubernetes Job, reusing the existing `workload-
 
 Shape:
 
-- New Kustomization `spi-osdu-schema-load` at `software/stacks/osdu/schema-load/`, wired into the core profile as Layer 5b (after `spi-osdu-services`, before `spi-osdu-reference`) per ADR-007.
+- New Kustomization `spi-osdu-schema-load` at `software/stacks/osdu/schema-load/`, wired into the core profile as Layer 5b (after `spi-osdu-init`, before `spi-osdu-reference`) per ADR-007.
 - Single `Job` with `workload-identity-sa`, the workload-identity pod label, and a mounted ConfigMap that provides `Token.py` and `bootstrap.sh` at the paths the loader image's entrypoint expects.
 - Kustomization `healthChecks` target the Job's `Complete` condition so `spi status` surfaces the Job alongside every other Flux resource.
 - The loader image tag is pinned to the same SHA as `schema.yaml`. `scripts/resolve-image-tags.py --update` advances both tags together.

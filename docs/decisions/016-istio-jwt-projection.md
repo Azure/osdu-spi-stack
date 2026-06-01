@@ -19,8 +19,8 @@ Adopt the three-resource pattern, applied imperatively from the CLI in the same 
 Resources:
 
 - `RequestAuthentication` accepting both AAD v1 and v2 issuers, audiences `{client_id}` and `https://management.azure.com[/]`, with `outputPayloadToHeader: x-payload` and `forwardOriginalToken: true`.
-- `EnvoyFilter` `microsoft-identity-filter` in the `osdu` namespace, applied to `SIDECAR_INBOUND`. Its Lua reads `envoy.filters.http.jwt_authn` dynamic metadata and writes `x-app-id` / `x-user-id`. The branch that special-cases `aud == https://management.azure.com/` replaces both headers with the OSDU UAMI client id, matching the audience presented by Workload Identity tokens.
-- `PeerAuthentication` `mtls-config` mode `PERMISSIVE` in `osdu`, defensive against managed-mesh defaults that could otherwise break the init Jobs.
+- `EnvoyFilter` `spi-osdu-identity-filter` in the `osdu` namespace, applied to `SIDECAR_INBOUND`. Its Lua reads `envoy.filters.http.jwt_authn` dynamic metadata and writes `x-app-id` / `x-user-id`. The branch that special-cases `aud == https://management.azure.com/` replaces both headers with the OSDU UAMI client id, matching the audience presented by Workload Identity tokens.
+- `PeerAuthentication` `spi-osdu-mtls` mode `PERMISSIVE` in `osdu`, defensive against managed-mesh defaults that could otherwise break the init Jobs.
 
 A per-service default-deny `AuthorizationPolicy` is intentionally not adopted in this ADR. The reference implementation that uses it treats it as defense in depth: even if the bearer is missing or invalid, the request never reaches the service. Our Azure-provider services already enforce identity in the Spring filter chain, so the second layer is duplicative for the bootstrap problem we are solving. Adding default-deny on services that are already serving traffic also has a wider blast radius than the rest of this change. We may revisit and adopt it later as a hardening pass.
 

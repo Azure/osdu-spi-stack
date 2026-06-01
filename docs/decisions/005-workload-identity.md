@@ -10,13 +10,13 @@ AKS Automatic enables the OIDC issuer by default, which is the precondition for 
 
 ## Decision
 
-Use a single UAMI (`osdu-identity`) federated with one ServiceAccount (`workload-identity-sa` in the `osdu` namespace). All OSDU services run under that ServiceAccount.
+Use a single UAMI (`<cluster>-osdu-identity`) federated with the `workload-identity-sa` ServiceAccount name across the fixed OSDU namespace set (`default`, `osdu-core`, `airflow`, `osdu-system`, `osdu-auth`, `osdu-reference`, `osdu`, `platform`). All OSDU services run under that ServiceAccount.
 
 - The UAMI is declared in `infra/modules/identity.bicep` and receives RBAC role assignments via `infra/modules/rbac.bicep`: Key Vault Secrets User, Storage Blob Data Contributor, Storage Table Data Contributor, Service Bus Data Sender, Service Bus Data Receiver, AcrPull.
 - The ServiceAccount carries `azure.workload.identity/client-id` and `tenant-id` annotations.
 - Pods opt in with the `azure.workload.identity/use: "true"` label; the AKS webhook projects the federated token file and injects `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`.
 
-Ingress mode `dns` provisions a second UAMI (`external-dns-identity`) scoped `DNS Zone Contributor` on the target zone's resource group (ADR-012).
+Ingress mode `dns` provisions a second UAMI (`<cluster>-external-dns`) scoped `DNS Zone Contributor` on the target DNS zone (ADR-012).
 
 Rejected: per-service UAMIs with least-privilege scoping. The role surface (the same six roles across every service) does not differentiate enough to justify the federation and RBAC volume at the SPI Stack's current scope.
 

@@ -4,7 +4,7 @@
 
 ## Context
 
-Provisioning an SPI Stack deploys on the order of 50 Azure resources: UAMI and federated credentials, Key Vault and its secrets, ACR, Cosmos DB Gremlin and per-partition SQL with 24 containers, per-partition Service Bus with 14 topics and ~16 subscriptions, common and per-partition Storage with containers and tables, and a scoped RBAC set. An imperative `az` CLI orchestrator for this resource graph grows past a thousand lines and ships ordering bugs that ARM would reject at submit time.
+Provisioning an SPI Stack deploys on the order of 50 Azure resources: UAMI and federated credentials, Key Vault and its secrets, ACR, Cosmos DB Gremlin and per-partition SQL with 24 containers, per-partition Service Bus with 14 topics and 14 subscriptions, common and per-partition Storage with containers and tables, and a scoped RBAC set. An imperative `az` CLI orchestrator for this resource graph grows past a thousand lines and ships ordering bugs that ARM would reject at submit time.
 
 Bicep inherits ARM's idempotency and parallel orchestration without a state file. It gives us `what-if` preview and deployment history as first-class features. Azure Verified Modules (AVM) provide Microsoft-maintained, versioned Bicep modules with best-practice defaults for complex resource types.
 

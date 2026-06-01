@@ -27,7 +27,7 @@ Changes that flow through this loop:
 
 OSDU service images move on a different cadence than the repo. Per [ADR-017](../decisions/017-osdu-image-lock.md), `spi up` queries the OSDU community GitLab registry for the newest immutable SHA tag per service, renders the result into a `osdu-image-lock` ConfigMap in `flux-system`, and applies it.
 
-The service Kustomizations under `software/stacks/osdu/profiles/core/` carry `postBuild.substituteFrom` blocks that reference `osdu-image-lock`. When Flux reconciles those Kustomizations, the `${PARTITION_IMAGE}` and `${PARTITION_IMAGE_TAG}` expressions in the rendered YAML expand against the live ConfigMap. Updating the lock and reconciling the Kustomization triggers a rolling update.
+The service Kustomizations under `software/stacks/osdu/profiles/core/` carry `postBuild.substituteFrom` blocks that reference `osdu-image-lock`. When Flux reconciles those Kustomizations, the `${PARTITION_IMAGE_REPOSITORY}` and `${PARTITION_IMAGE_TAG}` expressions in the rendered YAML expand against the live ConfigMap. Updating the lock and reconciling the Kustomization triggers a rolling update.
 
 The CLI is the only writer of `osdu-image-lock`. `spi reconcile --refresh-images` re-resolves and re-applies the lock, then forces a reconcile on the service Kustomizations. Nothing else moves service image tags.
 

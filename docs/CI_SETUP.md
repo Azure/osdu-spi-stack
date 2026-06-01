@@ -31,7 +31,7 @@ GitHub repo secrets:
 - `AZURE_SUBSCRIPTION_ID`
 
 Azure resources used by CI:
-- Resource group `spi-ci-whatif` (in `eastus2`) — read-only target for the
+- Resource group `spi-ci-whatif` (in `centralus`) — read-only target for the
   `bicep-whatif` validation job.
 
 ### To reproduce from scratch
@@ -66,7 +66,7 @@ gh secret set AZURE_TENANT_ID --body "<TENANT_ID>" --repo Azure/osdu-spi-stack
 gh secret set AZURE_SUBSCRIPTION_ID --body "<SUBSCRIPTION_ID>" --repo Azure/osdu-spi-stack
 
 # 5. Pre-create the bicep-whatif RG
-az group create --name "spi-ci-whatif" --location "eastus2" \
+az group create --name "spi-ci-whatif" --location "centralus" \
   --tags purpose=ci-whatif owner=osdu-spi-stack
 
 # 6. azure-smoke environment with required reviewer

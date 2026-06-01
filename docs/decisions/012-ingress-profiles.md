@@ -27,7 +27,7 @@ Three ingress profiles, each a self-contained Flux Kustomization tree under `sof
 Shared pieces (cert-manager install, Gateway resource, Istio ingress LB Service) live under `software/components/` and are brought in by all three profiles. The profile owns the variable surface:
 
 - `azure` uses the AKS cloud controller's `azure-dns-label-name` Service annotation (propagated via the Gateway's infrastructure annotations) to pin an Azure FQDN; cert-manager issues one cert against that FQDN; Kibana is served under `/kibana` via a subpath overlay.
-- `dns` provisions a second UAMI (`external-dns-identity`, scoped `DNS Zone Contributor` on the zone's resource group, ADR-005). ExternalDNS reads HTTPRoute hostnames and writes A and TXT records. The Gateway has one HTTPS listener per hostname, each with its own certificate. Kibana is its own subdomain (no subpath).
+- `dns` provisions a second UAMI (`<cluster>-external-dns`, scoped `DNS Zone Contributor` on the target DNS zone, ADR-005). ExternalDNS reads HTTPRoute hostnames and writes A and TXT records. The Gateway has one HTTPS listener per hostname, each with its own certificate. Kibana is its own subdomain (no subpath).
 - `ip` is the minimum surface: HTTPRoutes without hostnames bound to the HTTP:80 listener. No cert-manager issuers, no ExternalDNS, no Kibana routing, no TLS overlay.
 
 Inputs per mode land in a single `spi-ingress-config` ConfigMap in `flux-system`, consumed by Flux `postBuild.substituteFrom`.

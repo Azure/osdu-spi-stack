@@ -7,16 +7,22 @@ Repository: `Azure/osdu-spi-stack`
 
 ```
 src/spi/                  Python CLI (Typer + Rich + Pydantic)
-  cli.py                  Commands: check, up, down, status, info, reconcile
+  cli.py                  Commands: check, up, down, status, info, reconcile, update
   config.py               Config model (Azure-only, Profile enum)
-  checks.py               Tool prerequisites (az, bicep, kubectl, flux, helm)
-  helpers.py              Command execution, Bicep deployment, kubectl helpers
-  azure_infra.py          Thin orchestrator: RG + AKS imperative, PaaS via Bicep
+  checks.py               Tool prerequisites (az, bicep, kubectl, kubelogin, flux, helm)
+  deploy.py               Orchestrates: infra -> bootstrap -> GitOps (deploy_azure)
+  azure_infra.py          RG + AKS imperative, PaaS via Bicep (provision_azure_infra)
+  bicep.py                az deployment group create wrapper
+  bootstrap.py            K8s bootstrap (namespaces, StorageClasses, Gateway API CRDs)
+  shell.py                Command execution + kubectl helpers
   secrets.py              In-cluster secret generation (ES, Redis, PG)
   templates.py            YAML templates (GitRepository, Kustomization, ConfigMap)
+  images.py               OSDU image-lock resolution
+  ingress.py              Ingress mode logic (azure/dns/ip)
+  guard.py                Cluster-context safety checks
   status.py               Deployment health dashboard
   info.py                 Endpoint discovery and credential display
-  providers/azure.py      Orchestrates: infra -> bootstrap -> GitOps
+  update.py               Self-update command
 
 infra/                    Bicep templates for Azure PaaS provisioning
   main.bicep              RG-scoped entrypoint; wires module deployments
@@ -26,6 +32,7 @@ infra/                    Bicep templates for Azure PaaS provisioning
 
 software/
   charts/osdu-spi-service/ Local Helm chart (AKS Safeguards-compliant)
+  charts/osdu-spi-init/    Partition + entitlements bootstrap chart
   components/              In-cluster middleware (Flux manifests)
     cert-manager/          TLS certificate management
     trust-manager/         Cross-namespace CA bundle distribution
@@ -44,7 +51,7 @@ software/
 
 docs/
   architecture.md          System architecture document
-  decisions/               10 ADRs
+  decisions/               18 ADRs
   diagrams/                Excalidraw architecture diagram
 ```
 
@@ -76,15 +83,14 @@ uv run spi reconcile --resume                # Unfreeze GitOps
 
 - Azure-only (no KinD/AWS/GCP); SPI services depend on Azure PaaS (ADR-001)
 - AKS Automatic with managed Istio and Deployment Safeguards (ADR-002)
-- CLI (az commands) for infra + Flux GitOps for K8s workloads (ADR-003)
+- Imperative CLI bootstrap, then Flux CD + AKS GitOps Extension for K8s workloads (ADR-009)
 - Local Helm chart bakes Safeguards compliance into templates (ADR-004)
 - Workload Identity for all Azure PaaS access; no stored credentials (ADR-005)
 - Three namespaces: foundation, platform, osdu (ADR-006)
 - 7-layer Kustomization ordering with explicit dependsOn (ADR-007)
-- In-cluster only for ES, Redis, PG (Airflow); everything else is Azure PaaS (ADR-008)
+- In-cluster only for ES, Redis, PG (Airflow); everything else is Azure PaaS (ADR-003)
 - Azure PaaS provisioning declared in Bicep (`infra/`); RG + AKS + soft-delete
-  recovery + post-deploy Key Vault writes remain imperative (ADR-012, supersedes
-  the "use az CLI" portion of ADR-003 for PaaS resources)
+  recovery + post-deploy Key Vault writes remain imperative (ADR-008)
 
 ## OSDU Service Provider Context
 
@@ -127,7 +133,7 @@ Services use Azure SPI images from the OSDU community registry:
 
 ## Deployment Workflow
 
-1. `spi check` -- verify az, bicep, kubectl, flux, helm installed
+1. `spi check` -- verify az, bicep, kubectl, kubelogin, flux, helm installed
 2. `spi up --env dev1` -- provisions Azure infra (~45-50 min, mostly AKS Automatic), bootstraps K8s, activates GitOps
    - RG + AKS via `az` CLI
    - Identity + KV + ACR + CosmosDB + Service Bus + Storage + RBAC via
