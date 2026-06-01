@@ -88,7 +88,7 @@ jobs:
         # GitHub's ubuntu-latest runner sometimes preinstalls helm and
         # sometimes doesn't; install explicitly so the prereq check is
         # deterministic.
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
         with:
           version: 'v3.16.2'
 
