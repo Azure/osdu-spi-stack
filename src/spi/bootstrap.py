@@ -17,7 +17,7 @@
 import subprocess
 
 from .console import console, display_result, display_yaml
-from .shell import kubectl_apply_yaml, kubectl_json, run_command
+from .shell import kubectl_apply_yaml, kubectl_json, resolve_command, run_command
 from .templates import storage_class
 
 STORAGE_CLASSES = ["pg-storageclass", "redis-storageclass", "es-storageclass"]
@@ -49,7 +49,7 @@ def ensure_namespaces(istio_revision: str = "") -> None:
 
     for ns in ["osdu-flux", "foundation", "platform"]:
         subprocess.run(
-            ["kubectl", "create", "namespace", ns],
+            resolve_command(["kubectl", "create", "namespace", ns]),
             capture_output=True,
             text=True,
         )

@@ -25,13 +25,13 @@ import typer
 
 from .config import BASE_NAME
 from .console import console
-from .shell import kubectl_json
+from .shell import kubectl_json, resolve_command
 
 
 def _get_current_context() -> str:
     """Return the current kubectl context name, or empty string on failure."""
     result = subprocess.run(
-        ["kubectl", "config", "current-context"],
+        resolve_command(["kubectl", "config", "current-context"]),
         capture_output=True,
         text=True,
     )
@@ -61,7 +61,7 @@ def _has_spi_fingerprint() -> bool:
         return False
     # Resource group matches cluster name for spi-stack deployments
     result = subprocess.run(
-        [
+        resolve_command([
             "az",
             "k8s-configuration",
             "flux",
@@ -78,7 +78,7 @@ def _has_spi_fingerprint() -> bool:
             "provisioningState",
             "--output",
             "tsv",
-        ],
+        ]),
         capture_output=True,
         text=True,
     )
