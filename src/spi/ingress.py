@@ -144,7 +144,7 @@ def resolve_post_deploy_inputs(config: Config) -> None:
 def create_ingress_config(
     config: Config, external_dns_client_id: str, tenant_id: str, gateway_ip: str
 ) -> None:
-    """Write the spi-ingress-config ConfigMap in flux-system.
+    """Write the spi-ingress-config ConfigMap in osdu-flux.
 
     The ConfigMap is consumed by Flux Kustomizations in the
     software/stacks/osdu/ingress/<mode>/ profile via postBuild substituteFrom.
@@ -179,7 +179,7 @@ def create_ingress_config(
         "kind: ConfigMap",
         "metadata:",
         "  name: spi-ingress-config",
-        "  namespace: flux-system",
+        "  namespace: osdu-flux",
         "  labels:",
         "    app.kubernetes.io/managed-by: osdu-spi-stack",
         "data:",

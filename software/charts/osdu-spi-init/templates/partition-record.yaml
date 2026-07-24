@@ -82,7 +82,7 @@ data:
         },
         "elastic-ssl-enabled": {
           "sensitive": false,
-          "value": "false"
+          "value": "true"
         },
         "indexer-decimation-enabled": {
           "sensitive": false,

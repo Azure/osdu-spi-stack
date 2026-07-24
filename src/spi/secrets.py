@@ -34,7 +34,7 @@ from .console import console
 from .shell import kubectl_apply_yaml
 
 SEED_NAME = "spi-secrets"
-SEED_NAMESPACE = "flux-system"
+SEED_NAMESPACE = "osdu-flux"
 
 SEED_KEYS = [
     "elastic_password",

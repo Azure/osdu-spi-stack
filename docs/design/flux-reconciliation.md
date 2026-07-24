@@ -25,7 +25,7 @@ Changes that flow through this loop:
 
 ### Service update loop (from `osdu-image-lock`)
 
-OSDU service images move on a different cadence than the repo. Per [ADR-017](../decisions/017-osdu-image-lock.md), `spi up` queries the OSDU community GitLab registry for the newest immutable SHA tag per service, renders the result into a `osdu-image-lock` ConfigMap in `flux-system`, and applies it.
+OSDU service images move on a different cadence than the repo. Per [ADR-017](../decisions/017-osdu-image-lock.md), `spi up` queries the OSDU community GitLab registry for the newest immutable SHA tag per service, renders the result into a `osdu-image-lock` ConfigMap in `osdu-flux`, and applies it.
 
 The service Kustomizations under `software/stacks/osdu/profiles/core/` carry `postBuild.substituteFrom` blocks that reference `osdu-image-lock`. When Flux reconciles those Kustomizations, the `${PARTITION_IMAGE_REPOSITORY}` and `${PARTITION_IMAGE_TAG}` expressions in the rendered YAML expand against the live ConfigMap. Updating the lock and reconciling the Kustomization triggers a rolling update.
 
@@ -69,9 +69,9 @@ Two gotchas worth knowing:
 When debugging a stuck layer:
 
 ```bash
-flux get kustomizations -n flux-system
+flux get kustomizations -n osdu-flux
 spi status                                # grouped by layer, easier on the eye
-kubectl describe kustomization spi-elasticsearch -n flux-system
+kubectl describe kustomization spi-elasticsearch -n osdu-flux
 ```
 
 The `Conditions:` block on the Kustomization names the upstream that has not gone Ready (`dependency not ready`) or the in-layer resource that failed its health check.
@@ -94,7 +94,7 @@ spec:
     substituteFrom:
       - kind: ConfigMap
         name: osdu-image-lock
-        namespace: flux-system
+        namespace: osdu-flux
 ```
 
 When Flux fetches the manifests under `./software/stacks/osdu/services/`, it expands every `${...}` reference in the rendered YAML against the ConfigMap. Each per-service `HelmRelease` carries values like:
@@ -127,7 +127,7 @@ So changing the ConfigMap changes the resolved image on the next reconcile. The 
 Symptom: `spi osdu-services` reports `Ready=False` after the timeout.
 
 ```bash
-$ flux get kustomizations -n flux-system | grep osdu
+$ flux get kustomizations -n osdu-flux | grep osdu
 spi-osdu-services    False   1m   ... dependency not ready
 spi-osdu-init        False   1m   ... blocked
 spi-osdu-schema-load False   1m   ... blocked
@@ -137,7 +137,7 @@ spi-bootstrap        False   12m  ... HealthCheckFailed: redis-disable-mtls
 The chain: `spi-osdu-services` waits on `spi-bootstrap`, which failed its health check on the Redis `DestinationRule`. Drill into that Kustomization:
 
 ```bash
-$ kubectl describe kustomization spi-bootstrap -n flux-system
+$ kubectl describe kustomization spi-bootstrap -n osdu-flux
 ... Status: ReconciliationFailed
 ... Message: networking.istio.io/v1beta1/DestinationRule/osdu/redis-disable-mtls:
    redis-disable-mtls not found
@@ -145,7 +145,7 @@ $ kubectl describe kustomization spi-bootstrap -n flux-system
 
 The Istio CRD has not registered yet, or the namespace is wrong. `kubectl get crd | grep istio` confirms. Fix the upstream (`spi-gateway` Kustomization or the AKS Istio extension), reconcile, and the chain unblocks layer by layer.
 
-The same pattern works for HelmRelease failures (`flux get helmreleases -n flux-system`), schema-load Job failures (`kubectl logs job/schema-load -n osdu`), and image substitution failures (`kubectl get cm osdu-image-lock -n flux-system -o yaml` shows the resolved values).
+The same pattern works for HelmRelease failures (`flux get helmreleases -n osdu-flux`), schema-load Job failures (`kubectl logs job/schema-load -n osdu`), and image substitution failures (`kubectl get cm osdu-image-lock -n osdu-flux -o yaml` shows the resolved values).
 
 ## Worked example: refresh service images on a live cluster
 

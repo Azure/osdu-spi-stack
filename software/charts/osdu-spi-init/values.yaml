@@ -34,7 +34,7 @@ serviceAccountName: workload-identity-sa
 
 # -- Node scheduling: Jobs run on the osdu nodepool alongside the services.
 nodeSelector:
-  agentpool: osdu
+  spi-pool: osdu
 
 tolerations:
   - key: workload

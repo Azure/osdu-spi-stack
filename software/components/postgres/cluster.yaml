@@ -12,6 +12,10 @@ spec:
   minSyncReplicas: 1
   maxSyncReplicas: 1
 
+  # Pin the PostgreSQL major explicitly; otherwise the image silently
+  # follows the CNPG operator's default (which moved to PG 18 in 1.30).
+  imageName: ghcr.io/cloudnative-pg/postgresql:17
+
   postgresql:
     parameters:
       max_connections: "200"
@@ -53,7 +57,7 @@ spec:
       requiredDuringSchedulingIgnoredDuringExecution:
         nodeSelectorTerms:
           - matchExpressions:
-              - key: agentpool
+              - key: spi-pool
                 operator: In
                 values:
                   - platform

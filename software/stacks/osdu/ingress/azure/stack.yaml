@@ -8,7 +8,7 @@
 # HTTPS:443 listener referencing the cert Secret. All OSDU APIs and
 # middleware UIs (Kibana /kibana, Airflow /airflow) live under one host.
 #
-# Required variables in spi-ingress-config ConfigMap (flux-system):
+# Required variables in spi-ingress-config ConfigMap (osdu-flux):
 #   ACME_EMAIL, INGRESS_FQDN
 
 ---
@@ -17,7 +17,7 @@ apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: spi-cert-manager-issuers
-  namespace: flux-system
+  namespace: osdu-flux
   labels:
     spi-stack.layer: "1"
 spec:
@@ -43,7 +43,7 @@ apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: spi-kibana
-  namespace: flux-system
+  namespace: osdu-flux
   labels:
     spi-stack.layer: "3"
 spec:
@@ -64,7 +64,7 @@ apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: spi-gateway-tls
-  namespace: flux-system
+  namespace: osdu-flux
   labels:
     spi-stack.layer: "1"
 spec:
@@ -89,7 +89,7 @@ apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: spi-osdu-routes
-  namespace: flux-system
+  namespace: osdu-flux
   labels:
     spi-stack.layer: "6"
 spec:

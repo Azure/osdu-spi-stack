@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -27,7 +29,7 @@ from typing import Iterable
 GITLAB_HOST = "https://community.opengroup.org"
 DEFAULT_IMAGE_BRANCH = "master"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
-IMAGE_LOCK_NAMESPACE = "flux-system"
+IMAGE_LOCK_NAMESPACE = "osdu-flux"
 
 _SHA_TAG_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -112,12 +114,30 @@ def image_lock_key(service_name: str) -> str:
     return service_name.upper().replace("-", "_")
 
 
-def gitlab_get(url: str):
-    """GET a GitLab API URL and return parsed JSON."""
+def gitlab_get(url: str, attempts: int = 3):
+    """GET a GitLab API URL and return parsed JSON.
+
+    Retries transient network failures (timeouts, connection resets) with a
+    short backoff: the community registry intermittently times out, and a
+    single blip should not abort an entire `spi up` run.
+    """
 
     req = urllib.request.Request(url, headers={"User-Agent": "spi-stack-resolver"})
-    with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
-        return json.loads(resp.read())
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
+                return json.loads(resp.read())
+        except (TimeoutError, urllib.error.URLError, ConnectionError) as exc:
+            # HTTP error responses (4xx/5xx) are URLError subclasses but
+            # indicate a server-side answer, not a transient network blip;
+            # retry only non-HTTP failures and 5xx.
+            if isinstance(exc, urllib.error.HTTPError) and exc.code < 500:
+                raise
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(5 * attempt)
+    raise ImageResolutionError(f"GitLab API unreachable after {attempts} attempts: {last_error}")
 
 
 def _registry_repositories(project_id: int, image_name: str) -> list[dict]:

@@ -42,7 +42,7 @@ spec:
       serviceAccountName: workload-identity-sa
       restartPolicy: Never
       nodeSelector:
-        agentpool: osdu
+        spi-pool: osdu
       tolerations:
         - key: workload
           operator: Equal

@@ -10,7 +10,7 @@ spec:
   template:
     metadata:
       labels:
-        agentpool: platform
+        spi-pool: platform
     spec:
       taints:
         - key: workload
@@ -65,7 +65,7 @@ spec:
   template:
     metadata:
       labels:
-        agentpool: osdu
+        spi-pool: osdu
     spec:
       taints:
         - key: workload
