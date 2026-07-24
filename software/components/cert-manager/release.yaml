@@ -9,7 +9,7 @@ spec:
   chart:
     spec:
       chart: cert-manager
-      version: "v1.17.*"
+      version: "v1.18.*"
       sourceRef:
         kind: HelmRepository
         name: jetstack
@@ -26,6 +26,10 @@ spec:
     global:
       podSecurityPolicy:
         enabled: false
+      # kube-system is a protected namespace on AKS Automatic; leader
+      # election Leases must live in the release namespace instead.
+      leaderElection:
+        namespace: foundation
     # AKS Automatic Safeguards compliance
     securityContext:
       runAsNonRoot: true

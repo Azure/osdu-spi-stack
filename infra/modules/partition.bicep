@@ -31,6 +31,9 @@ param isPrimaryPartition bool = false
 @description('Key Vault name that receives the Cosmos primary key. Empty string skips the secret write.')
 param keyVaultName string = ''
 
+@description('Principal ID (object ID) of the OSDU managed identity that accesses Cosmos SQL data. Empty string skips the SQL data-plane role assignment.')
+param principalId string = ''
+
 // ──────────────────────────────────────────────────────────
 // Data definitions (ported from azure_infra.py)
 // ──────────────────────────────────────────────────────────
@@ -200,6 +203,26 @@ resource osduSystemDbContainerResources 'Microsoft.DocumentDB/databaseAccounts/s
   }
 }]
 
+// SQL data-plane role for the OSDU managed identity. The target tenant's
+// "Configure Cosmos DB database accounts to disable local authentication"
+// modify policy flips disableLocalAuth on this account at creation time,
+// so key-based access silently stops working there; without this role,
+// legal/storage/schema/workflow fail with 403 "does not have required RBAC
+// permissions". Cosmos data-plane roles are NOT Azure RBAC: they are
+// sqlRoleAssignments on the account, invisible to `az role assignment`,
+// and take ~5-15 minutes to propagate.
+var sqlDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
+
+resource osduIdentitySqlDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2023-11-15' = if (!empty(principalId)) {
+  parent: cosmosAccount
+  name: guid(cosmosAccount.id, principalId, sqlDataContributorRoleId)
+  properties: {
+    roleDefinitionId: '${cosmosAccount.id}/sqlRoleDefinitions/${sqlDataContributorRoleId}'
+    principalId: principalId
+    scope: cosmosAccount.id
+  }
+}
+
 // ──────────────────────────────────────────────────────────
 // Service Bus
 // ──────────────────────────────────────────────────────────
@@ -210,6 +233,14 @@ resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview
   sku: {
     name: 'Standard'
     tier: 'Standard'
+  }
+  // Tenant policy (ServiceBusCreationDeniedWhenLocalAuthIsEnabledOrMinTlsIsLow)
+  // denies namespace creation unless local auth is off and TLS >= 1.2.
+  // Runtime access uses Workload Identity via the Data Sender/Receiver roles
+  // in rbac.bicep.
+  properties: {
+    disableLocalAuth: true
+    minimumTlsVersion: '1.2'
   }
 }
 
@@ -258,7 +289,10 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01'
   name: 'default'
 }
 
-resource storageContainerResources 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = [for containerName in partitionStorageContainerNames: {
+// The OSDU storage-azure provider writes record blobs to a container named
+// after the data partition id (e.g. "opendes"). core-lib-azure's BlobStore
+// does not auto-create it, so record ingestion 404s unless it exists.
+resource storageContainerResources 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = [for containerName in union(partitionStorageContainerNames, [partition]): {
   parent: blobService
   name: containerName
 }]
@@ -330,6 +364,37 @@ resource serviceBusConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-0
 
 resource storageAccountKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName)) {
   name: '${partition}-storage-account-key'
+  parent: keyVault
+  properties: {
+    value: 'DISABLED'
+  }
+}
+
+// System-partition Cosmos secrets. OSDU "system" services (schema, workflow)
+// resolve the shared catalog from KV secrets prefixed ``system-`` rather than
+// ``{partition}-``. The osdu-system-db SQL database lives in the primary
+// partition's Cosmos account (see osduSystemDb above), so these point at the
+// same account. Without them, system services fail at startup with
+// "Failed to retrieve system-cosmos-endpoint. Not found.". Only the primary
+// partition owns the system DB, so guard on isPrimaryPartition.
+resource systemCosmosEndpointSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName) && isPrimaryPartition) {
+  name: 'system-cosmos-endpoint'
+  parent: keyVault
+  properties: {
+    value: cosmosAccount.properties.documentEndpoint
+  }
+}
+
+resource systemCosmosPrimaryKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName) && isPrimaryPartition) {
+  name: 'system-cosmos-primary-key'
+  parent: keyVault
+  properties: {
+    value: cosmosAccount.listKeys().primaryMasterKey
+  }
+}
+
+resource systemCosmosConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName) && isPrimaryPartition) {
+  name: 'system-cosmos-connection'
   parent: keyVault
   properties: {
     value: 'DISABLED'

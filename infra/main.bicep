@@ -92,6 +92,25 @@ param dnsZoneResourceGroup string = ''
 @description('Object ID of the deployer service principal. When set, grants the deployer Key Vault Secrets Officer so the post-deploy bootstrap step can write runtime secrets. Empty string is fine for local dev users with RG Owner.')
 param deployerPrincipalId string = ''
 
+@description('Principal type of deployerPrincipalId. Human deployers must pass User.')
+@allowed([
+  'User'
+  'ServicePrincipal'
+])
+param deployerPrincipalType string = 'ServicePrincipal'
+
+@description('Object ID of the AKS kubelet (node) identity. Empty string skips the kubelet AcrPull grant. Set by the CLI from the AKS deployment output so nodes can pull custom images from the ACR.')
+param kubeletIdentityObjectId string = ''
+
+@description('Opt-in: deploy workspace-based Application Insights + Log Analytics. Off by default; adds cost and deploy time developers usually do not need.')
+param enableApplicationInsights bool = false
+
+@description('Application Insights component name. Required when enableApplicationInsights is true.')
+param appInsightsName string = ''
+
+@description('Log Analytics workspace name backing the App Insights component. Required when enableApplicationInsights is true.')
+param logAnalyticsName string = ''
+
 // ──────────────────────────────────────────────────────────
 // Modules (shared resources, parallel)
 // ──────────────────────────────────────────────────────────
@@ -127,6 +146,7 @@ module gremlinModule 'modules/cosmos-gremlin.bicep' = {
     name: gremlinAccountName
     location: location
     keyVaultName: keyVaultName
+    principalId: identityModule.outputs.principalId
   }
   dependsOn: [
     keyvaultModule
@@ -155,6 +175,7 @@ module partitionModules 'modules/partition.bicep' = [for (p, i) in dataPartition
     storageAccountName: partitionStorageNames[i]
     isPrimaryPartition: p == primaryPartition
     keyVaultName: keyVaultName
+    principalId: identityModule.outputs.principalId
   }
   dependsOn: [
     keyvaultModule
@@ -170,6 +191,8 @@ module rbacModule 'modules/rbac.bicep' = {
   params: {
     principalId: identityModule.outputs.principalId
     deployerPrincipalId: deployerPrincipalId
+    deployerPrincipalType: deployerPrincipalType
+    kubeletIdentityObjectId: kubeletIdentityObjectId
     keyVaultName: keyVaultName
     acrName: acrName
     commonStorageName: commonStorageName
@@ -348,6 +371,38 @@ resource partitionServiceBusSecrets 'Microsoft.KeyVault/vaults/secrets@2023-07-0
 }]
 
 // ──────────────────────────────────────────────────────────
+// Observability: Log Analytics workspace + Application Insights (opt-in)
+// ──────────────────────────────────────────────────────────
+//
+// OSDU service images bundle the App Insights Java agent, and
+// core-lib-azure >= 2.5.6 ships LogCustomDimensionFilter, which reads the
+// AI request-telemetry context on every request with no null guard — if
+// App Insights is not initialized the service returns HTTP 500 on every
+// request. Off by default (cost + deploy time); the CLI writes
+// disabled/dummy agent configuration into osdu-config when disabled.
+
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (enableApplicationInsights) {
+  name: logAnalyticsName
+  location: location
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
+  }
+}
+
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = if (enableApplicationInsights) {
+  name: appInsightsName
+  location: location
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: logAnalytics.id
+  }
+}
+
+// ──────────────────────────────────────────────────────────
 // Outputs
 // ──────────────────────────────────────────────────────────
 //
@@ -391,6 +446,9 @@ output partitionStorageNamesOut array = partitionStorageNames
 // plumbs this into the spi-ingress-config ConfigMap so the HelmRelease
 // can wire workload-identity annotations on the service account.
 #disable-next-line BCP318
+output appInsightsConnectionString string = enableApplicationInsights ? appInsights.properties.ConnectionString : ''
+output appInsightsName string = enableApplicationInsights ? appInsightsName : ''
+
 output externalDnsClientId string = !empty(dnsZoneName) ? externalDnsIdentityModule.outputs.clientId : ''
 #disable-next-line BCP318
 output externalDnsPrincipalId string = !empty(dnsZoneName) ? externalDnsIdentityModule.outputs.principalId : ''

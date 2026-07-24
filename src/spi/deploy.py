@@ -189,7 +189,10 @@ def _write_keyvault_bootstrap_secrets(
     """
     console.print("\n[bold]Writing OSDU bootstrap secrets to Key Vault...[/bold]")
     tbl_endpoint = f"https://{storage_account_name}.table.core.windows.net/"
-    elastic_endpoint = "https://elasticsearch-es-http.platform.svc.cluster.local:9200"
+    # ECK's self-signed cert SANs cover elasticsearch-es-http.platform.svc
+    # but NOT the ...svc.cluster.local form; with elastic-ssl-enabled=true
+    # the long form fails hostname verification (SSLPeerUnverifiedException).
+    elastic_endpoint = "https://elasticsearch-es-http.platform.svc:9200"
     redis_hostname = "platform-redis-master.platform.svc.cluster.local"
 
     secrets_to_write: list[tuple[str, str]] = [

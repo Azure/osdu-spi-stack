@@ -46,6 +46,16 @@ resource fluxExtension 'Microsoft.KubernetesConfiguration/extensions@2024-11-01'
         releaseNamespace: 'flux-system'
       }
     }
+    // Disable Flux multi-tenancy enforcement. With it on (default since
+    // extension v1.9) the agent injects `serviceAccountName: flux-applier`
+    // and the controllers impersonate that SA; AKS Automatic's
+    // protect-system-namespaces ValidatingAdmissionPolicy denies the
+    // impersonation, failing every reconcile with `dry-run failed
+    // (Forbidden)`. With enforcement off the controllers apply as their own
+    // exempt flux-system identities.
+    configurationSettings: {
+      'multiTenancy.enforce': 'false'
+    }
   }
 }
 

@@ -89,7 +89,7 @@ data:
   REDIS_PORT: "6379"
   SERVER_PORT: "8080"
   APPINSIGHTS_KEY: "{appinsights_key}"
-  ELASTICSEARCH_HOST: "elasticsearch-es-http.platform.svc.cluster.local"
+  ELASTICSEARCH_HOST: "elasticsearch-es-http.platform.svc"
 """
 
 
