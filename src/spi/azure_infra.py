@@ -114,24 +114,41 @@ def _cosmos_gremlin_name(env: str, suffix: str = "") -> str:
 
 def create_resource_group(config: Config):
     console.print("\n[bold]Creating resource group...[/bold]")
-    # `az group create` is idempotent. The `--tags` flag REPLACES the entire
-    # tag set, so we only pass it the first time (when no suffix tag exists
-    # yet — read_rg_suffix_tag returns None). Otherwise the tag has already
-    # been written, and we re-run create-without-tags to leave it intact.
-    cmd = [
-        "az",
-        "group",
-        "create",
-        "--name",
-        config.resource_group,
-        "--location",
-        config.location,
-        "--output",
-        "json",
-    ]
-    if read_rg_suffix_tag(config.resource_group) is None:
-        cmd.extend(["--tags", f"{RG_SUFFIX_TAG}={config.name_suffix}"])
-    run_command(cmd, description=f"Create resource group: {config.resource_group}")
+    # `az group create` on an EXISTING group is an ARM PUT: omitting --tags
+    # CLEARS the tag set (this silently dropped the spi-name-suffix tag and
+    # made every resumed run mint a fresh suffix). Never re-PUT an existing
+    # group — only create when absent, with the tag included.
+    exists = (
+        run_command(
+            ["az", "group", "exists", "--name", config.resource_group],
+            description=f"Check resource group exists: {config.resource_group}",
+            display=False,
+        )
+        .stdout.strip()
+        .lower()
+        == "true"
+    )
+    if exists:
+        if read_rg_suffix_tag(config.resource_group) is None:
+            write_rg_suffix_tag(config.resource_group, config.name_suffix)
+        display_result(f"Resource group {config.resource_group} ready")
+        return
+    run_command(
+        [
+            "az",
+            "group",
+            "create",
+            "--name",
+            config.resource_group,
+            "--location",
+            config.location,
+            "--tags",
+            f"{RG_SUFFIX_TAG}={config.name_suffix}",
+            "--output",
+            "json",
+        ],
+        description=f"Create resource group: {config.resource_group}",
+    )
     display_result(f"Resource group {config.resource_group} ready")
 
 
@@ -276,6 +293,44 @@ def create_aks_automatic(config: Config, dry_run: bool = False) -> Dict[str, Any
         description="Convert kubeconfig to azurecli auth",
     )
 
+    # Pin the target tenant into the exec plugin's environment. kubelogin's
+    # azurecli mode lets an inherited AZURE_TENANT_ID env var override even
+    # its --tenant-id flag, so a shell configured for a different tenant
+    # silently produces wrong-tenant tokens (kubectl then fails 401). An
+    # exec-env entry on the kubeconfig user beats the inherited env var.
+    account_tenant = run_command(
+        ["az", "account", "show", "--query", "tenantId", "--output", "tsv"],
+        description="Get deployment tenant id",
+        display=False,
+        check=False,
+    ).stdout.strip()
+    kubeconfig_user = run_command(
+        ["kubectl", "config", "view", "--minify", "-o", "jsonpath={.contexts[0].context.user}"],
+        description="Get kubeconfig user entry",
+        display=False,
+        check=False,
+    ).stdout.strip()
+    if account_tenant and kubeconfig_user:
+        run_command(
+            [
+                "kubectl",
+                "config",
+                "set-credentials",
+                kubeconfig_user,
+                "--exec-command=kubelogin",
+                "--exec-arg=get-token",
+                "--exec-arg=--login",
+                "--exec-arg=azurecli",
+                "--exec-arg=--server-id",
+                "--exec-arg=6dae42f8-4368-4678-94ff-3960e28e3630",
+                f"--exec-env=AZURE_TENANT_ID={account_tenant}",
+                "--exec-api-version=client.authentication.k8s.io/v1beta1",
+            ],
+            description="Pin tenant in kubeconfig exec env",
+            display=False,
+            check=False,
+        )
+
     # AVM v0.13.0 types proxyRedirectionMechanism out of IstioComponents;
     # enable CNI chaining imperatively. Idempotent. CNI chaining avoids
     # the NET_ADMIN capability requirement that the default Istio sidecar
@@ -377,20 +432,29 @@ def _verify_role_assignment_recorded(user_oid: str, cluster_resource_id: str):
     authorization-plane propagation. ARM listings respond within seconds and
     are independent of AKS-plane caching.
     """
+    # Verify via raw ARM: every `az role assignment` subcommand resolves
+    # principals through Microsoft Graph, which Conditional Access token
+    # protection can block (AADSTS530084) even when ARM access is fine.
+    # b1ff04bb-... is the built-in "Azure Kubernetes Service RBAC Cluster
+    # Admin" role definition ID.
+    aks_rbac_cluster_admin_role_id = "b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b"
     result = run_command(
         [
             "az",
-            "role",
-            "assignment",
-            "list",
-            "--assignee",
-            user_oid,
-            "--scope",
-            cluster_resource_id,
-            "--role",
-            "Azure Kubernetes Service RBAC Cluster Admin",
+            "rest",
+            "--method",
+            "get",
+            "--url",
+            (
+                f"https://management.azure.com{cluster_resource_id}"
+                "/providers/Microsoft.Authorization/roleAssignments"
+                "?api-version=2022-04-01"
+            ),
             "--query",
-            "length(@)",
+            (
+                f"length(value[?properties.principalId=='{user_oid}' && "
+                f"contains(properties.roleDefinitionId, '{aks_rbac_cluster_admin_role_id}')])"
+            ),
             "--output",
             "tsv",
         ],
@@ -557,11 +621,28 @@ def _build_bicep_params(config: Config, oidc_issuer: str) -> Dict[str, Any]:
         # conditional modules in main.bicep no-op when dnsZoneName is empty.
         "dnsZoneName": config.dns_zone,
         "dnsZoneResourceGroup": config.dns_zone_rg,
-        # Deployer SP OID -- used by rbac.bicep to grant KV Secrets Officer
+        # Deployer OID -- used by rbac.bicep to grant KV Secrets Officer
         # so Phase 6 (`az keyvault secret set`) succeeds. Empty string is
-        # fine for local users with RG Owner.
+        # fine for local users with RG Owner. The principal type must match
+        # the actual identity or ARM rejects the role assignment with
+        # UnmatchedPrincipalType.
         "deployerPrincipalId": os.environ.get("SPI_DEPLOYER_OID", "").strip(),
+        "deployerPrincipalType": _deployer_principal_type(),
     }
+
+
+def _deployer_principal_type() -> str:
+    """Principal type of the logged-in az identity (User vs ServicePrincipal)."""
+    override = os.environ.get("SPI_DEPLOYER_TYPE", "").strip()
+    if override in ("User", "ServicePrincipal"):
+        return override
+    result = run_command(
+        ["az", "account", "show", "--query", "user.type", "--output", "tsv"],
+        description="Get deployer principal type",
+        check=False,
+        display=False,
+    )
+    return "User" if (result.stdout or "").strip() == "user" else "ServicePrincipal"
 
 
 def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:

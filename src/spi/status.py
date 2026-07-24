@@ -95,7 +95,7 @@ def get_kustomization_table() -> Table:
     table.add_column("Message")
     table.add_column("Age", justify="right")
 
-    data = kubectl_json(["get", "kustomizations", "-n", "flux-system"])
+    data = kubectl_json(["get", "kustomizations", "-n", "osdu-flux"])
     if not data or "items" not in data:
         table.add_row("[dim]No kustomizations found[/dim]", "", "", "", "")
         return table
@@ -402,7 +402,7 @@ def get_summary() -> Panel:
     from .guard import get_suspend_status
 
     counts = {"ready": 0, "progressing": 0, "failed": 0}
-    data = kubectl_json(["get", "kustomizations", "-n", "flux-system"])
+    data = kubectl_json(["get", "kustomizations", "-n", "osdu-flux"])
     if data and "items" in data:
         for item in data["items"]:
             conditions = item.get("status", {}).get("conditions", [])

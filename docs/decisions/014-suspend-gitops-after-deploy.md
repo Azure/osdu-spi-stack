@@ -17,7 +17,7 @@ The CLI already exposes `spi reconcile --suspend` and `spi reconcile --resume` (
 
 ## Decision
 
-Suspend the Flux `GitRepository` source (`osdu-spi-stack-system` in `flux-system`) automatically as the final step of `spi up`. The deployed environment is pinned to the commit that was current when `spi up` ran. Future commits do not auto-reconcile. Users opt into updates explicitly:
+Suspend the Flux `GitRepository` source (`osdu-spi-stack-system` in `osdu-flux`; see [ADR-020](020-osdu-flux-gitops-namespace.md)) automatically as the final step of `spi up`. The deployed environment is pinned to the commit that was current when `spi up` ran. Future commits do not auto-reconcile. Users opt into updates explicitly:
 
 - `spi reconcile` performs a one-shot pull: fetches latest, reconciles once, stays suspended.
 - `spi reconcile --resume` re-enables continuous auto-reconciliation.

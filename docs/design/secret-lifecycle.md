@@ -59,7 +59,7 @@ Services read their KV secrets via the Azure SDK using Workload Identity. The OS
 
 ## Class 3: In-cluster middleware passwords
 
-The CLI generates all three middleware passwords (`src/spi/secrets.py`, `_generate_password`), stores them in a seed Secret `spi-secrets` in `flux-system`, and pre-creates the Kubernetes Secrets the operators consume. The operators read these pre-created Secrets rather than minting their own:
+The CLI generates all three middleware passwords (`src/spi/secrets.py`, `_generate_password`), stores them in a seed Secret `spi-secrets` in `osdu-flux`, and pre-creates the Kubernetes Secrets the operators consume. The operators read these pre-created Secrets rather than minting their own:
 
 - **Elasticsearch.** The CLI creates `elasticsearch-es-elastic-user` in `platform`; ECK adopts it as the elastic-user credential.
 - **Redis.** The CLI creates `redis-credentials` in `platform`; the Bitnami chart consumes it via `existingSecret` (`software/components/redis/release.yaml`).

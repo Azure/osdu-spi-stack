@@ -24,19 +24,19 @@ STORAGE_CLASSES = ["pg-storageclass", "redis-storageclass", "es-storageclass"]
 
 
 def _detect_istio_revision() -> str:
-    """Detect the installed Istio ASM revision from the cluster."""
-    data = kubectl_json(["get", "ns", "aks-istio-system"])
-    if data:
-        rev = data.get("metadata", {}).get("labels", {}).get("istio.io/rev", "")
-        if rev:
-            return rev
+    """Detect the installed Istio ASM revision from the cluster.
 
-    data = kubectl_json(["get", "pods", "-n", "aks-istio-system"])
+    The istiod deployment is named ``istiod-<revision>`` (e.g.
+    ``istiod-asm-1-30``); the aks-istio-system namespace itself carries no
+    ``istio.io/rev`` label, so the deployment name is the reliable source.
+    """
+    data = kubectl_json(["get", "deploy", "-n", "aks-istio-system"])
     if data and data.get("items"):
-        rev = data["items"][0].get("metadata", {}).get("labels", {}).get("istio.io/rev", "")
-        if rev:
-            return rev
-    return "asm-1-28"
+        for item in data["items"]:
+            name = item.get("metadata", {}).get("name", "")
+            if name.startswith("istiod-"):
+                return name.removeprefix("istiod-")
+    return "asm-1-30"
 
 
 def ensure_namespaces(istio_revision: str = "") -> None:
@@ -47,7 +47,7 @@ def ensure_namespaces(istio_revision: str = "") -> None:
         istio_revision = _detect_istio_revision()
     console.print(f"  [info]Istio revision: {istio_revision}[/info]")
 
-    for ns in ["flux-system", "foundation", "platform"]:
+    for ns in ["osdu-flux", "foundation", "platform"]:
         subprocess.run(
             ["kubectl", "create", "namespace", ns],
             capture_output=True,
