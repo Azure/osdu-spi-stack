@@ -7,6 +7,16 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 
 ## [Unreleased]
 
+### Fixed
+- Deployer object-ID resolution no longer requires a Microsoft Graph token.
+  The cluster-admin RBAC grant read the signed-in principal's object ID via
+  `az ad signed-in-user show` / `az ad sp show`, both of which request Graph
+  tokens that Conditional Access token protection can refuse to issue
+  (AADSTS530084) even when ARM access works, failing `spi up` after AKS
+  provisioning. The OID is now decoded from the `oid` claim of the cached
+  ARM access token; the Graph lookups and the `SPI_DEPLOYER_OID` override
+  remain as fallbacks.
+
 ## [0.2.0] - 2026-07-24
 
 ### Added
