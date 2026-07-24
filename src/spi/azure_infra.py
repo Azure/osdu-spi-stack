@@ -624,6 +624,8 @@ def create_aks(config: Config, dry_run: bool = False) -> Dict[str, Any]:
             "Refusing to continue because the required AcrPull grant would be skipped."
         )
 
+    _ensure_cluster_identity_network_contributor(config, aks_outputs)
+
     console.print("\n[bold]Fetching cluster credentials...[/bold]")
     run_command(
         [
@@ -700,6 +702,100 @@ def _pin_kubeconfig_tenant() -> None:
         description="Pin tenant in kubeconfig exec environment",
         display=False,
     )
+
+
+NETWORK_CONTRIBUTOR_ROLE_ID = "4d97b98b-1d4f-4787-a291-c67834d212e7"
+
+
+def _ensure_cluster_identity_network_contributor(
+    config: Config,
+    aks_outputs: Dict[str, Any],
+) -> None:
+    """Guarantee the cluster identity can read and join the BYO VNet.
+
+    Node autoprovisioning resolves the node subnet as the cluster's
+    control-plane identity. Bicep declares the grant, but a role assignment
+    created against a just-created managed identity can be dropped after the
+    deployment reports success, and the only symptom is every AKSNodeClass
+    reporting SubnetsReady=False with a 403, long after `spi up` exits. ARM is
+    the source of truth, so verify and repair here.
+    """
+    principal_id = aks_outputs.get("clusterPrincipalId", "")
+    if not principal_id:
+        raise RuntimeError(
+            f"AKS cluster {config.cluster_name} did not report its control-plane identity, "
+            "so the VNet role assignment node autoprovisioning needs cannot be verified."
+        )
+
+    vnet_id = (
+        f"/subscriptions/{_subscription_id()}/resourceGroups/{config.resource_group}"
+        f"/providers/Microsoft.Network/virtualNetworks/{config.cluster_name}-vnet"
+    )
+    result = run_command(
+        [
+            "az",
+            "rest",
+            "--method",
+            "get",
+            "--url",
+            (
+                f"https://management.azure.com{vnet_id}"
+                "/providers/Microsoft.Authorization/roleAssignments"
+                "?api-version=2022-04-01"
+            ),
+            "--query",
+            (
+                f"length(value[?properties.principalId=='{principal_id}' && "
+                f"contains(properties.roleDefinitionId, '{NETWORK_CONTRIBUTOR_ROLE_ID}')])"
+            ),
+            "--output",
+            "tsv",
+        ],
+        description="Verify cluster identity can read the node subnet",
+        display=False,
+        check=False,
+    )
+    try:
+        recorded = int((result.stdout or "0").strip())
+    except ValueError:
+        recorded = 0
+    if result.returncode == 0 and recorded > 0:
+        return
+
+    console.print(
+        "[warning]Cluster identity is missing Network Contributor on the VNet; "
+        "node autoprovisioning cannot resolve the subnet. Reapplying.[/warning]"
+    )
+    run_command(
+        [
+            "az",
+            "role",
+            "assignment",
+            "create",
+            "--role",
+            "Network Contributor",
+            "--assignee-object-id",
+            principal_id,
+            "--assignee-principal-type",
+            "ServicePrincipal",
+            "--scope",
+            vnet_id,
+            "--output",
+            "none",
+        ],
+        description="Grant cluster identity Network Contributor on the VNet",
+        check=False,
+    )
+    display_result("Cluster identity can resolve the node subnet")
+
+
+def _subscription_id() -> str:
+    """Return the subscription the CLI is currently signed in to."""
+    return run_command(
+        ["az", "account", "show", "--query", "id", "--output", "tsv"],
+        description="Resolve subscription id",
+        display=False,
+    ).stdout.strip()
 
 
 def _resolve_system_pool_zones(config: Config) -> list:
