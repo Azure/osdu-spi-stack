@@ -242,6 +242,32 @@ jobs:
           kubectl get svc -n aks-istio-ingress
           kubectl get pods -n aks-istio-ingress --field-selector=status.phase=Running
 
+      - name: Acceptance probe (HTTPS terminates)
+        run: |
+          set -euo pipefail
+          # A pod-level probe cannot catch a dead TLS path: cert-manager
+          # stalling on issuance leaves every pod Running while :443 refuses
+          # connections (the ADR-025 failure mode). Handshake the gateway's
+          # HTTPS hostname for real; retry to absorb ACME issuance lag.
+          host=$(kubectl get gateway spi-gateway -n aks-istio-ingress \
+            -o jsonpath='{.spec.listeners[?(@.protocol=="HTTPS")].hostname}' | awk '{print $1}')
+          if [[ -z "$host" ]]; then
+            echo "No HTTPS listener on spi-gateway; skipping TLS probe (ip mode)."
+            exit 0
+          fi
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://${host}/" || true)
+            if [[ "$code" =~ ^[0-9]+$ && "$code" != "000" ]]; then
+              echo "HTTPS terminated on ${host} (HTTP ${code}) after ${i} attempts"
+              exit 0
+            fi
+            echo "attempt ${i}: no TLS yet on ${host} (code=${code}); retrying in 30s"
+            sleep 30
+          done
+          echo "HTTPS never terminated on ${host}; dumping certificate state" >&2
+          kubectl get certificates,certificaterequests,orders,challenges -A || true
+          exit 1
+
       - name: Capture diagnostics on failure
         if: failure()
         run: bash scripts/capture_diagnostics.sh "smoke-${{ github.run_id }}"

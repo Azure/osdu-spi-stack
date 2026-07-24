@@ -67,3 +67,4 @@ Create an ADR for any decision that could plausibly have gone a different way an
 | [022](022-spi-pool-node-label.md) | spi-pool as the Workload Node-Placement Label | Accepted |
 | [023](023-optional-application-insights.md) | Opt-In Application Insights Provisioning | Accepted |
 | [024](024-middleware-only-minimal-profile.md) | Middleware-Only `minimal` Profile, Replacing the Unbacked `full` | Accepted |
+| [025](025-tls-certificates-in-platform.md) | TLS Certificates in platform with Gateway ReferenceGrants | Accepted |

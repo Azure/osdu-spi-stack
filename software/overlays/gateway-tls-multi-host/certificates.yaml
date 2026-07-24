@@ -1,8 +1,13 @@
+# Certificates live in platform, not aks-istio-ingress: the AKS-managed
+# protect-system-namespaces policy denies cert-manager's status writes in
+# managed namespaces, silently stalling issuance (ADR-025). The
+# ReferenceGrant lets the Gateway's HTTPS listeners read the secrets
+# across the namespace boundary.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: osdu-tls
-  namespace: aks-istio-ingress
+  namespace: platform
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack
 spec:
@@ -17,7 +22,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: kibana-tls
-  namespace: aks-istio-ingress
+  namespace: platform
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack
 spec:
@@ -32,7 +37,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: airflow-tls
-  namespace: aks-istio-ingress
+  namespace: platform
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack
 spec:
@@ -42,3 +47,26 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: gateway-to-tls-secrets
+  namespace: platform
+  labels:
+    app.kubernetes.io/managed-by: osdu-spi-stack
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      namespace: aks-istio-ingress
+  to:
+    - group: ""
+      kind: Secret
+      name: osdu-tls
+    - group: ""
+      kind: Secret
+      name: kibana-tls
+    - group: ""
+      kind: Secret
+      name: airflow-tls
