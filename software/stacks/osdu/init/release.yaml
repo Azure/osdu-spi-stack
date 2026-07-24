@@ -17,13 +17,14 @@ spec:
   chart:
     spec:
       chart: ./software/charts/osdu-spi-init
+      reconcileStrategy: Revision
       sourceRef:
         kind: GitRepository
         name: osdu-spi-stack-system
-  # Partition list is injected by the CLI via the spi-init-values ConfigMap
-  # in osdu-flux (written by src/spi/deploy.py::_create_spi_init_values).
-  # Flipping multi-partition on is a --partition CLI flag change; no edits to
-  # this file are required.
+  # Partition list and creator identities are injected by the CLI via the
+  # spi-init-values ConfigMap in osdu-flux. Revision reconciliation picks up
+  # source changes, while ordered hooks with before-hook-creation rerun the
+  # immutable init Jobs safely when the chart or creator values change.
   valuesFrom:
     - kind: ConfigMap
       name: spi-init-values

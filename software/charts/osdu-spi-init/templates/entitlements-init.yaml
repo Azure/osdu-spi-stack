@@ -16,6 +16,10 @@ kind: Job
 metadata:
   name: entitlements-init-{{ $partition }}
   namespace: {{ $.Values.namespace }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
   labels:
     {{- include "osdu-spi-init.labels" $ | nindent 4 }}
     app.kubernetes.io/component: entitlements-init
@@ -42,6 +46,8 @@ spec:
           env:
             - name: PARTITION
               value: {{ $partition | quote }}
+            - name: CREATOR_USER_IDS_JSON
+              value: {{ $.Values.creatorUserIds | toJson | quote }}
           volumeMounts:
             - name: scripts
               mountPath: /scripts

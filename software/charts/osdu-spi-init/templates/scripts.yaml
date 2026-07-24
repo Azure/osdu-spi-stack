@@ -180,10 +180,15 @@ data:
       4. POST /api/entitlements/v2/tenant-provisioning with
          data-partition-id: <PARTITION>. This creates users.data.root and
          sibling root groups, adding the caller's appid as OWNER.
-      5. Treat 200 and 409 as success.
+      5. For every CREATOR_USER_IDS_JSON entry, add that projected identity to users,
+        users.datalake.ops, users.datalake.admins and users.data.root.
+      6. Treat existing tenant/member responses as success.
     """
+    import json
     import os
     import sys
+    import time
+    import urllib.error
     import urllib.request
 
     sys.path.insert(0, "/scripts")
@@ -191,6 +196,14 @@ data:
     from wait import wait_for_status
 
     PARTITION = os.environ["PARTITION"]
+    CREATOR_USER_IDS = []
+    seen_creator_ids = set()
+    for value in json.loads(os.environ.get("CREATOR_USER_IDS_JSON", "[]")):
+        creator_user_id = str(value).strip()
+        normalized = creator_user_id.lower()
+        if creator_user_id and normalized not in seen_creator_ids:
+            CREATOR_USER_IDS.append(creator_user_id)
+            seen_creator_ids.add(normalized)
     ENTITLEMENTS_HOST = os.environ.get(
         "ENTITLEMENTS_HOST", "http://entitlements.osdu.svc.cluster.local"
     )
@@ -201,6 +214,82 @@ data:
     INFO_URL = f"{ENTITLEMENTS_HOST}/api/entitlements/v2/info"
     PARTITION_GET_URL = f"{PARTITION_HOST}/api/partition/v1/partitions/{PARTITION}"
     POST_URL = f"{ENTITLEMENTS_HOST}/api/entitlements/v2/tenant-provisioning"
+    API_BASE = f"{ENTITLEMENTS_HOST}/api/entitlements/v2"
+    ROOT_GROUPS = ["users", "users.datalake.ops", "users.datalake.admins", "users.data.root"]
+
+
+    def call(method: str, path: str, token: str, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            API_BASE + path,
+            data=data,
+            method=method,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+                "data-partition-id": PARTITION,
+            },
+        )
+        try:
+            resp = urllib.request.urlopen(req, timeout=60)
+            return resp.getcode(), resp.read().decode(errors="replace")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode(errors="replace")
+
+
+    def resolve_domain(token: str):
+        for _ in range(60):
+            code, payload = call("GET", "/groups", token)
+            if code == 200:
+                groups = json.loads(payload).get("groups", [])
+                for group in groups:
+                    email = group.get("email", "")
+                    if "@" in email:
+                        suffix = email.split("@", 1)[1]
+                        if suffix.startswith(PARTITION + "."):
+                            return suffix[len(PARTITION) + 1:], len(groups)
+            time.sleep(5)
+        return None, 0
+
+
+    def seed_creators(token: str) -> bool:
+        if not CREATOR_USER_IDS:
+            print("  Creator access disabled; skipping Entitlements membership.")
+            return True
+
+        domain, count = resolve_domain(token)
+        if not domain:
+            print(f"  ERROR: could not resolve Entitlements domain for '{PARTITION}'")
+            return False
+        print(f"  Seeding {len(CREATOR_USER_IDS)} creator identifier(s) in domain {domain}")
+
+        success = True
+        for creator_user_id in CREATOR_USER_IDS:
+            print(f"  creator = {creator_user_id} (groups visible: {count})")
+            for name in ROOT_GROUPS:
+                group = f"{name}@{PARTITION}.{domain}"
+                code, payload = call(
+                    "POST",
+                    f"/groups/{group}/members",
+                    token,
+                    {"email": creator_user_id, "role": "MEMBER"},
+                )
+                added = code in (200, 409)
+                print(f"  add {group} -> {code}{'' if added else ' ' + payload[:160]}")
+                success = success and added
+
+            for name in ROOT_GROUPS:
+                group = f"{name}@{PARTITION}.{domain}"
+                code, payload = call("GET", f"/groups/{group}/members", token)
+                members = json.loads(payload).get("members", []) if code == 200 else []
+                present = any(
+                    member.get("email", "").lower() == creator_user_id.lower()
+                    for member in members
+                )
+                print(f"  verify {group} -> present={present}")
+                success = success and present
+        return success
 
 
     def main() -> int:
@@ -245,9 +334,11 @@ data:
             print(payload)
             if code == 409:
                 print("  Tenant already provisioned; treating as success.")
-                return 0
+            else:
+                return 1
+        if code not in (200, 409):
             return 1
-        return 0 if code == 200 else 1
+        return 0 if seed_creators(token) else 1
 
 
     if __name__ == "__main__":

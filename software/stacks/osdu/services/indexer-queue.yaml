@@ -26,6 +26,7 @@ spec:
     image:
       repository: ${INDEXER_QUEUE_IMAGE_REPOSITORY}
       tag: "${INDEXER_QUEUE_IMAGE_TAG}"
+      digest: "${INDEXER_QUEUE_IMAGE_DIGEST}"
     nodeSelector:
       spi-pool: osdu
     tolerations:
@@ -39,6 +40,8 @@ spec:
       - name: AZURE_ISTIOAUTH_ENABLED
         value: "true"
       - name: AZURE_PAAS_WORKLOADIDENTITY_ISENABLED
+        value: "true"
+      - name: AZURE_MSI_ISENABLED
         value: "true"
       - name: AZURE_SERVICEBUS_TOPIC_NAME
         value: recordstopic

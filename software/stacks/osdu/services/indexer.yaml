@@ -26,6 +26,7 @@ spec:
     image:
       repository: ${INDEXER_IMAGE_REPOSITORY}
       tag: "${INDEXER_IMAGE_TAG}"
+      digest: "${INDEXER_IMAGE_DIGEST}"
     elasticTls: true
     redisTls: true
     nodeSelector:
@@ -47,6 +48,8 @@ spec:
       - name: AZURE_ISTIOAUTH_ENABLED
         value: "true"
       - name: AZURE_PAAS_WORKLOADIDENTITY_ISENABLED
+        value: "true"
+      - name: AZURE_MSI_ISENABLED
         value: "true"
       - name: SECURITY_HTTPS_CERTIFICATE_TRUST
         value: "true"

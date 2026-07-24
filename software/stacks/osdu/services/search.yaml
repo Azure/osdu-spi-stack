@@ -26,6 +26,7 @@ spec:
     image:
       repository: ${SEARCH_IMAGE_REPOSITORY}
       tag: "${SEARCH_IMAGE_TAG}"
+      digest: "${SEARCH_IMAGE_DIGEST}"
     elasticTls: true
     redisTls: true
     nodeSelector:

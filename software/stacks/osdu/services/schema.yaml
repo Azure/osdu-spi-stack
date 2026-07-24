@@ -26,6 +26,7 @@ spec:
     image:
       repository: ${SCHEMA_IMAGE_REPOSITORY}
       tag: "${SCHEMA_IMAGE_TAG}"
+      digest: "${SCHEMA_IMAGE_DIGEST}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu
@@ -46,6 +47,8 @@ spec:
       - name: AZURE_ISTIOAUTH_ENABLED
         value: "true"
       - name: AZURE_PAAS_WORKLOADIDENTITY_ISENABLED
+        value: "true"
+      - name: AZURE_MSI_ISENABLED
         value: "true"
       - name: COSMOSDB_DATABASE
         value: osdu-db

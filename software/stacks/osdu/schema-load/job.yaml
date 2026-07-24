@@ -23,10 +23,16 @@ metadata:
     app.kubernetes.io/component: schema-load
 spec:
   backoffLimit: 2
-  # 30 min ceiling covers the worst-case startup: ~20 min precheck wait
-  # on a fresh cluster while the schema pod is still pulling, plus a few
-  # minutes for the ~1,386 schema POSTs and token exchange.
-  activeDeadlineSeconds: 1800
+  # 60 min ceiling. The loader POSTs ~1,386 schemas; on a cold cluster the
+  # backing Cosmos autoscales up from its 400 RU/s floor and throttles (429)
+  # the initial burst, so the SDK retries with backoff and a single pass can
+  # exceed 30 min even when the schema service is immediately ready. Note
+  # activeDeadlineSeconds is a terminal Job deadline that overrides
+  # backoffLimit (no retry once exceeded), so it must cover the throttled
+  # worst case; 60 min does. Operators trigger a manual re-run with
+  # kubectl delete job schema-load -n osdu (already-loaded schemas return
+  # 409 and are skipped, so a re-run converges quickly).
+  activeDeadlineSeconds: 3600
   # No ttlSecondsAfterFinished: this is a one-shot loader. Flux
   # reconciles this Kustomization every 10 min; a TTL would let the
   # controller delete the completed Job and the next reconcile would
@@ -55,7 +61,7 @@ spec:
             defaultMode: 0755
       containers:
         - name: loader
-          image: community.opengroup.org:5555/osdu/platform/system/schema-service/schema-service-schema-load-master:ae8d35e5452ddd8d47bd395be06f3bcc4d0062a7
+          image: community.opengroup.org:5555/osdu/platform/system/schema-service/schema-service-schema-load-master:df3e78629f7e398cbda86d93946e49b011076d8f
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:

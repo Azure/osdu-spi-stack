@@ -24,6 +24,7 @@ spec:
     image:
       repository: ${CRS_CONVERSION_IMAGE_REPOSITORY}
       tag: "${CRS_CONVERSION_IMAGE_TAG}"
+      digest: "${CRS_CONVERSION_IMAGE_DIGEST}"
     nodeSelector:
       spi-pool: osdu
     tolerations:
