@@ -91,7 +91,18 @@ The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines seven
 | 5b | Schema load (one-shot Job) | 5a |
 | 6 | Reference services | 5, 5b |
 
-The ingress profile (`software/stacks/osdu/ingress/<mode>/`) adds Kustomizations at Layer 1 (cert issuers, ExternalDNS in `dns` mode, TLS overlays) and Layer 6 (HTTPRoutes). See [ADR-007](decisions/007-layered-kustomization-ordering.md) and [ADR-012](decisions/012-ingress-profiles.md).
+The ingress profile (`software/stacks/osdu/ingress/<mode>/`) adds Kustomizations at Layer 1 (cert issuers, ExternalDNS in `dns` mode, TLS overlays) and Layer 6 (HTTPRoutes, split into `spi-middleware-routes` and `spi-osdu-routes`). See [ADR-007](decisions/007-layered-kustomization-ordering.md) and [ADR-012](decisions/012-ingress-profiles.md).
+
+### Stack profiles
+
+`spi up --profile <name>` selects which slice of the layer DAG Flux reconciles.
+
+| Profile | Layers | Deploys |
+|---------|--------|---------|
+| `minimal` | 0a-4b | Middleware only: operators, cert-manager, trust-manager, Gateway, Elasticsearch, Redis, PostgreSQL, Airflow, CA bundles. No OSDU services. |
+| `core` (default) | 0a-6 | Everything in `minimal`, plus the OSDU services, partition/entitlements bootstrap, schema load, and reference services. |
+
+Layers 0a through 4b are byte-identical between the two profiles, so middleware validated under `minimal` behaves the same under `core`. Because `minimal` never creates `spi-osdu-services`, it pairs with the `<mode>-minimal` ingress trees, which omit the OSDU HTTPRoute Kustomization that would otherwise stall on that dependency. See [ADR-024](decisions/024-middleware-only-minimal-profile.md).
 
 ## AKS Automatic
 

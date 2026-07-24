@@ -50,8 +50,12 @@ def generate_name_suffix() -> str:
 
 
 class Profile(str, Enum):
+    # Middleware only: operators, cert/trust-manager, Gateway, Elasticsearch,
+    # Redis, PostgreSQL, Airflow. Stops before layer 5 (no OSDU services).
+    MINIMAL = "minimal"
+    # Middleware plus the OSDU services, bootstrap Jobs, schema load, and
+    # reference services. Default.
     CORE = "core"
-    FULL = "full"
 
 
 class IngressMode(str, Enum):

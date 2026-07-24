@@ -1,12 +1,8 @@
-# SPI Stack - Ingress profile: AZURE (default)
+# SPI Stack - Ingress profile: AZURE, minimal variant
 #
-# Uses Azure's auto-assigned <label>.<region>.cloudapp.azure.com FQDN.
-# CLI patches the Istio ingress LB with service.beta.kubernetes.io/
-# azure-dns-label-name=<cluster-name> before this stack reconciles.
-# cert-manager issues a Let's Encrypt cert on the FQDN via HTTP-01 on
-# the existing HTTP:80 listener; gateway-tls-single-host adds the
-# HTTPS:443 listener referencing the cert Secret. All OSDU APIs and
-# middleware UIs (Kibana /kibana, Airflow /airflow) live under one host.
+# Identical to ingress/azure/ minus spi-osdu-routes. The minimal stack
+# profile deploys no OSDU services, so a Kustomization that dependsOn
+# spi-osdu-services would stall on DependencyNotReady forever.
 #
 # Required variables in spi-ingress-config ConfigMap (osdu-flux):
 #   ACME_EMAIL, INGRESS_FQDN
@@ -84,9 +80,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# HTTPRoutes for the middleware UIs (Kibana /kibana, Airflow /airflow) on
-# the single FQDN. Split from spi-osdu-routes so it carries no dependency
-# on spi-osdu-services and stays reconcilable under the minimal profile.
+# HTTPRoutes for the middleware UIs (Kibana /kibana, Airflow /airflow).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -104,32 +98,6 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/stacks/osdu/routes/single-host/middleware
-  prune: true
-  wait: true
-  timeout: 5m
-  postBuild:
-    substituteFrom:
-      - kind: ConfigMap
-        name: spi-ingress-config
-
----
-# HTTPRoutes for the OSDU APIs on the single FQDN.
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: spi-osdu-routes
-  namespace: osdu-flux
-  labels:
-    spi-stack.layer: "6"
-spec:
-  interval: 10m
-  dependsOn:
-    - name: spi-osdu-services
-    - name: spi-gateway-tls
-  sourceRef:
-    kind: GitRepository
-    name: osdu-spi-stack-system
-  path: ./software/stacks/osdu/routes/single-host/osdu
   prune: true
   wait: true
   timeout: 5m

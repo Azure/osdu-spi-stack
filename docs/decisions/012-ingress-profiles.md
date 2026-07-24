@@ -32,6 +32,8 @@ Shared pieces (cert-manager install, Gateway resource, Istio ingress LB Service)
 
 Inputs per mode land in a single `spi-ingress-config` ConfigMap in `flux-system`, consumed by Flux `postBuild.substituteFrom`.
 
+Each mode has a `<mode>-minimal` sibling tree, selected when the stack profile is `minimal` (ADR-024). It is the mode's tree minus the `spi-osdu-routes` Kustomization, whose `dependsOn: spi-osdu-services` cannot be satisfied by a profile that deploys no OSDU services. HTTPRoutes are split by scope for this reason: `spi-middleware-routes` (Kibana, Airflow) reconciles in both variants, `spi-osdu-routes` only in the full trees. `ip-minimal` is empty, since `ip` mode carries no middleware routes at all.
+
 Rejected:
 - **Single mode with conditional Helm or Kustomize overlays.** Produces a profile matrix that is hard to review and makes `what-if` diffs opaque. Three flat profiles are easier to read and swap.
 - **Terraform-first DNS for `dns` mode.** ExternalDNS's continuous reconciliation matches HTTPRoute changes as services are added; Terraform drift-reconciles only on apply.

@@ -7,6 +7,36 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 
 ## [Unreleased]
 
+### Added
+- `--profile minimal`: deploys the middleware substrate only (operators,
+  cert-manager, trust-manager, Gateway, Elasticsearch, Redis, PostgreSQL,
+  Airflow, CA bundles) and stops below layer 5, so no OSDU services are
+  installed. Layers 0a-4b are identical to `core` (ADR-024).
+- `<mode>-minimal` ingress trees for each `--ingress-mode`, selected
+  automatically by the `minimal` profile.
+- `tests/test_profiles.py`: asserts every `Profile` x `IngressMode` pairing
+  resolves to real trees with no unsatisfiable `dependsOn`.
+
+### Changed
+- HTTPRoutes split by scope: `software/stacks/osdu/routes/<tree>/` now has
+  `middleware/` and `osdu/` subdirectories, reconciled as separate
+  `spi-middleware-routes` and `spi-osdu-routes` Kustomizations. Middleware
+  routing no longer depends on the OSDU services being present.
+- `spi-middleware-routes` now depends on `spi-airflow`, which the previous
+  combined route Kustomization never waited for despite routing to
+  `airflow-webserver`.
+- `profile` and `ingressMode` in `infra/flux.bicep` carry `@allowed`
+  constraints, so an unbacked value fails at template validation instead of
+  stalling Flux after the infrastructure is provisioned.
+- `spi up --profile minimal` skips OSDU image-lock resolution; nothing
+  consumes the ConfigMap on that profile.
+
+### Removed
+- `--profile full`. The value was accepted by the CLI but had no manifests
+  behind it: it pointed Flux at a nonexistent
+  `software/stacks/osdu/profiles/full` path, so a deploy provisioned the full
+  Azure estate and then failed to reconcile (ADR-024).
+
 ## [0.1.0] - 2026-07-24
 
 ### Added

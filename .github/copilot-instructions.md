@@ -45,6 +45,7 @@ software/
     gateway/               Istio Gateway API
   stacks/osdu/
     profiles/core/         7-layer Kustomization stack
+    profiles/minimal/      Middleware-only stack (layers 0-4b)
     services/              10 core OSDU service HelmReleases
     services-reference/    3 reference service HelmReleases
     secrets/               ConfigMap placeholder docs
@@ -60,7 +61,7 @@ docs/
 ```bash
 uv run spi check                            # Validate prerequisites
 uv run spi up --env dev1                     # Deploy everything
-uv run spi up --env dev1 --profile full      # Deploy with all services
+uv run spi up --env dev1 --profile minimal   # Middleware only, no OSDU services
 uv run spi up --env dev1 --partition p1 --partition p2  # Multi-partition
 uv run spi up --env dev1 --dry-run           # Preview Bicep changes (what-if)
 uv run spi down --env dev1                   # Delete all Azure resources

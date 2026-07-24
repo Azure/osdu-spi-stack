@@ -26,7 +26,9 @@ The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines a set
 | 5b | `spi-osdu-schema-load` (one-shot Job, ADR-013) | `spi-osdu-init` |
 | 6 | `spi-osdu-reference` (reference services) | 5, 5b |
 
-The ingress profile (`software/stacks/osdu/ingress/<mode>/stack.yaml`, ADR-012) attaches additional Kustomizations at Layer 1 (cert issuers, ExternalDNS, TLS overlays) and Layer 6 (HTTPRoutes). The two profiles reconcile independently under one `fluxConfigurations` resource (ADR-009).
+The ingress profile (`software/stacks/osdu/ingress/<mode>/stack.yaml`, ADR-012) attaches additional Kustomizations at Layer 1 (cert issuers, ExternalDNS, TLS overlays) and Layer 6 (`spi-middleware-routes`, `spi-osdu-routes`). The two profiles reconcile independently under one `fluxConfigurations` resource (ADR-009).
+
+The `minimal` profile (ADR-024) declares layers 0a through 4b verbatim and stops, pairing with the `<mode>-minimal` ingress trees so no `dependsOn` is left unsatisfiable.
 
 All Kustomizations use `wait: true` so each layer's Ready gate reflects actual workload health; per-layer `timeout` is tuned to the slowest workload in that layer (15 min for Elasticsearch and Airflow, 30 min for the OSDU service layers, 35 min for schema-load).
 

@@ -22,13 +22,29 @@ param repoUrl string
 param repoBranch string = 'main'
 
 @description('Profile path segment under software/stacks/osdu/profiles (e.g., "core").')
+@allowed([
+  'minimal'
+  'core'
+])
 param profile string = 'core'
 
 @description('Ingress mode path segment under software/stacks/osdu/ingress (azure, dns, or ip).')
+@allowed([
+  'azure'
+  'dns'
+  'ip'
+])
 param ingressMode string = 'azure'
 
 @description('Name of the fluxConfigurations resource on the cluster.')
 param configurationName string = 'osdu-spi-stack-system'
+
+// The minimal profile deploys no OSDU services, so it needs the ingress
+// tree that omits the OSDU HTTPRoute Kustomization; that one dependsOn
+// spi-osdu-services and would otherwise stall on DependencyNotReady.
+var ingressPath = profile == 'minimal'
+  ? './software/stacks/osdu/ingress/${ingressMode}-minimal'
+  : './software/stacks/osdu/ingress/${ingressMode}'
 
 resource aks 'Microsoft.ContainerService/managedClusters@2024-10-01' existing = {
   name: clusterName
@@ -87,7 +103,7 @@ resource gitopsConfig 'Microsoft.KubernetesConfiguration/fluxConfigurations@2024
         timeoutInSeconds: 1800
       }
       ingress: {
-        path: './software/stacks/osdu/ingress/${ingressMode}'
+        path: ingressPath
         prune: true
         syncIntervalInSeconds: 600
         timeoutInSeconds: 1800
