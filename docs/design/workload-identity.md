@@ -14,7 +14,7 @@ Five steps from Azure to a usable bearer token inside a pod:
 
 1. **The UAMI exists.** `infra/modules/identity.bicep` creates the OSDU UAMI (`<cluster>-osdu-identity`, a `Microsoft.ManagedIdentity/userAssignedIdentities` resource). The UAMI has a `client_id`, a `tenant_id`, and a `principal_id`.
 2. **The federated credentials bind the UAMI to the ServiceAccount.** The same module creates one `federatedIdentityCredentials` subresource per namespace in the fixed OSDU set (`default`, `osdu-core`, `airflow`, `osdu-system`, `osdu-auth`, `osdu-reference`, `osdu`, `platform`), each with `subject` `system:serviceaccount:<ns>:workload-identity-sa`; the `issuer` is the AKS cluster's OIDC discovery URL (a property of the cluster, populated by AKS automatically).
-3. **The RBAC bindings make the UAMI useful.** `infra/modules/rbac.bicep` assigns six roles scoped per resource: `Key Vault Secrets User`, `Storage Blob Data Contributor`, `Storage Table Data Contributor`, `Service Bus Data Sender`, `Service Bus Data Receiver`, `AcrPull`. Per [ADR-005](../decisions/005-workload-identity.md), the SPI stack uses one shared identity rather than per-service identities.
+3. **The RBAC bindings make the UAMI useful.** `infra/modules/rbac.bicep` assigns roles scoped per resource: `Key Vault Secrets User`, `Storage Blob Data Contributor`, `Storage Table Data Contributor`, `Azure Service Bus Data Owner`, `AcrPull`. Per [ADR-005](../decisions/005-workload-identity.md), the SPI stack uses one shared identity rather than per-service identities.
 4. **The ServiceAccount carries the link annotations.** During K8s bootstrap (`src/spi/deploy.py`, `_create_osdu_config`), the CLI creates `workload-identity-sa` in the `platform` and `osdu` namespaces with two annotations: `azure.workload.identity/client-id: <UAMI client_id>` and `azure.workload.identity/tenant-id: <tenant>`. Pods that mount this ServiceAccount inherit the annotations.
 5. **The pod opts in with a label.** A service pod includes `azure.workload.identity/use: "true"` in its labels. The AKS webhook sees the label, looks at the ServiceAccount annotations, mounts a projected SA token at `/var/run/secrets/azure/tokens/token`, and injects three env vars: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`.
 
@@ -62,11 +62,13 @@ ADR-016 calls this out as the most common failure mode. The `RequestAuthenticati
 
 The symptom of a missing audience is identical to "Workload Identity broken": empty `app-id=` in the service's request log, 403 from partition or 401 from entitlements. The cure is to verify the audience list, not to debug the federation chain.
 
-## The indexer-queue carve-out
+## Service Bus and indexer-queue
 
-Per [ADR-005](../decisions/005-workload-identity.md) "Consequences," indexer-queue is the one carve-out. The `indexer-queue-master` image (current `core-lib-azure` 2.0.6) builds its Service Bus subscription client via `SubscriptionClientFactoryImpl`, which constructs a `ConnectionStringBuilder` regardless of the `AZURE_PAAS_WORKLOADIDENTITY_ISENABLED` flag. Without a real connection string the subscription client throws `IllegalConnectionStringFormatException` on every retry and records-changed events never reach the indexer.
+Service Bus local authentication is disabled in SPI Stack. Services must use the shared UAMI via Workload Identity and the `Azure Service Bus Data Owner` role assignment.
 
-The CLI accepts this carve-out by storing a real Service Bus SAS connection string in `{partition}-sb-connection`. The key is gated by the same UAMI's `Key Vault Secrets User` role; it never lands in a pod env var. When the upstream subscription client honors the Workload Identity flag, this can move back to a `"DISABLED"` placeholder like the other partition KV secrets.
+`core-lib-azure` selects the token-based Service Bus path only when `azure.msi.isEnabled=true`; service manifests therefore set both `AZURE_MSI_ISENABLED=true` and `AZURE_PAAS_WORKLOADIDENTITY_ISENABLED=true`.
+
+`indexer-queue` is the remaining compatibility risk. Current upstream `indexer-queue` still pins `core-lib-azure` 2.0.6; that version can use MSI but does not have the newer Workload Identity-aware subscription client path. SPI Stack keeps `{partition}-sb-connection` as the literal `"DISABLED"` placeholder, so `indexer-queue` must move to a Workload Identity-aware core-lib version before local-auth-disabled Service Bus can work end to end.
 
 ## Worked example: trace a "401 with empty app-id" failure
 
@@ -93,7 +95,7 @@ No change to the federation chain, no change to the ServiceAccount, no change to
 
 ## Related ADRs
 
-- [ADR-002](../decisions/002-aks-automatic.md) -- AKS Automatic (provides the OIDC issuer)
+- [ADR-033](../decisions/033-selectable-aks-deployment-modes.md) -- both AKS modes provide the OIDC issuer
 - [ADR-005](../decisions/005-workload-identity.md) -- Workload Identity for Azure PaaS Access
 - [ADR-010](../decisions/010-keyvault-secret-management.md) -- Key Vault + ConfigMap Secret Model
 - [ADR-016](../decisions/016-istio-jwt-projection.md) -- Istio JWT Projection

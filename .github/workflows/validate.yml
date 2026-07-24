@@ -125,17 +125,29 @@ jobs:
         run: az bicep install
       - name: Bicep build (syntax check)
         if: steps.gate.outputs.skip != 'true'
-        run: az bicep build --file infra/main.bicep
+        run: |
+          az bicep build --file infra/main.bicep
+          az bicep build --file infra/aks.bicep
+          az bicep build --file infra/aks-base.bicep
+          az bicep build --file infra/flux.bicep
       - name: Ensure what-if RG exists
         if: steps.gate.outputs.skip != 'true'
         run: |
           set -euo pipefail
           az group create --name spi-ci-whatif --location centralus --only-show-errors -o none
-      - name: What-if deployment
+      - name: What-if deployment (Application Insights off/on)
         if: steps.gate.outputs.skip != 'true'
         run: |
           az deployment group what-if \
             --resource-group spi-ci-whatif \
             --template-file infra/main.bicep \
             --parameters infra/params/dev1.bicepparam \
+            --no-pretty-print
+          az deployment group what-if \
+            --resource-group spi-ci-whatif \
+            --template-file infra/main.bicep \
+            --parameters infra/params/dev1.bicepparam \
+              enableApplicationInsights=true \
+              appInsightsName=osdu-ci-insights \
+              logAnalyticsName=osdu-ci-logs \
             --no-pretty-print

@@ -4,7 +4,10 @@
 
 ### Azure-Native Software for OSDU
 
-SPI Stack deploys the OSDU platform onto Azure using AKS Automatic and Azure PaaS services with a bootstrap + [Flux CD](https://fluxcd.io/) GitOps model. Infrastructure is provisioned via `az` CLI commands, then Flux continuously reconciles Kubernetes workloads from this Git repository.
+SPI Stack deploys the OSDU platform onto Azure using AKS Automatic 1.36 and
+Azure PaaS services with a bootstrap + [Flux CD](https://fluxcd.io/) GitOps
+model. The validated Base SKU + Node Autoprovisioning topology remains
+available through an immutable deployment flag.
 
 This project is currently optimized for Azure dev/test environments and is still evolving.
 
@@ -17,7 +20,10 @@ This project is currently optimized for Azure dev/test environments and is still
 ## Why SPI Stack
 
 - **Azure-native**: leverages CosmosDB, Service Bus, Storage, Key Vault, and Entra ID
-- **AKS Automatic**: managed Istio, Karpenter, and Deployment Safeguards out of the box
+- **AKS Automatic by default**: managed Istio, hosted system pools, Karpenter,
+  and Deployment Safeguards
+- **Base + NAP fallback**: `--aks-mode base` preserves the validated explicit
+  cluster topology
 - **GitOps-driven**: Flux continuously reconciles desired state after bootstrap
 - **Transparent**: every `az` and `kubectl` command is shown before execution
 - **Workload Identity**: no stored credentials; all Azure access via federated identity
@@ -94,6 +100,22 @@ spi check
 # Deploy (provisions Azure resources + activates GitOps)
 spi up --env dev1
 
+# Optional fallback topology; the selected mode is preserved on reruns
+spi up --env dev1 --aks-mode base
+
+# Creator access is seeded into Entitlements by default.
+# Disable it for workload-only automation:
+spi up --env dev1 --no-seed-creator
+
+# Deploy a coordinated release tag across SPI service repositories
+spi up --env dev1 --image-tag v1.2.3
+
+# Advanced: validate the same feature ref across multiple service repositories
+spi up --env dev1 --image-ref fix/core-lib-azure-3.0.1
+
+# Compatibility fallback to OSDU community images
+spi up --env dev1 --image-source community --image-branch master
+
 # Multi-partition deploy (one CosmosDB + Service Bus + storage per partition)
 spi up --env dev1 --partition opendes --partition tenant1
 
@@ -140,7 +162,7 @@ SPI Stack is **GitOps + bootstrap**, not "pure GitOps from an empty cluster."
 The CLI performs a bootstrap phase:
 
 - Provision Azure PaaS resources (CosmosDB, Service Bus, Storage, Key Vault)
-- Create an AKS Automatic cluster with Managed Identity
+- Create AKS Automatic by default, or Base + NAP when explicitly selected
 - Configure Workload Identity and RBAC role assignments
 - Bootstrap the cluster with namespaces, secrets, ConfigMap, and ServiceAccount
 - Activate the AKS native Flux extension pointing to this repo
@@ -150,13 +172,13 @@ After that handoff, **Flux owns steady-state reconciliation** and continuously c
 <details>
 <summary>Deployment phases</summary>
 
-1. **Core Infra**: Resource Group, AKS Automatic, Managed Identity, Key Vault, ACR
+1. **Core Infra**: Resource Group, selected AKS topology, Managed Identity, Key Vault, ACR
 2. **Data Infra**: CosmosDB (Gremlin + SQL), Service Bus, Storage Accounts
 3. **IAM**: Federated credentials, RBAC role assignments, Key Vault secrets
 4. **K8s Bootstrap**: Namespaces, StorageClasses, secrets, ConfigMap, ServiceAccount
 5. **GitOps**: AKS native Flux extension pointing to this repo
 
-A full `spi up` typically takes ~45-50 minutes, dominated by AKS Automatic provisioning (~30 min). Exact times vary by region.
+A full `spi up` typically takes ~45-50 minutes, dominated by AKS provisioning (~30 min). Exact times vary by region.
 
 </details>
 
@@ -167,8 +189,18 @@ Use `--env` to run multiple isolated deployments. Each environment gets its own 
 
 ```bash
 uv run spi up --env dev1
+uv run spi up --env dev1 --aks-mode base
+uv run spi up --env dev1 --application-insights
 uv run spi up --env staging
 ```
+
+Application Insights and its Log Analytics workspace are disabled by default.
+Use `--application-insights` when the environment needs request, dependency,
+and exception telemetry.
+
+AKS Automatic is the default. Use `--aks-mode base` only when Base + Node
+Autoprovisioning is required. Both choices are immutable for the lifetime of an
+environment.
 
 </details>
 
@@ -198,7 +230,7 @@ Use `minimal` when you are working on the middleware itself and the OSDU service
 
 | Resource | Purpose |
 |----------|---------|
-| AKS Automatic | Kubernetes with managed Istio, Karpenter, Safeguards |
+| AKS Automatic / Base + NAP | Kubernetes with managed Istio and Karpenter Node Autoprovisioning |
 | CosmosDB Gremlin | Entitlements graph |
 | CosmosDB SQL | OSDU operational data (per partition) |
 | Service Bus | Async messaging (per partition, 14 topics) |
@@ -234,7 +266,7 @@ Commands:
   reconcile  Force Flux to re-sync from Git               [--suspend] [--resume] [--refresh-images]
 ```
 
-Use `--dry-run` on `spi up` to preview the Bicep changes (`az deployment group what-if`) before any Azure resources are created beyond the resource group. `--profile` defaults to `core`; `minimal` deploys middleware only. `--ingress-mode` defaults to `azure`; the other supported modes are `dns` (per-service hostnames on an owned Azure DNS zone) and `ip` (bare IP, debug only). `--refresh-images` re-resolves the OSDU community image tags and reconciles the service Kustomizations.
+Use `--dry-run` on `spi up` to preview the Bicep changes (`az deployment group what-if`) before any Azure resources are created beyond the resource group. `--aks-mode` defaults to `automatic`; `base` selects the Base SKU with Node Autoprovisioning and is preserved per environment. `--profile` defaults to `core`; `minimal` deploys middleware only. `--ingress-mode` defaults to `azure`; the other supported modes are `dns` (per-service hostnames on an owned Azure DNS zone) and `ip` (bare IP, debug only). Service images default to each public `yuchen-osdu` package's `main-snapshot`, which is immediately pinned to an immutable digest. Use `--image-tag` for a coordinated release tag, `--image-ref` for advanced multi-repository feature validation, or `--image-source community` for the OSDU GitLab fallback. `--refresh-images` re-resolves the configured selector and reconciles the service Kustomizations.
 
 
 ## Documentation
