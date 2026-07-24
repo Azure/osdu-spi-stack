@@ -43,7 +43,7 @@ targetScope = 'resourceGroup'
 param envName string = ''
 
 @description('Azure region for all resources.')
-param location string = 'eastus2'
+param location string = 'centralus'
 
 @description('User-assigned managed identity name.')
 param identityName string

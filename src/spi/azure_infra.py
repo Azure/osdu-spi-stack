@@ -288,6 +288,44 @@ def create_aks_automatic(config: Config, dry_run: bool = False) -> Dict[str, Any
         description="Convert kubeconfig to azurecli auth",
     )
 
+    # Pin the target tenant into the exec plugin's environment. kubelogin's
+    # azurecli mode lets an inherited AZURE_TENANT_ID env var override even
+    # its --tenant-id flag, so a shell configured for a different tenant
+    # silently produces wrong-tenant tokens (kubectl then fails 401). An
+    # exec-env entry on the kubeconfig user beats the inherited env var.
+    account_tenant = run_command(
+        ["az", "account", "show", "--query", "tenantId", "--output", "tsv"],
+        description="Get deployment tenant id",
+        display=False,
+        check=False,
+    ).stdout.strip()
+    kubeconfig_user = run_command(
+        ["kubectl", "config", "view", "--minify", "-o", "jsonpath={.contexts[0].context.user}"],
+        description="Get kubeconfig user entry",
+        display=False,
+        check=False,
+    ).stdout.strip()
+    if account_tenant and kubeconfig_user:
+        run_command(
+            [
+                "kubectl",
+                "config",
+                "set-credentials",
+                kubeconfig_user,
+                "--exec-command=kubelogin",
+                "--exec-arg=get-token",
+                "--exec-arg=--login",
+                "--exec-arg=azurecli",
+                "--exec-arg=--server-id",
+                "--exec-arg=6dae42f8-4368-4678-94ff-3960e28e3630",
+                f"--exec-env=AZURE_TENANT_ID={account_tenant}",
+                "--exec-api-version=client.authentication.k8s.io/v1beta1",
+            ],
+            description="Pin tenant in kubeconfig exec env",
+            display=False,
+            check=False,
+        )
+
     # AVM v0.13.0 types proxyRedirectionMechanism out of IstioComponents;
     # enable CNI chaining imperatively. Idempotent. CNI chaining avoids
     # the NET_ADMIN capability requirement that the default Istio sidecar
