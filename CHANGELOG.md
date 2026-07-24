@@ -8,6 +8,17 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 ## [Unreleased]
 
 ### Fixed
+- HTTPS ingress never terminated on AKS Automatic: the gateway TLS overlays
+  declared their cert-manager Certificates in `aks-istio-ingress`, where the
+  AKS-managed protect-system-namespaces policy denies cert-manager's status
+  writes — issuance stalled silently with every Kustomization Ready and :443
+  refusing connections. Certificates now issue into `platform` and reach the
+  Gateway's listeners via ReferenceGrants (ADR-025). The smoke workflow
+  gained an HTTPS-handshake probe so a dead TLS path fails CI.
+
+## [0.2.1] - 2026-07-24
+
+### Fixed
 - Deployer object-ID resolution no longer requires a Microsoft Graph token.
   The cluster-admin RBAC grant read the signed-in principal's object ID via
   `az ad signed-in-user show` / `az ad sp show`, both of which request Graph
@@ -112,6 +123,7 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   nonexistent path under `lib/pythonX.Y/infra/`, breaking `spi up` for
   every `uv tool install` user. (`ee45a65`)
 
-[Unreleased]: https://github.com/Azure/osdu-spi-stack/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Azure/osdu-spi-stack/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Azure/osdu-spi-stack/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Azure/osdu-spi-stack/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Azure/osdu-spi-stack/releases/tag/v0.1.0
