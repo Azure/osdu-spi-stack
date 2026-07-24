@@ -1,18 +1,27 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// AKS Automatic cluster + managed Istio.
+// AKS Standard (Base SKU) cluster with Node Autoprovisioning + managed Istio.
+//
+// NOTE: This was AKS Automatic, but ~2026-06-02 AKS Automatic made managed
+// system node pools mandatory, which non-bypassably BLOCKS creating/modifying
+// MutatingWebhookConfigurations (even for cluster-admin) via the
+// "AKS-managed security control changes" guardrail. cert-manager and
+// CloudNativePG both require MWCs, so the full SPI Stack cannot reconcile on
+// Automatic. We therefore run the Base SKU with Node Autoprovisioning (NAP /
+// Karpenter) enabled -- this preserves the software layer's Karpenter
+// NodePools and per-service nodeSelectors while dropping the Automatic-only
+// guardrails.
 //
 // Scope: only the AKS cluster. The cluster uses a user-assigned managed
-// identity because Automatic with a BYO VNet requires one. Workload identity
-// for pods is a SEPARATE user-assigned identity
-// created in infra/main.bicep after this template outputs the OIDC
-// issuer URL for federated credentials.
+// identity (BYO VNet requires UAMI). Workload identity for pods is a SEPARATE
+// user-assigned identity created in infra/main.bicep after this template
+// outputs the OIDC issuer URL for federated credentials.
 //
-// One post-deploy imperative step remains: use `az aks mesh
-// enable-istio-cni` to flip managed Istio to CNIChaining. The resource
-// provider rejects proxyRedirectionMechanism at create time even though
-// newer schemas expose it.
+// One post-deploy imperative step remains: `az aks mesh enable-istio-cni`
+// to flip managed Istio to CNIChaining. The resource provider rejects
+// proxyRedirectionMechanism at create time even though newer schemas
+// expose it.
 
 targetScope = 'resourceGroup'
 
@@ -26,15 +35,18 @@ param clusterName string
 @description('Azure region.')
 param location string = resourceGroup().location
 
-@description('Kubernetes version for the cluster. Must be >= 1.36: earlier AKS Automatic versions block all MutatingWebhookConfigurations (cert-manager, CNPG) at the authorization layer.')
-param kubernetesVersion string = '1.36'
+@description('Kubernetes version for the cluster.')
+param kubernetesVersion string = '1.34'
 
 @description('VM size for the system pool. D4lds_v5 has a 150 GiB cache that fits the 128 GiB default ephemeral OS disk.')
 param systemPoolVmSize string = 'Standard_D4lds_v5'
 
-@description('Availability zones for the system pool. Empty selects a region-aware default.')
+@description('Availability zones for the system node pool. Empty selects a region-aware default. eastus2 excludes zone 2, which lacks zonal capacity for the system VM SKU; other regions use 1, 2, 3.')
 param availabilityZones array = []
 
+// Region-aware zone default. eastus2 does not offer zone 2 for the Dlds_v5
+// system SKU, so a hardcoded ['1','2','3'] fails there with a SKU/zone
+// mismatch; callers can still override via the availabilityZones parameter.
 var zonesByRegion = {
   eastus2: ['1', '3']
 }
@@ -103,26 +115,29 @@ resource clusterIdentityNetworkContributor 'Microsoft.Authorization/roleAssignme
 }
 
 // ──────────────────────────────────────────────
-// AKS Automatic cluster
+// AKS Standard (Base SKU) cluster + Node Autoprovisioning
 // ──────────────────────────────────────────────
 //
-// Automatic SKU validation requires:
-//   - UAMI (user-assigned managed identity) when using BYO VNet.
-//     Managed-VNet Automatic clusters require SAMI; BYO-VNet requires
-//     UAMI; these are mutually exclusive.
-//   - Ephemeral OS disks on the explicit system pool
-//   - webApplicationRouting and KeyvaultSecretsProvider add-ons enabled
-//   - hostedSystemProfile wired to the BYO VNet so AKS Automatic's
-//     service-created "hostedpool" does not fall back to a managed VNet
+// Key config vs a vanilla Base cluster (these are what AKS Automatic used
+// to preconfigure and must now be explicit):
+//   - aadProfile: Azure RBAC for Kubernetes (the CLI grants the deployer
+//     cluster-admin and authenticates with kubelogin azurecli mode).
+//   - securityProfile.workloadIdentity + oidcIssuerProfile: federated
+//     workload identity for OSDU pods (wired in infra/main.bicep).
+//   - nodeProvisioningProfile (NAP / Karpenter): REQUIRED -- the software
+//     layer defines platform/osdu Karpenter NodePools and every OSDU
+//     service nodeSelects them. NAP requires Azure CNI overlay + Cilium.
+//   - UAMI (BYO VNet requires user-assigned identity).
+//   - Ephemeral OS disks + webAppRouting + KeyvaultSecretsProvider add-ons.
 //
-// With BYO VNet, outboundType switches from managedNATGateway to
-// userAssignedNATGateway (the NAT we pre-created in vnet.bicep).
+// With BYO VNet, outbound egress flows through the user-assigned NAT
+// Gateway pre-created in vnet.bicep (outboundType: userAssignedNATGateway).
 
 resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
   name: clusterName
   location: location
   sku: {
-    name: 'Automatic'
+    name: 'Base'
     tier: 'Standard'
   }
   identity: {
@@ -145,41 +160,54 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
     disableLocalAccounts: true
     supportPlan: 'KubernetesOfficial'
 
-    // Automatic requires public API server for Karpenter.
+    // Public API server (Karpenter/NAP and the CLI talk to it publicly).
     publicNetworkAccess: 'Enabled'
 
-    // OIDC issuer URL is output and consumed by infra/main.bicep to
-    // wire federated credentials to the workload-identity SAs.
+    // Azure RBAC for Kubernetes authorization. AKS Automatic preconfigured
+    // this; Base must set it explicitly. The CLI assigns the deployer the
+    // "Azure Kubernetes Service RBAC Cluster Admin" role and authenticates
+    // with kubelogin (azurecli mode) -- see src/spi/azure_infra.py.
+    aadProfile: {
+      managed: true
+      enableAzureRBAC: true
+    }
+
+    // OIDC issuer URL is output and consumed by infra/main.bicep to wire
+    // federated credentials to the workload-identity SAs. workloadIdentity
+    // is preconfigured on Automatic but must be explicit on Base.
     oidcIssuerProfile: {
       enabled: true
     }
-
-    // Keep AKS Automatic's service-created hosted pools on the BYO VNet.
-    hostedSystemProfile: {
-      enabled: true
-      nodeSubnetID: vnetModule.outputs.subnetId
-      systemNodeSubnetID: vnetModule.outputs.systemNodeSubnetId
+    securityProfile: {
+      workloadIdentity: {
+        enabled: true
+      }
     }
+
+    // Node Autoprovisioning (Karpenter). REQUIRED: the software layer
+    // (software/components/nodepools) defines platform/osdu Karpenter
+    // NodePools and every OSDU service nodeSelects them. ``defaultNodePools:
+    // 'Auto'`` provisions an untainted default pool that hosts infra
+    // (cert-manager, CNPG, flux) which carries no nodeSelector. NAP is GA
+    // and requires Azure CNI overlay + Cilium dataplane (set below).
     nodeProvisioningProfile: {
       mode: 'Auto'
       defaultNodePools: 'Auto'
     }
 
-    // BYO VNet: outbound goes through the user-assigned NAT Gateway
-    // attached to the subnets in vnet.bicep.
+    // Azure CNI Overlay powered by Cilium (required by NAP). Outbound goes
+    // through the user-assigned NAT Gateway attached to the subnets in
+    // vnet.bicep. CIDRs match the prior deployment shape.
     networkProfile: {
-      outboundType: 'userAssignedNATGateway'
       networkPlugin: 'azure'
+      networkPluginMode: 'overlay'
+      networkDataplane: 'cilium'
+      networkPolicy: 'cilium'
+      outboundType: 'userAssignedNATGateway'
+      podCidr: '10.244.0.0/16'
       serviceCidr: '192.168.0.0/16'
       dnsServiceIP: '192.168.0.10'
       loadBalancerSku: 'standard'
-    }
-
-    // API server VNet integration is always-on for AKS Automatic with
-    // BYO VNet and requires a dedicated delegated subnet distinct from
-    // the node subnets (see vnet.bicep).
-    apiServerAccessProfile: {
-      subnetId: vnetModule.outputs.apiServerSubnetId
     }
 
     ingressProfile: {
@@ -215,13 +243,12 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
       }
     }
 
-    // System pool. Automatic uses managed hosted pools for its platform
-    // components and Karpenter for user workloads; this explicit pool
-    // preserves the previous deployment shape for system add-ons.
+    // Bootstrap system pool for kube-system + the NAP/Karpenter controller.
+    // NAP provisions all other capacity (default/platform/osdu NodePools).
     agentPoolProfiles: [
       {
         name: 'systempool'
-        count: 1
+        count: 2
         mode: 'System'
         vmSize: systemPoolVmSize
         osDiskType: 'Ephemeral'
@@ -235,14 +262,14 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
     // applied imperatively post-deploy (see top-of-file note).
     //
     // revisions is pinned to prevent AKS from silently upgrading the
-    // mesh under us. `asm-1-30` is the newest revision compatible with
-    // Kubernetes 1.36 (asm-1-28 tops out at 1.35 per
-    // `az aks mesh get-revisions`).
+    // mesh under us. `asm-1-28` matches the sister Terraform repo
+    // (../osdu-spi-infra/main/infra/aks.tf); validated with 1.34 on
+    // KubernetesOfficial and LTS.
     serviceMeshProfile: {
       mode: 'Istio'
       istio: {
         revisions: [
-          'asm-1-30'
+          'asm-1-28'
         ]
         components: {
           ingressGateways: [
@@ -268,5 +295,7 @@ output clusterName string = clusterName
 output clusterResourceId string = aksCluster.id
 output oidcIssuerUrl string = aksCluster.properties.?oidcIssuerProfile.?issuerURL ?? ''
 output clusterPrincipalId string = clusterIdentity.properties.principalId
+
+@description('Object ID of the AKS-managed kubelet (node) identity. Consumed by main.bicep/rbac.bicep to grant AcrPull so nodes can pull images from the SPI ACR (e.g. custom OSDU service images). Empty if not yet populated by the RP.')
 output kubeletIdentityObjectId string = aksCluster.properties.?identityProfile.?kubeletidentity.?objectId ?? ''
-output istioRevision string = 'asm-1-30'
+output istioRevision string = 'asm-1-28'

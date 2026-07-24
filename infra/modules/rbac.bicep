@@ -9,10 +9,10 @@
 @description('Principal ID (object ID) of the managed identity.')
 param principalId string
 
-@description('Principal ID (object ID) of the deployer. Empty string skips deployer-side role assignments. Optional because local-dev users typically have Owner on the RG and do not need an explicit grant.')
+@description('Principal ID (object ID) of the deployer. Empty string skips deployer-side role assignments.')
 param deployerPrincipalId string = ''
 
-@description('Principal type of deployerPrincipalId. Human deployers must pass User or the assignment fails principal validation.')
+@description('Principal type of the deployerPrincipalId.')
 @allowed([
   'User'
   'ServicePrincipal'
@@ -111,10 +111,11 @@ resource acrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   }
 }
 
-// The AKS kubelet (node) identity is what actually PULLS container images
-// for pods; the workload identity above covers app-level ACR access only.
-// Without this, pods referencing images in the SPI ACR (e.g. custom OSDU
-// images swapped in via the osdu-image-lock ConfigMap) ImagePullBackOff.
+// The AKS kubelet (node) identity is what actually PULLS container images for
+// pods. The workload identity above gets AcrPull for app-level access, but
+// image pulls use the kubelet identity, so it needs AcrPull too -- otherwise
+// pods referencing the SPI ACR (e.g. custom OSDU service images swapped in via
+// the osdu-image-lock ConfigMap) fail with ImagePullBackOff.
 resource kubeletAcrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(kubeletIdentityObjectId)) {
   scope: acr
   name: guid(acr.id, kubeletIdentityObjectId, roleIds.acrPull)
@@ -159,7 +160,13 @@ resource partitionStorageBlobAssignments 'Microsoft.Authorization/roleAssignment
   }
 }]
 
-resource serviceBusSenderAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (sbName, i) in serviceBusNames: {
+// Service Bus data-plane roles for the OSDU managed identity. Topics and their
+// subscriptions are pre-created in partition.bicep (serviceBusSubscriptionDefs),
+// so the runtime never creates entities and does not need management-plane rights.
+// Data Sender (publish) plus Data Receiver (consume) is the least-privilege pair
+// that covers the OSDU publish/subscribe path (ADR-005); Data Owner would also
+// grant entity management, which nothing in the deployed service set requires.
+resource serviceBusDataSenderAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (sbName, i) in serviceBusNames: {
   scope: serviceBusNamespaces[i]
   name: guid(serviceBusNamespaces[i].id, principalId, roleIds.serviceBusDataSender)
   properties: {
@@ -169,7 +176,7 @@ resource serviceBusSenderAssignments 'Microsoft.Authorization/roleAssignments@20
   }
 }]
 
-resource serviceBusReceiverAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (sbName, i) in serviceBusNames: {
+resource serviceBusDataReceiverAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (sbName, i) in serviceBusNames: {
   scope: serviceBusNamespaces[i]
   name: guid(serviceBusNamespaces[i].id, principalId, roleIds.serviceBusDataReceiver)
   properties: {

@@ -10,7 +10,7 @@
 // role assignments that bind the identity to the above.
 //
 // Key Vault secret VALUES are also declared here: static metadata plus
-// ``listKeys()`` on Cosmos accounts is resolved at deploy time, so the CLI
+// ``listKeys()`` on local-auth-enabled partition Cosmos accounts is resolved at deploy time, so the CLI
 // no longer has to run ``az cosmosdb keys list`` + ``az keyvault secret set``
 // post-deploy.
 //
@@ -43,7 +43,7 @@ targetScope = 'resourceGroup'
 param envName string = ''
 
 @description('Azure region for all resources.')
-param location string = 'westus3'
+param location string = 'eastus2'
 
 @description('User-assigned managed identity name.')
 param identityName string
@@ -89,10 +89,10 @@ param dnsZoneName string = ''
 @description('Resource group that contains the Azure DNS zone. Required when dnsZoneName is set.')
 param dnsZoneResourceGroup string = ''
 
-@description('Object ID of the deployer service principal. When set, grants the deployer Key Vault Secrets Officer so the post-deploy bootstrap step can write runtime secrets. Empty string is fine for local dev users with RG Owner.')
+@description('Object ID of the deployer. Grants Key Vault Secrets Officer so the post-deploy bootstrap step can write runtime secrets.')
 param deployerPrincipalId string = ''
 
-@description('Principal type of deployerPrincipalId. Human deployers must pass User.')
+@description('Principal type of deployerPrincipalId.')
 @allowed([
   'User'
   'ServicePrincipal'
@@ -102,16 +102,13 @@ param deployerPrincipalType string = 'ServicePrincipal'
 @description('Object ID of the AKS kubelet (node) identity. Empty string skips the kubelet AcrPull grant. Set by the CLI from the AKS deployment output so nodes can pull custom images from the ACR.')
 param kubeletIdentityObjectId string = ''
 
-@description('Disable Service Bus local (SAS) auth on partition namespaces. Required true where tenant policy denies local-auth namespaces; set false elsewhere if running the community indexer-queue image (needs SAS, ADR-005).')
-param serviceBusDisableLocalAuth bool = true
-
-@description('Opt-in: deploy workspace-based Application Insights + Log Analytics. Off by default; adds cost and deploy time developers usually do not need.')
+@description('Deploy workspace-based Application Insights and Log Analytics resources.')
 param enableApplicationInsights bool = false
 
 @description('Application Insights component name. Required when enableApplicationInsights is true.')
 param appInsightsName string = ''
 
-@description('Log Analytics workspace name backing the App Insights component. Required when enableApplicationInsights is true.')
+@description('Log Analytics workspace name backing the workspace-based App Insights component. Required when enableApplicationInsights is true.')
 param logAnalyticsName string = ''
 
 // ──────────────────────────────────────────────────────────
@@ -148,12 +145,8 @@ module gremlinModule 'modules/cosmos-gremlin.bicep' = {
   params: {
     name: gremlinAccountName
     location: location
-    keyVaultName: keyVaultName
     principalId: identityModule.outputs.principalId
   }
-  dependsOn: [
-    keyvaultModule
-  ]
 }
 
 module storageCommonModule 'modules/storage-common.bicep' = {
@@ -179,7 +172,6 @@ module partitionModules 'modules/partition.bicep' = [for (p, i) in dataPartition
     isPrimaryPartition: p == primaryPartition
     keyVaultName: keyVaultName
     principalId: identityModule.outputs.principalId
-    serviceBusDisableLocalAuth: serviceBusDisableLocalAuth
   }
   dependsOn: [
     keyvaultModule
@@ -240,6 +232,41 @@ module externalDnsRoleModule 'modules/external-dns-role.bicep' = if (!empty(dnsZ
 }
 
 // ──────────────────────────────────────────────────────────
+// Observability: Log Analytics workspace + Application Insights
+// ──────────────────────────────────────────────────────────
+//
+// OSDU service images bundle the App Insights Java agent and the core-lib-azure
+// 2.x web SDK. core-lib-azure >= 2.5.6 ships LogCustomDimensionFilter, which
+// reads the App Insights request-telemetry context on every request with no
+// null guard -- if App Insights is not initialized the service returns HTTP 500
+// on every request. AKS Automatic enabled App Insights by default; AKS Base
+// does not. Operators can provision it here with `spi up
+// --application-insights`; the CLI otherwise writes disabled/dummy agent
+// configuration into the osdu-config ConfigMap that every service reads.
+
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (enableApplicationInsights) {
+  name: logAnalyticsName
+  location: location
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
+  }
+}
+
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = if (enableApplicationInsights) {
+  name: appInsightsName
+  location: location
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    #disable-next-line BCP318
+    WorkspaceResourceId: logAnalytics.id
+  }
+}
+
+// ──────────────────────────────────────────────────────────
 // Key Vault secret values (declarative; replaces post-deploy CLI writes)
 // ──────────────────────────────────────────────────────────
 //
@@ -252,12 +279,9 @@ module externalDnsRoleModule 'modules/external-dns-role.bicep' = if (!empty(dnsZ
 // All secret values stay out of the deployment outputs -- they are set
 // only on the child resource and never surface in the deployment record.
 
-// Cosmos primary-key secrets (graph-db-primary-key and
-// {partition}-cosmos-primary-key) are written INSIDE the gremlinModule
-// and partitionModules respectively. ``listKeys()`` on an ``existing``
-// reference at this scope fails with ResourceNotFound because Bicep's
-// dependency analyzer does not chain through the module that creates
-// the account.
+// Partition Cosmos primary-key secrets are written INSIDE each
+// partitionModule. The Gremlin account has local auth disabled, so no
+// graph-db-primary-key secret is written.
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
@@ -337,8 +361,6 @@ resource secretGraphEndpoint 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   dependsOn: [ keyvaultModule ]
 }
 
-// graph-db-primary-key is written inside gremlinModule; see note above.
-
 resource partitionStorageSecrets 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [for (p, i) in dataPartitions: {
   name: '${p}-storage'
   parent: keyVault
@@ -373,38 +395,6 @@ resource partitionServiceBusSecrets 'Microsoft.KeyVault/vaults/secrets@2023-07-0
     keyvaultModule
   ]
 }]
-
-// ──────────────────────────────────────────────────────────
-// Observability: Log Analytics workspace + Application Insights (opt-in)
-// ──────────────────────────────────────────────────────────
-//
-// OSDU service images bundle the App Insights Java agent, and
-// core-lib-azure >= 2.5.6 ships LogCustomDimensionFilter, which reads the
-// AI request-telemetry context on every request with no null guard — if
-// App Insights is not initialized the service returns HTTP 500 on every
-// request. Off by default (cost + deploy time); the CLI writes
-// disabled/dummy agent configuration into osdu-config when disabled.
-
-resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (enableApplicationInsights) {
-  name: logAnalyticsName
-  location: location
-  properties: {
-    sku: {
-      name: 'PerGB2018'
-    }
-    retentionInDays: 30
-  }
-}
-
-resource appInsights 'Microsoft.Insights/components@2020-02-02' = if (enableApplicationInsights) {
-  name: appInsightsName
-  location: location
-  kind: 'web'
-  properties: {
-    Application_Type: 'web'
-    WorkspaceResourceId: logAnalytics.id
-  }
-}
 
 // ──────────────────────────────────────────────────────────
 // Outputs
@@ -450,9 +440,14 @@ output partitionStorageNamesOut array = partitionStorageNames
 // plumbs this into the spi-ingress-config ConfigMap so the HelmRelease
 // can wire workload-identity annotations on the service account.
 #disable-next-line BCP318
-output appInsightsConnectionString string = enableApplicationInsights ? appInsights.properties.ConnectionString : ''
-output appInsightsName string = enableApplicationInsights ? appInsightsName : ''
-
 output externalDnsClientId string = !empty(dnsZoneName) ? externalDnsIdentityModule.outputs.clientId : ''
 #disable-next-line BCP318
 output externalDnsPrincipalId string = !empty(dnsZoneName) ? externalDnsIdentityModule.outputs.principalId : ''
+
+// Application Insights connection string + key. Empty when not provisioned;
+// the CLI falls back to a disabled/dummy connection string in osdu-config so
+// core-lib-azure's request filter does not NPE.
+#disable-next-line BCP318
+output appInsightsConnectionString string = enableApplicationInsights ? appInsights.properties.ConnectionString : ''
+#disable-next-line BCP318
+output appInsightsInstrumentationKey string = enableApplicationInsights ? appInsights.properties.InstrumentationKey : ''
