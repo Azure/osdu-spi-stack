@@ -43,6 +43,7 @@ against both ``aks.bicep`` and ``main.bicep`` run; all post-deploy steps
 are skipped and an empty outputs dict is returned.
 """
 
+import base64
 import json
 import os
 import time
@@ -378,6 +379,13 @@ def _grant_deployer_cluster_admin(config: Config, cluster_resource_id: str):
     # federated exchange, which fails ~20 min into spi up with AADSTS700024.
     user_oid = os.environ.get("SPI_DEPLOYER_OID", "").strip()
     if not user_oid:
+        # Prefer decoding `oid` from the cached ARM access token: it is the
+        # principal's object ID for users and service principals alike, and
+        # needs no Microsoft Graph token, which Conditional Access token
+        # protection can refuse to issue (AADSTS530084) even when ARM access
+        # is fine. Graph lookups below are the fallback.
+        user_oid = _deployer_oid_from_arm_token()
+    if not user_oid:
         if principal_type == "ServicePrincipal":
             # `az ad signed-in-user show` calls Graph `/me`, which is
             # delegated-flow-only. For SP auth, look up the SP by its appId
@@ -422,6 +430,50 @@ def _grant_deployer_cluster_admin(config: Config, cluster_resource_id: str):
     )
     _verify_role_assignment_recorded(user_oid, cluster_resource_id)
     _wait_for_cluster_rbac()
+
+
+def _decode_jwt_claim(token: str, claim: str) -> str:
+    """Extract a claim from a JWT payload without signature verification.
+
+    Safe here because the token comes straight from the local az token
+    cache and is only mined for the caller's own object ID; it is never
+    used to make an authorization decision.
+    """
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        value = claims.get(claim, "")
+        return value if isinstance(value, str) else ""
+    except (IndexError, ValueError):
+        return ""
+
+
+def _deployer_oid_from_arm_token() -> str:
+    """Read the signed-in principal's object ID from a cached ARM access token.
+
+    Returns an empty string on any failure so callers can fall back to the
+    Graph-based lookups.
+    """
+    result = run_command(
+        [
+            "az",
+            "account",
+            "get-access-token",
+            "--resource",
+            "https://management.azure.com/",
+            "--query",
+            "accessToken",
+            "--output",
+            "tsv",
+        ],
+        description="Get deployer object ID from ARM token",
+        display=False,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    return _decode_jwt_claim(result.stdout.strip(), "oid")
 
 
 def _verify_role_assignment_recorded(user_oid: str, cluster_resource_id: str):
