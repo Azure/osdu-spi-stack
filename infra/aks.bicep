@@ -32,13 +32,12 @@ param kubernetesVersion string = '1.36'
 @description('VM size for the system pool. D4lds_v5 has a 150 GiB cache that fits the 128 GiB default ephemeral OS disk.')
 param systemPoolVmSize string = 'Standard_D4lds_v5'
 
-@description('Availability zones for the system pool. Empty selects a region-aware default.')
-param availabilityZones array = []
-
-var zonesByRegion = {
-  eastus2: ['1', '3']
-}
-var systemPoolZones = !empty(availabilityZones) ? availabilityZones : (contains(zonesByRegion, location) ? zonesByRegion[location] : ['1', '2', '3'])
+@description('Availability zones for the system pool. The Automatic SKU validates this against its recommended values, so all three zones are required unless a region genuinely offers fewer.')
+param availabilityZones array = [
+  '1'
+  '2'
+  '3'
+]
 
 // ──────────────────────────────────────────────
 // Private network (BYO VNet)
@@ -226,7 +225,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
         vmSize: systemPoolVmSize
         osDiskType: 'Ephemeral'
         osType: 'Linux'
-        availabilityZones: systemPoolZones
+        availabilityZones: availabilityZones
         vnetSubnetID: vnetModule.outputs.subnetId
       }
     ]
