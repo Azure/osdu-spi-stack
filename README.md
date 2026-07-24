@@ -27,21 +27,51 @@ This project is currently optimized for Azure dev/test environments and is still
 
 The only tool you need is [`uv`](https://docs.astral.sh/uv/). Each
 [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases) publishes a
-versioned `spi` wheel (`spi-X.Y.Z-py3-none-any.whl`). Install a specific version
-by its wheel URL (recommended for reproducibility):
+versioned `spi` wheel (`spi-X.Y.Z-py3-none-any.whl`); you install it directly
+from its GitHub Release URL.
+
+### Install the latest release
+
+These commands always resolve the newest release, so they never need updating
+between versions. Pick the one for your shell.
+
+**macOS / Linux (bash, zsh):**
 
 ```bash
-uv tool install https://github.com/Azure/osdu-spi-stack/releases/download/v0.1.0/spi-0.1.0-py3-none-any.whl
+uv tool install "$(curl -fsSL https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest \
+  | grep -o 'https://github.com/Azure/osdu-spi-stack/releases/download/[^"]*-py3-none-any.whl')"
+```
+
+**Windows (PowerShell):**
+
+```powershell
+uv tool install (irm https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest).assets.where({ $_.name -like '*-py3-none-any.whl' }).browser_download_url
+```
+
+Then verify:
+
+```bash
 spi --version
 ```
 
-To install the newest release, copy its wheel URL from the
-[latest release](https://github.com/Azure/osdu-spi-stack/releases/latest) and
-substitute it above.
-
 After install the `spi` binary is on PATH; no `uv run` prefix.
 
-To upgrade in place to the newest release:
+### Install a specific version (reproducibility)
+
+To pin an exact version — for CI, reproducible environments, or bug reports —
+install its wheel URL directly (same command on every platform):
+
+```bash
+uv tool install https://github.com/Azure/osdu-spi-stack/releases/download/v0.1.0/spi-0.1.0-py3-none-any.whl
+```
+
+Copy the wheel URL for any version from that release's page under
+[Releases](https://github.com/Azure/osdu-spi-stack/releases).
+
+### Upgrade
+
+After the first install, `spi` upgrades itself — no URL needed, same on every
+platform:
 
 ```bash
 spi update           # check for a newer version and install it
@@ -50,7 +80,7 @@ spi update --force   # reinstall even if already on the latest version
 ```
 
 > **Note:** `uv tool install git+https://github.com/...@vX.Y.Z` also works,
-> but the wheel-URL form above is preferred because it preserves the
+> but the wheel-URL forms above are preferred because they preserve the
 > tag-derived version in `spi --version` reliably.
 
 ## Quick Start
