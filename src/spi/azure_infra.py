@@ -65,6 +65,10 @@ INFRA_MAIN_BICEP = INFRA_ROOT / "main.bicep"
 INFRA_AKS_BICEP = INFRA_ROOT / "aks.bicep"
 INFRA_AKS_BASE_BICEP = INFRA_ROOT / "aks-base.bicep"
 
+# System pool VM size. Kept here rather than only in Bicep so the CLI can
+# resolve the zones this exact size can actually use in the target region.
+SYSTEM_POOL_VM_SIZE = "Standard_D4lds_v5"
+
 
 # ─────────────────────────────────────────────────────────────
 # Resource-name helpers (preserve the existing naming contract).
@@ -584,11 +588,14 @@ def create_aks(config: Config, dry_run: bool = False) -> Dict[str, Any]:
     if aks_outputs:
         display_result(f"AKS cluster {config.cluster_name} already exists")
     else:
+        zones = _resolve_system_pool_zones(config)
         aks_outputs = run_bicep_deployment(
             template_path=str(template_path),
             parameters={
                 "clusterName": config.cluster_name,
                 "location": config.location,
+                "systemPoolVmSize": SYSTEM_POOL_VM_SIZE,
+                "availabilityZones": zones,
             },
             resource_group=config.resource_group,
             deployment_name=f"spi-aks-{config.env or 'base'}",
@@ -693,6 +700,73 @@ def _pin_kubeconfig_tenant() -> None:
         description="Pin tenant in kubeconfig exec environment",
         display=False,
     )
+
+
+def _resolve_system_pool_zones(config: Config) -> list:
+    """Return the availability zones the system pool can actually use.
+
+    Zone availability is per subscription, not just per region: a size can be
+    published in three zones while one of them is restricted for this
+    subscription. Passing a restricted zone fails with
+    AvailabilityZoneNotSupported, and the Automatic SKU separately rejects a
+    reduced zone set, so the usable set has to be resolved before deploying.
+    """
+    result = run_command(
+        [
+            "az",
+            "vm",
+            "list-skus",
+            "--location",
+            config.location,
+            "--size",
+            SYSTEM_POOL_VM_SIZE,
+            "--resource-type",
+            "virtualMachines",
+            "--output",
+            "json",
+        ],
+        description=f"Resolve system pool zones in {config.location}",
+        display=False,
+        check=False,
+    )
+    published: list = []
+    restricted: set = set()
+    if result.returncode == 0:
+        for sku in json.loads(result.stdout or "[]"):
+            if sku.get("name") != SYSTEM_POOL_VM_SIZE:
+                continue
+            for info in sku.get("locationInfo") or []:
+                published.extend(info.get("zones") or [])
+            for restriction in sku.get("restrictions") or []:
+                if restriction.get("type") == "Zone":
+                    restricted.update((restriction.get("restrictionInfo") or {}).get("zones") or [])
+
+    if not published:
+        raise RuntimeError(
+            f"{SYSTEM_POOL_VM_SIZE} is not offered in {config.location}. "
+            "Choose a region that offers it."
+        )
+
+    usable = sorted(set(published) - restricted)
+    if not usable:
+        raise RuntimeError(
+            f"{SYSTEM_POOL_VM_SIZE} has no usable availability zone in {config.location} "
+            "for this subscription."
+        )
+
+    # Automatic validates the system pool against the region's recommended zone
+    # set and refuses a reduced list, so a restricted zone is fatal there while
+    # Base can simply avoid it.
+    if config.aks_mode == AksMode.AUTOMATIC and len(usable) < len(set(published)):
+        raise RuntimeError(
+            f"AKS Automatic requires every availability zone in {config.location}, but "
+            f"zone(s) {', '.join(sorted(restricted))} are restricted for "
+            f"{SYSTEM_POOL_VM_SIZE} in this subscription. Deploy Automatic in another "
+            "region, or use --aks-mode base here."
+        )
+
+    console.print(f"  [info]System pool availability zones: {', '.join(usable)}[/info]")
+    return usable
 
 
 def _existing_aks_outputs(config: Config) -> "Dict[str, Any] | None":

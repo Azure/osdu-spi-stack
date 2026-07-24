@@ -151,14 +151,25 @@ def test_aks_mode_classifier_requires_nap_for_base():
 )
 def test_create_aks_dry_run_selects_mode_template(mode, template_name):
     cfg = Config.from_env("dev1", aks_mode=mode)
-    with mock.patch.object(
-        azure_infra,
-        "run_bicep_deployment",
-        return_value={},
-    ) as deploy:
+    with (
+        mock.patch.object(
+            azure_infra,
+            "_resolve_system_pool_zones",
+            return_value=["1", "2", "3"],
+        ),
+        mock.patch.object(
+            azure_infra,
+            "run_bicep_deployment",
+            return_value={},
+        ) as deploy,
+    ):
         assert azure_infra.create_aks(cfg, dry_run=True) == {}
 
     assert deploy.call_args.kwargs["template_path"].endswith(template_name)
+    assert deploy.call_args.kwargs["parameters"]["availabilityZones"] == ["1", "2", "3"]
+    assert (
+        deploy.call_args.kwargs["parameters"]["systemPoolVmSize"] == azure_infra.SYSTEM_POOL_VM_SIZE
+    )
 
 
 def test_create_resource_group_persists_aks_mode_tag():

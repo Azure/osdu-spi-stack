@@ -41,16 +41,12 @@ param kubernetesVersion string = '1.34'
 @description('VM size for the system pool. D4lds_v5 has a 150 GiB cache that fits the 128 GiB default ephemeral OS disk.')
 param systemPoolVmSize string = 'Standard_D4lds_v5'
 
-@description('Availability zones for the system node pool. Empty selects a region-aware default. eastus2 excludes zone 2, which lacks zonal capacity for the system VM SKU; other regions use 1, 2, 3.')
-param availabilityZones array = []
-
-// Region-aware zone default. eastus2 does not offer zone 2 for the Dlds_v5
-// system SKU, so a hardcoded ['1','2','3'] fails there with a SKU/zone
-// mismatch; callers can still override via the availabilityZones parameter.
-var zonesByRegion = {
-  eastus2: ['1', '3']
-}
-var systemPoolZones = !empty(availabilityZones) ? availabilityZones : (contains(zonesByRegion, location) ? zonesByRegion[location] : ['1', '2', '3'])
+@description('Availability zones for the system node pool. The CLI resolves the zones this VM size can actually use in the target region, because zone restrictions are per subscription.')
+param availabilityZones array = [
+  '1'
+  '2'
+  '3'
+]
 
 // ──────────────────────────────────────────────
 // Private network (BYO VNet)
@@ -253,7 +249,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
         vmSize: systemPoolVmSize
         osDiskType: 'Ephemeral'
         osType: 'Linux'
-        availabilityZones: systemPoolZones
+        availabilityZones: availabilityZones
         vnetSubnetID: vnetModule.outputs.subnetId
       }
     ]
