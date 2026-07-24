@@ -114,24 +114,36 @@ def _cosmos_gremlin_name(env: str, suffix: str = "") -> str:
 
 def create_resource_group(config: Config):
     console.print("\n[bold]Creating resource group...[/bold]")
-    # `az group create` is idempotent. The `--tags` flag REPLACES the entire
-    # tag set, so we only pass it the first time (when no suffix tag exists
-    # yet — read_rg_suffix_tag returns None). Otherwise the tag has already
-    # been written, and we re-run create-without-tags to leave it intact.
-    cmd = [
-        "az",
-        "group",
-        "create",
-        "--name",
-        config.resource_group,
-        "--location",
-        config.location,
-        "--output",
-        "json",
-    ]
-    if read_rg_suffix_tag(config.resource_group) is None:
-        cmd.extend(["--tags", f"{RG_SUFFIX_TAG}={config.name_suffix}"])
-    run_command(cmd, description=f"Create resource group: {config.resource_group}")
+    # `az group create` on an EXISTING group is an ARM PUT: omitting --tags
+    # CLEARS the tag set (this silently dropped the spi-name-suffix tag and
+    # made every resumed run mint a fresh suffix). Never re-PUT an existing
+    # group — only create when absent, with the tag included.
+    exists = run_command(
+        ["az", "group", "exists", "--name", config.resource_group],
+        description=f"Check resource group exists: {config.resource_group}",
+        display=False,
+    ).stdout.strip().lower() == "true"
+    if exists:
+        if read_rg_suffix_tag(config.resource_group) is None:
+            write_rg_suffix_tag(config.resource_group, config.name_suffix)
+        display_result(f"Resource group {config.resource_group} ready")
+        return
+    run_command(
+        [
+            "az",
+            "group",
+            "create",
+            "--name",
+            config.resource_group,
+            "--location",
+            config.location,
+            "--tags",
+            f"{RG_SUFFIX_TAG}={config.name_suffix}",
+            "--output",
+            "json",
+        ],
+        description=f"Create resource group: {config.resource_group}",
+    )
     display_result(f"Resource group {config.resource_group} ready")
 
 
