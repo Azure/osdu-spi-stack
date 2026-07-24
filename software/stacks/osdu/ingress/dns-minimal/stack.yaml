@@ -1,10 +1,12 @@
-# SPI Stack - Ingress profile: DNS (custom domain)
+# SPI Stack - Ingress profile: DNS, minimal variant
 #
-# Uses an existing Azure DNS zone in the current subscription.
-# ExternalDNS syncs A records from HTTPRoute hostnames. cert-manager
-# issues a Let's Encrypt cert per subdomain via HTTP-01 on the HTTP:80
-# listener. gateway-tls-multi-host adds three HTTPS:443 listeners,
-# one per hostname (osdu / kibana / airflow).
+# Identical to ingress/dns/ minus spi-osdu-routes. The minimal stack
+# profile deploys no OSDU services, so a Kustomization that dependsOn
+# spi-osdu-services would stall on DependencyNotReady forever.
+#
+# gateway-tls-multi-host still provisions all three HTTPS:443 listeners
+# (osdu / kibana / airflow); the osdu listener simply has no route
+# attached until the profile is switched to core.
 #
 # Required variables in spi-ingress-config ConfigMap (osdu-flux):
 #   ACME_EMAIL, TXT_OWNER_ID, DNS_ZONE, DNS_ZONE_RG, AZURE_TENANT_ID,
@@ -110,9 +112,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# HTTPRoutes for the middleware UIs on their own subdomains. Split from
-# spi-osdu-routes so it carries no dependency on spi-osdu-services and
-# stays reconcilable under the minimal profile.
+# HTTPRoutes for the middleware UIs on their own subdomains.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -131,33 +131,6 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/stacks/osdu/routes/multi-host/middleware
-  prune: true
-  wait: true
-  timeout: 5m
-  postBuild:
-    substituteFrom:
-      - kind: ConfigMap
-        name: spi-ingress-config
-
----
-# HTTPRoutes for the OSDU APIs on the osdu subdomain.
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: spi-osdu-routes
-  namespace: osdu-flux
-  labels:
-    spi-stack.layer: "6"
-spec:
-  interval: 10m
-  dependsOn:
-    - name: spi-osdu-services
-    - name: spi-gateway-tls
-    - name: spi-external-dns
-  sourceRef:
-    kind: GitRepository
-    name: osdu-spi-stack-system
-  path: ./software/stacks/osdu/routes/multi-host/osdu
   prune: true
   wait: true
   timeout: 5m

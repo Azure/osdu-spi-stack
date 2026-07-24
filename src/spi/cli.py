@@ -235,7 +235,11 @@ def check(
 
 @app.command()
 def up(
-    profile: Optional[Profile] = typer.Option(None, help="Deployment profile (default: core)"),
+    profile: Optional[Profile] = typer.Option(
+        None,
+        help="Deployment profile: core (default; middleware + OSDU services) or "
+        "minimal (middleware only, no OSDU services).",
+    ),
     env: str = typer.Option(..., "--env", help="Environment name (required, e.g. dev1, test)"),
     repo_url: str = typer.Option(
         "https://github.com/Azure/osdu-spi-stack.git",

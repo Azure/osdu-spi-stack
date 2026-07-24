@@ -100,6 +100,9 @@ spi up --env dev1 --partition opendes --partition tenant1
 # Pick an ingress mode (default: azure)
 spi up --env dev1 --ingress-mode dns --dns-zone example.com
 spi up --env dev1 --ingress-mode ip       # debug / smoke
+
+# Middleware only, no OSDU services
+spi up --env dev1 --profile minimal
 ```
 
 ### After Deploy
@@ -180,6 +183,17 @@ Three namespaces, deployed in dependency order via a 7-layer Kustomization stack
 | **platform** | Middleware | Elasticsearch, Redis (TLS), PostgreSQL (Airflow), Airflow, Istio Gateway |
 | **osdu** | Services | partition, entitlements, legal, schema, storage, search, indexer, file, workflow + 3 reference services |
 
+### Profiles
+
+`--profile` selects how much of that stack Flux reconciles:
+
+| Profile | Deploys |
+|---------|---------|
+| `core` (default) | Everything above. |
+| `minimal` | `foundation` and `platform` only — operators, cert-manager, trust-manager, Gateway, Elasticsearch, Redis, PostgreSQL, Airflow. No OSDU services. |
+
+Use `minimal` when you are working on the middleware itself and the OSDU services would only add deploy time. The middleware layers are identical between profiles, so what you validate on `minimal` holds on `core`.
+
 ### Azure PaaS Resources
 
 | Resource | Purpose |
@@ -220,7 +234,7 @@ Commands:
   reconcile  Force Flux to re-sync from Git               [--suspend] [--resume] [--refresh-images]
 ```
 
-Use `--dry-run` on `spi up` to preview the Bicep changes (`az deployment group what-if`) before any Azure resources are created beyond the resource group. `--ingress-mode` defaults to `azure`; the other supported modes are `dns` (per-service hostnames on an owned Azure DNS zone) and `ip` (bare IP, debug only). `--refresh-images` re-resolves the OSDU community image tags and reconciles the service Kustomizations.
+Use `--dry-run` on `spi up` to preview the Bicep changes (`az deployment group what-if`) before any Azure resources are created beyond the resource group. `--profile` defaults to `core`; `minimal` deploys middleware only. `--ingress-mode` defaults to `azure`; the other supported modes are `dns` (per-service hostnames on an owned Azure DNS zone) and `ip` (bare IP, debug only). `--refresh-images` re-resolves the OSDU community image tags and reconciles the service Kustomizations.
 
 
 ## Documentation

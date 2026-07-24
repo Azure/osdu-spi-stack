@@ -33,7 +33,7 @@ from .bootstrap import (
     ensure_namespaces,
     install_gateway_api_crds,
 )
-from .config import Config, IngressMode
+from .config import Config, IngressMode, Profile
 from .console import console, display_result, display_yaml
 from .images import (
     DEFAULT_IMAGE_BRANCH,
@@ -321,7 +321,9 @@ def deploy_azure(
     caller can inspect what would change without actually provisioning.
     """
     image_lock_yaml = ""
-    if refresh_images and not dry_run:
+    # The minimal profile deploys no OSDU services, so nothing consumes the
+    # lock ConfigMap; skip the community-registry roundtrip entirely.
+    if refresh_images and not dry_run and config.profile is not Profile.MINIMAL:
         # Resolve before provisioning so registry/API failures stop quickly and
         # never leave a partially configured cluster with a mixed image set.
         image_lock_yaml = _resolve_image_lock(image_branch)

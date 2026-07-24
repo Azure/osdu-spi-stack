@@ -47,10 +47,10 @@ The 60-minute provision timeout gives ~15 minutes of headroom over the worst obs
 # Default profile, run id as env suffix
 gh workflow run smoke.yml --ref main
 
-# Custom suffix + full profile
+# Custom suffix + middleware-only profile
 gh workflow run smoke.yml --ref main \
   -f env_suffix=mybranch \
-  -f profile=full
+  -f profile=minimal
 
 # Tail the run
 gh run watch <run-id>

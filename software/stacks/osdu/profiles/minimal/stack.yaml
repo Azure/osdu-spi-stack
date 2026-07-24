@@ -1,0 +1,299 @@
+# SPI Stack - Minimal Profile
+# Middleware only. Identical to the core profile through Layer 4b, then
+# stops: no OSDU services, no partition/entitlements bootstrap, no schema
+# load, no reference services.
+#
+# Layer 0a: Namespaces
+# Layer 0b: Karpenter NodePools (platform + osdu)
+# Layer 1: Operators (ECK, CNPG) + cert-manager + trust-manager + Gateway
+# Layer 2: Middleware (Elasticsearch, Redis, PostgreSQL) -- on platform nodes
+# Layer 3: Airflow (depends on PostgreSQL) -- on platform nodes
+# Layer 4a: OSDU configuration (ConfigMap created by CLI)
+# Layer 4b: Bootstrap (trust-manager Bundles for CA distribution + Redis Istio DR)
+#
+# Use this profile to develop against the middleware substrate itself --
+# authoring an HTTPRoute, debugging a Helm chart, validating the
+# trust-manager CA distribution -- without the OSDU services adding noise.
+# Pair it with any --ingress-mode; the CLI selects the matching
+# software/stacks/osdu/ingress/<mode>-minimal tree (ADR-012).
+
+---
+# Layer 0a: Namespaces
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-namespaces
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "0"
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/namespaces
+  prune: false
+  wait: true
+  timeout: 5m
+
+---
+# Layer 0b: Karpenter NodePools
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-nodepools
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "0"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/nodepools
+  prune: true
+  wait: true
+  timeout: 5m
+
+---
+# Layer 1a: cert-manager
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-cert-manager
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/cert-manager
+  prune: true
+  wait: true
+  timeout: 10m
+
+---
+# Layer 1a2: trust-manager (cross-namespace CA bundle distribution)
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-trust-manager
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-cert-manager
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/trust-manager
+  prune: true
+  wait: true
+  timeout: 10m
+
+---
+# Layer 1b: ECK operator
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-eck-operator
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/operators/eck
+  prune: true
+  wait: true
+  timeout: 10m
+
+---
+# Layer 1c: CNPG operator
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-cnpg-operator
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/operators/cnpg
+  prune: true
+  wait: true
+  timeout: 10m
+
+---
+# Layer 1d: Gateway
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-gateway
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/gateway
+  prune: true
+  wait: true
+  timeout: 5m
+
+---
+# Layer 2a: Elasticsearch
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-elasticsearch
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "2"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-eck-operator
+    - name: spi-nodepools
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/elasticsearch
+  prune: true
+  wait: true
+  timeout: 15m
+
+---
+# Layer 2b: Redis
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-redis
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "2"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-cert-manager
+    - name: spi-nodepools
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/redis
+  prune: true
+  wait: true
+  timeout: 10m
+
+---
+# Layer 2c: PostgreSQL (Airflow metadata)
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-postgresql
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "2"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-cnpg-operator
+    - name: spi-nodepools
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/postgres
+  prune: true
+  wait: true
+  timeout: 10m
+
+---
+# Layer 3: Airflow
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-airflow
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "3"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-postgresql
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/airflow
+  prune: true
+  wait: true
+  timeout: 15m
+
+---
+# Layer 4: OSDU configuration placeholder
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-osdu-config
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "4"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/stacks/osdu/secrets
+  prune: false
+  wait: true
+  timeout: 5m
+
+---
+# Layer 4b: Bootstrap (trust-manager Bundles + Redis Istio DestinationRule)
+# Declares two trust-manager Bundle CRs that mirror the Redis and
+# Elasticsearch TLS CAs from platform -> osdu, plus the Redis mTLS-disable
+# DestinationRule. Depends on middleware being Ready so the source secrets
+# exist, and on trust-manager so the Bundle CRD is registered.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-bootstrap
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "4"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-trust-manager
+    - name: spi-elasticsearch
+    - name: spi-redis
+    - name: spi-osdu-config
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/stacks/osdu/bootstrap
+  prune: true
+  wait: true
+  timeout: 10m

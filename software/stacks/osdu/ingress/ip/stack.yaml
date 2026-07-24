@@ -18,7 +18,7 @@ spec:
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
-  path: ./software/stacks/osdu/routes/ip-only
+  path: ./software/stacks/osdu/routes/ip-only/osdu
   prune: true
   wait: true
   timeout: 5m

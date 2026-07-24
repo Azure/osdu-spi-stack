@@ -1,0 +1,10 @@
+# SPI Stack - Ingress profile: IP, minimal variant
+#
+# Deliberately empty. The ip ingress mode attaches only OSDU API
+# HTTPRoutes (no cert issuers, no Kibana, no TLS overlay, no middleware
+# routes), and the minimal stack profile deploys no OSDU services --
+# so there is nothing left to reconcile. Reach middleware UIs with
+# `kubectl port-forward` on this combination.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []
