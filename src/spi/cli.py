@@ -688,16 +688,20 @@ def up(
     # derived resource names are stable across `spi up` re-runs and don't
     # collide with deployments in other subscriptions.
     name_suffix = _resolve_name_suffix(env, for_up=True)
-    resolved_aks_mode = _resolve_aks_mode(
-        env,
-        requested=aks_mode,
-        for_up=not dry_run,
-    )
-    resolved_application_insights = _resolve_application_insights(
-        env,
-        requested=application_insights,
-        for_up=not dry_run,
-    )
+    try:
+        resolved_aks_mode = _resolve_aks_mode(
+            env,
+            requested=aks_mode,
+            for_up=not dry_run,
+        )
+        resolved_application_insights = _resolve_application_insights(
+            env,
+            requested=application_insights,
+            for_up=not dry_run,
+        )
+    except RuntimeError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=2)
     try:
         resolved_creator_user_ids = _resolve_creator_user_ids(seed_creator, creator_user_id)
         (
