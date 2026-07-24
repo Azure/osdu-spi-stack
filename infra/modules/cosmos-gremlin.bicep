@@ -20,6 +20,9 @@ param location string
 @description('Key Vault name that receives the primary key. Empty string skips the secret write.')
 param keyVaultName string = ''
 
+@description('Principal ID (object ID) of the OSDU managed identity that accesses Gremlin data. Empty string skips the data-plane role assignment.')
+param principalId string = ''
+
 resource gremlinAccount 'Microsoft.DocumentDB/databaseAccounts@2023-11-15' = {
   name: name
   location: location
@@ -88,6 +91,24 @@ resource primaryKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!
   parent: keyVault
   properties: {
     value: gremlinAccount.listKeys().primaryMasterKey
+  }
+}
+
+// Gremlin data-plane role for the OSDU managed identity. The target tenant's
+// Cosmos modify policy flips disableLocalAuth at creation time, making the
+// primary key above unusable there; this role is the Entra-token path the
+// MSI-aware entitlements image uses instead. Additive and harmless where
+// key auth still works. Like sqlRoleAssignments, this is Cosmos-native RBAC
+// (not `az role assignment`) with ~5-15 minute propagation.
+var gremlinDataContributorRoleId = '00000000-0000-0000-0000-000000000004'
+
+resource osduIdentityGremlinDataContributor 'Microsoft.DocumentDB/databaseAccounts/gremlinRoleAssignments@2024-12-01-preview' = if (!empty(principalId)) {
+  parent: gremlinAccount
+  name: guid(gremlinAccount.id, principalId, gremlinDataContributorRoleId)
+  properties: {
+    roleDefinitionId: '${gremlinAccount.id}/gremlinRoleDefinitions/${gremlinDataContributorRoleId}'
+    principalId: principalId
+    scope: gremlinAccount.id
   }
 }
 

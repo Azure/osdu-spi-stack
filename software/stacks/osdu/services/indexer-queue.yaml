@@ -2,7 +2,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: indexer-queue
-  namespace: flux-system
+  namespace: osdu-flux
 spec:
   targetNamespace: osdu
   dependsOn:
@@ -27,7 +27,7 @@ spec:
       repository: ${INDEXER_QUEUE_IMAGE_REPOSITORY}
       tag: "${INDEXER_QUEUE_IMAGE_TAG}"
     nodeSelector:
-      agentpool: osdu
+      spi-pool: osdu
     tolerations:
       - key: workload
         operator: Equal

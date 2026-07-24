@@ -9,8 +9,18 @@
 @description('Principal ID (object ID) of the managed identity.')
 param principalId string
 
-@description('Principal ID (object ID) of the deployer service principal. Empty string skips deployer-side role assignments. Optional because local-dev users typically have Owner on the RG and do not need an explicit grant.')
+@description('Principal ID (object ID) of the deployer. Empty string skips deployer-side role assignments. Optional because local-dev users typically have Owner on the RG and do not need an explicit grant.')
 param deployerPrincipalId string = ''
+
+@description('Principal type of deployerPrincipalId. Human deployers must pass User or the assignment fails principal validation.')
+@allowed([
+  'User'
+  'ServicePrincipal'
+])
+param deployerPrincipalType string = 'ServicePrincipal'
+
+@description('Object ID of the AKS kubelet (node) identity. Empty string skips the kubelet AcrPull assignment.')
+param kubeletIdentityObjectId string = ''
 
 @description('Key Vault name (existing, created by keyvault.bicep).')
 param keyVaultName string
@@ -87,7 +97,7 @@ resource deployerKeyVaultSecretsOfficerAssignment 'Microsoft.Authorization/roleA
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.keyVaultSecretsOfficer)
     principalId: deployerPrincipalId
-    principalType: 'ServicePrincipal'
+    principalType: deployerPrincipalType
   }
 }
 
@@ -97,6 +107,20 @@ resource acrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.acrPull)
     principalId: principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// The AKS kubelet (node) identity is what actually PULLS container images
+// for pods; the workload identity above covers app-level ACR access only.
+// Without this, pods referencing images in the SPI ACR (e.g. custom OSDU
+// images swapped in via the osdu-image-lock ConfigMap) ImagePullBackOff.
+resource kubeletAcrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(kubeletIdentityObjectId)) {
+  scope: acr
+  name: guid(acr.id, kubeletIdentityObjectId, roleIds.acrPull)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.acrPull)
+    principalId: kubeletIdentityObjectId
     principalType: 'ServicePrincipal'
   }
 }
