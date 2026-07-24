@@ -34,6 +34,9 @@ param keyVaultName string = ''
 @description('Principal ID (object ID) of the OSDU managed identity that accesses Cosmos SQL data. Empty string skips the SQL data-plane role assignment.')
 param principalId string = ''
 
+@description('Disable Service Bus local (SAS) auth. Required true in tenants whose policy denies local-auth namespaces (e.g. Microsoft corp). Set false in tenants without that policy if running the community indexer-queue image, which still needs the SAS connection path (ADR-005).')
+param serviceBusDisableLocalAuth bool = true
+
 // ──────────────────────────────────────────────────────────
 // Data definitions (ported from azure_infra.py)
 // ──────────────────────────────────────────────────────────
@@ -237,9 +240,10 @@ resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview
   // Tenant policy (ServiceBusCreationDeniedWhenLocalAuthIsEnabledOrMinTlsIsLow)
   // denies namespace creation unless local auth is off and TLS >= 1.2.
   // Runtime access uses Workload Identity via the Data Sender/Receiver roles
-  // in rbac.bicep.
+  // in rbac.bicep. disableLocalAuth is parameterized so tenants without the
+  // policy can keep the SAS path the community indexer-queue image requires.
   properties: {
-    disableLocalAuth: true
+    disableLocalAuth: serviceBusDisableLocalAuth
     minimumTlsVersion: '1.2'
   }
 }

@@ -102,6 +102,9 @@ param deployerPrincipalType string = 'ServicePrincipal'
 @description('Object ID of the AKS kubelet (node) identity. Empty string skips the kubelet AcrPull grant. Set by the CLI from the AKS deployment output so nodes can pull custom images from the ACR.')
 param kubeletIdentityObjectId string = ''
 
+@description('Disable Service Bus local (SAS) auth on partition namespaces. Required true where tenant policy denies local-auth namespaces; set false elsewhere if running the community indexer-queue image (needs SAS, ADR-005).')
+param serviceBusDisableLocalAuth bool = true
+
 @description('Opt-in: deploy workspace-based Application Insights + Log Analytics. Off by default; adds cost and deploy time developers usually do not need.')
 param enableApplicationInsights bool = false
 
@@ -176,6 +179,7 @@ module partitionModules 'modules/partition.bicep' = [for (p, i) in dataPartition
     isPrimaryPartition: p == primaryPartition
     keyVaultName: keyVaultName
     principalId: identityModule.outputs.principalId
+    serviceBusDisableLocalAuth: serviceBusDisableLocalAuth
   }
   dependsOn: [
     keyvaultModule
