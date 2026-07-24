@@ -49,16 +49,16 @@ Create an ADR for any decision that could plausibly have gone a different way an
 | [004](004-local-helm-chart-safeguards.md) | Local Helm Chart for Safeguards Compliance | Accepted |
 | [005](005-workload-identity.md) | Workload Identity for Azure PaaS Access | Accepted; data-plane boundary revised by [035](035-entra-first-data-plane.md) |
 | [006](006-three-namespace-model.md) | Three-Namespace Model | Accepted |
-| [007](007-layered-kustomization-ordering.md) | Layered Flux Kustomization Ordering | Accepted; Gateway ownership revised by [036](036-single-gateway-ownership.md) |
+| [007](007-layered-kustomization-ordering.md) | Layered Flux Kustomization Ordering | Accepted |
 | [008](008-bicep-for-azure-provisioning.md) | Bicep for Azure Provisioning (AVM for AKS) | Accepted |
 | [009](009-flux-cd-for-gitops.md) | Flux CD + AKS GitOps Extension | Accepted |
 | [010](010-keyvault-secret-management.md) | Key Vault + ConfigMap Secret Model | Accepted |
 | [011](011-trust-manager-ca-distribution.md) | Cross-Namespace CA Distribution via trust-manager | Accepted |
-| [012](012-ingress-profiles.md) | Three Ingress Profiles (azure, dns, ip) | Accepted; Gateway ownership revised by [036](036-single-gateway-ownership.md) |
+| [012](012-ingress-profiles.md) | Three Ingress Profiles (azure, dns, ip) | Accepted |
 | [013](013-schema-load-flux-job.md) | Schema Load via a Flux-Managed Job | Accepted |
 | [014](014-suspend-gitops-after-deploy.md) | Suspend GitOps Reconciliation After Deploy | Accepted |
-| [015](015-partition-entitlements-bootstrap.md) | Partition + Entitlements Bootstrap via a Flux Helm Chart | Accepted; membership seeding extended by [037](037-per-identity-authorization.md) |
-| [016](016-istio-jwt-projection.md) | Istio JWT Projection for Azure-Provider OSDU Services | Accepted; projection revised by [037](037-per-identity-authorization.md) |
+| [015](015-partition-entitlements-bootstrap.md) | Partition + Entitlements Bootstrap via a Flux Helm Chart | Accepted; membership seeding extended by [036](036-per-identity-authorization.md) |
+| [016](016-istio-jwt-projection.md) | Istio JWT Projection for Azure-Provider OSDU Services | Accepted; projection revised by [036](036-per-identity-authorization.md) |
 | [017](017-osdu-image-lock.md) | Per-Deploy Image Lock via ConfigMap + Flux Substitution | Accepted |
 | [018](018-karpenter-nodepool-authoring.md) | Karpenter NodePool Authoring as Workload Manifests | Accepted |
 | [019](019-kubernetes-136-minimum.md) | Kubernetes 1.36 Minimum for AKS Automatic | Accepted |
@@ -78,5 +78,4 @@ Create an ADR for any decision that could plausibly have gone a different way an
 | [033](033-selectable-aks-deployment-modes.md) | Selectable AKS Deployment Modes | Accepted |
 | [034](034-runtime-resolved-istio-revision.md) | Runtime-Resolved Managed Istio Revision | Accepted |
 | [035](035-entra-first-data-plane.md) | Entra-First Data-Plane Authentication Boundary | Accepted |
-| [036](036-single-gateway-ownership.md) | Single Gateway Ownership by the Ingress Profile | Accepted |
-| [037](037-per-identity-authorization.md) | Per-Identity Authorization with Explicit Membership Seeding | Accepted |
+| [036](036-per-identity-authorization.md) | Per-Identity Authorization with Explicit Membership Seeding | Accepted |

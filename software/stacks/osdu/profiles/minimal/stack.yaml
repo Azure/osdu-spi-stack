@@ -35,6 +35,10 @@ spec:
   prune: false
   wait: true
   timeout: 5m
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-ingress-config
 
 ---
 # Layer 0b: Karpenter NodePools

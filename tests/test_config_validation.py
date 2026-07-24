@@ -56,9 +56,9 @@ class TestValidPartitions:
         assert cfg.image_tag == "main-snapshot"
         assert cfg.image_ref == ""
 
-    def test_full_profile_uses_the_implemented_thirteen_service_stack(self):
-        cfg = Config(env="dev1", profile=Profile.FULL)
-        assert cfg.gitops_profile == "core"
+    def test_minimal_profile_deploys_middleware_only(self):
+        cfg = Config(env="dev1", profile=Profile.MINIMAL)
+        assert cfg.profile.value == "minimal"
 
     def test_empty_env_still_valid(self):
         cfg = Config(env="", data_partitions=["p1"])

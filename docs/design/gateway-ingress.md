@@ -130,7 +130,6 @@ Same drill, plus one: **ExternalDNS wrote the A record.** `kubectl logs deploy/e
 - `software/stacks/osdu/ingress/<mode>-minimal/` -- the same trees minus `spi-osdu-routes`, used by the `minimal` stack profile (ADR-024)
 - `software/stacks/osdu/routes/<tree>/middleware/` -- Kibana + Airflow HTTPRoutes and ReferenceGrants
 - `software/stacks/osdu/routes/<tree>/osdu/` -- OSDU API HTTPRoutes
-- `software/components/gateway/` -- the shared Gateway base rendered by exactly one ingress profile (ADR-036)
-- `infra/modules/external-dns-identity.bicep`, `infra/modules/external-dns-role.bicep` -- the conditional UAMI + role
+- `software/components/gateway/` -- the shared Gateway base rendered by exactly one ingress profile`r`n- `infra/modules/external-dns-identity.bicep`, `infra/modules/external-dns-role.bicep` -- the conditional UAMI + role
 - `src/spi/ingress.py` -- CLI logic for `--ingress-mode`
 - `infra/flux.bicep` -- carries `ingressMode` as a Bicep parameter

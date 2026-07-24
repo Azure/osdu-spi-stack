@@ -142,6 +142,27 @@ spec:
   timeout: 10m
 
 ---
+# Layer 1d: Gateway
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-gateway
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/gateway
+  prune: true
+  wait: true
+  timeout: 5m
+
+---
 # Layer 2a: Elasticsearch
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization

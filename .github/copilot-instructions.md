@@ -100,9 +100,8 @@ uv run spi reconcile --resume                # Unfreeze GitOps
   wired to all services in both modes (ADR-023, ADR-030)
 - Record-ingestion data plane enabled: system-cosmos secrets, per-partition record
   blob container, Elasticsearch TLS (ADR-031)
-- The ingress profile is the only Gateway owner (ADR-036)
 - Identity is projected per caller; access requires explicit Entitlements
-  membership seeding (ADR-037)
+  membership seeding (ADR-036)
 - Managed Istio revision is resolved at deploy time, never hardcoded (ADR-034)
 - Service images default to the public GHCR SPI fleet, pinned by digest (ADR-032)
 

@@ -293,7 +293,7 @@ def _deploy_flux_config(config: Config, activate_gitops: bool) -> None:
             "clusterName": config.cluster_name,
             "repoUrl": config.repo_url,
             "repoBranch": config.repo_branch,
-            "profile": config.gitops_profile,
+            "profile": config.profile.value,
             "ingressMode": config.ingress_mode.value,
             "activateGitOps": activate_gitops,
             "gitRepositoryLocalAuthRef": (

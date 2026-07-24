@@ -168,11 +168,6 @@ class Config(BaseModel):
         """First data partition hosts the system database."""
         return self.data_partitions[0]
 
-    @property
-    def gitops_profile(self) -> str:
-        """Repository profile path; full currently aliases the 13-service core stack."""
-        return Profile.CORE.value if self.profile == Profile.FULL else self.profile.value
-
     @model_validator(mode="after")
     def _validate_data_partitions(self) -> "Config":
         if self.image_source == ImageSource.GHCR:

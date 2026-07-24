@@ -2,9 +2,9 @@
 #
 # Uses an existing Azure DNS zone in the current subscription.
 # ExternalDNS syncs A records from HTTPRoute hostnames. cert-manager
-# issues a Let's Encrypt cert per subdomain via HTTP-01. This profile is
-# the sole owner of spi-gateway and declares HTTP:80 plus three HTTPS:443
-# listeners, one per hostname (osdu / kibana / airflow).
+# issues a Let's Encrypt cert per subdomain via HTTP-01 on the HTTP:80
+# listener. gateway-tls-multi-host adds three HTTPS:443 listeners,
+# one per hostname (osdu / kibana / airflow).
 #
 # Required variables in spi-ingress-config ConfigMap (osdu-flux):
 #   ACME_EMAIL, TXT_OWNER_ID, DNS_ZONE, DNS_ZONE_RG, AZURE_TENANT_ID,
@@ -24,6 +24,7 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-cert-manager
+    - name: spi-gateway
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
@@ -84,11 +85,11 @@ spec:
   timeout: 10m
 
 ---
-# Single owner for the HTTP/HTTPS Gateway and its three certificates.
+# Three HTTPS:443 listeners, one per hostname, each with its own cert.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: spi-gateway
+  name: spi-gateway-tls
   namespace: osdu-flux
   labels:
     spi-stack.layer: "1"
