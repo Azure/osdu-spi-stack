@@ -2,7 +2,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: trust-manager
-  namespace: flux-system
+  namespace: osdu-flux
 spec:
   targetNamespace: foundation
   interval: 30m
@@ -13,7 +13,7 @@ spec:
       sourceRef:
         kind: HelmRepository
         name: jetstack
-        namespace: flux-system
+        namespace: osdu-flux
   # Upstream default-install fails AKS Safeguards because trust-manager's
   # defaultPackage init container is emitted without resource requests.
   # We don't use the default-CAs feature (our Bundles source from Secrets),

@@ -27,7 +27,7 @@ from typing import Iterable
 GITLAB_HOST = "https://community.opengroup.org"
 DEFAULT_IMAGE_BRANCH = "master"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
-IMAGE_LOCK_NAMESPACE = "flux-system"
+IMAGE_LOCK_NAMESPACE = "osdu-flux"
 
 _SHA_TAG_RE = re.compile(r"^[0-9a-f]{40}$")
 

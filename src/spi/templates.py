@@ -271,7 +271,7 @@ spec:
 def spi_init_values_configmap(partitions: list[str]) -> str:
     """ConfigMap consumed by the osdu-spi-init HelmRelease via valuesFrom.
 
-    Lives in flux-system (where the HelmRelease is reconciled) and carries the
+    Lives in osdu-flux (where the HelmRelease is reconciled) and carries the
     full Helm values YAML. The CLI writes it based on --partition flags so that
     enabling a new partition is a CLI argument change, not a git edit.
     """
@@ -281,7 +281,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: spi-init-values
-  namespace: flux-system
+  namespace: osdu-flux
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack
 data:

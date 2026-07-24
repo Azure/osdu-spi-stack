@@ -2,7 +2,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: airflow
-  namespace: flux-system
+  namespace: osdu-flux
 spec:
   # Pin release name so chart resources are named airflow-* (not
   # platform-airflow-*, which is the default Flux <targetNamespace>-<name>

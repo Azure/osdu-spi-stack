@@ -97,7 +97,7 @@ def _show_next_steps(config: Config):
     table.add_column("Action", style="cyan")
     table.add_column("Command", style="yellow")
 
-    table.add_row("Watch progress", "kubectl get kustomizations -n flux-system --watch")
+    table.add_row("Watch progress", "kubectl get kustomizations -n osdu-flux --watch")
     table.add_row("Check operators", "kubectl get pods -n foundation")
     table.add_row("Check middleware", "kubectl get pods -n platform")
     table.add_row("Check services", "kubectl get pods -n osdu")
@@ -448,7 +448,7 @@ def reconcile(
                 "gitrepository",
                 "osdu-spi-stack-system",
                 "-n",
-                "flux-system",
+                "osdu-flux",
                 "-p",
                 '{"spec":{"suspend":true}}',
                 "--type=merge",
@@ -468,7 +468,7 @@ def reconcile(
                 "gitrepository",
                 "osdu-spi-stack-system",
                 "-n",
-                "flux-system",
+                "osdu-flux",
                 "-p",
                 '{"spec":{"suspend":false}}',
                 "--type=merge",
@@ -517,7 +517,7 @@ def reconcile(
             "--overwrite",
             "gitrepository/osdu-spi-stack-system",
             "-n",
-            "flux-system",
+            "osdu-flux",
             f"reconcile.fluxcd.io/requestedAt={ts}",
         ],
         description="Trigger GitRepository reconciliation",
@@ -537,7 +537,7 @@ def reconcile(
                 "--overwrite",
                 f"kustomization/{name}",
                 "-n",
-                "flux-system",
+                "osdu-flux",
                 f"reconcile.fluxcd.io/requestedAt={ts}",
             ],
             description=f"Trigger Kustomization reconciliation ({name})",

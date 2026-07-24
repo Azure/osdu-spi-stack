@@ -64,7 +64,12 @@ resource gitopsConfig 'Microsoft.KubernetesConfiguration/fluxConfigurations@2024
   scope: aks
   properties: {
     scope: 'cluster'
-    namespace: 'flux-system'
+    // SPI-owned GitOps objects (GitRepository, Kustomizations) live in
+    // osdu-flux, NOT the extension's flux-system: AKS Automatic's
+    // protect-system-namespace-objects policy denies deployer writes to
+    // flux-system, so the CLI seeds ConfigMaps/secrets into osdu-flux and
+    // the Flux config must reconcile from the same namespace.
+    namespace: 'osdu-flux'
     sourceKind: 'GitRepository'
     gitRepository: {
       url: repoUrl

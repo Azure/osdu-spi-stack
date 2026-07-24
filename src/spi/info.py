@@ -67,7 +67,7 @@ def _secret_value(namespace: str, name: str, key: str) -> str:
 
 def _read_ingress_config() -> dict:
     """Read the CLI-written spi-ingress-config ConfigMap. Empty dict if missing."""
-    data = kubectl_json(["get", "configmap", "spi-ingress-config", "-n", "flux-system"])
+    data = kubectl_json(["get", "configmap", "spi-ingress-config", "-n", "osdu-flux"])
     if not data:
         return {}
     return data.get("data", {}) or {}
@@ -83,7 +83,7 @@ def _read_osdu_config() -> dict:
 
 def _read_flux_extension_values() -> dict:
     """Read Azure metadata injected by the AKS Flux extension."""
-    data = kubectl_json(["get", "configmap", "flux-extension-values", "-n", "flux-system"])
+    data = kubectl_json(["get", "configmap", "flux-extension-values", "-n", "osdu-flux"])
     if not data:
         return {}
     return data.get("data", {}) or {}
@@ -99,7 +99,7 @@ def _read_partitions_list() -> list:
     Returns ["opendes"] as a safe fallback when the ConfigMap is missing — a
     cluster pre-bootstrap or one deployed without the CLI still renders sanely.
     """
-    data = kubectl_json(["get", "configmap", "spi-init-values", "-n", "flux-system"])
+    data = kubectl_json(["get", "configmap", "spi-init-values", "-n", "osdu-flux"])
     if not data:
         return []
     values_yaml = (data.get("data") or {}).get("values.yaml", "")
