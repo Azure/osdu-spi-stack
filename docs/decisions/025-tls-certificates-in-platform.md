@@ -9,7 +9,7 @@ deciders: "SPI Stack maintainers"
 
 ## Context and Problem Statement
 
-The gateway TLS overlays declared their cert-manager `Certificate` resources in `aks-istio-ingress`, next to the Gateway whose listeners consume the secrets. On AKS Automatic that namespace is managed: the `aks-managed-protect-system-namespaces` ValidatingAdmissionPolicy denies writes to it from non-exempt identities. Flux's controllers are exempt (ADR-020), so the Certificate *applied* cleanly — but cert-manager's controller is not exempt, so its every status update was denied. No CertificateRequest, no ACME order, no secret; the HTTPS:443 listener never opened while every Kustomization reported Ready.
+The gateway TLS overlays declared their cert-manager `Certificate` resources in `aks-istio-ingress`, next to the Gateway whose listeners consume the secrets. On AKS Automatic that namespace is managed: the `aks-managed-protect-system-namespaces` ValidatingAdmissionPolicy denies writes to it from non-exempt identities. Flux's controllers are exempt (ADR-020), so the Certificate *applied* cleanly, but cert-manager's controller is not exempt, so its every status update was denied. No CertificateRequest, no ACME order, no secret; the HTTPS:443 listener never opened while every Kustomization reported Ready.
 
 The failure was silent twice over: a status-less Certificate passes Flux's health checks, and the smoke workflow probed pods and Services but never performed a TLS handshake.
 
@@ -17,7 +17,7 @@ The failure was silent twice over: a status-less Certificate passes Flux's healt
 
 - cert-manager must be able to write status on the resources it reconciles; no SPI-controlled identity can be exempted from the AKS-managed policy.
 - The Gateway itself must stay in `aks-istio-ingress` (managed Istio owns the GatewayClass there).
-- The deployer cannot hand-patch resources in managed namespaces either — the declarative Flux path is the only write path, so the topology must be correct in Git.
+- The deployer cannot hand-patch resources in managed namespaces either; the declarative Flux path is the only write path, so the topology must be correct in Git.
 
 ## Considered Options
 
@@ -27,7 +27,7 @@ The failure was silent twice over: a status-less Certificate passes Flux's healt
 
 ## Decision Outcome
 
-Chosen option: "Issue Certificates into `platform`, bridge with ReferenceGrants". `platform` already hosts cert-manager-issued material (`redis-tls-cert`), proving the write path. Each TLS overlay declares its Certificates in `platform` plus a ReferenceGrant (in `platform`) allowing the `spi-gateway` Gateway in `aks-istio-ingress` to read the named secrets; listener `certificateRefs` carry an explicit `namespace: platform`. HTTP-01 solver routes are created in the challenge's namespace — now `platform` — and attach to the gateway via its `allowedRoutes: from: All` listeners, so issuance needs no writes to the managed namespace at all.
+Chosen option: "Issue Certificates into `platform`, bridge with ReferenceGrants". `platform` already hosts cert-manager-issued material (`redis-tls-cert`), proving the write path. Each TLS overlay declares its Certificates in `platform` plus a ReferenceGrant (in `platform`) allowing the `spi-gateway` Gateway in `aks-istio-ingress` to read the named secrets; listener `certificateRefs` carry an explicit `namespace: platform`. HTTP-01 solver routes are created in the challenge's namespace (now `platform`) and attach to the gateway via its `allowedRoutes: from: All` listeners, so issuance needs no writes to the managed namespace at all.
 
 ### Consequences
 

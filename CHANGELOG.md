@@ -11,7 +11,7 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 - HTTPS ingress never terminated on AKS Automatic: the gateway TLS overlays
   declared their cert-manager Certificates in `aks-istio-ingress`, where the
   AKS-managed protect-system-namespaces policy denies cert-manager's status
-  writes — issuance stalled silently with every Kustomization Ready and :443
+  writes; issuance stalled silently with every Kustomization Ready and :443
   refusing connections. Certificates now issue into `platform` and reach the
   Gateway's listeners via ReferenceGrants (ADR-025). The smoke workflow
   gained an HTTPS-handshake probe so a dead TLS path fails CI.
