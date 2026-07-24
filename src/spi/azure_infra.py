@@ -377,20 +377,29 @@ def _verify_role_assignment_recorded(user_oid: str, cluster_resource_id: str):
     authorization-plane propagation. ARM listings respond within seconds and
     are independent of AKS-plane caching.
     """
+    # Verify via raw ARM: every `az role assignment` subcommand resolves
+    # principals through Microsoft Graph, which Conditional Access token
+    # protection can block (AADSTS530084) even when ARM access is fine.
+    # b1ff04bb-... is the built-in "Azure Kubernetes Service RBAC Cluster
+    # Admin" role definition ID.
+    aks_rbac_cluster_admin_role_id = "b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b"
     result = run_command(
         [
             "az",
-            "role",
-            "assignment",
-            "list",
-            "--assignee",
-            user_oid,
-            "--scope",
-            cluster_resource_id,
-            "--role",
-            "Azure Kubernetes Service RBAC Cluster Admin",
+            "rest",
+            "--method",
+            "get",
+            "--url",
+            (
+                f"https://management.azure.com{cluster_resource_id}"
+                "/providers/Microsoft.Authorization/roleAssignments"
+                "?api-version=2022-04-01"
+            ),
             "--query",
-            "length(@)",
+            (
+                f"length(value[?properties.principalId=='{user_oid}' && "
+                f"contains(properties.roleDefinitionId, '{aks_rbac_cluster_admin_role_id}')])"
+            ),
             "--output",
             "tsv",
         ],
