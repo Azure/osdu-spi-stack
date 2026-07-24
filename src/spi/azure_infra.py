@@ -566,11 +566,28 @@ def _build_bicep_params(config: Config, oidc_issuer: str) -> Dict[str, Any]:
         # conditional modules in main.bicep no-op when dnsZoneName is empty.
         "dnsZoneName": config.dns_zone,
         "dnsZoneResourceGroup": config.dns_zone_rg,
-        # Deployer SP OID -- used by rbac.bicep to grant KV Secrets Officer
+        # Deployer OID -- used by rbac.bicep to grant KV Secrets Officer
         # so Phase 6 (`az keyvault secret set`) succeeds. Empty string is
-        # fine for local users with RG Owner.
+        # fine for local users with RG Owner. The principal type must match
+        # the actual identity or ARM rejects the role assignment with
+        # UnmatchedPrincipalType.
         "deployerPrincipalId": os.environ.get("SPI_DEPLOYER_OID", "").strip(),
+        "deployerPrincipalType": _deployer_principal_type(),
     }
+
+
+def _deployer_principal_type() -> str:
+    """Principal type of the logged-in az identity (User vs ServicePrincipal)."""
+    override = os.environ.get("SPI_DEPLOYER_TYPE", "").strip()
+    if override in ("User", "ServicePrincipal"):
+        return override
+    result = run_command(
+        ["az", "account", "show", "--query", "user.type", "--output", "tsv"],
+        description="Get deployer principal type",
+        check=False,
+        display=False,
+    )
+    return "User" if (result.stdout or "").strip() == "user" else "ServicePrincipal"
 
 
 def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
