@@ -6,6 +6,9 @@ name: Release
 # tag, builds a wheel via `uv build`, tags the commit, and creates a GitHub
 # Release with the wheel + sdist attached as assets.
 #
+# Can also be dispatched manually against main with an explicit release type,
+# which is the recovery path when a PR is merged without a label.
+#
 # Adapted from cimpl-stack/.gitlab-ci.yml release:auto stage (lines 360-525).
 # The version-computation and notes-generation shell is platform-agnostic; the
 # only GitHub-specific change is reading labels from the workflow event
@@ -15,6 +18,18 @@ on:
   pull_request:
     types: [closed]
     branches: [main]
+  # Manual recovery path. A PR merged without a release:* label cannot cut a
+  # release after the fact: re-running the skipped run replays the original
+  # event payload (so a label added later is invisible), and GitHub does not
+  # allow reopening a merged PR. Dispatch against main to release whatever is
+  # already merged.
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: "Release type"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: write
@@ -22,10 +37,12 @@ permissions:
 jobs:
   release:
     if: >
-      github.event.pull_request.merged == true && (
-        contains(github.event.pull_request.labels.*.name, 'release:patch') ||
-        contains(github.event.pull_request.labels.*.name, 'release:minor') ||
-        contains(github.event.pull_request.labels.*.name, 'release:major')
+      github.event_name == 'workflow_dispatch' || (
+        github.event.pull_request.merged == true && (
+          contains(github.event.pull_request.labels.*.name, 'release:patch') ||
+          contains(github.event.pull_request.labels.*.name, 'release:minor') ||
+          contains(github.event.pull_request.labels.*.name, 'release:major')
+        )
       )
     runs-on: ubuntu-latest
     steps:
@@ -36,10 +53,12 @@ jobs:
           fetch-tags: true
           ref: main
 
-      - name: Determine release type from PR labels
+      - name: Determine release type from PR label or dispatch input
         id: release_type
         run: |
-          if ${{ contains(github.event.pull_request.labels.*.name, 'release:major') }}; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "type=${{ inputs.release_type }}" >> "$GITHUB_OUTPUT"
+          elif ${{ contains(github.event.pull_request.labels.*.name, 'release:major') }}; then
             echo "type=major" >> "$GITHUB_OUTPUT"
           elif ${{ contains(github.event.pull_request.labels.*.name, 'release:minor') }}; then
             echo "type=minor" >> "$GITHUB_OUTPUT"

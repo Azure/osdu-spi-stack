@@ -7,6 +7,8 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-24
+
 ### Added
 - `--profile minimal`: deploys the middleware substrate only (operators,
   cert-manager, trust-manager, Gateway, Elasticsearch, Redis, PostgreSQL,
@@ -100,5 +102,6 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   nonexistent path under `lib/pythonX.Y/infra/`, breaking `spi up` for
   every `uv tool install` user. (`ee45a65`)
 
-[Unreleased]: https://github.com/Azure/osdu-spi-stack/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Azure/osdu-spi-stack/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Azure/osdu-spi-stack/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Azure/osdu-spi-stack/releases/tag/v0.1.0

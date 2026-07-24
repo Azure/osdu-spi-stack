@@ -52,7 +52,7 @@ software/
 
 docs/
   architecture.md          System architecture document
-  decisions/               18 ADRs
+  decisions/               24 ADRs
   diagrams/                Excalidraw architecture diagram
 ```
 
