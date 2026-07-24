@@ -94,3 +94,50 @@ def test_render_image_lock_contains_service_keys_without_schema_load():
     assert "PARTITION_IMAGE_REPOSITORY" in yaml
     assert "INDEXER_QUEUE_IMAGE_TAG" in yaml
     assert "SCHEMA_LOAD_IMAGE_TAG" not in yaml
+
+
+def test_gitlab_get_retries_transient_timeouts(monkeypatch):
+    """Transient network failures retry with backoff; success on a later
+    attempt returns normally instead of aborting the whole resolution."""
+    from spi import images
+
+    calls = {"n": 0}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(req, timeout=0):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise TimeoutError("The read operation timed out")
+        return FakeResponse()
+
+    monkeypatch.setattr(images.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(images.time, "sleep", lambda s: None)
+
+    assert images.gitlab_get("https://example.invalid/api") == {"ok": True}
+    assert calls["n"] == 3
+
+
+def test_gitlab_get_raises_after_exhausting_attempts(monkeypatch):
+    from spi import images
+
+    def always_timeout(req, timeout=0):
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr(images.urllib.request, "urlopen", always_timeout)
+    monkeypatch.setattr(images.time, "sleep", lambda s: None)
+
+    try:
+        images.gitlab_get("https://example.invalid/api", attempts=2)
+    except images.ImageResolutionError as exc:
+        assert "2 attempts" in str(exc)
+    else:
+        raise AssertionError("expected ImageResolutionError")

@@ -28,7 +28,7 @@ Rejected:
 ## Consequences
 
 - NodePool changes flow through the same GitOps loop as every other workload manifest: PR, review, Flux reconcile. No CLI or Bicep redeploy.
-- Workload isolation is enforced at the scheduler. Platform pods declare `tolerations` and `nodeSelector: agentpool=platform` in their charts; OSDU services declare the matching osdu pair. Mis-tolerated pods stay `Pending` rather than landing on the wrong pool.
+- Workload isolation is enforced at the scheduler. Platform pods declare `tolerations` and `nodeSelector: spi-pool=platform` (label renamed from `agentpool`, see [ADR-022](022-spi-pool-node-label.md)) in their charts; OSDU services declare the matching osdu pair. Mis-tolerated pods stay `Pending` rather than landing on the wrong pool.
 - The Layer 0b position means NodePools are present before Layer 1 operators reconcile, so the first ECK or CNPG pod schedules on the correct pool without a Karpenter cold-start delay against unlabeled nodes.
 - Adding a new workload domain (e.g., a future ingest pool) is a new NodePool + AKSNodeClass pair under `software/components/nodepools/` and a chart-level toleration. No infra-side change.
 - The disruption settings (`WhenEmptyOrUnderutilized`, 5 min) are tuned for dev/test churn. Production-style workloads would likely want longer windows and `WhenEmpty` only; that is a future tuning concern, not a structural change.

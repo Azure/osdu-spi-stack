@@ -118,11 +118,16 @@ def create_resource_group(config: Config):
     # CLEARS the tag set (this silently dropped the spi-name-suffix tag and
     # made every resumed run mint a fresh suffix). Never re-PUT an existing
     # group — only create when absent, with the tag included.
-    exists = run_command(
-        ["az", "group", "exists", "--name", config.resource_group],
-        description=f"Check resource group exists: {config.resource_group}",
-        display=False,
-    ).stdout.strip().lower() == "true"
+    exists = (
+        run_command(
+            ["az", "group", "exists", "--name", config.resource_group],
+            description=f"Check resource group exists: {config.resource_group}",
+            display=False,
+        )
+        .stdout.strip()
+        .lower()
+        == "true"
+    )
     if exists:
         if read_rg_suffix_tag(config.resource_group) is None:
             write_rg_suffix_tag(config.resource_group, config.name_suffix)
