@@ -44,7 +44,7 @@ from .images import (
     render_image_lock_configmap,
     resolve_image_lock,
 )
-from .ingress import resolve_acme_email, resolve_ingress_mode
+from .ingress import ensure_istio_revision_published, resolve_acme_email, resolve_ingress_mode
 from .shell import kubectl_apply_yaml, kubectl_json, run_command
 
 app = typer.Typer(
@@ -783,7 +783,13 @@ def down(
     check_prerequisites(["az"])
 
     name_suffix = _resolve_name_suffix(env, for_up=False)
-    aks_mode = _resolve_aks_mode(env, requested=None, for_up=False)
+    # Teardown must stay available even when the recorded mode disagrees with
+    # the cluster, which is exactly the state an operator needs to clean up.
+    try:
+        aks_mode = _resolve_aks_mode(env, requested=None, for_up=False)
+    except RuntimeError as exc:
+        console.print(f"[warning]{exc}[/warning]")
+        aks_mode = AksMode.AUTOMATIC
     config = _build_config(
         env=env,
         name_suffix=name_suffix,
@@ -951,6 +957,13 @@ def reconcile(
 
     if resume:
         ns = resolve_flux_namespace()
+        # An environment created before the revision was published would let
+        # Flux apply an empty istio.io/rev and drop sidecar injection.
+        try:
+            ensure_istio_revision_published()
+        except RuntimeError as exc:
+            console.print(f"[error]{exc}[/error]")
+            raise typer.Exit(code=1)
         console.print(f"\n[bold]Resuming Flux reconciliation in '{ns}'...[/bold]")
         _set_flux_suspend(ns, False)
         console.print("[success]GitRepository, Kustomizations, and HelmReleases resumed.[/success]")

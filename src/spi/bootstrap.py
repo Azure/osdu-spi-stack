@@ -21,7 +21,7 @@ from .templates import storage_class
 STORAGE_CLASSES = ["pg-storageclass", "redis-storageclass", "es-storageclass"]
 
 
-def _detect_istio_revision() -> str:
+def detect_istio_revision() -> str:
     """Detect the installed Istio ASM revision from the cluster."""
     data = kubectl_json(["get", "deploy", "-n", "aks-istio-system"])
     if data and data.get("items"):
@@ -49,7 +49,7 @@ def ensure_namespaces(istio_revision: str = "") -> None:
     console.print("\n[bold]Ensuring namespaces...[/bold]")
 
     if not istio_revision:
-        istio_revision = _detect_istio_revision()
+        istio_revision = detect_istio_revision()
     console.print(f"  [info]Istio revision: {istio_revision}[/info]")
 
     for ns in ["osdu-flux", "foundation", "platform"]:

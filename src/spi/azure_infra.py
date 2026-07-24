@@ -1139,6 +1139,26 @@ def _resolve_deployer_principal() -> "tuple[str, str]":
         ).stdout.strip()
         return oid, principal_type
 
+    # Service principals authenticate by appId, so the object ID needed for the
+    # Key Vault Secrets Officer grant has to be looked up. Without it the grant
+    # is skipped and the Phase 6 secret writes fail against an RBAC vault.
+    # Graph can be blocked by Conditional Access, so a failed lookup degrades to
+    # the previous behavior rather than aborting the deployment.
+    app_id = account.get("user", {}).get("name", "")
+    if app_id:
+        result = run_command(
+            ["az", "ad", "sp", "show", "--id", app_id, "--query", "id", "--output", "tsv"],
+            description="Get deployer object ID (service principal)",
+            display=False,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip(), principal_type
+        console.print(
+            "[warning]Unable to resolve the service principal object ID. "
+            "Set SPI_DEPLOYER_OID if Key Vault writes fail.[/warning]"
+        )
+
     return "", principal_type
 
 
