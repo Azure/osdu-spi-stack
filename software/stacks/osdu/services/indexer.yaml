@@ -29,7 +29,7 @@ spec:
     elasticTls: true
     redisTls: true
     nodeSelector:
-      agentpool: osdu
+      spi-pool: osdu
     tolerations:
       - key: workload
         operator: Equal

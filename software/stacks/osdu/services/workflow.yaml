@@ -28,7 +28,7 @@ spec:
       tag: "${WORKFLOW_IMAGE_TAG}"
     redisTls: true
     nodeSelector:
-      agentpool: osdu
+      spi-pool: osdu
     tolerations:
       - key: workload
         operator: Equal

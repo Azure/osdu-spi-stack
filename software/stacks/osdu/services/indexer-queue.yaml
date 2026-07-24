@@ -27,7 +27,7 @@ spec:
       repository: ${INDEXER_QUEUE_IMAGE_REPOSITORY}
       tag: "${INDEXER_QUEUE_IMAGE_TAG}"
     nodeSelector:
-      agentpool: osdu
+      spi-pool: osdu
     tolerations:
       - key: workload
         operator: Equal

@@ -67,7 +67,7 @@ spec:
           value: "platform"
           effect: NoSchedule
       nodeSelector:
-        agentpool: platform
+        spi-pool: platform
       securityContexts:
         pod:
           runAsNonRoot: true
@@ -124,7 +124,7 @@ spec:
           value: "platform"
           effect: NoSchedule
       nodeSelector:
-        agentpool: platform
+        spi-pool: platform
       securityContexts:
         pod:
           runAsNonRoot: true
@@ -165,7 +165,7 @@ spec:
           value: "platform"
           effect: NoSchedule
       nodeSelector:
-        agentpool: platform
+        spi-pool: platform
       securityContexts:
         pod:
           runAsNonRoot: true
@@ -195,7 +195,7 @@ spec:
           value: "platform"
           effect: NoSchedule
       nodeSelector:
-        agentpool: platform
+        spi-pool: platform
       securityContexts:
         pod:
           runAsNonRoot: true
@@ -227,7 +227,7 @@ spec:
           value: "platform"
           effect: NoSchedule
       nodeSelector:
-        agentpool: platform
+        spi-pool: platform
       securityContexts:
         pod:
           runAsNonRoot: true
@@ -253,7 +253,7 @@ spec:
           value: "platform"
           effect: NoSchedule
       nodeSelector:
-        agentpool: platform
+        spi-pool: platform
       securityContexts:
         pod:
           runAsNonRoot: true
