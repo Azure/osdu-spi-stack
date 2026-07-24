@@ -23,7 +23,7 @@ Some pieces are in every mode and live under `software/components/`:
 - **Managed Istio** from AKS Automatic (ADR-002). Provides the Gateway API implementation and the ingress LoadBalancer service.
 - **`Gateway` resource** in the `aks-istio-ingress` namespace. The Gateway listens on HTTP:80; the HTTPS listener is added by the mode-specific Kustomization (since it needs a cert that depends on the hostname).
 - **cert-manager** for any mode that issues TLS (`azure`, `dns`).
-- **`spi-ingress-config` ConfigMap** in `flux-system`, written by the CLI during K8s bootstrap. Carries `GATEWAY_HOSTNAME`, `GATEWAY_LABEL`, `DNS_ZONE`, and similar values consumed by Flux `postBuild.substituteFrom`.
+- **`spi-ingress-config` ConfigMap** in `osdu-flux`, written by the CLI during K8s bootstrap. Carries `GATEWAY_HOSTNAME`, `GATEWAY_LABEL`, `DNS_ZONE`, and similar values consumed by Flux `postBuild.substituteFrom`.
 
 ## Mode: `azure` (default)
 

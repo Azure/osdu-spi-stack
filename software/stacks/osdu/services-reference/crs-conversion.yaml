@@ -2,7 +2,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: crs-conversion
-  namespace: flux-system
+  namespace: osdu-flux
 spec:
   targetNamespace: osdu
   interval: 30m
@@ -25,7 +25,7 @@ spec:
       repository: ${CRS_CONVERSION_IMAGE_REPOSITORY}
       tag: "${CRS_CONVERSION_IMAGE_TAG}"
     nodeSelector:
-      agentpool: osdu
+      spi-pool: osdu
     tolerations:
       - key: workload
         operator: Equal

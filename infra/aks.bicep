@@ -1,7 +1,7 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// AKS Automatic cluster + managed Istio via Azure Verified Modules.
+// AKS Automatic cluster + managed Istio.
 //
 // Scope: only the AKS cluster. The cluster uses a system-assigned
 // managed identity (required by Automatic when the managed vnet path is
@@ -9,15 +9,10 @@
 // created in infra/main.bicep after this template outputs the OIDC
 // issuer URL for federated credentials.
 //
-// Known AVM gaps (v0.13.0) that remain imperative post-deploy:
-//   1. safeguardsProfile is not exposed. On the Automatic SKU, safeguards
-//      are enforced via a non-bypassable ValidatingAdmissionPolicy and
-//      cannot be relaxed; the CLI's `az aks update --safeguards-level
-//      Warning` is retained only for parity with the pre-migration path.
-//   2. serviceMeshProfile.istio.components.proxyRedirectionMechanism is
-//      typed-out of the IstioComponents schema (what-if accepts it, the
-//      RP rejects at deploy). Use `az aks mesh enable-istio-cni` post-
-//      deploy to flip to CNIChaining.
+// One post-deploy imperative step remains: use `az aks mesh
+// enable-istio-cni` to flip managed Istio to CNIChaining. The resource
+// provider rejects proxyRedirectionMechanism at create time even though
+// newer schemas expose it.
 
 targetScope = 'resourceGroup'
 
@@ -31,11 +26,18 @@ param clusterName string
 @description('Azure region.')
 param location string = resourceGroup().location
 
-@description('Kubernetes version for the cluster.')
-param kubernetesVersion string = '1.34'
+@description('Kubernetes version for the cluster. Must be >= 1.36: earlier AKS Automatic versions block all MutatingWebhookConfigurations (cert-manager, CNPG) at the authorization layer.')
+param kubernetesVersion string = '1.36'
 
 @description('VM size for the system pool. D4lds_v5 has a 150 GiB cache that fits the 128 GiB default ephemeral OS disk.')
 param systemPoolVmSize string = 'Standard_D4lds_v5'
+
+@description('Availability zones for the system pool. Default is all three; override for regions with zonal capacity or quota gaps (e.g. eastus2 rejects zone 2 for some VM sizes).')
+param availabilityZones array = [
+  '1'
+  '2'
+  '3'
+]
 
 // ──────────────────────────────────────────────
 // Private network (BYO VNet)
@@ -100,26 +102,37 @@ resource clusterIdentityNetworkContributor 'Microsoft.Authorization/roleAssignme
 }
 
 // ──────────────────────────────────────────────
-// AKS Automatic cluster via AVM
+// AKS Automatic cluster
 // ──────────────────────────────────────────────
 //
 // Automatic SKU validation requires:
 //   - UAMI (user-assigned managed identity) when using BYO VNet.
 //     Managed-VNet Automatic clusters require SAMI; BYO-VNet requires
 //     UAMI; these are mutually exclusive.
-//   - Ephemeral OS disks on the system pool
-//   - webApplicationRouting and KeyvaultSecretsProvider addons enabled
+//   - Ephemeral OS disks on the explicit system pool
+//   - webApplicationRouting and KeyvaultSecretsProvider add-ons enabled
+//   - hostedSystemProfile wired to the BYO VNet so AKS Automatic's
+//     service-created "hostedpool" does not fall back to a managed VNet
 //
 // With BYO VNet, outboundType switches from managedNATGateway to
 // userAssignedNATGateway (the NAT we pre-created in vnet.bicep).
 
-module aksCluster 'br/public:avm/res/container-service/managed-cluster:0.13.0' = {
-  name: 'spi-aks-automatic'
-  params: {
-    name: clusterName
-    location: location
-    skuName: 'Automatic'
+resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
+  name: clusterName
+  location: location
+  sku: {
+    name: 'Automatic'
+    tier: 'Standard'
+  }
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${clusterIdentity.id}': {}
+    }
+  }
+  properties: {
     kubernetesVersion: kubernetesVersion
+    dnsPrefix: clusterName
 
     // Shorter node RG name than the AKS default
     // (``${clusterName}_aks_${clusterName}_nodes``). Immutable after
@@ -127,67 +140,93 @@ module aksCluster 'br/public:avm/res/container-service/managed-cluster:0.13.0' =
     // new environments get the clean ``{clusterName}-nodes`` form.
     nodeResourceGroup: '${clusterName}-nodes'
 
+    enableRBAC: true
+    disableLocalAccounts: true
+    supportPlan: 'KubernetesOfficial'
+
     // Automatic requires public API server for Karpenter.
     publicNetworkAccess: 'Enabled'
 
     // OIDC issuer URL is output and consumed by infra/main.bicep to
     // wire federated credentials to the workload-identity SAs.
-    enableOidcIssuerProfile: true
+    oidcIssuerProfile: {
+      enabled: true
+    }
 
-    // UAMI on the cluster (required for BYO VNet; see block above).
-    // Workload identity for pods is a separate UAMI in infra/main.bicep.
-    managedIdentities: {
-      userAssignedResourceIds: [
-        clusterIdentity.id
-      ]
+    // Keep AKS Automatic's service-created hosted pools on the BYO VNet.
+    hostedSystemProfile: {
+      enabled: true
+      nodeSubnetID: vnetModule.outputs.subnetId
+      systemNodeSubnetID: vnetModule.outputs.systemNodeSubnetId
+    }
+    nodeProvisioningProfile: {
+      mode: 'Auto'
+      defaultNodePools: 'Auto'
     }
 
     // BYO VNet: outbound goes through the user-assigned NAT Gateway
-    // attached to the subnet in vnet.bicep.
-    outboundType: 'userAssignedNATGateway'
-    networkPlugin: 'azure'
-    serviceCidr: '192.168.0.0/16'
-    dnsServiceIP: '192.168.0.10'
+    // attached to the subnets in vnet.bicep.
+    networkProfile: {
+      outboundType: 'userAssignedNATGateway'
+      networkPlugin: 'azure'
+      serviceCidr: '192.168.0.0/16'
+      dnsServiceIP: '192.168.0.10'
+      loadBalancerSku: 'standard'
+    }
 
     // API server VNet integration is always-on for AKS Automatic with
     // BYO VNet and requires a dedicated delegated subnet distinct from
-    // the node subnet (see vnet.bicep).
+    // the node subnets (see vnet.bicep).
     apiServerAccessProfile: {
       subnetId: vnetModule.outputs.apiServerSubnetId
     }
 
-    enableKeyvaultSecretsProvider: true
-    enableSecretRotation: true
-    webApplicationRoutingEnabled: true
+    ingressProfile: {
+      webAppRouting: {
+        enabled: true
+      }
+    }
+    addonProfiles: {
+      azureKeyvaultSecretsProvider: {
+        enabled: true
+        config: {
+          enableSecretRotation: 'true'
+        }
+      }
+    }
 
     // Explicitly enable the CSI disk/file/blob drivers and snapshot
-    // controller. AKS Automatic installs these by default, but AVM
-    // v0.13.0 passes through null for unset flags; declaring them
-    // matches the sister Terraform repo
-    // (../osdu-spi-infra/main/infra/aks.tf:82-87) and removes the
-    // ambiguity that appears to leave PVCs stuck in ExternalProvisioning
-    // on fresh clusters. AVM exposes these as four scalar booleans
-    // rather than a nested storageProfile block.
-    enableStorageProfileDiskCSIDriver: true
-    enableStorageProfileFileCSIDriver: true
-    enableStorageProfileBlobCSIDriver: true
-    enableStorageProfileSnapshotController: true
+    // controller. This matches the sister Terraform repo
+    // (../osdu-spi-infra/main/infra/aks.tf:82-87) and avoids PVCs
+    // getting stuck in ExternalProvisioning on fresh clusters.
+    storageProfile: {
+      diskCSIDriver: {
+        enabled: true
+      }
+      fileCSIDriver: {
+        enabled: true
+      }
+      blobCSIDriver: {
+        enabled: true
+      }
+      snapshotController: {
+        enabled: true
+      }
+    }
 
-    // System pool. AVM requires primaryAgentPoolProfiles even though
-    // Automatic uses Karpenter for user workloads; this pool carries
-    // system addons only.
-    primaryAgentPoolProfiles: [
+    // System pool. Automatic uses managed hosted pools for its platform
+    // components and Karpenter for user workloads; this explicit pool
+    // preserves the previous deployment shape for system add-ons.
+    agentPoolProfiles: [
       {
         name: 'systempool'
+        count: 1
         mode: 'System'
         vmSize: systemPoolVmSize
         osDiskType: 'Ephemeral'
-        availabilityZones: [
-          1
-          2
-          3
-        ]
-        vnetSubnetResourceId: vnetModule.outputs.subnetId
+        osType: 'Linux'
+        availabilityZones: availabilityZones
+        vnetSubnetID: vnetModule.outputs.subnetId
       }
     ]
 
@@ -195,14 +234,14 @@ module aksCluster 'br/public:avm/res/container-service/managed-cluster:0.13.0' =
     // applied imperatively post-deploy (see top-of-file note).
     //
     // revisions is pinned to prevent AKS from silently upgrading the
-    // mesh under us. `asm-1-28` matches the sister Terraform repo
-    // (../osdu-spi-infra/main/infra/aks.tf) and is the current AVM
-    // default; validated with 1.34 on KubernetesOfficial and LTS.
+    // mesh under us. `asm-1-30` is the newest revision compatible with
+    // Kubernetes 1.36 (asm-1-28 tops out at 1.35 per
+    // `az aks mesh get-revisions`).
     serviceMeshProfile: {
       mode: 'Istio'
       istio: {
         revisions: [
-          'asm-1-28'
+          'asm-1-30'
         ]
         components: {
           ingressGateways: [
@@ -215,6 +254,9 @@ module aksCluster 'br/public:avm/res/container-service/managed-cluster:0.13.0' =
       }
     }
   }
+  dependsOn: [
+    clusterIdentityNetworkContributor
+  ]
 }
 
 // ──────────────────────────────────────────────
@@ -222,6 +264,6 @@ module aksCluster 'br/public:avm/res/container-service/managed-cluster:0.13.0' =
 // ──────────────────────────────────────────────
 
 output clusterName string = clusterName
-output clusterResourceId string = aksCluster.outputs.resourceId
-output oidcIssuerUrl string = aksCluster.outputs.?oidcIssuerUrl ?? ''
+output clusterResourceId string = aksCluster.id
+output oidcIssuerUrl string = aksCluster.properties.?oidcIssuerProfile.?issuerURL ?? ''
 output clusterPrincipalId string = clusterIdentity.properties.principalId

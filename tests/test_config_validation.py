@@ -141,3 +141,14 @@ class TestFromEnv:
     def test_from_env_invalid_partition(self):
         with pytest.raises(ValidationError):
             Config.from_env(env="dev1", data_partitions=["BAD"])
+
+
+def test_deployer_principal_type_env_override(monkeypatch):
+    """SPI_DEPLOYER_TYPE bypasses the az account lookup entirely."""
+    from spi import azure_infra
+
+    monkeypatch.setenv("SPI_DEPLOYER_TYPE", "User")
+    assert azure_infra._deployer_principal_type() == "User"
+
+    monkeypatch.setenv("SPI_DEPLOYER_TYPE", "ServicePrincipal")
+    assert azure_infra._deployer_principal_type() == "ServicePrincipal"

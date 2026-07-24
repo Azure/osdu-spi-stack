@@ -98,7 +98,7 @@ spi status --watch
 The dashboard groups Kustomizations by layer, shows HelmRelease status, the schema-load Job, and the per-partition init Jobs. Anything stuck at `False` for more than a few minutes points to the layer where the chain is blocked.
 
 ```bash
-kubectl get kustomizations -n flux-system --watch
+kubectl get kustomizations -n osdu-flux --watch
 ```
 
 The raw Flux view if you need to confirm exact condition messages.
@@ -137,7 +137,7 @@ Milestones to watch for in the CLI output:
 1. **"Resource group spi-stack-dev1 ready"** -- Phase 1 step 3.
 2. **"AKS deployment complete"** -- Phase 1 step 5. The cluster exists.
 3. **"PaaS deployment complete"** -- Phase 1 step 8. Cosmos, Service Bus, Storage, Key Vault, ACR are live.
-4. **"Flux extension activated"** -- Phase 1 step 10. Flux is running in `flux-system`.
+4. **"Flux extension activated"** -- Phase 1 step 10. Flux is running in `flux-system`; SPI GitOps objects reconcile in `osdu-flux`.
 5. **"Writing runtime KV secrets"** -- Phase 1 step 11. Redis/Elasticsearch credentials are written to Key Vault from the seed.
 6. **"GitRepository suspended"** -- Phase 1 step 12. CLI is about to exit.
 

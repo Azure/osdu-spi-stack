@@ -2,7 +2,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: osdu-spi-init
-  namespace: flux-system
+  namespace: osdu-flux
 spec:
   targetNamespace: osdu
   interval: 30m
@@ -21,7 +21,7 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   # Partition list is injected by the CLI via the spi-init-values ConfigMap
-  # in flux-system (written by src/spi/deploy.py::_create_spi_init_values).
+  # in osdu-flux (written by src/spi/deploy.py::_create_spi_init_values).
   # Flipping multi-partition on is a --partition CLI flag change; no edits to
   # this file are required.
   valuesFrom:

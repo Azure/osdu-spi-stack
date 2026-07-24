@@ -71,7 +71,7 @@ Three application namespaces:
 | **platform** | Middleware and Gateway | No | Elasticsearch, Redis, PostgreSQL (Airflow), Airflow, Istio Gateway |
 | **osdu** | OSDU services | Yes | OSDU service deployments, schema-load Job, `osdu-config`, `workload-identity-sa` |
 
-The `flux-system` namespace is managed by the AKS Flux extension and hosts Flux controllers, the `GitRepository`, and the two top-level Kustomizations. `aks-istio-system` and `aks-istio-ingress` are owned by AKS. See [ADR-006](decisions/006-three-namespace-model.md).
+The `flux-system` namespace is managed by the AKS Flux extension and hosts the Flux controllers. SPI-owned GitOps objects — the `GitRepository`, Kustomizations, and bootstrap ConfigMaps/Secrets — live in the dedicated `osdu-flux` namespace (see [ADR-020](decisions/020-osdu-flux-gitops-namespace.md)). `aks-istio-system` and `aks-istio-ingress` are owned by AKS. See [ADR-006](decisions/006-three-namespace-model.md).
 
 ### Layered dependency model
 
@@ -218,7 +218,7 @@ Changes to this repository (middleware manifests, profile definitions, service Y
 
 ### Service update loop
 
-When an OSDU service merges to master, its GitLab CI pipeline builds a new container image and the community registry exposes a new immutable SHA tag. `spi up` resolves the current master tags and writes them to `flux-system/osdu-image-lock`; the service Kustomizations consume that ConfigMap through Flux post-build substitution. This keeps the deployed image set explicit while avoiding stale, pruned tags in long-lived test workflows.
+When an OSDU service merges to master, its GitLab CI pipeline builds a new container image and the community registry exposes a new immutable SHA tag. `spi up` resolves the current master tags and writes them to `osdu-flux/osdu-image-lock`; the service Kustomizations consume that ConfigMap through Flux post-build substitution. This keeps the deployed image set explicit while avoiding stale, pruned tags in long-lived test workflows.
 
 Run `spi reconcile --refresh-images` to resolve a fresh image lock for an existing cluster, then reconcile the service Kustomizations. `scripts/resolve-image-tags.py --update` remains available for static image references such as the schema-load Job.
 

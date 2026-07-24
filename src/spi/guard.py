@@ -51,7 +51,7 @@ def _has_spi_fingerprint() -> bool:
     are not yet installed (e.g., right after ``spi up`` and before the
     extension has installed them).
     """
-    data = kubectl_json(["get", "gitrepository", "osdu-spi-stack-system", "-n", "flux-system"])
+    data = kubectl_json(["get", "gitrepository", "osdu-spi-stack-system", "-n", "osdu-flux"])
     if data is not None:
         return True
 
@@ -118,7 +118,7 @@ def verify_spi_cluster() -> str:
             f"[error]Context '{ctx}' is set, but the cluster has no spi-stack deployment.[/error]"
         )
         console.print(
-            "[dim]The osdu-spi-stack-system GitRepository was not found in flux-system.[/dim]"
+            "[dim]The osdu-spi-stack-system GitRepository was not found in osdu-flux.[/dim]"
         )
         console.print(
             "[dim]Run 'uv run spi up' to deploy, or set SPI_SKIP_GUARD=1 to bypass.[/dim]"
@@ -130,7 +130,7 @@ def verify_spi_cluster() -> str:
 
 def get_suspend_status() -> bool:
     """Check if the Flux GitRepository source is suspended."""
-    data = kubectl_json(["get", "gitrepository", "osdu-spi-stack-system", "-n", "flux-system"])
+    data = kubectl_json(["get", "gitrepository", "osdu-spi-stack-system", "-n", "osdu-flux"])
     if not data:
         return False
     return bool(data.get("spec", {}).get("suspend", False))
