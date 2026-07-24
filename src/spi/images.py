@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.error
@@ -24,14 +25,25 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Iterable
 
 GITLAB_HOST = "https://community.opengroup.org"
+GITHUB_API_HOST = "https://api.github.com"
+GHCR_HOST = "https://ghcr.io"
 DEFAULT_IMAGE_BRANCH = "master"
+DEFAULT_GHCR_ORG = "yuchen-osdu"
+DEFAULT_GHCR_TAG = "main-snapshot"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"
 
 _SHA_TAG_RE = re.compile(r"^[0-9a-f]{40}$")
+_BEARER_PARAMETER_RE = re.compile(r'([a-zA-Z]+)="([^"]*)"')
+
+
+class ImageSource(str, Enum):
+    COMMUNITY = "community"
+    GHCR = "ghcr"
 
 
 class ImageResolutionError(RuntimeError):
@@ -60,7 +72,9 @@ class ResolvedImage:
 
     @property
     def image(self) -> str:
-        return f"{self.repository}:{self.tag}"
+        return (
+            f"{self.repository}@{self.digest}" if self.digest else f"{self.repository}:{self.tag}"
+        )
 
 
 # Service registry: maps service name to GitLab project ID, image base name,
@@ -114,30 +128,117 @@ def image_lock_key(service_name: str) -> str:
     return service_name.upper().replace("-", "_")
 
 
-def gitlab_get(url: str, attempts: int = 3):
-    """GET a GitLab API URL and return parsed JSON.
-
-    Retries transient network failures (timeouts, connection resets) with a
-    short backoff: the community registry intermittently times out, and a
-    single blip should not abort an entire `spi up` run.
-    """
-
-    req = urllib.request.Request(url, headers={"User-Agent": "spi-stack-resolver"})
+def _urlopen_with_retry(
+    request: urllib.request.Request,
+    *,
+    attempts: int = 3,
+    timeout: int = 15,
+):
+    """Open an HTTP request, retrying transient network and server failures."""
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
-                return json.loads(resp.read())
+            return urllib.request.urlopen(request, timeout=timeout)  # nosec B310
         except (TimeoutError, urllib.error.URLError, ConnectionError) as exc:
-            # HTTP error responses (4xx/5xx) are URLError subclasses but
-            # indicate a server-side answer, not a transient network blip;
-            # retry only non-HTTP failures and 5xx.
             if isinstance(exc, urllib.error.HTTPError) and exc.code < 500:
                 raise
             last_error = exc
             if attempt < attempts:
                 time.sleep(5 * attempt)
-    raise ImageResolutionError(f"GitLab API unreachable after {attempts} attempts: {last_error}")
+    raise ImageResolutionError(f"Registry request failed after {attempts} attempts: {last_error}")
+
+
+def gitlab_get(url: str, attempts: int = 3):
+    """GET a GitLab API URL and return parsed JSON."""
+
+    req = urllib.request.Request(url, headers={"User-Agent": "spi-stack-resolver"})
+    with _urlopen_with_retry(req, attempts=attempts) as resp:
+        return json.loads(resp.read())
+
+
+def github_get(url: str):
+    """GET a public GitHub API URL, using an available token when present."""
+
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "spi-stack-resolver",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
+    with _urlopen_with_retry(req) as resp:
+        return json.loads(resp.read())
+
+
+def _ghcr_manifest_digest(repository: str, tag: str) -> str:
+    """Resolve one public GHCR tag to its immutable OCI manifest digest."""
+
+    tag_path = urllib.parse.quote(tag, safe="")
+    manifest_url = f"{GHCR_HOST}/v2/{repository}/manifests/{tag_path}"
+    headers = {
+        "Accept": (
+            "application/vnd.oci.image.index.v1+json,"
+            "application/vnd.docker.distribution.manifest.list.v2+json,"
+            "application/vnd.oci.image.manifest.v1+json,"
+            "application/vnd.docker.distribution.manifest.v2+json"
+        ),
+        "User-Agent": "spi-stack-resolver",
+    }
+
+    def request(auth_token: str = ""):
+        request_headers = dict(headers)
+        if auth_token:
+            request_headers["Authorization"] = f"Bearer {auth_token}"
+        req = urllib.request.Request(manifest_url, headers=request_headers)
+        return _urlopen_with_retry(req)
+
+    try:
+        response = request()
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401:
+            raise ImageResolutionError(
+                f"{repository}:{tag}: GHCR manifest request failed with HTTP "
+                f"{exc.code} {exc.reason}"
+            ) from exc
+        challenge = exc.headers.get("WWW-Authenticate", "")
+        if not challenge.lower().startswith("bearer "):
+            raise ImageResolutionError(
+                f"GHCR did not return a Bearer challenge for {repository}:{tag}"
+            ) from exc
+        params = dict(_BEARER_PARAMETER_RE.findall(challenge))
+        realm = params.pop("realm", "")
+        if not realm:
+            raise ImageResolutionError(
+                f"GHCR Bearer challenge has no token realm for {repository}:{tag}"
+            ) from exc
+        token_url = f"{realm}?{urllib.parse.urlencode(params)}"
+        token_req = urllib.request.Request(
+            token_url,
+            headers={"User-Agent": "spi-stack-resolver"},
+        )
+        with _urlopen_with_retry(token_req) as token_resp:
+            token_data = json.loads(token_resp.read())
+        auth_token = token_data.get("token") or token_data.get("access_token")
+        if not auth_token:
+            raise ImageResolutionError(
+                f"GHCR did not issue a pull token for {repository}:{tag}"
+            ) from exc
+        try:
+            response = request(auth_token)
+        except urllib.error.HTTPError as retry_exc:
+            raise ImageResolutionError(
+                f"{repository}:{tag}: GHCR manifest request failed with HTTP "
+                f"{retry_exc.code} {retry_exc.reason}"
+            ) from retry_exc
+
+    with response:
+        digest = response.headers.get("Docker-Content-Digest", "")
+        response.read()
+    if not digest.startswith("sha256:"):
+        raise ImageResolutionError(f"GHCR returned no immutable digest for {repository}:{tag}")
+    return digest
 
 
 def _registry_repositories(project_id: int, image_name: str) -> list[dict]:
@@ -227,14 +328,69 @@ def resolve_image(service_name: str, entry: ImageRegistryEntry, branch: str) -> 
     )
 
 
+def resolve_ghcr_tag_image(service_name: str, org: str, tag: str) -> ResolvedImage:
+    """Resolve an exact public GHCR tag to its immutable manifest digest."""
+
+    registry_path = f"{org.lower()}/{service_name.lower()}"
+    digest = _ghcr_manifest_digest(registry_path, tag)
+    return ResolvedImage(
+        name=service_name,
+        repository=f"ghcr.io/{registry_path}",
+        tag=tag,
+        created_at="",
+        digest=digest,
+    )
+
+
+def resolve_ghcr_ref_image(service_name: str, org: str, ref: str) -> ResolvedImage:
+    """Resolve an SPI service Git ref to its public GHCR image digest."""
+
+    repo = service_name
+    quoted_ref = urllib.parse.quote(ref, safe="")
+    commit = github_get(f"{GITHUB_API_HOST}/repos/{org}/{repo}/commits/{quoted_ref}")
+    sha = commit.get("sha", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ImageResolutionError(
+            f"{service_name}: GitHub ref {org}/{repo}@{ref!r} returned no commit SHA"
+        )
+    tag = f"sha-{sha[:12]}"
+    registry_path = f"{org.lower()}/{repo.lower()}"
+    digest = _ghcr_manifest_digest(registry_path, tag)
+    committed_at = commit.get("commit", {}).get("committer", {}).get("date", "") or commit.get(
+        "commit", {}
+    ).get("author", {}).get("date", "")
+    return ResolvedImage(
+        name=service_name,
+        repository=f"ghcr.io/{registry_path}",
+        tag=tag,
+        created_at=committed_at,
+        digest=digest,
+    )
+
+
 def resolve_images(
-    branch: str = DEFAULT_IMAGE_BRANCH,
+    source: ImageSource = ImageSource.GHCR,
+    tag: str | None = None,
+    ref: str | None = None,
+    org: str = DEFAULT_GHCR_ORG,
     names: Iterable[str] | None = None,
 ) -> dict[str, ResolvedImage]:
     """Resolve all requested images atomically.
 
     Raises ImageResolutionError if any requested image cannot be resolved.
     """
+
+    source = ImageSource(source)
+    if source == ImageSource.GHCR:
+        if tag and ref:
+            raise ImageResolutionError("GHCR image tag and Git ref are mutually exclusive")
+        resolved_tag = tag or ("" if ref else DEFAULT_GHCR_TAG)
+        resolved_ref = ref or ""
+    else:
+        if tag:
+            raise ImageResolutionError("Exact image tags are supported only for GHCR")
+        resolved_tag = ""
+        resolved_ref = ref or DEFAULT_IMAGE_BRANCH
 
     requested = list(names or IMAGE_REGISTRY.keys())
     resolved: dict[str, ResolvedImage] = {}
@@ -243,19 +399,31 @@ def resolve_images(
     for name in requested:
         entry = IMAGE_REGISTRY[name]
         try:
-            resolved[name] = resolve_image(name, entry, branch)
+            if source == ImageSource.GHCR:
+                if resolved_ref:
+                    resolved[name] = resolve_ghcr_ref_image(name, org, resolved_ref)
+                else:
+                    resolved[name] = resolve_ghcr_tag_image(name, org, resolved_tag)
+            else:
+                resolved[name] = resolve_image(name, entry, resolved_ref)
         except Exception as exc:
-            errors.append(str(exc))
+            message = str(exc)
+            errors.append(message if message.startswith(f"{name}:") else f"{name}: {message}")
 
     if errors:
         raise ImageResolutionError("; ".join(errors))
     return resolved
 
 
-def resolve_image_lock(branch: str = DEFAULT_IMAGE_BRANCH) -> dict[str, ResolvedImage]:
+def resolve_image_lock(
+    source: ImageSource = ImageSource.GHCR,
+    tag: str | None = None,
+    ref: str | None = None,
+    org: str = DEFAULT_GHCR_ORG,
+) -> dict[str, ResolvedImage]:
     """Resolve the images controlled by the live Flux image lock."""
 
-    return resolve_images(branch=branch, names=image_lock_names())
+    return resolve_images(source=source, tag=tag, ref=ref, org=org, names=image_lock_names())
 
 
 def _yaml_string(value: str) -> str:
@@ -264,14 +432,33 @@ def _yaml_string(value: str) -> str:
 
 def render_image_lock_configmap(
     resolved: dict[str, ResolvedImage],
-    branch: str = DEFAULT_IMAGE_BRANCH,
+    source: ImageSource = ImageSource.GHCR,
+    tag: str | None = None,
+    ref: str | None = None,
+    org: str = DEFAULT_GHCR_ORG,
     resolved_at: datetime | None = None,
 ) -> str:
     """Render the Flux substitution ConfigMap for service image pins."""
 
     timestamp = (resolved_at or datetime.now(timezone.utc)).isoformat()
+    source = ImageSource(source)
+    if source == ImageSource.GHCR:
+        if tag and ref:
+            raise ImageResolutionError("GHCR image tag and Git ref are mutually exclusive")
+        resolved_tag = tag or ("" if ref else DEFAULT_GHCR_TAG)
+        resolved_ref = ref or ""
+    else:
+        if tag:
+            raise ImageResolutionError("Exact image tags are supported only for GHCR")
+        resolved_tag = ""
+        resolved_ref = ref or DEFAULT_IMAGE_BRANCH
+
     data: dict[str, str] = {
-        "IMAGE_BRANCH": branch,
+        "IMAGE_SOURCE": source.value,
+        "IMAGE_ORG": org if source == ImageSource.GHCR else "",
+        "IMAGE_TAG": resolved_tag,
+        "IMAGE_REF": resolved_ref,
+        "IMAGE_BRANCH": resolved_ref if source == ImageSource.COMMUNITY else "",
         "IMAGE_RESOLVED_AT": timestamp,
         "IMAGE_COUNT": str(len(resolved)),
     }
@@ -293,7 +480,9 @@ def render_image_lock_configmap(
         "  labels:",
         "    app.kubernetes.io/managed-by: osdu-spi-stack",
         "  annotations:",
-        f"    spi-stack.osdu.dev/image-branch: {_yaml_string(branch)}",
+        f"    spi-stack.osdu.dev/image-source: {_yaml_string(source.value)}",
+        f"    spi-stack.osdu.dev/image-tag: {_yaml_string(resolved_tag)}",
+        f"    spi-stack.osdu.dev/image-ref: {_yaml_string(resolved_ref)}",
         f"    spi-stack.osdu.dev/resolved-at: {_yaml_string(timestamp)}",
         "data:",
     ]

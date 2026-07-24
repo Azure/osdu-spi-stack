@@ -22,6 +22,7 @@ helper used by status/info/guard where panel output would be noise.
 
 import json
 import shlex
+import shutil
 import subprocess
 import time
 from typing import Any, Dict, List, Optional
@@ -44,6 +45,22 @@ TRANSIENT_KUBECTL_ERRORS = (
     "the server is currently unable to handle the request",
     "tls handshake timeout",
 )
+
+
+def resolve_command(cmd_list: List[str]) -> List[str]:
+    """Resolve the executable path for direct subprocess calls.
+
+    Windows often exposes CLIs such as Azure CLI as ``az.cmd``. PowerShell can
+    resolve ``az`` through PATHEXT, but ``subprocess.run(["az", ...])`` with
+    ``shell=False`` cannot. Resolve the first argv element up front so callers
+    keep transparent argv lists without relying on shell execution.
+    """
+    if not cmd_list:
+        return cmd_list
+    executable = shutil.which(cmd_list[0])
+    if executable:
+        return [executable, *cmd_list[1:]]
+    return cmd_list
 
 
 def run_command(
@@ -85,7 +102,7 @@ def run_command(
         command_syntax = Syntax(formatted_cmd, "bash", theme="monokai", line_numbers=False)
         console.print(Panel(command_syntax, title=title, border_style=style))
 
-    result = subprocess.run(cmd_list, capture_output=capture_output, text=text)
+    result = subprocess.run(resolve_command(cmd_list), capture_output=capture_output, text=text)
 
     if check and result.returncode != 0:
         if result.stderr and result.stderr.strip():
@@ -106,7 +123,7 @@ def kubectl_apply_yaml(
     delay = base_delay
     for attempt in range(1, retries + 1):
         proc = subprocess.run(
-            ["kubectl", "apply", "-f", "-"],
+            resolve_command(["kubectl", "apply", "-f", "-"]),
             input=yaml_content,
             capture_output=True,
             text=True,
@@ -138,7 +155,7 @@ def kubectl_json(args: List[str]) -> Optional[Dict[str, Any]]:
     Used by status/info/guard for background state reads where the
     transparent command panel from ``run_command`` would be noise.
     """
-    cmd = ["kubectl"] + args + ["-o", "json"]
+    cmd = resolve_command(["kubectl"] + args + ["-o", "json"])
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         return None

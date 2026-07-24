@@ -31,7 +31,7 @@ import typer
 
 from .config import Config, IngressMode
 from .console import console, display_result, display_yaml
-from .shell import kubectl_apply_yaml, kubectl_json
+from .shell import kubectl_apply_yaml, kubectl_json, resolve_command
 
 ISTIO_INGRESS_NAMESPACE = "aks-istio-ingress"
 # Istio with gatewayClassName=istio provisions a LoadBalancer Service
@@ -65,7 +65,7 @@ def discover_dns_zone() -> tuple:
     typer.Exit on zero or multiple (with an instructive message).
     """
     result = subprocess.run(
-        ["az", "network", "dns", "zone", "list", "-o", "json"],
+        resolve_command(["az", "network", "dns", "zone", "list", "-o", "json"]),
         capture_output=True,
         text=True,
     )
@@ -142,7 +142,11 @@ def resolve_post_deploy_inputs(config: Config) -> None:
 
 
 def create_ingress_config(
-    config: Config, external_dns_client_id: str, tenant_id: str, gateway_ip: str
+    config: Config,
+    external_dns_client_id: str,
+    tenant_id: str,
+    gateway_ip: str,
+    istio_revision: str,
 ) -> None:
     """Write the spi-ingress-config ConfigMap in osdu-flux.
 
@@ -157,6 +161,7 @@ def create_ingress_config(
         "GATEWAY_IP": gateway_ip or "",
         "TXT_OWNER_ID": config.cluster_name,
         "AZURE_TENANT_ID": tenant_id or "",
+        "ISTIO_REVISION": istio_revision,
     }
 
     if config.ingress_mode == IngressMode.AZURE:

@@ -73,7 +73,7 @@ TOOL_REGISTRY: dict[str, ToolInfo] = {
     },
     "kubelogin": {
         "check_args": ["--version"],
-        "description": "AAD exec plugin for kubectl (required by AKS Automatic)",
+        "description": "AAD exec plugin for kubectl (required by Azure RBAC for Kubernetes)",
         "install": {
             "darwin": "brew install Azure/kubelogin/kubelogin",
             "linux": "az aks install-cli",

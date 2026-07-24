@@ -20,18 +20,56 @@ before status/info/reconcile modify it. Set ``SPI_SKIP_GUARD=1`` to bypass.
 
 import os
 import subprocess
+from typing import Any, Dict, Optional
 
 import typer
 
 from .config import BASE_NAME
 from .console import console
-from .shell import kubectl_json
+from .shell import kubectl_json, resolve_command
+
+SPI_GITREPOSITORY = "osdu-spi-stack-system"
+# flux.bicep declares the Flux config in flux-system, but a stack may place its
+# Flux resources (GitRepository, Kustomizations, HelmReleases) in a dedicated
+# namespace such as osdu-flux. resolve_flux_namespace() reads the live cluster;
+# this constant is only the fallback when the GitRepository cannot be located.
+DEFAULT_FLUX_NAMESPACE = "osdu-flux"
+
+
+def find_spi_gitrepository() -> Optional[Dict[str, Any]]:
+    """Return the osdu-spi-stack-system GitRepository object, searched across all
+    namespaces, or None if absent.
+
+    Namespace-agnostic so the CLI works whether the stack's Flux resources live
+    in flux-system or a dedicated namespace such as osdu-flux.
+    """
+    data = kubectl_json(["get", "gitrepository", "-A", "-o", "json"])
+    if not data:
+        return None
+    for item in data.get("items", []):
+        if item.get("metadata", {}).get("name") == SPI_GITREPOSITORY:
+            return item
+    return None
+
+
+def resolve_flux_namespace(default: str = DEFAULT_FLUX_NAMESPACE) -> str:
+    """Namespace where the SPI Stack's Flux resources live.
+
+    Read from the live GitRepository, falling back to ``default`` when it cannot
+    be located (e.g. before the Flux CRDs are installed).
+    """
+    gr = find_spi_gitrepository()
+    if gr:
+        ns = gr.get("metadata", {}).get("namespace")
+        if ns:
+            return ns
+    return default
 
 
 def _get_current_context() -> str:
     """Return the current kubectl context name, or empty string on failure."""
     result = subprocess.run(
-        ["kubectl", "config", "current-context"],
+        resolve_command(["kubectl", "config", "current-context"]),
         capture_output=True,
         text=True,
     )
@@ -51,8 +89,7 @@ def _has_spi_fingerprint() -> bool:
     are not yet installed (e.g., right after ``spi up`` and before the
     extension has installed them).
     """
-    data = kubectl_json(["get", "gitrepository", "osdu-spi-stack-system", "-n", "osdu-flux"])
-    if data is not None:
+    if find_spi_gitrepository() is not None:
         return True
 
     ctx = _get_current_context()
@@ -61,24 +98,26 @@ def _has_spi_fingerprint() -> bool:
         return False
     # Resource group matches cluster name for spi-stack deployments
     result = subprocess.run(
-        [
-            "az",
-            "k8s-configuration",
-            "flux",
-            "show",
-            "--resource-group",
-            cluster_name,
-            "--cluster-name",
-            cluster_name,
-            "--cluster-type",
-            "managedClusters",
-            "--name",
-            "osdu-spi-stack-system",
-            "--query",
-            "provisioningState",
-            "--output",
-            "tsv",
-        ],
+        resolve_command(
+            [
+                "az",
+                "k8s-configuration",
+                "flux",
+                "show",
+                "--resource-group",
+                cluster_name,
+                "--cluster-name",
+                cluster_name,
+                "--cluster-type",
+                "managedClusters",
+                "--name",
+                "osdu-spi-stack-system",
+                "--query",
+                "provisioningState",
+                "--output",
+                "tsv",
+            ]
+        ),
         capture_output=True,
         text=True,
     )
@@ -118,7 +157,7 @@ def verify_spi_cluster() -> str:
             f"[error]Context '{ctx}' is set, but the cluster has no spi-stack deployment.[/error]"
         )
         console.print(
-            "[dim]The osdu-spi-stack-system GitRepository was not found in osdu-flux.[/dim]"
+            "[dim]The osdu-spi-stack-system GitRepository was not found on the cluster.[/dim]"
         )
         console.print(
             "[dim]Run 'uv run spi up' to deploy, or set SPI_SKIP_GUARD=1 to bypass.[/dim]"
@@ -130,7 +169,7 @@ def verify_spi_cluster() -> str:
 
 def get_suspend_status() -> bool:
     """Check if the Flux GitRepository source is suspended."""
-    data = kubectl_json(["get", "gitrepository", "osdu-spi-stack-system", "-n", "osdu-flux"])
-    if not data:
+    gr = find_spi_gitrepository()
+    if not gr:
         return False
-    return bool(data.get("spec", {}).get("suspend", False))
+    return bool(gr.get("spec", {}).get("suspend", False))

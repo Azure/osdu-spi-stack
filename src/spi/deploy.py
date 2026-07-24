@@ -20,6 +20,8 @@ Workload Identity SAs, in-cluster seed secrets), activates GitOps via Flux,
 and writes the KV runtime secrets that OSDU services read at startup.
 """
 
+import hashlib
+import json
 import os
 import subprocess
 import time
@@ -36,7 +38,6 @@ from .bootstrap import (
 from .config import Config, IngressMode, Profile
 from .console import console, display_result, display_yaml
 from .images import (
-    DEFAULT_IMAGE_BRANCH,
     ImageResolutionError,
     render_image_lock_configmap,
     resolve_image_lock,
@@ -49,7 +50,7 @@ from .ingress import (
 )
 from .paths import INFRA_ROOT
 from .secrets import ensure_secrets, get_or_create_seed
-from .shell import kubectl_apply_yaml, run_command
+from .shell import kubectl_apply_yaml, resolve_command, run_command
 from .templates import (
     istio_auth_resources,
     osdu_config_configmap,
@@ -58,6 +59,7 @@ from .templates import (
 )
 
 GITREPO_NAME = "osdu-spi-stack-system"
+OSDU_CONFIG_ROLLOUT_ANNOTATION = "spi.osdu/config-rollout-hash"
 
 INFRA_FLUX_BICEP = INFRA_ROOT / "flux.bicep"
 
@@ -93,10 +95,13 @@ def _create_osdu_config(config: Config, infra_outputs: dict) -> None:
         primary_cosmosdb_endpoint=infra_outputs.get(f"{partition}_cosmos_endpoint", ""),
         primary_storage_account_name=infra_outputs.get("common_storage_name", ""),
         primary_servicebus_namespace=infra_outputs.get(f"{partition}_sb_namespace", ""),
+        appinsights_key=infra_outputs.get("app_insights_instrumentation_key", ""),
+        app_insights_connection_string=infra_outputs.get("app_insights_connection_string", ""),
     )
     display_yaml(yaml_content, "ConfigMap: osdu-config")
     kubectl_apply_yaml(yaml_content, "apply osdu-config ConfigMap")
     display_result("osdu-config ConfigMap created")
+    _restart_osdu_deployments_if_config_changed(yaml_content)
 
     for ns in ["platform", "osdu"]:
         sa_yaml = workload_identity_sa(
@@ -106,6 +111,68 @@ def _create_osdu_config(config: Config, infra_outputs: dict) -> None:
         )
         kubectl_apply_yaml(sa_yaml, f"apply workload-identity-sa in {ns}")
     display_result("Workload Identity ServiceAccounts created")
+
+
+def _restart_osdu_deployments_if_config_changed(
+    yaml_content: str,
+) -> None:
+    """Restart existing services until the current envFrom config is applied."""
+    config_hash = hashlib.sha256(yaml_content.encode("utf-8")).hexdigest()
+    configmap = run_command(
+        ["kubectl", "get", "configmap", "osdu-config", "--namespace", "osdu", "--output", "json"],
+        display=False,
+        check=False,
+    )
+    if configmap.returncode != 0:
+        raise RuntimeError(
+            "Unable to read osdu-config rollout state: "
+            f"{configmap.stderr.strip() or configmap.stdout.strip()}"
+        )
+    try:
+        configmap_json = json.loads(configmap.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Unable to parse osdu-config rollout state.") from exc
+
+    applied_hash = (
+        configmap_json.get("metadata", {})
+        .get("annotations", {})
+        .get(OSDU_CONFIG_ROLLOUT_ANNOTATION, "")
+    )
+    if applied_hash == config_hash:
+        return
+
+    deployments = run_command(
+        ["kubectl", "get", "deployment", "--namespace", "osdu", "--output", "name"],
+        display=False,
+        check=False,
+    )
+    if deployments.returncode != 0:
+        raise RuntimeError(
+            "Unable to list OSDU deployments before applying the updated "
+            f"configuration: {deployments.stderr.strip() or deployments.stdout.strip()}"
+        )
+    if deployments.stdout.strip():
+        run_command(
+            ["kubectl", "rollout", "restart", "deployment", "--namespace", "osdu"],
+            description="Restart services for updated osdu-config",
+        )
+        display_result("OSDU service deployments restarted with updated configuration")
+
+    # Record success only after the restart request completes. If listing or
+    # restart fails, the old hash remains and the next spi up retries.
+    run_command(
+        [
+            "kubectl",
+            "annotate",
+            "configmap",
+            "osdu-config",
+            "--namespace",
+            "osdu",
+            f"{OSDU_CONFIG_ROLLOUT_ANNOTATION}={config_hash}",
+            "--overwrite",
+        ],
+        description="Record osdu-config rollout state",
+    )
 
 
 def _create_istio_auth(config: Config, infra_outputs: dict) -> None:
@@ -135,20 +202,33 @@ def _create_spi_init_values(config: Config) -> None:
     consumes via valuesFrom. Must run before Flux reconciles the HelmRelease.
     """
     console.print("\n[bold]Creating SPI init values ConfigMap...[/bold]")
-    yaml_content = spi_init_values_configmap(config.data_partitions)
+    yaml_content = spi_init_values_configmap(config.data_partitions, config.creator_user_ids)
     display_yaml(yaml_content, "ConfigMap: spi-init-values")
     kubectl_apply_yaml(yaml_content, "apply spi-init-values ConfigMap")
     display_result(
         f"spi-init-values ConfigMap created for partitions: {', '.join(config.data_partitions)}"
+        + (
+            f"; creator access: {', '.join(config.creator_user_ids)}"
+            if config.creator_user_ids
+            else "; creator access disabled"
+        )
     )
 
 
-def _resolve_image_lock(image_branch: str) -> str:
-    """Resolve current OSDU service images and render the Flux image lock."""
+def _resolve_image_lock(config: Config) -> str:
+    """Resolve the configured service image baseline and render the Flux lock."""
 
-    console.print("\n[bold]Resolving OSDU service images...[/bold]")
+    selector = config.image_ref or config.image_tag
+    console.print(
+        f"\n[bold]Resolving {config.image_source.value} service images at {selector}...[/bold]"
+    )
     try:
-        resolved = resolve_image_lock(branch=image_branch)
+        resolved = resolve_image_lock(
+            source=config.image_source,
+            tag=config.image_tag,
+            ref=config.image_ref,
+            org=config.image_org,
+        )
     except ImageResolutionError as exc:
         console.print(f"[error]Unable to resolve OSDU service images: {exc}[/error]")
         raise
@@ -158,7 +238,13 @@ def _resolve_image_lock(image_branch: str) -> str:
             f"  [success]{name}[/success] -> {image.repository.split('/')[-1]}:{image.tag[:12]}"
         )
 
-    return render_image_lock_configmap(resolved, branch=image_branch)
+    return render_image_lock_configmap(
+        resolved,
+        source=config.image_source,
+        tag=config.image_tag,
+        ref=config.image_ref,
+        org=config.image_org,
+    )
 
 
 def _create_image_lock(image_lock_yaml: str) -> None:
@@ -168,6 +254,57 @@ def _create_image_lock(image_lock_yaml: str) -> None:
     display_yaml(image_lock_yaml, "ConfigMap: osdu-image-lock")
     kubectl_apply_yaml(image_lock_yaml, "apply osdu-image-lock ConfigMap")
     display_result("osdu-image-lock ConfigMap created")
+
+
+def _wait_for_namespace(namespace: str, timeout_seconds: int = 300) -> None:
+    """Wait until a namespace exists."""
+    deadline = time.time() + timeout_seconds
+    last_error = ""
+    with console.status(f"[bold]Waiting for namespace {namespace}...[/bold]"):
+        while time.time() < deadline:
+            result = subprocess.run(
+                resolve_command(["kubectl", "get", "namespace", namespace]),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if result.returncode == 0:
+                display_result(f"Namespace {namespace} ready")
+                return
+            last_error = (result.stderr or result.stdout or "").strip()
+            time.sleep(5)
+    console.print(f"[error]Namespace {namespace} was not created: {last_error}[/error]")
+    raise typer.Exit(code=1)
+
+
+def _deploy_flux_config(config: Config, activate_gitops: bool) -> None:
+    """Install Flux, optionally creating the GitOps configuration."""
+    if activate_gitops:
+        console.print("\n[bold]Deploying Flux GitOps config via Bicep...[/bold]")
+        deployment_name = f"spi-flux-{config.env or 'base'}"
+    else:
+        console.print("\n[bold]Installing Flux extension via Bicep...[/bold]")
+        deployment_name = f"spi-flux-ext-{config.env or 'base'}"
+
+    run_bicep_deployment(
+        template_path=str(INFRA_FLUX_BICEP),
+        parameters={
+            "clusterName": config.cluster_name,
+            "repoUrl": config.repo_url,
+            "repoBranch": config.repo_branch,
+            "profile": config.gitops_profile,
+            "ingressMode": config.ingress_mode.value,
+            "activateGitOps": activate_gitops,
+            "gitRepositoryLocalAuthRef": (
+                "osdu-spi-stack-system-auth" if config.repo_url.startswith("ssh://") else ""
+            ),
+        },
+        resource_group=config.resource_group,
+        deployment_name=deployment_name,
+    )
+    if not activate_gitops:
+        _wait_for_namespace("osdu-flux")
 
 
 def _write_keyvault_bootstrap_secrets(
@@ -189,9 +326,11 @@ def _write_keyvault_bootstrap_secrets(
     """
     console.print("\n[bold]Writing OSDU bootstrap secrets to Key Vault...[/bold]")
     tbl_endpoint = f"https://{storage_account_name}.table.core.windows.net/"
-    # ECK's self-signed cert SANs cover elasticsearch-es-http.platform.svc
-    # but NOT the ...svc.cluster.local form; with elastic-ssl-enabled=true
-    # the long form fails hostname verification (SSLPeerUnverifiedException).
+    # The ECK Elasticsearch HTTP cert SANs cover the short service name
+    # (elasticsearch-es-http.platform.svc) but NOT the fully-qualified
+    # ...svc.cluster.local form. With elastic-ssl-enabled=true the OSDU client
+    # verifies the hostname, so the endpoint MUST use a SAN-listed name or
+    # every search/indexer call fails with SSLPeerUnverifiedException.
     elastic_endpoint = "https://elasticsearch-es-http.platform.svc:9200"
     redis_hostname = "platform-redis-master.platform.svc.cluster.local"
 
@@ -218,20 +357,22 @@ def _write_keyvault_bootstrap_secrets(
     for name, value in secrets_to_write:
         while True:
             result = subprocess.run(
-                [
-                    "az",
-                    "keyvault",
-                    "secret",
-                    "set",
-                    "--vault-name",
-                    keyvault_name,
-                    "--name",
-                    name,
-                    "--value",
-                    value,
-                    "--output",
-                    "none",
-                ],
+                resolve_command(
+                    [
+                        "az",
+                        "keyvault",
+                        "secret",
+                        "set",
+                        "--vault-name",
+                        keyvault_name,
+                        "--name",
+                        name,
+                        "--value",
+                        value,
+                        "--output",
+                        "none",
+                    ]
+                ),
                 capture_output=True,
                 text=True,
             )
@@ -266,15 +407,17 @@ def _pin_gitops_source() -> None:
     console.print("\n[bold]Pinning environment to deploy commit...[/bold]")
 
     wait_result = subprocess.run(
-        [
-            "kubectl",
-            "wait",
-            "--for=condition=Ready",
-            f"gitrepository/{GITREPO_NAME}",
-            "-n",
-            "osdu-flux",
-            "--timeout=120s",
-        ],
+        resolve_command(
+            [
+                "kubectl",
+                "wait",
+                "--for=condition=Ready",
+                f"gitrepository/{GITREPO_NAME}",
+                "-n",
+                "osdu-flux",
+                "--timeout=120s",
+            ]
+        ),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -312,7 +455,6 @@ def deploy_azure(
     config: Config,
     dry_run: bool = False,
     refresh_images: bool = True,
-    image_branch: str = DEFAULT_IMAGE_BRANCH,
 ) -> None:
     """Provision Azure infra, bootstrap Kubernetes, deploy via GitOps.
 
@@ -326,7 +468,7 @@ def deploy_azure(
     if refresh_images and not dry_run and config.profile is not Profile.MINIMAL:
         # Resolve before provisioning so registry/API failures stop quickly and
         # never leave a partially configured cluster with a mixed image set.
-        image_lock_yaml = _resolve_image_lock(image_branch)
+        image_lock_yaml = _resolve_image_lock(config)
 
     # For dns mode we need to resolve the DNS zone BEFORE running main.bicep
     # so the conditional external-dns-identity + DNS Zone Contributor role
@@ -343,10 +485,16 @@ def deploy_azure(
         return
 
     # Phase 4: Kubernetes bootstrap
-    ensure_namespaces()
-    ensure_secrets()
+    ensure_namespaces(infra_outputs.get("istio_revision", ""))
     create_storage_classes()
     install_gateway_api_crds()
+
+    # AKS Automatic protects the extension-managed flux-system namespace.
+    # Install the controllers there, but keep SPI-owned GitOps inputs in
+    # the user-managed osdu-flux namespace before enabling reconciliation.
+    _deploy_flux_config(config, activate_gitops=False)
+
+    ensure_secrets()
     if image_lock_yaml:
         _create_image_lock(image_lock_yaml)
     _create_osdu_config(config, infra_outputs)
@@ -360,22 +508,11 @@ def deploy_azure(
         external_dns_client_id=infra_outputs.get("external_dns_client_id", ""),
         tenant_id=infra_outputs.get("tenant_id", ""),
         gateway_ip=get_ingress_ip(),
+        istio_revision=infra_outputs.get("istio_revision", ""),
     )
 
-    # Phase 5: GitOps activation (Flux extension + Kustomization via Bicep)
-    console.print("\n[bold]Deploying Flux extension and GitOps config via Bicep...[/bold]")
-    run_bicep_deployment(
-        template_path=str(INFRA_FLUX_BICEP),
-        parameters={
-            "clusterName": config.cluster_name,
-            "repoUrl": config.repo_url,
-            "repoBranch": config.repo_branch,
-            "profile": config.profile.value,
-            "ingressMode": config.ingress_mode.value,
-        },
-        resource_group=config.resource_group,
-        deployment_name=f"spi-flux-{config.env or 'base'}",
-    )
+    # Phase 5: GitOps activation (Kustomization via Bicep)
+    _deploy_flux_config(config, activate_gitops=True)
     display_result(
         f"GitOps activated for profile: {config.profile.value}, "
         f"ingress: {config.ingress_mode.value}"

@@ -14,8 +14,6 @@
 
 """In-cluster bootstrap: namespaces, StorageClasses, Gateway API CRDs."""
 
-import subprocess
-
 from .console import console, display_result, display_yaml
 from .shell import kubectl_apply_yaml, kubectl_json, run_command
 from .templates import storage_class
@@ -24,19 +22,26 @@ STORAGE_CLASSES = ["pg-storageclass", "redis-storageclass", "es-storageclass"]
 
 
 def _detect_istio_revision() -> str:
-    """Detect the installed Istio ASM revision from the cluster.
-
-    The istiod deployment is named ``istiod-<revision>`` (e.g.
-    ``istiod-asm-1-30``); the aks-istio-system namespace itself carries no
-    ``istio.io/rev`` label, so the deployment name is the reliable source.
-    """
+    """Detect the installed Istio ASM revision from the cluster."""
     data = kubectl_json(["get", "deploy", "-n", "aks-istio-system"])
     if data and data.get("items"):
         for item in data["items"]:
             name = item.get("metadata", {}).get("name", "")
             if name.startswith("istiod-"):
                 return name.removeprefix("istiod-")
-    return "asm-1-30"
+
+    data = kubectl_json(["get", "ns", "aks-istio-system"])
+    if data:
+        rev = data.get("metadata", {}).get("labels", {}).get("istio.io/rev", "")
+        if rev:
+            return rev
+
+    data = kubectl_json(["get", "pods", "-n", "aks-istio-system"])
+    if data and data.get("items"):
+        rev = data["items"][0].get("metadata", {}).get("labels", {}).get("istio.io/rev", "")
+        if rev:
+            return rev
+    raise RuntimeError("Unable to detect the installed AKS managed Istio revision.")
 
 
 def ensure_namespaces(istio_revision: str = "") -> None:
@@ -48,11 +53,13 @@ def ensure_namespaces(istio_revision: str = "") -> None:
     console.print(f"  [info]Istio revision: {istio_revision}[/info]")
 
     for ns in ["osdu-flux", "foundation", "platform"]:
-        subprocess.run(
-            ["kubectl", "create", "namespace", ns],
-            capture_output=True,
-            text=True,
-        )
+        yaml_content = f"""\
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {ns}
+"""
+        kubectl_apply_yaml(yaml_content, f"create namespace {ns}")
 
     # Only osdu namespace gets Istio injection (platform middleware
     # does not need the service mesh and istio-init requires NET_ADMIN

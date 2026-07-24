@@ -83,7 +83,7 @@ def _read_osdu_config() -> dict:
 
 def _read_flux_extension_values() -> dict:
     """Read Azure metadata injected by the AKS Flux extension."""
-    data = kubectl_json(["get", "configmap", "flux-extension-values", "-n", "osdu-flux"])
+    data = kubectl_json(["get", "configmap", "flux-extension-values", "-n", "flux-system"])
     if not data:
         return {}
     return data.get("data", {}) or {}

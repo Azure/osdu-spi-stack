@@ -14,6 +14,26 @@
 
 """YAML templates for Kubernetes resources."""
 
+import json
+
+# Disabled/dummy App Insights fallback. core-lib-azure >= 2.5.6 NPEs on every
+# request if the App Insights SDK is not initialized (see osdu_config_configmap).
+# When no real App Insights is provisioned we still set a syntactically valid
+# connection string so the SDK initializes. Inline configuration disables
+# telemetry collection, auxiliary exporters, and retry persistence.
+_DUMMY_AI_INSTRUMENTATION_KEY = "00000000-0000-0000-0000-000000000000"
+_DUMMY_AI_CONNECTION_STRING = (
+    f"InstrumentationKey={_DUMMY_AI_INSTRUMENTATION_KEY};IngestionEndpoint=https://localhost/"
+)
+_DUMMY_AI_CONFIGURATION = (
+    f'{{"connectionString":"{_DUMMY_AI_CONNECTION_STRING}",'
+    '"sampling":{"percentage":0},'
+    '"preview":{"liveMetrics":{"enabled":false},"profiler":{"enabled":false},'
+    '"statsbeat":{"disabled":true},"diskPersistenceMaxSizeMb":0},'
+    '"internal":{"statsbeat":{"disabledAll":true},'
+    '"preAggregatedStandardMetrics":{"enabled":false}}}'
+)
+
 
 def storage_class(
     name: str,
@@ -50,6 +70,7 @@ def osdu_config_configmap(
     primary_storage_account_name: str,
     primary_servicebus_namespace: str,
     appinsights_key: str = "",
+    app_insights_connection_string: str = "",
 ) -> str:
     """ConfigMap with Azure PaaS endpoints for OSDU services.
 
@@ -65,7 +86,25 @@ def osdu_config_configmap(
     UAMI client id (single-resource scope, dodges AADSTS28000); override
     with the AAD_CLIENT_ID host env var to point at a separate OSDU app
     registration.
+
+    APPLICATIONINSIGHTS_CONNECTION_STRING / APPINSIGHTS_INSTRUMENTATIONKEY are
+    consumed by the bundled App Insights Java agent and the core-lib-azure 2.x
+    web SDK. core-lib-azure >= 2.5.6 ships LogCustomDimensionFilter, which reads
+    the App Insights request-telemetry context on EVERY request with no null
+    guard; if App Insights is not initialized the service returns HTTP 500 on
+    every request. AKS Automatic enabled App Insights by default, but AKS Base
+    does not, so we always populate a connection string here -- the real one
+    when App Insights is provisioned (infra/main.bicep), or a disabled/dummy
+    fallback (telemetry goes nowhere) so the SDK still initializes and the
+    filter does not NPE.
     """
+    ai_conn = app_insights_connection_string or _DUMMY_AI_CONNECTION_STRING
+    ai_key = appinsights_key or _DUMMY_AI_INSTRUMENTATION_KEY
+    ai_disabled_config = (
+        f"  APPLICATIONINSIGHTS_CONFIGURATION_CONTENT: '{_DUMMY_AI_CONFIGURATION}'\n"
+        if not app_insights_connection_string
+        else ""
+    )
     return f"""\
 apiVersion: v1
 kind: ConfigMap
@@ -88,7 +127,11 @@ data:
   PRIMARY_SERVICEBUS_NAMESPACE: "{primary_servicebus_namespace}"
   REDIS_PORT: "6379"
   SERVER_PORT: "8080"
-  APPINSIGHTS_KEY: "{appinsights_key}"
+  APPINSIGHTS_KEY: "{ai_key}"
+  APPINSIGHTS_INSTRUMENTATIONKEY: "{ai_key}"
+  APPLICATIONINSIGHTS_CONNECTION_STRING: "{ai_conn}"
+  APPLICATIONINSIGHTS_SELF_DIAGNOSTICS_LEVEL: "OFF"
+{ai_disabled_config}\
   ELASTICSEARCH_HOST: "elasticsearch-es-http.platform.svc"
 """
 
@@ -128,15 +171,19 @@ def istio_auth_resources(
     are not rejected by managed-mesh defaults.
 
     Both ``entra_client_id`` (the OSDU UAMI client id) and ``aad_client_id``
-    are listed in the jwtRules audiences. The bootstrap Jobs present tokens
-    with ``aud=https://management.azure.com/``; the Lua's special-case branch
-    pins ``x-app-id`` to ``entra_client_id`` for those. Service-to-service
-    calls inside the cluster mint tokens via core-lib-azure's ``getWIToken``
-    with scope ``${{aadClientId}}/.default`` (i.e. ``aud=aad_client_id``),
-    so ``aad_client_id`` must also be a valid audience for those calls to
-    pass jwt_authn and have ``x-app-id`` projected. When the operator does
-    not override AAD_CLIENT_ID, both values are equal and only one entry is
-    emitted per jwtRule.
+    are listed in the jwtRules audiences, alongside
+    ``https://management.azure.com[/]`` which the bootstrap Jobs and onboarded
+    CI identities present. The Lua does not special-case any audience or
+    identity: it projects the caller's own application id (``appid`` for v1
+    app/MSI tokens, ``azp`` for v2) as ``x-app-id`` / ``x-user-id``, and the
+    access decision belongs to entitlements (the projected identity must be a
+    member; ``spi onboard`` seeds CI identities via the AddMember API).
+    Service-to-service calls inside the cluster mint tokens via core-lib-azure's
+    ``getWIToken`` with scope ``${{aadClientId}}/.default`` (i.e.
+    ``aud=aad_client_id``), so ``aad_client_id`` must also be a valid audience
+    for those calls to pass jwt_authn. When the operator does not override
+    AAD_CLIENT_ID, both values are equal and only one entry is emitted per
+    jwtRule.
     """
     extra_aud = (
         f'\n        - "{aad_client_id}"'
@@ -212,7 +259,6 @@ spec:
             inlineCode: |
               local AAD_V1_ISSUER = "sts.windows.net"
               local AAD_V2_ISSUER = "login.microsoftonline.com"
-              local entraClientId = "{entra_client_id}"
 
               local function processAADV1(payload, h)
                 if payload["unique_name"] then
@@ -245,17 +291,14 @@ spec:
                 end
                 local payload = meta["payload"]
 
-                local aud = payload["aud"]
-                if aud then
-                  h:headers():add("x-app-id", aud)
-                  if aud == "https://management.azure.com/"
-                     or aud == "https://management.azure.com" then
-                    if payload["appid"] then
-                      h:headers():replace("x-app-id", entraClientId)
-                      h:headers():add("x-user-id", entraClientId)
-                    end
-                    return
-                  end
+                -- This filter ONLY projects identity. It extracts the calling application
+                -- id (appid for v1 app/MSI tokens, azp for v2, falling back to the audience
+                -- for user tokens that carry neither) as x-app-id, and the caller identity
+                -- as x-user-id (below). The actual access decision belongs to entitlements,
+                -- which authorizes the projected x-user-id by group membership.
+                local appId = payload["appid"] or payload["azp"] or payload["aud"]
+                if appId then
+                  h:headers():add("x-app-id", appId)
                 end
 
                 local iss = payload["iss"]
@@ -268,7 +311,9 @@ spec:
 """
 
 
-def spi_init_values_configmap(partitions: list[str]) -> str:
+def spi_init_values_configmap(
+    partitions: list[str], creator_user_ids: list[str] | None = None
+) -> str:
     """ConfigMap consumed by the osdu-spi-init HelmRelease via valuesFrom.
 
     Lives in osdu-flux (where the HelmRelease is reconciled) and carries the
@@ -288,4 +333,5 @@ data:
   values.yaml: |
     partitions:
 {partition_lines}
+    creatorUserIds: {json.dumps(creator_user_ids or [])}
 """
