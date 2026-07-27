@@ -144,7 +144,7 @@ def _build_config(
     env: str = "",
     repo_url: str = "https://github.com/Azure/osdu-spi-stack.git",
     branch: str = "main",
-    location: str = "eastus2",
+    location: str = "westus3",
     data_partitions: Optional[List[str]] = None,
     ingress_mode: IngressMode = IngressMode.AZURE,
     dns_zone: str = "",
@@ -584,7 +584,11 @@ def up(
         help="Git repository URL",
     ),
     branch: str = typer.Option("main", "--branch", help="Git branch"),
-    location: str = typer.Option("eastus2", "--location", help="Azure region"),
+    location: str = typer.Option(
+        "westus3",
+        "--location",
+        help="Azure region (eastus2/centralus have shown API Server VNet Integration capacity constraints)",
+    ),
     aks_mode: Optional[AksMode] = typer.Option(
         None,
         "--aks-mode",

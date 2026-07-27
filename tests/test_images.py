@@ -113,11 +113,11 @@ def test_resolve_ghcr_tag_image_pins_manifest_digest(monkeypatch):
 
     resolved = resolve_ghcr_tag_image(
         service_name="partition",
-        org="yuchen-osdu",
+        org="Azure",
         tag="main-snapshot",
     )
 
-    assert resolved.repository == "ghcr.io/yuchen-osdu/partition"
+    assert resolved.repository == "ghcr.io/azure/partition"
     assert resolved.tag == "main-snapshot"
     assert resolved.digest == "sha256:" + ("b" * 64)
     assert resolved.image == f"{resolved.repository}@{resolved.digest}"
@@ -142,11 +142,11 @@ def test_resolve_ghcr_ref_image_uses_ref_commit_and_manifest_digest(monkeypatch)
 
     resolved = resolve_ghcr_ref_image(
         service_name="partition",
-        org="yuchen-osdu",
+        org="Azure",
         ref="fix/core-lib-azure-3.0.1",
     )
 
-    assert resolved.repository == "ghcr.io/yuchen-osdu/partition"
+    assert resolved.repository == "ghcr.io/azure/partition"
     assert resolved.tag == "sha-" + commit_sha[:12]
     assert resolved.digest == "sha256:" + ("b" * 64)
     assert resolved.image == f"{resolved.repository}@{resolved.digest}"
@@ -156,7 +156,7 @@ def test_render_ghcr_main_lock_records_tag_selector():
     resolved = {
         name: ResolvedImage(
             name=name,
-            repository=f"ghcr.io/yuchen-osdu/{name}",
+            repository=f"ghcr.io/azure/{name}",
             tag="main-snapshot",
             created_at="",
             digest=f"sha256:{name}",
@@ -167,7 +167,7 @@ def test_render_ghcr_main_lock_records_tag_selector():
     yaml = render_image_lock_configmap(
         resolved,
         source=ImageSource.GHCR,
-        org="yuchen-osdu",
+        org="Azure",
         resolved_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
     )
 

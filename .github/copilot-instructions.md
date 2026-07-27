@@ -135,9 +135,10 @@ in an SPI Stack deployment.
 
 ## OSDU Service Images
 
-Services default to public images built by the yuchen-osdu SPI service forks:
-- Baseline: `ghcr.io/yuchen-osdu/<service>:main-snapshot`, resolved once and
-  pinned by immutable digest.
+Services default to public images built by the SPI service forks:
+- Baseline: `ghcr.io/<image-org>/<service>:main-snapshot`, resolved once and
+  pinned by immutable digest. `--image-org` selects the organization and
+  defaults to `Azure`.
 - `--image-tag` selects a coordinated release tag.
 - `--image-ref` is the advanced feature-ref path and resolves to each
   repository's `sha-<commit>` image.

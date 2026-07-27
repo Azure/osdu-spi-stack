@@ -52,7 +52,7 @@ class TestValidPartitions:
     def test_ghcr_images_are_the_default_baseline(self):
         cfg = Config(env="dev1")
         assert cfg.image_source == ImageSource.GHCR
-        assert cfg.image_org == "yuchen-osdu"
+        assert cfg.image_org == "Azure"
         assert cfg.image_tag == "main-snapshot"
         assert cfg.image_ref == ""
 

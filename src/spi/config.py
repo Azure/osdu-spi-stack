@@ -89,7 +89,7 @@ class Config(BaseModel):
     cluster_name: str = BASE_NAME
     # Azure
     resource_group: str = BASE_NAME
-    location: str = "eastus2"
+    location: str = "westus3"
     # Automatic is the upstream/default topology. Base preserves the proven
     # Base SKU + Node Autoprovisioning alternative for explicit deployments.
     aks_mode: AksMode = AksMode.AUTOMATIC
@@ -97,9 +97,9 @@ class Config(BaseModel):
     # is persisted on the resource group so idempotent reruns preserve the
     # environment's original observability mode.
     application_insights: bool = False
-    # Service image baseline. The yuchen SPI Stack defaults to images produced
-    # by the yuchen-osdu service forks; community GitLab remains an explicit
-    # compatibility fallback.
+    # Service image baseline. The stack defaults to images produced by the SPI
+    # service forks in the configured GitHub organization; community GitLab
+    # remains an explicit compatibility fallback.
     image_source: ImageSource = ImageSource.GHCR
     image_org: str = DEFAULT_GHCR_ORG
     image_tag: str = DEFAULT_GHCR_TAG

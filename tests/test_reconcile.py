@@ -120,7 +120,7 @@ def test_legacy_image_branch_selects_community_images():
 def test_image_refresh_preserves_current_selection_when_options_omitted():
     current = (
         ImageSource.GHCR,
-        "yuchen-osdu",
+        "Azure",
         "",
         "fix/core-lib-azure-3.0.1",
     )
@@ -145,7 +145,7 @@ def test_image_source_change_uses_new_source_defaults():
         image_tag=None,
         image_ref=None,
         image_branch=None,
-        current=(ImageSource.GHCR, "yuchen-osdu", "", "feature/ref"),
+        current=(ImageSource.GHCR, "Azure", "", "feature/ref"),
     ) == (ImageSource.COMMUNITY, "", "", "master")
 
 
@@ -156,7 +156,7 @@ def test_ghcr_defaults_to_main_snapshot():
         image_tag=None,
         image_ref=None,
         image_branch=None,
-    ) == (ImageSource.GHCR, "yuchen-osdu", "main-snapshot", "")
+    ) == (ImageSource.GHCR, "Azure", "main-snapshot", "")
 
 
 def test_explicit_tag_replaces_feature_ref():
@@ -166,8 +166,8 @@ def test_explicit_tag_replaces_feature_ref():
         image_tag="v1.2.3",
         image_ref=None,
         image_branch=None,
-        current=(ImageSource.GHCR, "yuchen-osdu", "", "feature/ref"),
-    ) == (ImageSource.GHCR, "yuchen-osdu", "v1.2.3", "")
+        current=(ImageSource.GHCR, "Azure", "", "feature/ref"),
+    ) == (ImageSource.GHCR, "Azure", "v1.2.3", "")
 
 
 @pytest.mark.parametrize(

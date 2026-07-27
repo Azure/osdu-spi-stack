@@ -43,7 +43,7 @@ Changing the default must not remove the community option.
 ## Decision Outcome
 
 Chosen option: "Use GHCR tags as discovery selectors and pin their OCI
-digests." The default baseline is each `yuchen-osdu` service package's
+digests." The default baseline is each SPI service package's
 `main-snapshot`, representing its latest successful `main` build. The CLI
 resolves that tag once and stores the immutable OCI digest in
 `osdu-image-lock`.
@@ -95,9 +95,10 @@ The image lock covers 13 running services. The schema-load Job remains outside
 the lock because a completed Job cannot be upgraded safely in place; it is
 still pinned to an immutable community image.
 
-The GitHub organization is configurable. `yuchen-osdu` is the current fork
-default and can later change to `Azure` once the official Azure organization
-hosts the complete service and package fleet.
+The GitHub organization is configurable via `--image-org`. It defaults to
+`Azure`; until that organization hosts the complete service and package fleet,
+adopters point it at whichever organization publishes their SPI service forks,
+or fall back to `--image-source community`.
 
 ## Live Validation
 

@@ -27,7 +27,7 @@ def test_existing_aks_outputs_includes_kubelet_identity_object_id():
     cluster = {
         "name": cfg.cluster_name,
         "id": "/subscriptions/s/resourceGroups/rg/providers/x/managedClusters/c",
-        "location": "eastus2",
+        "location": cfg.location,
         "provisioningState": "Succeeded",
         "sku": {"name": "Automatic"},
         "oidcIssuerProfile": {"issuerUrl": "https://oidc"},
@@ -50,7 +50,7 @@ def test_existing_aks_outputs_kubelet_id_empty_when_absent():
     cfg = Config(env="dev1")
     cluster = {
         "name": cfg.cluster_name,
-        "location": "eastus2",
+        "location": cfg.location,
         "provisioningState": "Succeeded",
         "sku": {"name": "Automatic"},
     }
