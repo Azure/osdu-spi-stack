@@ -61,7 +61,10 @@ spec:
             defaultMode: 0755
       containers:
         - name: loader
-          image: community.opengroup.org:5555/osdu/platform/system/schema-service/schema-service-schema-load-master:df3e78629f7e398cbda86d93946e49b011076d8f
+          # Community master tags are garbage-collected: only the few most
+          # recent SHAs stay pullable, so a long-lived pin eventually 404s.
+          # Keep this on the same commit as the schema-service image.
+          image: community.opengroup.org:5555/osdu/platform/system/schema-service/schema-service-schema-load-master:146f2f613cb56ad5b6089d25ac0577c04db6377a
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
