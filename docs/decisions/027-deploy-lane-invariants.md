@@ -14,8 +14,8 @@ that lives in one fork but never reached the others.
 
 Adopt the following invariants and fixes across the canonical template
 (`osdu-spi`) and every service fork. The template is the source of truth
-(ADR-037 image ownership applies to actions too); a fix proven in one fork is not
-done until it is in the template.
+(the template repository's own image-ownership decision applies to actions too);
+a fix proven in one fork is not done until it is in the template.
 
 ### 1. CI mode must suspend HelmReleases, not only Kustomizations
 

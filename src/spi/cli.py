@@ -959,15 +959,19 @@ def reconcile(
         )
         return
 
+    # An environment created before the revision was published would let Flux
+    # apply an empty istio.io/rev and drop sidecar injection. This must run for
+    # BOTH paths: plain `spi reconcile` also pulls the new commit and annotates
+    # every Kustomization including spi-namespaces, so it can render the empty
+    # label just as readily as --resume can.
+    try:
+        ensure_istio_revision_published()
+    except RuntimeError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+
     if resume:
         ns = resolve_flux_namespace()
-        # An environment created before the revision was published would let
-        # Flux apply an empty istio.io/rev and drop sidecar injection.
-        try:
-            ensure_istio_revision_published()
-        except RuntimeError as exc:
-            console.print(f"[error]{exc}[/error]")
-            raise typer.Exit(code=1)
         console.print(f"\n[bold]Resuming Flux reconciliation in '{ns}'...[/bold]")
         _set_flux_suspend(ns, False)
         console.print("[success]GitRepository, Kustomizations, and HelmReleases resumed.[/success]")

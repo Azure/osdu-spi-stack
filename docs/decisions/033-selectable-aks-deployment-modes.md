@@ -11,7 +11,7 @@ deciders: "Yuchen Wang"
 
 Two validated cluster topologies now exist for the same stack. AKS Automatic is
 the upstream substrate (ADR-002) and is deployable again on Kubernetes 1.36
-(ADR-019). AKS Base with Node Autoprovisioning (ADR-026) was adopted while
+(ADR-019). AKS Base with Node Autoprovisioning (ADR-028) was adopted while
 Automatic blocked the mutating webhooks cert-manager and CloudNativePG require,
 and it remains a fully validated deployment shape with explicit Azure RBAC,
 Cilium overlay networking, and a region-aware system pool.

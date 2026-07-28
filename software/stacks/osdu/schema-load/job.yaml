@@ -18,6 +18,15 @@ kind: Job
 metadata:
   name: schema-load
   namespace: osdu
+  annotations:
+    # A Job's spec.template is immutable, so a change to the loader image or its
+    # command cannot be applied in place: Flux's server-side apply fails with an
+    # immutable-field error, the stale Job survives, this Kustomization reports
+    # Ready=False, and spi-osdu-reference stays blocked behind it. Let Flux
+    # delete and recreate the Job instead. Safe for a one-shot loader because
+    # already-registered schemas return 409 and are skipped, so a re-run
+    # converges quickly.
+    kustomize.toolkit.fluxcd.io/force: enabled
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack
     app.kubernetes.io/component: schema-load
