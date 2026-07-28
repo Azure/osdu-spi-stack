@@ -4,8 +4,10 @@ Azure-native OSDU deployment. A Python CLI (`spi`) provisions Azure infra with
 `az` + Bicep, bootstraps AKS Automatic, then Flux CD reconciles Kubernetes
 workloads from this repository. Repo: `Azure/osdu-spi-stack`.
 
-The only tool you need is [`uv`](https://docs.astral.sh/uv/); it manages Python,
-dependencies, and every command below.
+The only tool you need for repo work is [`uv`](https://docs.astral.sh/uv/); it manages
+Python, dependencies, and every command below. Deploying to Azure additionally
+requires `az`, `bicep`, `kubectl`, `kubelogin`, `flux`, and `helm`, which
+`uv run spi check` verifies.
 
 ## Repository map
 
@@ -58,8 +60,9 @@ Sanity-check the CLI itself with `uv run spi --help` and `uv run spi check`.
 
 - **Azure only.** When reading cloned OSDU service repos, only `*-azure/` providers
   (and shared `*-core/`) matter; skip `*-aws/`, `*-gc/`, `*-ibm/`, `*-core-plus/`.
-- **No stored credentials.** All Azure PaaS access uses Workload Identity; never
-  commit secrets or hardcode credentials.
+- **No stored credentials.** Workload Identity is the strategic path for Azure PaaS
+  access; a key/SAS compatibility path remains for community images, with keys
+  kept in Key Vault (ADR-021). Never commit secrets or hardcode credentials.
 - Architecture decisions are recorded as ADRs in `docs/decisions/`; check there
   before changing the deployment model.
 
