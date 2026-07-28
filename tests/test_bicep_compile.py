@@ -18,11 +18,14 @@ Guards against schema drift that would only surface at deploy time. Skipped
 when the Azure CLI is not installed (e.g., contributor laptops without az).
 """
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from spi.config import Profile
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INFRA_DIR = REPO_ROOT / "infra"
@@ -67,3 +70,17 @@ def test_bicepparam_files_compile():
             f"stdout:\n{result.stdout}\n"
             f"stderr:\n{result.stderr}"
         )
+
+
+def test_flux_bicep_allows_every_profile():
+    source = (INFRA_DIR / "flux.bicep").read_text()
+    match = re.search(
+        r"@allowed\(\[(?P<values>.*?)\]\)\s*param profile string",
+        source,
+        re.DOTALL,
+    )
+    assert match is not None, "profile @allowed block not found in infra/flux.bicep"
+
+    allowed_block = match.group("values")
+    for profile in Profile:
+        assert f"'{profile.value}'" in allowed_block
