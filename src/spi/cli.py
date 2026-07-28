@@ -77,9 +77,10 @@ def _show_config(config: Config):
     table.add_row("Branch", config.repo_branch)
     table.add_row("Data Partitions", ", ".join(config.data_partitions))
     table.add_row("Key Vault", config.keyvault_name)
-    table.add_row("Ingress Mode", config.ingress_mode.value)
-    if config.ingress_mode == IngressMode.DNS and config.dns_zone:
-        table.add_row("DNS Zone", f"{config.dns_zone} (rg: {config.dns_zone_rg})")
+    if config.profile is not Profile.BARE:
+        table.add_row("Ingress Mode", config.ingress_mode.value)
+        if config.ingress_mode == IngressMode.DNS and config.dns_zone:
+            table.add_row("DNS Zone", f"{config.dns_zone} (rg: {config.dns_zone_rg})")
 
     aad_override = os.environ.get("AAD_CLIENT_ID", "").strip()
     if aad_override:
@@ -98,9 +99,10 @@ def _show_next_steps(config: Config):
     table.add_column("Command", style="yellow")
 
     table.add_row("Watch progress", "kubectl get kustomizations -n osdu-flux --watch")
-    table.add_row("Check operators", "kubectl get pods -n foundation")
-    table.add_row("Check middleware", "kubectl get pods -n platform")
-    table.add_row("Check services", "kubectl get pods -n osdu")
+    if config.profile is not Profile.BARE:
+        table.add_row("Check operators", "kubectl get pods -n foundation")
+        table.add_row("Check middleware", "kubectl get pods -n platform")
+        table.add_row("Check services", "kubectl get pods -n osdu")
     table.add_row("View status", "uv run spi status")
     table.add_row("Cleanup", f"uv run spi down{config.env_flag}")
 
@@ -238,7 +240,8 @@ def up(
     profile: Optional[Profile] = typer.Option(
         None,
         help="Deployment profile: core (default; middleware + OSDU services) or "
-        "minimal (middleware only, no OSDU services).",
+        "minimal (middleware only, no OSDU services), or bare "
+        "(infra + activated GitOps only; no middleware).",
     ),
     env: str = typer.Option(..., "--env", help="Environment name (required, e.g. dev1, test)"),
     repo_url: str = typer.Option(
@@ -298,6 +301,21 @@ def up(
     if profile is None:
         profile = Profile.CORE
 
+    if profile is Profile.BARE:
+        if ingress_mode is not None:
+            raise typer.BadParameter(
+                "profile 'bare' deploys no ingress substrate; this option is not supported",
+                param_hint="--ingress-mode",
+            )
+        if dns_zone:
+            raise typer.BadParameter(
+                "profile 'bare' deploys no ingress substrate; this option is not supported",
+                param_hint="--dns-zone",
+            )
+        resolved_ingress = IngressMode.AZURE
+    else:
+        resolved_ingress = resolve_ingress_mode(ingress_mode)
+
     title = "[bold]SPI Stack[/bold] - Azure-native OSDU Software Stack"
     if dry_run:
         title += "\n[warning]DRY RUN: previewing Bicep changes only[/warning]"
@@ -319,7 +337,7 @@ def up(
         branch=branch,
         location=location,
         data_partitions=data_partitions,
-        ingress_mode=resolve_ingress_mode(ingress_mode),
+        ingress_mode=resolved_ingress,
         dns_zone=dns_zone,
         ingress_prefix=ingress_prefix,
         acme_email=resolve_acme_email(acme_email),
