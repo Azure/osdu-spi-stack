@@ -298,4 +298,4 @@ Redis and Elasticsearch TLS CAs live as Secrets in `platform`. trust-manager (in
 | Elasticsearch | 3 nodes | 128 GiB each | Search and indexing |
 | Redis | 1 master + 2 replicas | 8 GiB each | Caching (TLS) |
 | PostgreSQL | 3 instances (CNPG) | 10 GiB + 4 GiB WAL | Airflow metadata |
-| Airflow | Webserver + Scheduler + Triggerer | n/a | Workflow orchestration |
+| Airflow | API server + Scheduler + DAG processor + Triggerer | n/a | Workflow orchestration |

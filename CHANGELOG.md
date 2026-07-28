@@ -7,7 +7,26 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 
 ## [Unreleased]
 
+### Changed
+- Airflow 2.10.5 → 3.2.2 (chart 1.16.x → 1.22.x, single-engine, ADR-026).
+  The webserver is replaced by `airflow-api-server` (UI + `/api/v2` + task
+  execution API) and DAG parsing moves to a standalone dag-processor;
+  routes and ReferenceGrants now target the new service. All Airflow
+  signing material (`api-secret-key`, `jwt-secret`, `fernet-key`) is
+  CLI-seeded in `airflow-api-credentials` so Flux reconciles never rotate
+  keys. Deploy fresh (`spi down` / `spi up`); pre-Airflow-3 environments
+  are not supported.
+
 ### Fixed
+- `spi info --show-secrets --json` no longer emits credential values
+  (CodeQL `py/clear-text-logging-sensitive-data`): JSON output carries
+  secret references (`namespace/name#key`) since it is the form most
+  likely to end up in logs or CI artifacts; the interactive table remains
+  the only place values render.
+- `OSDU_AIRFLOW_URL` on the workflow service pointed at a nonexistent
+  `airflow-web` service; it now targets `airflow-api-server`. (The
+  workflow service's Airflow 3 API client is still pending upstream in
+  the community `master` images — see ADR-026.)
 - HTTPS ingress never terminated on AKS Automatic: the gateway TLS overlays
   declared their cert-manager Certificates in `aks-istio-ingress`, where the
   AKS-managed protect-system-namespaces policy denies cert-manager's status

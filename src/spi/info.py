@@ -188,7 +188,9 @@ def _compute_endpoints(cfg: dict) -> tuple:
         if kibana_host:
             middleware["Kibana"] = f"https://{kibana_host}/"
         if airflow_host:
-            middleware["Airflow"] = f"https://{airflow_host}/"
+            # The UI router's basename comes from base_url (/airflow), so the
+            # working URL keeps that path even on a dedicated host.
+            middleware["Airflow"] = f"https://{airflow_host}/airflow/"
         return mode, base, endpoints, middleware
 
     # Fallback: ip mode or no ConfigMap yet.
@@ -215,25 +217,46 @@ def _discover_gateway_ip() -> str:
 
 
 def _get_live_credentials() -> list:
-    """Return [(service, username, password), ...] for the stack's in-cluster
-    middleware. Entries with both user and password empty are dropped so the
-    table only shows credentials that actually exist on this cluster."""
+    """Return [(service, username, password, secret_ref), ...] for the stack's
+    in-cluster middleware, where secret_ref names the Kubernetes Secret and key
+    holding the password. Entries with both user and password empty are dropped
+    so the table only shows credentials that actually exist on this cluster."""
     pg_user = _secret_value("platform", "postgresql-airflow-credentials", "username")
     pg_pw = _secret_value("platform", "postgresql-airflow-credentials", "password")
     pg_su_user = _secret_value("platform", "postgresql-superuser-credentials", "username")
     pg_su_pw = _secret_value("platform", "postgresql-superuser-credentials", "password")
     elastic_pw = _secret_value("platform", "elasticsearch-es-elastic-user", "elastic")
     redis_pw = _secret_value("platform", "redis-credentials", "password")
-    airflow_pw = _secret_value("platform", "airflow-webserver-credentials", "password")
+    airflow_pw = _secret_value("platform", "airflow-api-credentials", "password")
 
     rows = [
-        ("PostgreSQL (Airflow)", pg_user, pg_pw),
-        ("PostgreSQL (superuser)", pg_su_user, pg_su_pw),
-        ("Elasticsearch", "elastic" if elastic_pw else "", elastic_pw),
-        ("Redis", "", redis_pw),
-        ("Airflow", "admin" if airflow_pw else "", airflow_pw),
+        (
+            "PostgreSQL (Airflow)",
+            pg_user,
+            pg_pw,
+            "platform/postgresql-airflow-credentials#password",
+        ),
+        (
+            "PostgreSQL (superuser)",
+            pg_su_user,
+            pg_su_pw,
+            "platform/postgresql-superuser-credentials#password",
+        ),
+        (
+            "Elasticsearch",
+            "elastic" if elastic_pw else "",
+            elastic_pw,
+            "platform/elasticsearch-es-elastic-user#elastic",
+        ),
+        ("Redis", "", redis_pw, "platform/redis-credentials#password"),
+        (
+            "Airflow",
+            "admin" if airflow_pw else "",
+            airflow_pw,
+            "platform/airflow-api-credentials#password",
+        ),
     ]
-    return [(svc, u, p) for svc, u, p in rows if u or p]
+    return [(svc, u, p, ref) for svc, u, p, ref in rows if u or p]
 
 
 def _build_endpoints_table(mode: str, base: str, middleware: dict) -> list:
@@ -321,8 +344,11 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
 
     if show_secrets:
         creds_list = _get_live_credentials()
+        # JSON output is the path most likely to be piped into logs or CI
+        # artifacts, so it carries secret references, never values; the
+        # interactive table below is the only place values render.
         info["credentials"] = [
-            {"service": svc, "username": u, "password": p} for svc, u, p in creds_list
+            {"service": svc, "username": u, "secret_ref": ref} for svc, u, _p, ref in creds_list
         ]
     else:
         creds_list = []
@@ -435,7 +461,7 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
             table.add_column("Service", style="bold")
             table.add_column("Username")
             table.add_column("Password", style="yellow")
-            for svc, user, pw in creds_list:
+            for svc, user, pw, _ref in creds_list:
                 table.add_row(svc, user, pw)
             console.print(table)
             console.print()

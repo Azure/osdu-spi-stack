@@ -6,7 +6,7 @@ metadata:
 spec:
   # Pin release name so chart resources are named airflow-* (not
   # platform-airflow-*, which is the default Flux <targetNamespace>-<name>
-  # concatenation). Routes and ReferenceGrants target airflow-webserver,
+  # concatenation). Routes and ReferenceGrants target airflow-api-server,
   # so the release name must match or Envoy returns 500.
   releaseName: airflow
   targetNamespace: platform
@@ -21,27 +21,37 @@ spec:
   chart:
     spec:
       chart: airflow
-      version: "1.16.*"
+      version: "1.22.*"
       sourceRef:
         kind: HelmRepository
         name: apache-airflow
   values:
+    # Pin the Airflow version explicitly so a chart bump can never silently
+    # change the Airflow release.
+    airflowVersion: "3.2.2"
+    defaultAirflowTag: "3.2.2"
+
     executor: KubernetesExecutor
-
-    # Disable Helm hooks for Flux CD compatibility -- Flux manages ordering
-    # via Kustomization dependsOn; hooks cause install timeouts
-    useHelmHooks: false
-
-    # Static webserver secret key from the CLI-generated secret
-    # (per Airflow production guide). Prevents session invalidation on
-    # webserver pod restarts.
-    webserverSecretKeySecretName: airflow-webserver-credentials
 
     # Use external PostgreSQL (CNPG)
     postgresql:
       enabled: false
+    # No Celery broker with KubernetesExecutor; also stops the chart
+    # rendering an unused redis-password secret. (The inert broker-url
+    # Secret still renders; its gate is data.brokerUrlSecretName.)
+    redis:
+      enabled: false
     data:
       metadataSecretName: airflow-metadata-secret
+
+    # All Airflow signing material comes from the CLI-generated
+    # airflow-api-credentials secret. Left unset, the chart mints random
+    # api-secret/JWT keys on every Helm render (each Flux reconcile would
+    # invalidate sessions and task tokens) and keeps the fernet key in an
+    # untracked pre-install-hook Secret outside the release.
+    apiSecretKeySecretName: airflow-api-credentials
+    jwtSecretName: airflow-api-credentials
+    fernetKeySecretName: airflow-api-credentials
 
     # Disable PVC persistence -- use emptyDir to avoid storage bloat
     workers:
@@ -51,7 +61,9 @@ spec:
       persistence:
         enabled: false
 
-    # Database migration job
+    # Database migration job. useHelmHooks false is per-job (there is no
+    # global switch): without it Flux skips the hook-owned Job and leaves
+    # the schema uninitialized.
     migrateDatabaseJob:
       enabled: true
       useHelmHooks: false
@@ -79,11 +91,11 @@ spec:
             drop:
               - ALL
 
-    # Create default admin user job.
-    # Override default args so the password from airflow-webserver-credentials
-    # is always enforced, even when the user already exists from a prior
-    # install. 'airflow users create' skips existing users, so we follow up
-    # with 'reset-password' to ensure the secret's password wins.
+    # Create default admin user job (valid under the FAB auth manager, the
+    # chart default for Airflow 3). The admin identity lives only in these
+    # args; the chart's defaultUser block is not consulted once args are
+    # overridden. 'airflow users create' skips existing users, so we follow
+    # up with 'reset-password' to ensure the secret's password wins.
     createUserJob:
       useHelmHooks: false
       applyCustomEnv: false
@@ -110,7 +122,7 @@ spec:
         - name: AIRFLOW_ADMIN_PW
           valueFrom:
             secretKeyRef:
-              name: airflow-webserver-credentials
+              name: airflow-api-credentials
               key: password
       resources:
         requests:
@@ -136,28 +148,15 @@ spec:
             drop:
               - ALL
 
-    # Webserver
-    webserver:
+    # API server (serves the UI, REST API, and task execution API)
+    apiServer:
       replicas: 1
-      defaultUser:
-        enabled: true
-        username: admin
-        role: Admin
-        # Placeholder; the real password is injected into createUserJob via
-        # AIRFLOW_ADMIN_PW env from airflow-webserver-credentials and applied
-        # with 'airflow users reset-password'.
-        password: "unused-overridden-by-createUserJob"
-        email: admin@osdu.local
-        firstName: OSDU
-        lastName: Admin
       resources:
         requests:
           cpu: 250m
           memory: 512Mi
         limits:
           cpu: "1"
-          # 4 sync gunicorn workers steady-state ~1.9GB total; 1Gi cgroup
-          # OOMs the workers under load.
           memory: 2Gi
       tolerations:
         - key: workload
@@ -207,7 +206,37 @@ spec:
             drop:
               - ALL
 
-    # Triggerer
+    # DAG processor (standalone in Airflow 3; parses the DAG folder)
+    dagProcessor:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      logGroomerSidecar:
+        enabled: false
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: "platform"
+          effect: NoSchedule
+      nodeSelector:
+        spi-pool: platform
+      securityContexts:
+        pod:
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+        container:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+
+    # Triggerer (kept enabled so deferrable operators remain available)
     triggerer:
       persistence:
         enabled: false
@@ -272,5 +301,9 @@ spec:
 
     # Config
     config:
-      webserver:
+      api:
+        # Only the path component matters: it becomes the FastAPI root_path
+        # so the UI/API serve under /airflow behind the gateway without a
+        # URL rewrite, and the chart derives execution_api_server_url from
+        # the same path.
         base_url: "http://localhost:8080/airflow"
