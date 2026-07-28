@@ -107,18 +107,21 @@ def _create_seed(seed: dict):
 def get_or_create_seed() -> dict:
     existing = _get_seed()
     if existing and all(k in existing for k in SEED_KEYS):
-        console.print(f"  [info]Seed secret '{SEED_NAME}' exists, reusing passwords[/info]")
+        console.print(f"  [info]Seed secret '{SEED_NAME}' exists, reusing seed values[/info]")
         return existing
 
     seed = dict(existing) if existing else {}
     for k in SEED_KEYS:
         if k not in seed:
-            seed[k] = _generate_fernet_key() if k == "airflow_fernet_key" else _generate_password()
+            if k == "airflow_fernet_key":
+                seed[k] = _generate_fernet_key()
+            else:
+                seed[k] = _generate_password()
 
     if existing:
         console.print("  [info]Seed secret updated with new keys[/info]")
     else:
-        console.print("  [info]Generating new passwords...[/info]")
+        console.print("  [info]Generating new seed secrets...[/info]")
     _create_seed(seed)
     return seed
 

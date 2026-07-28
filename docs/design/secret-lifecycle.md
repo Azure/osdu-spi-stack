@@ -42,7 +42,7 @@ Bicep writes are atomic with the rest of the deploy: the KV secret either lands 
 
 ### Writer B: the CLI (post-handoff)
 
-A small set of KV secrets covers the in-cluster middleware. The CLI knows all of these as soon as infra is up: the passwords come from the generated seed (`spi-secrets`, see Class 3) and the endpoints are the fixed in-cluster service DNS names.
+A small set of KV secrets covers the in-cluster middleware. The CLI knows all of these as soon as infra is up: the values come from the generated seed (`spi-secrets`, see Class 3) and the endpoints are the fixed in-cluster service DNS names.
 
 | Secret | Source |
 |---|---|
@@ -57,7 +57,7 @@ Re-running `spi up` against a live cluster re-runs these writes idempotently; KV
 
 Services read their KV secrets via the Azure SDK using Workload Identity. The OSDU `partition-azure` provider auto-prefixes the partition id onto every `sensitive: true` value at read time, so the partition record's `partition.json` template holds **bare** suffixes (`cosmos-endpoint`, not `opendes-cosmos-endpoint`). The ADR-015 amendment that originally got this wrong is now folded into the ADR body; the chart template uses bare values.
 
-## Class 3: In-cluster middleware passwords
+## Class 3: In-cluster middleware secrets
 
 The CLI generates the middleware passwords and Airflow signing keys (`src/spi/secrets.py`), stores them in a seed Secret `spi-secrets` in `osdu-flux`, and pre-creates the Kubernetes Secrets the operators consume. The operators read these pre-created Secrets rather than minting their own:
 
@@ -136,7 +136,7 @@ The fact that the partition record value is the bare suffix and the KV secret na
 - `infra/main.bicep` -- account-wide static KV secrets
 - `infra/modules/keyvault.bicep` -- KV resource only
 - `infra/modules/partition.bicep` -- per-partition KV secrets
-- `src/spi/secrets.py` -- generates middleware passwords (seed + `platform`/`osdu` K8s Secrets)
+- `src/spi/secrets.py` -- generates middleware secrets (seed + `platform`/`osdu` K8s Secrets)
 - `src/spi/deploy.py` -- runtime KV writes (`_write_keyvault_bootstrap_secrets`), `osdu-config` ConfigMap, and workload-identity ServiceAccounts
 - `software/stacks/osdu/bootstrap/ca-bundles.yaml` -- trust-manager Bundles + Redis DestinationRule
 - `software/charts/osdu-spi-service/templates/deployment.yaml` -- `import-ca-certs` init container
