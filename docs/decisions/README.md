@@ -13,14 +13,14 @@ For more information [see](https://adr.github.io/).
    - Status starts as `proposed`.
 3. For each considered option, write one line on why it was rejected. The decision is what was chosen; alternatives get just enough space to show the trade-off.
 4. Open a PR. The status moves to `accepted` once the decision is agreed.
-5. Decisions can be changed later. A new ADR supersedes an old one; do not edit accepted ADRs in place.
+5. Decisions can be changed later. Reversing or materially changing an accepted decision needs a new ADR that supersedes the old one; do not silently rewrite a closed decision in place. A small additive adjustment that extends a decision without contradicting it (a later profile, flag, or value) may instead be recorded as a short dated amendment note in the existing ADR, since a whole new ADR for a one-line change is disproportionate.
 
 ## ADR Style
 
 ADRs record decisions, not engineering logs. Keep them short and forward-facing so a reader can grok the decision in a single pass. The prose style (voice, word list, review checklist) is fixed in [docs/STYLE.md](../STYLE.md); the structural rules below complement it.
 
 - **No `## Validation` sections.** Phase-by-phase acceptance logs belong in the PR description, not in the ADR.
-- **No post-acceptance `## Amendment` sections.** If a decision needs revising, write a new ADR that supersedes it. Inline amendments re-open a record that should be closed.
+- **Amend only for small additive notes; supersede for real changes.** A decision that is reversed or materially changed gets a new ADR that supersedes it, not a rewrite of the closed record. A minor additive extension that does not contradict the decision (for example a later profile that reuses the same pattern) may be captured as a brief dated amendment note, a line or two, in place rather than a full new ADR.
 - **No incident narrative in Context.** State the structural problem the decision addresses. Specific clusters, timeout values, and triggering incidents age poorly inside the ADR.
 - **One-line option rejections.** Write "Rejected: <one clause>" rather than paragraphs re-litigating prior attempts.
 - **Forward-looking, not retrospective.** "Supersedes X because..." is fine; "The previous version of this ADR proposed..." is a sign the ADR should be superseded rather than edited.
