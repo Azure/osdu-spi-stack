@@ -9,10 +9,14 @@
 // partition, common and per-partition Storage, and the scoped RBAC
 // role assignments that bind the identity to the above.
 //
-// Key Vault secret VALUES are also declared here: static metadata plus
-// ``listKeys()`` on Cosmos accounts is resolved at deploy time, so the CLI
-// no longer has to run ``az cosmosdb keys list`` + ``az keyvault secret set``
-// post-deploy.
+// Key Vault secret VALUES are also declared here: endpoints and other static
+// metadata resolved at deploy time. Local auth is disabled on the Cosmos and
+// Service Bus accounts, so their per-partition key/connection secrets are
+// written as the literal ``DISABLED`` placeholder; graph-db-primary-key is
+// no longer written at all. Services MUST reach these accounts through
+// Workload Identity -- a requirement, not yet true of every bundled image;
+// images that still read keys directly fail until Workload-Identity-capable
+// builds land.
 //
 // Not in scope of this template:
 //   - AKS Automatic cluster + managed Istio -- declared separately in
@@ -102,9 +106,6 @@ param deployerPrincipalType string = 'ServicePrincipal'
 @description('Object ID of the AKS kubelet (node) identity. Empty string skips the kubelet AcrPull grant. Set by the CLI from the AKS deployment output so nodes can pull custom images from the ACR.')
 param kubeletIdentityObjectId string = ''
 
-@description('Disable Service Bus local (SAS) auth on partition namespaces. Required true where tenant policy denies local-auth namespaces; set false elsewhere if running the community indexer-queue image (needs SAS, ADR-005).')
-param serviceBusDisableLocalAuth bool = true
-
 @description('Opt-in: deploy workspace-based Application Insights + Log Analytics. Off by default; adds cost and deploy time developers usually do not need.')
 param enableApplicationInsights bool = false
 
@@ -148,12 +149,8 @@ module gremlinModule 'modules/cosmos-gremlin.bicep' = {
   params: {
     name: gremlinAccountName
     location: location
-    keyVaultName: keyVaultName
     principalId: identityModule.outputs.principalId
   }
-  dependsOn: [
-    keyvaultModule
-  ]
 }
 
 module storageCommonModule 'modules/storage-common.bicep' = {
@@ -179,7 +176,6 @@ module partitionModules 'modules/partition.bicep' = [for (p, i) in dataPartition
     isPrimaryPartition: p == primaryPartition
     keyVaultName: keyVaultName
     principalId: identityModule.outputs.principalId
-    serviceBusDisableLocalAuth: serviceBusDisableLocalAuth
   }
   dependsOn: [
     keyvaultModule
@@ -243,21 +239,20 @@ module externalDnsRoleModule 'modules/external-dns-role.bicep' = if (!empty(dnsZ
 // Key Vault secret values (declarative; replaces post-deploy CLI writes)
 // ──────────────────────────────────────────────────────────
 //
-// ``existing`` references let us call ``listKeys()`` on Cosmos accounts
-// provisioned inside sub-modules and write the result directly as a KV
-// secret. Splitting the declarations by "pattern" (static vs per-partition
+// ``existing`` references resolve endpoints and other static metadata on
+// resources provisioned inside sub-modules and write them directly as KV
+// secrets. Splitting the declarations by "pattern" (static vs per-partition
 // cosmos/storage/sb) keeps Bicep's array-loop semantics simple and makes
 // the deployment history self-describing without a ``flatten()`` dance.
 //
 // All secret values stay out of the deployment outputs -- they are set
 // only on the child resource and never surface in the deployment record.
 
-// Cosmos primary-key secrets (graph-db-primary-key and
-// {partition}-cosmos-primary-key) are written INSIDE the gremlinModule
-// and partitionModules respectively. ``listKeys()`` on an ``existing``
-// reference at this scope fails with ResourceNotFound because Bicep's
-// dependency analyzer does not chain through the module that creates
-// the account.
+// Local auth is disabled on the Cosmos and Service Bus accounts, so their
+// per-partition key/connection secrets carry the literal ``DISABLED``
+// (written inside partitionModules; graph-db-primary-key is no longer
+// written at all). No ``listKeys()`` runs at any scope; services MUST
+// reach these accounts through Workload Identity.
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
@@ -336,8 +331,6 @@ resource secretGraphEndpoint 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   properties: { value: gremlinModule.outputs.documentEndpoint }
   dependsOn: [ keyvaultModule ]
 }
-
-// graph-db-primary-key is written inside gremlinModule; see note above.
 
 resource partitionStorageSecrets 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [for (p, i) in dataPartitions: {
   name: '${p}-storage'

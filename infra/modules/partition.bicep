@@ -31,11 +31,8 @@ param isPrimaryPartition bool = false
 @description('Key Vault name that receives the Cosmos primary key. Empty string skips the secret write.')
 param keyVaultName string = ''
 
-@description('Principal ID (object ID) of the OSDU managed identity that accesses Cosmos SQL data. Empty string skips the SQL data-plane role assignment.')
-param principalId string = ''
-
-@description('Disable Service Bus local (SAS) auth. Required true in tenants whose policy denies local-auth namespaces (e.g. Microsoft corp). Set false in tenants without that policy if running the community indexer-queue image, which still needs the SAS connection path (ADR-005).')
-param serviceBusDisableLocalAuth bool = true
+@description('Principal ID (object ID) of the OSDU managed identity that accesses Cosmos SQL data.')
+param principalId string
 
 // ──────────────────────────────────────────────────────────
 // Data definitions (ported from azure_infra.py)
@@ -131,6 +128,7 @@ resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2023-11-15' = {
   kind: 'GlobalDocumentDB'
   properties: {
     databaseAccountOfferType: 'Standard'
+    disableLocalAuth: true
     consistencyPolicy: {
       defaultConsistencyLevel: 'Session'
     }
@@ -206,17 +204,16 @@ resource osduSystemDbContainerResources 'Microsoft.DocumentDB/databaseAccounts/s
   }
 }]
 
-// SQL data-plane role for the OSDU managed identity. The target tenant's
-// "Configure Cosmos DB database accounts to disable local authentication"
-// modify policy flips disableLocalAuth on this account at creation time,
-// so key-based access silently stops working there; without this role,
-// legal/storage/schema/workflow fail with 403 "does not have required RBAC
-// permissions". Cosmos data-plane roles are NOT Azure RBAC: they are
-// sqlRoleAssignments on the account, invisible to `az role assignment`,
-// and take ~5-15 minutes to propagate.
+// SQL data-plane role for the OSDU managed identity. Local auth is disabled on
+// this account (see disableLocalAuth above), so every data-plane call
+// authenticates with an Entra token; without this role, legal/storage/schema/
+// workflow fail with 403 "does not have required RBAC permissions". Cosmos
+// data-plane roles are NOT Azure RBAC: they are sqlRoleAssignments on the
+// account, invisible to `az role assignment`, and take ~5-15 minutes to
+// propagate.
 var sqlDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
 
-resource osduIdentitySqlDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2023-11-15' = if (!empty(principalId)) {
+resource osduIdentitySqlDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2023-11-15' = {
   parent: cosmosAccount
   name: guid(cosmosAccount.id, principalId, sqlDataContributorRoleId)
   properties: {
@@ -237,13 +234,10 @@ resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview
     name: 'Standard'
     tier: 'Standard'
   }
-  // Tenant policy (ServiceBusCreationDeniedWhenLocalAuthIsEnabledOrMinTlsIsLow)
-  // denies namespace creation unless local auth is off and TLS >= 1.2.
-  // Runtime access uses Workload Identity via the Data Sender/Receiver roles
-  // in rbac.bicep. disableLocalAuth is parameterized so tenants without the
-  // policy can keep the SAS path the community indexer-queue image requires.
+  // Local (SAS) auth is disabled and TLS >= 1.2 required. Runtime access uses
+  // Workload Identity via the Data Sender/Receiver roles in rbac.bicep.
   properties: {
-    disableLocalAuth: serviceBusDisableLocalAuth
+    disableLocalAuth: true
     minimumTlsVersion: '1.2'
   }
 }
@@ -302,13 +296,14 @@ resource storageContainerResources 'Microsoft.Storage/storageAccounts/blobServic
 }]
 
 // ──────────────────────────────────────────────────────────
-// Key Vault secret (same-module listKeys() for natural dependency)
+// Key Vault secrets (same-module for natural dependency)
 // ──────────────────────────────────────────────────────────
 //
-// Written inside this module so ``listKeys()`` has an implicit dependency
-// on the ``cosmosAccount`` resource above. An ``existing`` reference at
-// the parent scope does NOT carry a dependency on the creating module,
-// so attempting ``listKeys()`` there fails with ResourceNotFound.
+// Written inside this module so references to ``cosmosAccount`` and
+// ``storageAccount`` properties carry an implicit dependency on the
+// resources above. An ``existing`` reference at the parent scope does NOT
+// carry a dependency on the creating module, so it would fail with
+// ResourceNotFound.
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (!empty(keyVaultName)) {
   name: keyVaultName
@@ -318,7 +313,7 @@ resource cosmosPrimaryKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' =
   name: '${partition}-cosmos-primary-key'
   parent: keyVault
   properties: {
-    value: cosmosAccount.listKeys().primaryMasterKey
+    value: 'DISABLED'
   }
 }
 
@@ -332,24 +327,14 @@ resource storageAccountBlobEndpointSecret 'Microsoft.KeyVault/vaults/secrets@202
   }
 }
 
-// cosmos-connection and storage-account-key hold the literal "DISABLED".
-// The partition record references these secret names; Workload Identity
-// supplies the real credentials at runtime for every code path that supports
-// it, and writing "DISABLED" keeps the schema satisfied without exposing
-// real credentials.
-//
-// sb-connection is the carve-out: indexer-queue (image indexer-queue-master,
-// core-lib-azure 2.0.6) builds its Service Bus SubscriptionClient via
-// SubscriptionClientFactoryImpl, which always uses a SAS ConnectionStringBuilder
-// regardless of AZURE_PAAS_WORKLOADIDENTITY_ISENABLED. Without the real
-// primary connection string here, indexer-queue cannot subscribe to
-// recordstopic and records-changed events never reach the indexer.
-// See ADR-005 for the carve-out rationale.
-resource serviceBusRootKey 'Microsoft.ServiceBus/namespaces/authorizationRules@2022-10-01-preview' existing = {
-  parent: serviceBusNamespace
-  name: 'RootManageSharedAccessKey'
-}
-
+// cosmos-connection, sb-connection, storage-account-key, and the cosmos
+// primary-key secrets above all hold the literal "DISABLED". Local auth is
+// disabled on the Cosmos and Service Bus accounts, so no real key or
+// connection string exists to hand out; the partition record references these
+// secret names, and writing "DISABLED" keeps the record schema satisfied.
+// Services must authenticate through Workload Identity instead; community
+// images that still read these secrets fail until Workload-Identity-capable
+// images land.
 resource cosmosConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName)) {
   name: '${partition}-cosmos-connection'
   parent: keyVault
@@ -362,7 +347,7 @@ resource serviceBusConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-0
   name: '${partition}-sb-connection'
   parent: keyVault
   properties: {
-    value: serviceBusRootKey.listKeys().primaryConnectionString
+    value: 'DISABLED'
   }
 }
 
@@ -393,7 +378,7 @@ resource systemCosmosPrimaryKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07
   name: 'system-cosmos-primary-key'
   parent: keyVault
   properties: {
-    value: cosmosAccount.listKeys().primaryMasterKey
+    value: 'DISABLED'
   }
 }
 

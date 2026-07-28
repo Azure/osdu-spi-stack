@@ -1,6 +1,6 @@
 # Workload Identity
 
-**What this explains.** How one Managed Identity becomes a usable runtime credential inside an OSDU service pod, how the JWT projection in ADR-016 turns the resulting AAD bearer into a `x-app-id` header, and where the carve-out for indexer-queue lives.
+**What this explains.** How one Managed Identity becomes a usable runtime credential inside an OSDU service pod, how the JWT projection in ADR-016 turns the resulting AAD bearer into a `x-app-id` header, and why the indexer-queue Service Bus carve-out is now closed.
 
 **Why it matters.** "Workload Identity" sounds like one thing but is actually a federation chain across Entra ID, the AKS OIDC issuer, the AKS webhook, the Istio sidecar, and the service's Spring filter. Failures in any link surface as the same symptom: a 401 or 403 with an empty `app-id=`. This doc names each link so you can trace which one is broken.
 
@@ -64,9 +64,9 @@ The symptom of a missing audience is identical to "Workload Identity broken": em
 
 ## The indexer-queue carve-out
 
-Per [ADR-005](../decisions/005-workload-identity.md) "Consequences," indexer-queue is the one carve-out. The `indexer-queue-master` image (current `core-lib-azure` 2.0.6) builds its Service Bus subscription client via `SubscriptionClientFactoryImpl`, which constructs a `ConnectionStringBuilder` regardless of the `AZURE_PAAS_WORKLOADIDENTITY_ISENABLED` flag. Without a real connection string the subscription client throws `IllegalConnectionStringFormatException` on every retry and records-changed events never reach the indexer.
+Per [ADR-005](../decisions/005-workload-identity.md) "Consequences," indexer-queue is the one service that cannot use Workload Identity for Service Bus today. The `indexer-queue-master` image (current `core-lib-azure` 2.0.6) builds its Service Bus subscription client via `SubscriptionClientFactoryImpl`, which constructs a `ConnectionStringBuilder` regardless of the `AZURE_PAAS_WORKLOADIDENTITY_ISENABLED` flag. Without a real connection string the subscription client throws `IllegalConnectionStringFormatException` on every retry and records-changed events never reach the indexer.
 
-The CLI accepts this carve-out by storing a real Service Bus SAS connection string in `{partition}-sb-connection`. The key is gated by the same UAMI's `Key Vault Secrets User` role; it never lands in a pod env var. When the upstream subscription client honors the Workload Identity flag, this can move back to a `"DISABLED"` placeholder like the other partition KV secrets.
+[ADR-027](../decisions/027-entra-only-data-plane.md) disables local (SAS) auth on every Service Bus namespace, so `{partition}-sb-connection` now holds the literal `"DISABLED"` like the other data-plane secrets; no SAS string exists to hand out. Until indexer-queue runs a Workload-Identity-capable image (delivered through the custom-image supply chain, tracked separately), it cannot subscribe to `recordstopic` and records-changed events do not reach the indexer. Restoring that path is tracked with the custom-image work, not by re-enabling local auth.
 
 ## Worked example: trace a "401 with empty app-id" failure
 

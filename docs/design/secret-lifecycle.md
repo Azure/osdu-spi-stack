@@ -20,7 +20,7 @@ This split is the decision in [ADR-010](../decisions/010-keyvault-secret-managem
 
 There are no Class 1 secrets. The OSDU services authenticate to Cosmos, Service Bus, Storage, and Key Vault using AAD bearer tokens minted via Workload Identity (see [workload-identity](workload-identity.md)). Tokens are short-lived, refreshed automatically by the Azure SDK, and never written to disk.
 
-The one carve-out is `{partition}-sb-connection` for indexer-queue, which holds a real Service Bus SAS connection string because the current `core-lib-azure` `SubscriptionClientFactoryImpl` does not honor the Workload Identity flag. The value lives in Key Vault and is gated by the same UAMI's `Key Vault Secrets User` role; it never lands in a pod env var. See [ADR-005](../decisions/005-workload-identity.md) Consequences for the full rationale.
+The one carve-out is `{partition}-sb-connection` for indexer-queue. Its community `indexer-queue-master` image expects a real Service Bus SAS connection string because the current `core-lib-azure` `SubscriptionClientFactoryImpl` does not honor the Workload Identity flag. [ADR-027](../decisions/027-entra-only-data-plane.md) disables local (key/SAS) auth on every Cosmos and Service Bus account, so `{partition}-sb-connection` (and the other Cosmos key/connection secrets) now hold the literal `"DISABLED"`; indexer-queue therefore cannot subscribe until a Workload-Identity-capable image lands via the custom-image supply chain, tracked separately. See [ADR-005](../decisions/005-workload-identity.md) Consequences for the carve-out history.
 
 ## Class 2: Key Vault secrets
 
@@ -33,10 +33,10 @@ Most KV secrets are declared in Bicep, where the source value is Azure itself. T
 | Secret pattern | Source | Declared in |
 |---|---|---|
 | `tenant-id`, `subscription-id`, `osdu-identity-id`, `keyvault-uri`, `system-storage` | `tenant()` / `subscription()` / resource outputs | `main.bicep` |
-| `graph-db-endpoint` / `graph-db-primary-key` | Cosmos Gremlin endpoint / `listKeys()` | `main.bicep` / `cosmos-gremlin.bicep` |
+| `graph-db-endpoint` | Cosmos Gremlin endpoint | `main.bicep` |
 | `{p}-cosmos-endpoint`, `{p}-storage`, `{p}-sb-namespace` | Resource outputs | `main.bicep` |
-| `{p}-cosmos-primary-key`, `{p}-storage-account-blob-endpoint` | `listKeys()` / resource `.properties` | `partition.bicep` |
-| `{p}-cosmos-connection`, `{p}-storage-account-key`, `{p}-sb-connection` | `"DISABLED"` placeholder by default, or real SAS for the indexer-queue carve-out | `partition.bicep` |
+| `{p}-storage-account-blob-endpoint` | Resource `.properties` | `partition.bicep` |
+| `{p}-cosmos-primary-key`, `{p}-cosmos-connection`, `{p}-storage-account-key`, `{p}-sb-connection` | `"DISABLED"` placeholder; local auth is disabled on the Cosmos and Service Bus accounts, so services authenticate through Workload Identity (ADR-027) | `partition.bicep` |
 
 Bicep writes are atomic with the rest of the deploy: the KV secret either lands with the resource or the whole deploy fails. ARM is idempotent on secret writes (a re-deploy with the same value is a no-op).
 
