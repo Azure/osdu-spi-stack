@@ -18,6 +18,11 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   are not supported.
 
 ### Fixed
+- `spi info --show-secrets --json` no longer emits credential values
+  (CodeQL `py/clear-text-logging-sensitive-data`): JSON output carries
+  secret references (`namespace/name#key`) since it is the form most
+  likely to end up in logs or CI artifacts; the interactive table remains
+  the only place values render.
 - `OSDU_AIRFLOW_URL` on the workflow service pointed at a nonexistent
   `airflow-web` service; it now targets `airflow-api-server`. (The
   workflow service's Airflow 3 API client is still pending upstream in
