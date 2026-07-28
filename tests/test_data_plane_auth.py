@@ -82,6 +82,6 @@ def test_graph_db_primary_key_secret_not_written():
     offenders = [
         p.relative_to(REPO_ROOT)
         for p in INFRA_DIR.rglob("*.bicep")
-        if "graph-db-primary-key" in _read(p)
+        if "graph-db-primary-key" in _code(p)
     ]
     assert not offenders, f"graph-db-primary-key still written in: {offenders}"

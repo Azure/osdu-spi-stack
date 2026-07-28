@@ -11,9 +11,12 @@
 //
 // Key Vault secret VALUES are also declared here: endpoints and other static
 // metadata resolved at deploy time. Local auth is disabled on the Cosmos and
-// Service Bus accounts, so their key/connection secrets are written as the
-// literal ``DISABLED`` rather than real key material; every service reaches
-// these accounts through Workload Identity.
+// Service Bus accounts, so their per-partition key/connection secrets are
+// written as the literal ``DISABLED`` placeholder; graph-db-primary-key is
+// no longer written at all. Services MUST reach these accounts through
+// Workload Identity -- a requirement, not yet true of every bundled image;
+// images that still read keys directly fail until Workload-Identity-capable
+// builds land.
 //
 // Not in scope of this template:
 //   - AKS Automatic cluster + managed Istio -- declared separately in
@@ -246,9 +249,10 @@ module externalDnsRoleModule 'modules/external-dns-role.bicep' = if (!empty(dnsZ
 // only on the child resource and never surface in the deployment record.
 
 // Local auth is disabled on the Cosmos and Service Bus accounts, so their
-// key/connection secrets carry the literal ``DISABLED`` (written inside the
-// gremlinModule and partitionModules). No ``listKeys()`` runs at any scope;
-// every service reaches these accounts through Workload Identity.
+// per-partition key/connection secrets carry the literal ``DISABLED``
+// (written inside partitionModules; graph-db-primary-key is no longer
+// written at all). No ``listKeys()`` runs at any scope; services MUST
+// reach these accounts through Workload Identity.
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName

@@ -331,8 +331,10 @@ resource storageAccountBlobEndpointSecret 'Microsoft.KeyVault/vaults/secrets@202
 // primary-key secrets above all hold the literal "DISABLED". Local auth is
 // disabled on the Cosmos and Service Bus accounts, so no real key or
 // connection string exists to hand out; the partition record references these
-// secret names, and writing "DISABLED" keeps the record schema satisfied while
-// every service authenticates through Workload Identity.
+// secret names, and writing "DISABLED" keeps the record schema satisfied.
+// Services must authenticate through Workload Identity instead; community
+// images that still read these secrets fail until Workload-Identity-capable
+// images land.
 resource cosmosConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName)) {
   name: '${partition}-cosmos-connection'
   parent: keyVault
