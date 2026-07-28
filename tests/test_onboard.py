@@ -355,10 +355,98 @@ def test_repo_variable_delete_attempts_empty_values_and_ignores_404(monkeypatch)
 
 def test_secret_write_policy_rehome_and_idempotency():
     # First onboard: no secret yet -> write.
-    assert _should_write_secrets(secret_present=False, is_rehome=False, force=False) is True
+    assert _should_write_secrets(secrets_present=False, is_rehome=False, force=False) is True
     # Idempotent re-run against the same cluster (same identity already set) -> skip.
-    assert _should_write_secrets(secret_present=True, is_rehome=False, force=False) is False
+    assert _should_write_secrets(secrets_present=True, is_rehome=False, force=False) is False
     # Re-home onto a new cluster (identity changed) -> rewrite so the secret follows the variable.
-    assert _should_write_secrets(secret_present=True, is_rehome=True, force=False) is True
+    assert _should_write_secrets(secrets_present=True, is_rehome=True, force=False) is True
     # Explicit force -> rewrite.
-    assert _should_write_secrets(secret_present=True, is_rehome=False, force=True) is True
+    assert _should_write_secrets(secrets_present=True, is_rehome=False, force=True) is True
+
+
+def test_secret_write_policy_repairs_partial_state():
+    """Regression: a repo holding AZURE_CLIENT_ID but missing the tenant or
+    subscription secret must be repaired, not reported as already current."""
+    assert _should_write_secrets(secrets_present=False, is_rehome=False, force=False) is True
+
+
+def test_secret_write_policy_rewrites_when_the_link_is_unknown():
+    """Regression: the AZURE_CLIENT_ID *variable* is what re-home detection reads.
+    Without it we cannot tell whether existing secrets belong to this cluster or a
+    retired one, so the safe action is to rewrite rather than leave them stale."""
+    assert (
+        _should_write_secrets(
+            secrets_present=True, is_rehome=False, force=False, link_known=False
+        )
+        is True
+    )
+    # With the link known and everything present, the idempotent skip still applies.
+    assert (
+        _should_write_secrets(secrets_present=True, is_rehome=False, force=False, link_known=True)
+        is False
+    )
+
+
+def test_seed_job_timeouts_are_strictly_ordered():
+    """Regression: the client-side wait must outlast the Job's own deadline, which
+    must outlast the in-Job group-discovery retries. If the wait is shortest, the
+    cleanup in `finally` deletes a Job that was still going to succeed."""
+    from spi import onboard as ob
+
+    assert ob.SEED_JOB_GROUP_RETRY_SECONDS < ob.SEED_JOB_DEADLINE_SECONDS
+    assert ob.SEED_JOB_DEADLINE_SECONDS < ob.SEED_JOB_WAIT_SECONDS
+
+
+def test_seed_script_retry_budget_matches_the_declared_constant():
+    """The in-Job retry loop is embedded as a raw string, so it cannot import the
+    constant. Assert they agree, otherwise the ordering above is meaningless."""
+    import re
+
+    from spi import onboard as ob
+
+    attempts = int(re.search(r"for _ in range\((\d+)\):", ob._SEED_SCRIPT).group(1))
+    sleep_s = int(re.search(r"time\.sleep\((\d+)\)", ob._SEED_SCRIPT).group(1))
+    assert attempts * sleep_s == ob.SEED_JOB_GROUP_RETRY_SECONDS
+
+
+
+def test_kubectl_calls_are_pinned_to_this_runs_context():
+    """Regression: an unpinned kubectl inherits the ambient current-context, so a
+    failed or skipped credential fetch could apply RBAC and the seeding Job to
+    whichever cluster the operator was last pointed at."""
+    from spi.onboard import OnboardInputs, _kubectl
+
+    inp = OnboardInputs(
+        service="storage", repo="o/r", aks_cluster="spi-stack-x", aks_rg="rg", identities_rg="rg"
+    )
+    argv = _kubectl(inp, ["get", "deployment", "osdu-storage"])
+
+    assert argv[:3] == ["kubectl", "--context", "spi-onboard-spi-stack-x"]
+    assert argv[3:] == ["get", "deployment", "osdu-storage"]
+
+
+def test_no_unpinned_kubectl_invocations_remain():
+    """The pinning above is only effective if every call site uses the helper."""
+    import re
+    from pathlib import Path
+
+    import spi.onboard as ob
+
+    source = Path(ob.__file__).read_text(encoding="utf-8")
+    # Every literal kubectl argv must be the helper's own, which supplies --context.
+    for match in re.finditer(r'\["kubectl"[^\]]*\]', source, re.S):
+        assert "--context" in match.group(0), f"unpinned kubectl argv: {match.group(0)[:80]}"
+
+
+def test_credential_acquisition_is_fatal_and_names_the_context():
+    """Regression: get-credentials used check=False, so a failure fell through to a
+    context-free kubectl instead of stopping the run."""
+    import re
+    from pathlib import Path
+
+    import spi.onboard as ob
+
+    source = Path(ob.__file__).read_text(encoding="utf-8")
+    block = re.search(r'"get-credentials",.*?\)\n', source, re.S).group(0)
+    assert "--context" in block
+    assert "check=False" not in block

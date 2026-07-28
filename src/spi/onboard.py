@@ -105,6 +105,18 @@ AAD_TOKEN_RESOURCE = "https://management.azure.com"
 WORKLOAD_IDENTITY_SA = "workload-identity-sa"
 SEED_JOB_NAME = "spi-onboard-seed"
 SEED_IMAGE = "python:3.12-slim"
+# These three budgets must stay strictly ordered:
+#   group-discovery retries  <  Job deadline  <  client-side wait
+# The in-Job script retries group discovery for SEED_JOB_GROUP_RETRY_SECONDS
+# (entitlements groups appear asynchronously after tenant-provisioning). The Job
+# is allowed a little longer, and the client waits longer still because the pod
+# must first be scheduled -- on a cold cluster with node autoprovisioning that
+# alone can take minutes. Waiting for less than the Job's own deadline means the
+# cleanup in `finally` destroys a Job that was still going to succeed.
+SEED_JOB_GROUP_RETRY_SECONDS = 300
+SEED_JOB_DEADLINE_SECONDS = 600
+SEED_JOB_SCHEDULING_MARGIN_SECONDS = 180
+SEED_JOB_WAIT_SECONDS = SEED_JOB_DEADLINE_SECONDS + SEED_JOB_SCHEDULING_MARGIN_SECONDS
 ENTITLEMENTS_SEED_GROUPS = (
     "users",
     "users.datalake.ops",
@@ -230,6 +242,16 @@ def _run(cmd_list: List[str], **kwargs: Any) -> Any:
     return run_command(_resolve(cmd_list), **kwargs)
 
 
+def _kubectl(inp: "OnboardInputs", args: List[str]) -> List[str]:
+    """Build a kubectl argv pinned to this run's context.
+
+    Never call kubectl without this: an unpinned call inherits the ambient
+    current-context and can apply RBAC or the seeding Job to a different
+    cluster (D-onboard-context).
+    """
+    return ["kubectl", "--context", inp.kube_context, *args]
+
+
 @dataclass
 class OnboardInputs:
     service: str
@@ -257,6 +279,19 @@ class OnboardInputs:
     deployment_name: str = ""
     container_name: str = ""
     kv_secret_names: List[str] = field(default_factory=list)
+
+    @property
+    def kube_context(self) -> str:
+        """Dedicated kubeconfig context name for this onboarding run.
+
+        Onboarding applies RBAC and runs an entitlements seeding Job, so every
+        kubectl call must be pinned to the cluster we were asked to onboard.
+        Relying on the ambient current-context would let a failed or skipped
+        credential fetch silently target whichever cluster the operator last
+        used. The name is namespaced to avoid colliding with an operator's own
+        context for the same cluster.
+        """
+        return f"spi-onboard-{self.aks_cluster}"
 
     @property
     def identity_name(self) -> str:
@@ -446,6 +481,10 @@ def _verify_deployment(inp: OnboardInputs) -> None:
     # Ensure we have a kube context for this cluster (idempotent). Skip in dry-run -- fetching
     # credentials mutates the local kubeconfig, which a plan-only run must not do.
     if not inp.dry_run:
+        # Fatal by design: a failed credential fetch used to fall through to a
+        # context-free kubectl, which would then operate on whatever cluster the
+        # operator happened to be pointed at. --context gives this run its own
+        # named context so later calls cannot drift.
         _run(
             [
                 "az",
@@ -455,16 +494,17 @@ def _verify_deployment(inp: OnboardInputs) -> None:
                 inp.aks_rg,
                 "--name",
                 inp.aks_cluster,
+                "--context",
+                inp.kube_context,
                 "--overwrite-existing",
                 "--only-show-errors",
             ],
-            description="Get AKS credentials",
-            check=False,
+            description=f"Get AKS credentials (context '{inp.kube_context}')",
         )
 
     candidate = f"osdu-{inp.service}"
     deployment = subprocess.run(
-        _resolve(["kubectl", "get", "deployment", candidate, "-n", inp.namespace, "-o", "json"]),
+        _resolve(_kubectl(inp, ["get", "deployment", candidate, "-n", inp.namespace, "-o", "json"])),
         capture_output=True,
         text=True,
     )
@@ -988,7 +1028,7 @@ subjects:
         handle.write(manifest)
         handle.close()
         _run(
-            ["kubectl", "apply", "-f", handle.name],
+            _kubectl(inp, ["apply", "-f", handle.name]),
             description=f"Apply Flux read RBAC ({binding})",
         )
         display_result(
@@ -1056,7 +1096,7 @@ metadata:
   namespace: {inp.namespace}
 spec:
   backoffLimit: 2
-  activeDeadlineSeconds: 600
+  activeDeadlineSeconds: {SEED_JOB_DEADLINE_SECONDS}
   ttlSecondsAfterFinished: 600
   template:
     metadata:
@@ -1121,33 +1161,39 @@ def _ensure_entitlements_membership(inp: OnboardInputs) -> None:
         handle.close()
         # The Job spec is immutable; clear any prior run before applying.
         _run(
-            ["kubectl", "delete", "job", SEED_JOB_NAME, "-n", inp.namespace, "--ignore-not-found"],
+            _kubectl(inp, ["delete", "job", SEED_JOB_NAME, "-n", inp.namespace, "--ignore-not-found"]),
             description="Clear any prior entitlements seed Job",
             check=False,
         )
         _run(
-            ["kubectl", "apply", "-f", handle.name],
+            _kubectl(inp, ["apply", "-f", handle.name]),
             description=f"Apply entitlements seed Job for {inp.identity_client_id}",
         )
-        subprocess.run(
-            _resolve(
+        # Must outlast the Job's own activeDeadlineSeconds (SEED_JOB_DEADLINE_SECONDS),
+        # which in turn must outlast the in-Job group-discovery retry budget. Waiting
+        # for less means the `finally` below deletes a Job that was still going to
+        # succeed -- on a cold cluster, node provisioning alone can take minutes.
+        _run(
+            _kubectl(
+                inp,
                 [
-                    "kubectl",
                     "wait",
                     "--for=condition=complete",
                     f"job/{SEED_JOB_NAME}",
                     "-n",
                     inp.namespace,
-                    "--timeout=240s",
-                ]
+                    f"--timeout={SEED_JOB_WAIT_SECONDS}s",
+                ],
             ),
-            capture_output=True,
-            text=True,
+            description="Wait for the entitlements seed Job",
+            check=False,
         )
         logs = (
             subprocess.run(
                 _resolve(
-                    ["kubectl", "logs", f"job/{SEED_JOB_NAME}", "-n", inp.namespace, "--tail=40"]
+                    _kubectl(
+                        inp, ["logs", f"job/{SEED_JOB_NAME}", "-n", inp.namespace, "--tail=40"]
+                    )
                 ),
                 capture_output=True,
                 text=True,
@@ -1170,30 +1216,34 @@ def _ensure_entitlements_membership(inp: OnboardInputs) -> None:
         )
     finally:
         _run(
-            [
-                "kubectl",
-                "delete",
-                "job",
-                SEED_JOB_NAME,
-                "-n",
-                inp.namespace,
-                "--ignore-not-found",
-                "--wait=false",
-            ],
+            _kubectl(
+                inp,
+                [
+                    "delete",
+                    "job",
+                    SEED_JOB_NAME,
+                    "-n",
+                    inp.namespace,
+                    "--ignore-not-found",
+                    "--wait=false",
+                ],
+            ),
             description="Remove entitlements seed Job",
             check=False,
         )
         _run(
-            [
-                "kubectl",
-                "delete",
-                "configmap",
-                SEED_JOB_NAME,
-                "-n",
-                inp.namespace,
-                "--ignore-not-found",
-                "--wait=false",
-            ],
+            _kubectl(
+                inp,
+                [
+                    "delete",
+                    "configmap",
+                    SEED_JOB_NAME,
+                    "-n",
+                    inp.namespace,
+                    "--ignore-not-found",
+                    "--wait=false",
+                ],
+            ),
             description="Remove entitlements seed ConfigMap",
             check=False,
         )
@@ -1298,14 +1348,24 @@ def _resolve_no_data_access_profile(inp: OnboardInputs) -> None:
         console.print("  [info]No negative-authorization token required for this profile[/info]")
 
 
-def _should_write_secrets(secret_present: bool, is_rehome: bool, force: bool) -> bool:
+def _should_write_secrets(
+    secrets_present: bool, is_rehome: bool, force: bool, link_known: bool = True
+) -> bool:
     """Decide whether to (re)write the AZURE_* secrets.
 
-    Write when they are missing, when the identity changed (a re-home onto a new cluster), or
-    when explicitly forced. Skipping only the true idempotent case -- the same identity is
-    already set -- keeps the AZURE_CLIENT_ID secret and its variable copy from ever diverging.
+    Write when any of them is missing, when the identity changed (a re-home onto a new
+    cluster), when the repo->cluster link cannot be confirmed, or when explicitly forced.
+    Skipping only the true idempotent case -- all three present and the link already
+    recorded as this identity -- keeps the AZURE_CLIENT_ID secret and its variable copy
+    from ever diverging.
+
+    ``link_known`` is False when the AZURE_CLIENT_ID *variable* is absent. That variable is
+    what re-home detection reads, so without it we cannot tell whether the existing secrets
+    belong to this cluster or a retired one -- a legacy repo, or a first run that died after
+    writing only some secrets. Treat that as unknown and rewrite, rather than leaving stale
+    or partial tenant/subscription values behind.
     """
-    return (not secret_present) or is_rehome or force
+    return (not secrets_present) or is_rehome or force or (not link_known)
 
 
 def _write_handoff(inp: OnboardInputs) -> None:
@@ -1330,8 +1390,19 @@ def _write_handoff(inp: OnboardInputs) -> None:
             "identity to this one).[/warning]"
         )
 
-    secret_present = _secret_present(inp, "AZURE_CLIENT_ID")
-    if _should_write_secrets(secret_present, is_rehome, inp.force_rewrite_secrets):
+    # Check every secret we write, not just AZURE_CLIENT_ID: a run that died part-way
+    # through, or a repo provisioned before tenant/subscription were written, would
+    # otherwise look "present" and keep missing or stale values forever.
+    secrets_present = all(
+        _secret_present(inp, name)
+        for name in ("AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID")
+    )
+    if _should_write_secrets(
+        secrets_present,
+        is_rehome,
+        inp.force_rewrite_secrets,
+        link_known=bool(existing_client_id),
+    ):
         _gh_set_secret(inp, "AZURE_CLIENT_ID", inp.identity_client_id)
         _gh_set_secret(inp, "AZURE_TENANT_ID", inp.tenant_id)
         _gh_set_secret(inp, "AZURE_SUBSCRIPTION_ID", inp.subscription_id)

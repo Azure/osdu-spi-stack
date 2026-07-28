@@ -1301,6 +1301,16 @@ def _resolve_deployer_principal() -> "tuple[str, str]":
     )
     account = json.loads(account_result.stdout)
     principal_type = "User" if account.get("user", {}).get("type") == "user" else "ServicePrincipal"
+
+    # Prefer the ARM access token: `oid` is the principal's object ID for users
+    # and service principals alike and needs no Microsoft Graph token, which
+    # Conditional Access token protection can refuse to issue (AADSTS530084)
+    # even when ARM access is fine. This mirrors _grant_deployer_cluster_admin;
+    # the Graph lookups below remain as fallbacks.
+    oid = _deployer_oid_from_arm_token()
+    if oid:
+        return oid, principal_type
+
     if principal_type == "User":
         oid = run_command(
             ["az", "ad", "signed-in-user", "show", "--query", "id", "--output", "tsv"],
