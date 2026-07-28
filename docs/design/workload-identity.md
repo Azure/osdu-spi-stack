@@ -14,7 +14,7 @@ Five steps from Azure to a usable bearer token inside a pod:
 
 1. **The UAMI exists.** `infra/modules/identity.bicep` creates the OSDU UAMI (`<cluster>-osdu-identity`, a `Microsoft.ManagedIdentity/userAssignedIdentities` resource). The UAMI has a `client_id`, a `tenant_id`, and a `principal_id`.
 2. **The federated credentials bind the UAMI to the ServiceAccount.** The same module creates one `federatedIdentityCredentials` subresource per namespace in the fixed OSDU set (`default`, `osdu-core`, `airflow`, `osdu-system`, `osdu-auth`, `osdu-reference`, `osdu`, `platform`), each with `subject` `system:serviceaccount:<ns>:workload-identity-sa`; the `issuer` is the AKS cluster's OIDC discovery URL (a property of the cluster, populated by AKS automatically).
-3. **The RBAC bindings make the UAMI useful.** `infra/modules/rbac.bicep` assigns roles scoped per resource: `Key Vault Secrets User`, `Storage Blob Data Contributor`, `Storage Table Data Contributor`, `Azure Service Bus Data Owner`, `AcrPull`. Per [ADR-005](../decisions/005-workload-identity.md), the SPI stack uses one shared identity rather than per-service identities.
+3. **The RBAC bindings make the UAMI useful.** `infra/modules/rbac.bicep` assigns roles scoped per resource: `Key Vault Secrets User`, `Storage Blob Data Contributor`, `Storage Table Data Contributor`, `Azure Service Bus Data Sender` + `Azure Service Bus Data Receiver` (least privilege; entity management is not granted), `AcrPull`. Per [ADR-005](../decisions/005-workload-identity.md), the SPI stack uses one shared identity rather than per-service identities.
 4. **The ServiceAccount carries the link annotations.** During K8s bootstrap (`src/spi/deploy.py`, `_create_osdu_config`), the CLI creates `workload-identity-sa` in the `platform` and `osdu` namespaces with two annotations: `azure.workload.identity/client-id: <UAMI client_id>` and `azure.workload.identity/tenant-id: <tenant>`. Pods that mount this ServiceAccount inherit the annotations.
 5. **The pod opts in with a label.** A service pod includes `azure.workload.identity/use: "true"` in its labels. The AKS webhook sees the label, looks at the ServiceAccount annotations, mounts a projected SA token at `/var/run/secrets/azure/tokens/token`, and injects three env vars: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`.
 
@@ -64,7 +64,7 @@ The symptom of a missing audience is identical to "Workload Identity broken": em
 
 ## Service Bus and indexer-queue
 
-Service Bus local authentication is disabled in SPI Stack. Services must use the shared UAMI via Workload Identity and the `Azure Service Bus Data Owner` role assignment.
+Service Bus local authentication is disabled in SPI Stack. Services must use the shared UAMI via Workload Identity and its `Azure Service Bus Data Sender` + `Azure Service Bus Data Receiver` role assignments.
 
 `core-lib-azure` selects the token-based Service Bus path only when `azure.msi.isEnabled=true`; service manifests therefore set both `AZURE_MSI_ISENABLED=true` and `AZURE_PAAS_WORKLOADIDENTITY_ISENABLED=true`.
 

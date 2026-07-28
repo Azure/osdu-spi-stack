@@ -20,7 +20,7 @@ This split is the decision in [ADR-010](../decisions/010-keyvault-secret-managem
 
 There are no Class 1 secrets. The OSDU services authenticate to Cosmos, Service Bus, Storage, and Key Vault using AAD bearer tokens minted via Workload Identity (see [workload-identity](workload-identity.md)). Tokens are short-lived, refreshed automatically by the Azure SDK, and never written to disk.
 
-Service Bus local authentication is disabled. `{partition}-sb-connection` is kept only as a schema-compatible `"DISABLED"` placeholder; Service Bus clients must use Workload Identity and the UAMI's `Azure Service Bus Data Owner` role.
+Service Bus local authentication is disabled. `{partition}-sb-connection` is kept only as a schema-compatible `"DISABLED"` placeholder; Service Bus clients must use Workload Identity and the UAMI's `Azure Service Bus Data Sender` + `Azure Service Bus Data Receiver` roles.
 
 ## Class 2: Key Vault secrets
 

@@ -43,7 +43,7 @@ def find_spi_gitrepository() -> Optional[Dict[str, Any]]:
     Namespace-agnostic so the CLI works whether the stack's Flux resources live
     in flux-system or a dedicated namespace such as osdu-flux.
     """
-    data = kubectl_json(["get", "gitrepository", "-A", "-o", "json"])
+    data = kubectl_json(["get", "gitrepository", "-A"])
     if not data:
         return None
     for item in data.get("items", []):

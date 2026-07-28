@@ -115,3 +115,38 @@ def test_entitlements_init_uses_bearer_token_and_case_safe_verification():
     assert '"Authorization": f"Bearer {token}"' in script
     assert '"Authorization": f"******"' not in script
     assert "creator_user_id.lower()" in script
+
+
+def test_lookalike_issuer_hosts_are_rejected():
+    """Regression (CodeQL: incomplete URL substring sanitization): the issuer was
+    matched with `in`, so any URL merely CONTAINING the host passed. This helper
+    decides which principal is seeded as a creator, so a lookalike issuer must not
+    be able to smuggle an identity through."""
+    import pytest
+
+    from spi.identity import projected_user_id
+
+    for issuer in (
+        "https://evil.example.com/sts.windows.net/tenant/",
+        "https://sts.windows.net.attacker.io/tenant/",
+        "https://login.microsoftonline.com.evil.test/x/v2.0",
+        "https://sts.windows.net@evil.test/tenant/",
+        "https://STS.WINDOWS.NET.evil.test/t/",
+    ):
+        with pytest.raises(ValueError):
+            projected_user_id({"iss": issuer, "unique_name": "attacker@evil.test"})
+
+
+def test_genuine_issuer_hosts_are_still_accepted():
+    """The hardening above must not reject real Azure issuers, including the
+    case-insensitive form."""
+    from spi.identity import projected_user_id
+
+    for issuer in (
+        "https://sts.windows.net/72f988bf-86f1-41af-91ab-2d7cd011db47/",
+        "https://login.microsoftonline.com/72f988bf-86f1-41af-91ab-2d7cd011db47/v2.0",
+        "https://STS.Windows.NET/72f988bf/",
+    ):
+        assert projected_user_id({"iss": issuer, "unique_name": "user@microsoft.com"}) == (
+            "user@microsoft.com"
+        )

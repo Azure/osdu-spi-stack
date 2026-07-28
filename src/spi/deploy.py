@@ -304,7 +304,12 @@ def _deploy_flux_config(config: Config, activate_gitops: bool) -> None:
         deployment_name=deployment_name,
     )
     if not activate_gitops:
-        _wait_for_namespace("osdu-flux")
+        # The extension-only pass installs the Flux controllers into flux-system.
+        # Waiting on osdu-flux would prove nothing: ensure_namespaces() already
+        # created it earlier in Phase 4, so that check passes instantly whether or
+        # not the extension is ready. Wait for the namespace the extension itself
+        # creates, so Phase 5 cannot race controller installation.
+        _wait_for_namespace("flux-system")
 
 
 def _write_keyvault_bootstrap_secrets(

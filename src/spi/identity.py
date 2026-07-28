@@ -19,6 +19,24 @@ from __future__ import annotations
 import base64
 import json
 from typing import Any, Mapping
+from urllib.parse import urlsplit
+
+# Hosts that issue the AAD tokens this stack accepts. Compared against the parsed
+# host, never by substring: `"sts.windows.net" in issuer` also matches
+# https://evil.example.com/sts.windows.net/... and
+# https://sts.windows.net.attacker.io/..., either of which would let a lookalike
+# issuer decide which principal gets seeded as a creator.
+AAD_V1_ISSUER_HOST = "sts.windows.net"
+AAD_V2_ISSUER_HOST = "login.microsoftonline.com"
+
+
+def _issuer_host(issuer: str) -> str:
+    """Return the lowercased host of an issuer URL, without port or credentials."""
+
+    try:
+        return (urlsplit(issuer).hostname or "").lower()
+    except ValueError:
+        return ""
 
 
 def decode_jwt_claims(token: str) -> dict[str, Any]:
@@ -41,15 +59,15 @@ def decode_jwt_claims(token: str) -> dict[str, Any]:
 def projected_user_id(claims: Mapping[str, Any]) -> str:
     """Return the identifier projected by the Stack's Istio Lua filter."""
 
-    issuer = str(claims.get("iss", ""))
-    if "sts.windows.net" in issuer:
+    issuer_host = _issuer_host(str(claims.get("iss", "")))
+    if issuer_host == AAD_V1_ISSUER_HOST:
         if claims.get("unique_name"):
             return str(claims["unique_name"])
         if claims.get("oid") and claims.get("appid"):
             return str(claims["appid"])
         if claims.get("upn"):
             return str(claims["upn"])
-    elif "login.microsoftonline.com" in issuer:
+    elif issuer_host == AAD_V2_ISSUER_HOST:
         for name in ("unique_name", "oid", "azp"):
             if claims.get(name):
                 return str(claims[name])
