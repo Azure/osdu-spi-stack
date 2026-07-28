@@ -6,12 +6,12 @@
 
 OSDU community services publish container images to a single GitLab registry under tag patterns like `*-master:<sha>` plus a moving `latest`. Two operational realities sit underneath that:
 
-1. **Tag churn.** Tags get pruned. A chart that names a SHA tag today can break on next reconcile if the upstream registry trims it.
+1. **Tag churn.** Tags get pruned. A chart that names a SHA tag can break on any later reconcile once the upstream registry trims it.
 2. **Cluster drift over a long-lived deploy.** Without a pin, two `spi up` runs on different days against `main` install different images. Reproducing a bug becomes a moving target.
 
 The simple options both fail. Pinning images inside each service's `HelmRelease.values` ties chart edits to image bumps and produces noisy Git diffs every refresh. Letting Flux follow `latest` is the inverse failure mode: every reconcile risks a silent service rotation mid-test.
 
-We also already chose a local Helm chart per service (ADR-004) and Flux for in-cluster reconciliation (ADR-009). Both give us natural seams to inject pinned values without editing per-service manifests.
+ADR-004 (a local Helm chart per service) and ADR-009 (Flux for in-cluster reconciliation) both provide natural seams to inject pinned values without editing per-service manifests.
 
 ## Decision
 

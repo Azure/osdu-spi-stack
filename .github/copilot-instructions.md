@@ -80,6 +80,17 @@ uv run spi reconcile --resume                # Unfreeze GitOps
 - Every az/kubectl command displayed transparently via Rich panels.
 - Azure resource names derived from --env flag for isolation.
 
+## Documentation Style (docs/)
+
+`docs/STYLE.md` fixes the prose for ADRs (`docs/decisions/`), design docs
+(`docs/design/`), and `docs/architecture.md`. When reviewing or writing
+changes under `docs/`, hold them to that guide: impersonal active voice,
+claims backed by a named artifact or exact number, the banned/rationed word
+list, and its per-genre rules. ADRs are closed records (no dateable status,
+no external-project narrative); design docs are living documents
+(status-marked present tense is correct). Review suggestions for these files
+must themselves comply with the guide; do not propose wording the guide bans.
+
 ## Key Design Decisions
 
 - Azure-only (no KinD/AWS/GCP); SPI services depend on Azure PaaS (ADR-001)

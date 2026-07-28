@@ -63,7 +63,7 @@ Five things Bicep cannot or will not do; the CLI handles them with `az`:
 2. **Soft-delete Key Vault recovery.** `az keyvault list-deleted | jq` + `az keyvault recover`. ARM cannot branch on a live query, so the CLI checks before submitting `main.bicep` and runs `recover` if needed.
 3. **`az aks get-credentials`.** Kubeconfig merge is a client-side operation, not a resource.
 4. **`az aks mesh enable-istio-cni`.** AVM v0.13.0 types `proxyRedirectionMechanism` out of `IstioComponents`. The CLI patches it imperatively after `aks.bicep` lands; pin a newer AVM version when the parameter becomes available.
-5. **Runtime Key Vault secrets.** The in-cluster middleware secrets (`redis-*`, `{p}-elastic-*`) are not declarable in Bicep. The CLI writes them with `az keyvault secret set` from the generated seed passwords — no wait for middleware Ready, since the values are known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md) and the [secret lifecycle](secret-lifecycle.md) doc for the full handoff.
+5. **Runtime Key Vault secrets.** The in-cluster middleware secrets (`redis-*`, `{p}-elastic-*`) are not declarable in Bicep. The CLI writes them with `az keyvault secret set` from the generated seed passwords, with no wait for middleware Ready, since the values are known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md) and the [secret lifecycle](secret-lifecycle.md) doc for the full handoff.
 
 These seams are explicit and small. Adding to them is a smell: most "Bicep cannot do this" answers turn out to be "I have not read the AVM changelog yet."
 
@@ -124,7 +124,7 @@ Output snippet:
    ~ Modify: Microsoft.Storage/storageAccounts/spistackdev1common
 ```
 
-The dry-run does not touch the cluster. It does land the resource group (Bicep needs an RG target), but it skips soft-deleted Key Vault recovery — that runs only on a real deploy (`if not dry_run` in `azure_infra.py`).
+The dry-run does not touch the cluster. It does land the resource group (Bicep needs an RG target), but it skips soft-deleted Key Vault recovery; that runs only on a real deploy (`if not dry_run` in `azure_infra.py`).
 
 ## Related ADRs
 

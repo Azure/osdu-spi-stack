@@ -13,7 +13,7 @@ For production GitOps, continuous reconciliation is the central feature. For SPI
 3. **AI-driven churn.** Agents and skills that modify the repo can land changes faster than humans review their effect. One PR can disrupt every live cluster at once.
 4. **Loss of reproducibility.** When debugging, knowing the exact commit an environment is running matters. With auto-reconciliation, "the environment" is whatever happens to be latest.
 
-The CLI already exposes `spi reconcile --suspend` and `spi reconcile --resume` (the `reconcile` command in `src/spi/cli.py`), but these are opt-in and most users do not discover them until something goes wrong. cimpl-stack faced the identical problem and resolved it in its own ADR-018; this decision ports that behavior.
+The CLI already exposes `spi reconcile --suspend` and `spi reconcile --resume` (the `reconcile` command in `src/spi/cli.py`), but both are opt-in: nothing in the default `spi up` path invokes or surfaces them. The safe default and the discoverable one are not the same setting.
 
 ## Decision
 
@@ -31,7 +31,7 @@ Suspend the Flux `GitRepository` source (`osdu-spi-stack-system` in `osdu-flux`;
 2. Phase 4: Kubernetes bootstrap (namespaces, secrets, storage classes, Gateway API CRDs, `osdu-config` ConfigMap, workload identity ServiceAccounts, ingress config).
 3. Phase 5: Flux extension + GitOps configuration applied via `infra/flux.bicep`. The `GitRepository` starts with `suspend: false`.
 4. Phase 6: Key Vault bootstrap secrets written.
-5. **Phase 7 (new): `_pin_gitops_source()` in `deploy.py`** — wait up to 120s for `gitrepository/osdu-spi-stack-system` to reach `Ready=True`, then `kubectl patch spec.suspend: true`.
+5. **Phase 7: `_pin_gitops_source()` in `deploy.py`**: wait up to 120s for `gitrepository/osdu-spi-stack-system` to reach `Ready=True`, then `kubectl patch spec.suspend: true`.
 
 The wait in step 5 is non-fatal: if the source does not become Ready in 120s, the CLI emits a warning and suspends anyway. Flux reconciles from whatever it has cached, and the user can run `spi reconcile` to force a fetch.
 
@@ -41,7 +41,7 @@ The wait in step 5 is non-fatal: if the source does not become Ready in 120s, th
 
 ### User feedback
 
-The `spi status` dashboard already renders a yellow `SUSPENDED` banner when the `GitRepository` is suspended, and `spi info` includes the same field. The `spi up` completion message now reminds users that updates require an explicit `spi reconcile`.
+The `spi status` dashboard renders a yellow `SUSPENDED` banner when the `GitRepository` is suspended, and `spi info` includes the same field. The `spi up` completion message states that updates require an explicit `spi reconcile`.
 
 ## Consequences
 

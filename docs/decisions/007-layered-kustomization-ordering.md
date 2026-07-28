@@ -6,7 +6,7 @@
 
 A Kubernetes workload graph has hard ordering constraints: CRDs before CRs, operators before instances, cert-manager before certs, middleware before consumers. Applying everything at once surfaces as CrashLoopBackOff and CRD-not-found errors that resolve eventually but obscure real failures.
 
-Flux Kustomizations with explicit `dependsOn` let us encode those constraints once, in Git, where the graph is reviewable.
+Flux Kustomizations with explicit `dependsOn` encode those constraints once, in Git, where the graph is reviewable.
 
 ## Decision
 

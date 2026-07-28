@@ -25,12 +25,12 @@ Shape:
 - Partition list is injected via a `spi-init-values` ConfigMap the CLI writes (driven by `--partition` flags). The HelmRelease consumes it with `valuesFrom`, so adding a partition is a CLI argument change, not a Git edit.
 - Partition record values use **bare** Key Vault secret suffixes (`cosmos-endpoint`, `sb-namespace`, etc.), not partition-prefixed names. `partition-azure` auto-prefixes the partition id onto every `sensitive: true` value at write time, so embedding the prefix in the chart double-prefixes the stored value and breaks downstream service lookups.
 - New Kustomization `spi-osdu-init` at `software/stacks/osdu/init/`, wired into the core profile as Layer 5a (after `spi-osdu-services`, before `spi-osdu-schema-load`) per ADR-007. `schema-load` depends on `spi-osdu-init` so the schema POSTs see a tenant that is already provisioned.
-- Idempotence: 201 and 409 from partition-service count as success; 200 and 409 from entitlements-tenant-provisioning count as success. No `ttlSecondsAfterFinished` (same rationale as ADR-013 — Flux would re-create an auto-deleted Job and turn one-shot into periodic).
+- Idempotence: 201 and 409 from partition-service count as success; 200 and 409 from entitlements-tenant-provisioning count as success. No `ttlSecondsAfterFinished` (same rationale as ADR-013: Flux would re-create an auto-deleted Job and turn one-shot into periodic).
 
 Rejected:
 
 - **Imperative CLI step.** Re-opens the problems ADR-011 and ADR-013 closed: hidden CLI dependency, no re-run from the cluster, invisible to `flux get kustomizations`.
-- **Per-partition Flux Kustomization stamping.** One Kustomization per partition would duplicate every wiring decision in this ADR. A single Kustomization that contains a chart with a per-partition loop is the same outcome with less YAML.
+- **Per-partition Flux Kustomization stamping.** One Kustomization per partition duplicates every wiring decision above. A single Kustomization holding a chart with a per-partition loop is the same outcome with less YAML.
 - **Partition-prefixed values in the chart's `partition.json`.** Double-prefixes every stored value and surfaces as "Invalid data partition id" the first time a service dereferences the record. The bare-key pattern matches what `partition-azure` expects.
 
 ## Consequences
