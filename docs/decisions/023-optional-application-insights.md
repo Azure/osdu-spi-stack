@@ -11,7 +11,7 @@ deciders: "danielscholl"
 
 OSDU service images bundle the Application Insights Java agent, and
 `core-lib-azure >= 2.5.6` reads request-telemetry context on every request
-with no null guard — services return HTTP 500 on every request when the
+with no null guard: services return HTTP 500 on every request when the
 agent is enabled but App Insights is not initialized. The stack needs a
 telemetry story that neither forces every developer to pay for a Log
 Analytics workspace nor breaks services that expect an agent context.

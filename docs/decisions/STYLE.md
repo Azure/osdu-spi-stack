@@ -6,6 +6,20 @@ what it cites, and what a reviewer rejects. House exemplars:
 [ADR-012](012-ingress-profiles.md), [ADR-017](017-osdu-image-lock.md),
 [ADR-025](025-tls-certificates-in-platform.md).
 
+## Format
+
+Two shapes are in the corpus and both are acceptable:
+
+- **Classic** (ADR 001-018): `**Status**` line, `## Context`, `## Decision`
+  with inline `Rejected:` bullets, `## Consequences`.
+- **Frontmatter MADR** (ADR 019 onward, the templates): YAML frontmatter,
+  `## Context and Problem Statement`, `## Decision Drivers`,
+  `## Considered Options`, `## Decision Outcome`, `### Consequences`.
+
+New ADRs use the frontmatter template. Existing ADRs are not converted:
+restructuring a closed record churns history without changing what the reader
+learns, and the prose rules below apply identically to both shapes.
+
 ## The reader
 
 An ADR is read months or years after acceptance, usually by someone deciding
@@ -112,8 +126,11 @@ Reject an ADR that:
 A mechanical first pass:
 
 ```bash
-grep -nE "currently|in review|will soon|leverage|seamless|robust|note that|in order to|obviously|clearly,|we believe|—" docs/decisions/0*.md
+grep -nwiE "currently|leverage|utilize|seamless|robust|streamline|obviously|probably|likely|perhaps|arguably" docs/decisions/0*.md
+grep -nE "in review|will soon|note that|in order to|we believe|—" docs/decisions/0*.md
 ```
 
-A grep hit is a prompt to read the sentence, not an automatic failure;
-"clearly" in a quoted error message is fine.
+`-w` matters: without it, API values such as Karpenter's
+`WhenEmptyOrUnderutilized` match the word list. A hit is a prompt to read the
+sentence, not an automatic failure; a banned word inside a quoted identifier
+or error message stays.

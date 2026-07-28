@@ -21,8 +21,8 @@ layer from reconciling.
 
 - Node placement must keep working across AKS hardening waves; reserved
   system labels can gain restrictions at any time.
-- The label is purely internal — nothing outside this repository consumes
-  it — so a rename is mechanical.
+- The label is purely internal (nothing outside this repository consumes
+  it), so a rename is mechanical.
 
 ## Considered Options
 
