@@ -79,3 +79,5 @@ Create an ADR for any decision that could plausibly have gone a different way an
 | [034](034-runtime-resolved-istio-revision.md) | Runtime-Resolved Managed Istio Revision | Accepted |
 | [035](035-entra-first-data-plane.md) | Entra-First Data-Plane Authentication Boundary | Accepted |
 | [036](036-per-identity-authorization.md) | Per-Identity Authorization with Explicit Membership Seeding | Accepted |
+| [037](037-cluster-side-onboarding.md) | Cluster-Side Onboarding for Service-Fork CI/CD | Accepted |
+| [038](038-subscription-resolved-availability-zones.md) | Resolve System Pool Availability Zones per Subscription | Accepted |
