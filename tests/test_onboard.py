@@ -375,9 +375,7 @@ def test_secret_write_policy_rewrites_when_the_link_is_unknown():
     Without it we cannot tell whether existing secrets belong to this cluster or a
     retired one, so the safe action is to rewrite rather than leave them stale."""
     assert (
-        _should_write_secrets(
-            secrets_present=True, is_rehome=False, force=False, link_known=False
-        )
+        _should_write_secrets(secrets_present=True, is_rehome=False, force=False, link_known=False)
         is True
     )
     # With the link known and everything present, the idempotent skip still applies.
@@ -404,10 +402,14 @@ def test_seed_script_retry_budget_matches_the_declared_constant():
 
     from spi import onboard as ob
 
-    attempts = int(re.search(r"for _ in range\((\d+)\):", ob._SEED_SCRIPT).group(1))
-    sleep_s = int(re.search(r"time\.sleep\((\d+)\)", ob._SEED_SCRIPT).group(1))
-    assert attempts * sleep_s == ob.SEED_JOB_GROUP_RETRY_SECONDS
+    attempts_match = re.search(r"for _ in range\((\d+)\):", ob._SEED_SCRIPT)
+    sleep_match = re.search(r"time\.sleep\((\d+)\)", ob._SEED_SCRIPT)
+    assert attempts_match, "retry loop not found in the embedded seed script"
+    assert sleep_match, "sleep interval not found in the embedded seed script"
 
+    attempts = int(attempts_match.group(1))
+    sleep_s = int(sleep_match.group(1))
+    assert attempts * sleep_s == ob.SEED_JOB_GROUP_RETRY_SECONDS
 
 
 def test_kubectl_calls_are_pinned_to_this_runs_context():
@@ -447,6 +449,9 @@ def test_credential_acquisition_is_fatal_and_names_the_context():
     import spi.onboard as ob
 
     source = Path(ob.__file__).read_text(encoding="utf-8")
-    block = re.search(r'"get-credentials",.*?\)\n', source, re.S).group(0)
+    match = re.search(r'"get-credentials",.*?\)\n', source, re.S)
+    assert match, "get-credentials call not found in onboard.py"
+
+    block = match.group(0)
     assert "--context" in block
     assert "check=False" not in block

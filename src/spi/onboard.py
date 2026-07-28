@@ -504,7 +504,9 @@ def _verify_deployment(inp: OnboardInputs) -> None:
 
     candidate = f"osdu-{inp.service}"
     deployment = subprocess.run(
-        _resolve(_kubectl(inp, ["get", "deployment", candidate, "-n", inp.namespace, "-o", "json"])),
+        _resolve(
+            _kubectl(inp, ["get", "deployment", candidate, "-n", inp.namespace, "-o", "json"])
+        ),
         capture_output=True,
         text=True,
     )
@@ -1161,7 +1163,9 @@ def _ensure_entitlements_membership(inp: OnboardInputs) -> None:
         handle.close()
         # The Job spec is immutable; clear any prior run before applying.
         _run(
-            _kubectl(inp, ["delete", "job", SEED_JOB_NAME, "-n", inp.namespace, "--ignore-not-found"]),
+            _kubectl(
+                inp, ["delete", "job", SEED_JOB_NAME, "-n", inp.namespace, "--ignore-not-found"]
+            ),
             description="Clear any prior entitlements seed Job",
             check=False,
         )
