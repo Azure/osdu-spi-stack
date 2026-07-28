@@ -66,6 +66,8 @@ def _referenced_paths(tree: Path) -> set:
 
 
 def _ingress_tree(profile: Profile, mode: IngressMode) -> Path:
+    if profile is Profile.BARE:
+        return INGRESS_DIR / "bare"
     suffix = "-minimal" if profile is Profile.MINIMAL else ""
     return INGRESS_DIR / f"{mode.value}{suffix}"
 
@@ -132,3 +134,11 @@ class TestMinimalProfileScope:
     def test_ingress_declares_no_osdu_routes(self, mode):
         names = _declared_names(_ingress_tree(Profile.MINIMAL, mode))
         assert "spi-osdu-routes" not in names
+
+
+class TestBareProfileScope:
+    def test_stack_tree_is_empty(self):
+        assert list(_flux_kustomizations(PROFILES_DIR / Profile.BARE.value)) == []
+
+    def test_ingress_tree_is_empty(self):
+        assert list(_flux_kustomizations(INGRESS_DIR / "bare")) == []
