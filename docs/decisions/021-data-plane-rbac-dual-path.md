@@ -1,7 +1,7 @@
 ---
-status: "accepted"
+status: "superseded by [ADR-027](027-entra-only-data-plane.md)"
 contact: "danielscholl"
-date: "2026-07-24"
+date: "2026-07-28"
 deciders: "danielscholl"
 ---
 

@@ -264,7 +264,7 @@ Created by the CLI during K8s bootstrap and mounted into every OSDU service via 
 | PaaS metadata and secret values | Azure Key Vault | SDK reads under Workload Identity (or CSI) |
 | In-cluster middleware passwords | Kubernetes Secrets in `platform`/`osdu` | CLI-generated once per environment |
 
-Most Key Vault secret values are declared in `infra/main.bicep` and resolved at deploy time (including `listKeys()` for Cosmos accounts). A small set of runtime secrets that depend on in-cluster seed passwords (Elasticsearch and Redis credentials, `tbl-storage-endpoint`) are written post-handoff by the CLI. See [ADR-010](decisions/010-keyvault-secret-management.md).
+Most Key Vault secret values are declared in `infra/main.bicep` and resolved at deploy time. Local auth is disabled on the Cosmos and Service Bus accounts (ADR-027), so their key and connection secrets are written as `"DISABLED"` placeholders instead of real key material. A small set of runtime secrets that depend on in-cluster seed passwords (Elasticsearch and Redis credentials, `tbl-storage-endpoint`) are written post-handoff by the CLI. See [ADR-010](decisions/010-keyvault-secret-management.md).
 
 ### CA distribution and Redis mTLS
 
