@@ -9,22 +9,22 @@ deciders: "SPI Stack maintainers"
 
 ## Context and Problem Statement
 
-The stack briefly carried Airflow 2.10.5 (chart 1.16.x), which is in maintenance mode upstream. Airflow 3 restructures the deployment: the webserver becomes an `api-server` (UI + REST API + task execution API), DAG parsing moves to a standalone `dag-processor`, the REST API moves from `/api/v1` with per-request Basic auth to `/api/v2` with a JWT token exchange, and the chart introduces dedicated api-secret/JWT signing keys alongside the fernet key.
+Airflow 3 restructures the deployment relative to Airflow 2: the webserver becomes an `api-server` (UI + REST API + task execution API), DAG parsing moves to a standalone `dag-processor`, the REST API moves from `/api/v1` with per-request Basic auth to `/api/v2` with a JWT token exchange, and the chart introduces dedicated api-secret/JWT signing keys alongside the fernet key.
 
-A sibling project (cimpl-stack) adopted Airflow 3 by running both engines behind a feature flag. That transition state cost it a duplicated component tree, ten profile overlays, a stack rewriter, and per-instance engine metadata — none of which serves a repo with no installed base.
+The question is how the stack adopts a new Airflow major: as the sole engine, or hedged behind transition machinery (dual engines, a version switch, service-name indirection) that lets deployments choose.
 
 ## Decision Drivers
 
-- The stack has no users yet; there is nothing to migrate and no transition window to serve.
-- A dual-engine switch is pure carrying cost: every mechanism it needs (component duplication, path rewriting, service-name indirection) exists only for a transition.
+- The stack has no installed base; there is nothing to migrate and no transition window to serve.
+- Dual-engine support is pure carrying cost: every mechanism it needs (component duplication, profile overlays, path rewriting, service-name indirection) exists only to serve a transition.
 - Flux re-renders Helm values on every reconcile. The chart mints its api-secret and JWT keys fresh on each render, and keeps its fernet key in a pre-install-hook Secret that lives outside the Helm release — so any key not seeded by the CLI is either unstable or untracked.
-- The OSDU workflow service's Airflow 3 client is not yet in community `master` (it is in review on an unmerged upstream branch), but workflow→Airflow integration is inert in this stack today (no DAGs are loaded; `IGNORE_DAGCONTENT=true`).
+- Workflow→Airflow integration is optional in this stack (no DAGs are shipped; `IGNORE_DAGCONTENT=true`), so the Airflow version can move independently of the engines the OSDU workflow service supports.
 
 ## Considered Options
 
 - **Airflow 3 only.** One component, one engine, chart 1.22.x pinned to Airflow 3.2.2.
-- **Dual-engine with a flag (cimpl-stack model).** Keep Airflow 2 as fallback behind a switch.
-- **Stay on Airflow 2** until the OSDU workflow service supports Airflow 3 in `master`.
+- **Dual-engine behind a version switch.** Keep Airflow 2 deployable as a fallback.
+- **Track the OSDU ecosystem.** Hold Airflow at the newest major the community workflow service supports.
 
 ## Decision Outcome
 
@@ -39,14 +39,14 @@ Key mechanics:
 - **Service identity.** Routes and ReferenceGrants target `airflow-api-server`. The FAB auth manager (chart default) keeps the `createUserJob` admin-user flow valid; the admin identity lives solely in the job's args.
 - **Schema lifecycle.** The chart's migrate job (`airflow db migrate`, `useHelmHooks: false` so Flux runs it) initializes and upgrades the metadata schema.
 
-Deliberately not carried over from cimpl-stack: the engine switch and all its residue, `airflow3-*` resource naming, Istio sidecar opt-outs (this stack's `platform` namespace has no sidecar injection), and runtime `_PIP_ADDITIONAL_REQUIREMENTS` DAG loading (this stack ships no DAGs).
+Deliberately omitted: dual-engine switching machinery of any kind, runtime `_PIP_ADDITIONAL_REQUIREMENTS` package installs (the stack ships no DAGs, and runtime pip trades slow, registry-dependent pod starts for the image immutability the rest of the stack assumes), and Istio sidecar opt-outs (the `platform` namespace has no sidecar injection).
 
 ### Workflow service
 
-`OSDU_AIRFLOW_URL` points at `airflow-api-server` (the previous value referenced a nonexistent `airflow-web`). The Azure provider's Airflow 3 engine selection — `OSDU_AIRFLOW_VERSION=airflow3` plus `OSDU_AIRFLOW_AIRFLOW3_URL/USERNAME/PASSWORD` (the latter requiring the admin credential mirrored into the `osdu` namespace) — is not wired yet: those bindings exist only on an unmerged upstream branch, and this stack resolves workflow images from `master`. Wire them when upstream merges.
+`OSDU_AIRFLOW_URL` targets `airflow-api-server`. The Airflow version deployed here is decoupled from the engines the OSDU workflow service's images support: when the deployed workflow image carries an Airflow 3 client, engine selection is wired through its Azure provider config (`OSDU_AIRFLOW_VERSION=airflow3` plus `OSDU_AIRFLOW_AIRFLOW3_URL/USERNAME/PASSWORD`, the latter requiring the admin credential mirrored into the `osdu` namespace). Until then, workflow→Airflow API calls are unavailable — acceptable because this stack loads no DAGs.
 
 ### Consequences
 
 - Good, because the stack tracks the current Airflow major with one component and zero transition machinery.
 - Good, because signing-key lifecycle is correct under Flux: nothing rotates on reconcile, and every key is CLI-owned.
-- Bad, because workflow→Airflow API calls cannot work until the community workflow service ships its Airflow 3 client — accepted since that integration is inert today.
+- Bad, because the OSDU workflow service can lag Airflow majors, leaving its Airflow integration dormant until its images support the deployed engine.
