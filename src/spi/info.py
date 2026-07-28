@@ -188,7 +188,9 @@ def _compute_endpoints(cfg: dict) -> tuple:
         if kibana_host:
             middleware["Kibana"] = f"https://{kibana_host}/"
         if airflow_host:
-            middleware["Airflow"] = f"https://{airflow_host}/"
+            # The UI router's basename comes from base_url (/airflow), so the
+            # working URL keeps that path even on a dedicated host.
+            middleware["Airflow"] = f"https://{airflow_host}/airflow/"
         return mode, base, endpoints, middleware
 
     # Fallback: ip mode or no ConfigMap yet.
@@ -224,7 +226,7 @@ def _get_live_credentials() -> list:
     pg_su_pw = _secret_value("platform", "postgresql-superuser-credentials", "password")
     elastic_pw = _secret_value("platform", "elasticsearch-es-elastic-user", "elastic")
     redis_pw = _secret_value("platform", "redis-credentials", "password")
-    airflow_pw = _secret_value("platform", "airflow-webserver-credentials", "password")
+    airflow_pw = _secret_value("platform", "airflow-api-credentials", "password")
 
     rows = [
         ("PostgreSQL (Airflow)", pg_user, pg_pw),

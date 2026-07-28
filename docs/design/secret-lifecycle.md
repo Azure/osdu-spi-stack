@@ -12,7 +12,7 @@
 |---|---|---|---|
 | Azure PaaS credentials | Cosmos DB, Service Bus, Storage, Key Vault | Entra ID (token broker) | Workload Identity; no stored material |
 | PaaS metadata + secret values | Cosmos endpoints, Storage account names, Service Bus namespace, tenant ID | Azure Key Vault | SDK reads via Workload Identity (or CSI) |
-| In-cluster middleware passwords | Redis, Elasticsearch, PostgreSQL (Airflow) | Kubernetes Secrets in `platform` / `osdu` | CLI-generated seed (`spi-secrets`), consumed by the operators |
+| In-cluster middleware secrets | Redis, Elasticsearch, PostgreSQL (Airflow), Airflow signing keys | Kubernetes Secrets in `platform` / `osdu` | CLI-generated seed (`spi-secrets`), consumed by the operators |
 
 This split is the decision in [ADR-010](../decisions/010-keyvault-secret-management.md). The next sections walk each class.
 
@@ -59,11 +59,12 @@ Services read their KV secrets via the Azure SDK using Workload Identity. The OS
 
 ## Class 3: In-cluster middleware passwords
 
-The CLI generates all three middleware passwords (`src/spi/secrets.py`, `_generate_password`), stores them in a seed Secret `spi-secrets` in `osdu-flux`, and pre-creates the Kubernetes Secrets the operators consume. The operators read these pre-created Secrets rather than minting their own:
+The CLI generates the middleware passwords and Airflow signing keys (`src/spi/secrets.py`), stores them in a seed Secret `spi-secrets` in `osdu-flux`, and pre-creates the Kubernetes Secrets the operators consume. The operators read these pre-created Secrets rather than minting their own:
 
 - **Elasticsearch.** The CLI creates `elasticsearch-es-elastic-user` in `platform`; ECK adopts it as the elastic-user credential.
 - **Redis.** The CLI creates `redis-credentials` in `platform`; the Bitnami chart consumes it via `existingSecret` (`software/components/redis/release.yaml`).
 - **PostgreSQL (Airflow).** The CLI creates `postgresql-superuser-credentials` and `postgresql-airflow-credentials` in `platform`; CNPG consumes them via `superuserSecret` / the owner secret.
+- **Airflow.** The CLI creates `airflow-metadata-secret` (the SQLAlchemy connection string) and `airflow-api-credentials` (admin password plus the `api-secret-key`, `jwt-secret`, and `fernet-key` signing material) in `platform`. The chart consumes the signing keys via `apiSecretKeySecretName` / `jwtSecretName` / `fernetKeySecretName`; seeding them keeps every key stable across Flux reconciles and inside CLI ownership (ADR-026).
 
 The same generated passwords are mirrored into Key Vault by the CLI (Writer B above), so OSDU services in `osdu` read Elasticsearch and Redis credentials through the same Workload Identity path as everything else.
 

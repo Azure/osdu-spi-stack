@@ -14,10 +14,12 @@
 
 """Secret management for SPI Stack.
 
-SPI Stack only needs passwords for the three in-cluster components:
+SPI Stack only needs secrets for the in-cluster middleware:
   - Elasticsearch (elastic user)
   - Redis (default user)
   - PostgreSQL (Airflow metadata database)
+  - Airflow (admin password plus api-secret/JWT/fernet signing keys;
+    the fernet key is format-sensitive: urlsafe-base64, 32 bytes)
 
 Azure PaaS services use Workload Identity (no stored secrets).
 """
@@ -42,13 +44,20 @@ SEED_KEYS = [
     "pg_admin_password",
     "pg_airflow_password",
     "airflow_admin_password",
-    "airflow_webserver_secret_key",
+    "airflow_api_secret_key",
+    "airflow_jwt_secret",
+    "airflow_fernet_key",
 ]
 
 
 def _generate_password(length: int = 24) -> str:
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _generate_fernet_key() -> str:
+    # Fernet requires a urlsafe-base64-encoded 32-byte key, not a password.
+    return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
 
 
 def _kubectl_apply_secret(namespace: str, name: str, literals: dict):
@@ -104,7 +113,7 @@ def get_or_create_seed() -> dict:
     seed = dict(existing) if existing else {}
     for k in SEED_KEYS:
         if k not in seed:
-            seed[k] = _generate_password()
+            seed[k] = _generate_fernet_key() if k == "airflow_fernet_key" else _generate_password()
 
     if existing:
         console.print("  [info]Seed secret updated with new keys[/info]")
@@ -158,15 +167,24 @@ def _create_platform_secrets(s: dict):
         "platform",
         "airflow-metadata-secret",
         {
+            # Bare postgresql:// on purpose: SQLAlchemy already defaults to
+            # psycopg2, and the chart feeds this same string to the built-in
+            # airflow_db Connection, where a +driver suffix is an unknown
+            # conn_type.
             "connection": f"postgresql://airflow:{s['pg_airflow_password']}@{pg_host}:5432/airflow",
         },
     )
+    # Airflow signing material. The key names are fixed by the chart:
+    # api-secret-key (apiSecretKeySecretName), jwt-secret (jwtSecretName),
+    # fernet-key (fernetKeySecretName). 'password' is the admin UI/API user.
     _kubectl_apply_secret(
         "platform",
-        "airflow-webserver-credentials",
+        "airflow-api-credentials",
         {
             "password": s["airflow_admin_password"],
-            "webserver-secret-key": s["airflow_webserver_secret_key"],
+            "api-secret-key": s["airflow_api_secret_key"],
+            "jwt-secret": s["airflow_jwt_secret"],
+            "fernet-key": s["airflow_fernet_key"],
         },
     )
 

@@ -22,7 +22,7 @@ Run exactly three stateful middleware systems in the `platform` namespace, each 
 | Redis (TLS) | Bitnami chart + cert-manager | 1 master + 2 replicas, 8 GiB each |
 | PostgreSQL (Airflow metadata) | CloudNativePG | 3 instances, 10 GiB + 4 GiB WAL |
 
-Airflow is a non-stateful middleware tenant of this namespace (webserver, scheduler, triggerer).
+Airflow is a non-stateful middleware tenant of this namespace (api-server, scheduler, dag-processor, triggerer).
 
 Rejected:
 - Azure Cache for Redis, Azure Database for PostgreSQL: extra latency and cost for workloads that benefit from co-location.
