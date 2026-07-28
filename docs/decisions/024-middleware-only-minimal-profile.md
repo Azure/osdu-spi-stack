@@ -30,6 +30,8 @@ Separately, there was no way to stand up just the middleware substrate. Working 
 
 Chosen option: "Add `minimal`, drop `full`", because it removes a flag that cannot work and adds one that serves a real workflow. `Profile` is now `minimal | core`.
 
+**Amendment (2026-07-28):** `Profile` later gained a third, smaller `bare` value for infrastructure plus activated GitOps against empty stack and ingress trees. [ADR-012](012-ingress-profiles.md) records its ingress pairing.
+
 `software/stacks/osdu/profiles/minimal/stack.yaml` reproduces layers 0a through 4b verbatim and stops. It ends at the same boundary `spi-osdu-services` starts from, so the middleware substrate is complete (including the trust-manager Bundles that mirror the Redis and Elasticsearch CAs into `osdu`, ADR-011) without a single OSDU service.
 
 ### Ingress pairing
