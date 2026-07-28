@@ -32,3 +32,8 @@ jobs:
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:python"
+          # Public repositories can upload CodeQL results for free. Private
+          # forks without GitHub Advanced Security still run the analysis, but
+          # must keep the SARIF and database local to avoid a hard failure.
+          upload: ${{ github.event.repository.private && 'never' || 'always' }}
+          upload-database: ${{ github.event.repository.private && 'false' || 'true' }}

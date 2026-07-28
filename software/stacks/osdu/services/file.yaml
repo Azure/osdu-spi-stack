@@ -26,6 +26,7 @@ spec:
     image:
       repository: ${FILE_IMAGE_REPOSITORY}
       tag: "${FILE_IMAGE_TAG}"
+      digest: "${FILE_IMAGE_DIGEST}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu
@@ -46,6 +47,8 @@ spec:
       - name: AZURE_ISTIOAUTH_ENABLED
         value: "true"
       - name: AZURE_PAAS_WORKLOADIDENTITY_ISENABLED
+        value: "true"
+      - name: AZURE_MSI_ISENABLED
         value: "true"
       - name: SPRING_CONFIG_NAME
         value: common,application

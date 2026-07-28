@@ -31,6 +31,10 @@ spec:
   prune: false
   wait: true
   timeout: 5m
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-ingress-config
 
 ---
 # Layer 0b: Karpenter NodePools
@@ -375,9 +379,11 @@ spec:
   path: ./software/stacks/osdu/schema-load
   prune: true
   wait: true
-  # Matches the Job's activeDeadlineSeconds (1800s) plus headroom for
-  # image pull and reconcile overhead.
-  timeout: 35m
+  # Must exceed the Job's activeDeadlineSeconds (3600s) plus headroom for image
+  # pull and reconcile overhead, otherwise a legitimate slow load is reported
+  # Ready=False while the Job is still running happily, blocking the dependent
+  # reference-services Kustomization below.
+  timeout: 65m
   healthChecks:
     - apiVersion: batch/v1
       kind: Job

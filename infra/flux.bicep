@@ -4,11 +4,10 @@
 // GitOps activation: AKS-native Flux extension plus the cluster-scoped
 // GitRepository + Kustomization that Flux will reconcile against.
 //
-// Deployed AFTER ``infra/aks.bicep`` and ``infra/main.bicep`` and AFTER
-// the CLI's imperative K8s bootstrap phase. The Bicep declaration replaces
-// the previous ``az k8s-configuration flux create`` call; re-deploys drift-
-// reconcile the Kustomization config (sync interval, repo branch, profile
-// path) without the CLI having to branch on create-vs-update.
+// Deployed twice by the CLI on AKS Automatic:
+//   1. Extension-only so Azure creates the protected flux-system namespace.
+//   2. Full GitOps activation after the CLI writes the ConfigMaps/secrets
+//      consumed by postBuild substitutions and HelmRelease valuesFrom.
 
 targetScope = 'resourceGroup'
 
@@ -39,12 +38,34 @@ param ingressMode string = 'azure'
 @description('Name of the fluxConfigurations resource on the cluster.')
 param configurationName string = 'osdu-spi-stack-system'
 
+@description('Create the fluxConfigurations GitOps resource. Set false to install only the Flux extension and namespace.')
+param activateGitOps bool = true
+
+@description('Namespace for SPI-owned GitRepository, Kustomizations, HelmReleases, and bootstrap ConfigMaps.')
+param gitopsNamespace string = 'osdu-flux'
+
+@description('Optional local Kubernetes Secret name for private Git repository auth.')
+param gitRepositoryLocalAuthRef string = ''
+
 // The minimal profile deploys no OSDU services, so it needs the ingress
 // tree that omits the OSDU HTTPRoute Kustomization; that one dependsOn
 // spi-osdu-services and would otherwise stall on DependencyNotReady.
 var ingressPath = profile == 'minimal'
   ? './software/stacks/osdu/ingress/${ingressMode}-minimal'
   : './software/stacks/osdu/ingress/${ingressMode}'
+
+var gitRepositoryBase = {
+  url: repoUrl
+  repositoryRef: {
+    branch: repoBranch
+  }
+  syncIntervalInSeconds: 600
+  timeoutInSeconds: 600
+}
+
+var gitRepositoryAuth = !empty(gitRepositoryLocalAuthRef) ? {
+  localAuthRef: gitRepositoryLocalAuthRef
+} : {}
 
 resource aks 'Microsoft.ContainerService/managedClusters@2024-10-01' existing = {
   name: clusterName
@@ -57,44 +78,36 @@ resource fluxExtension 'Microsoft.KubernetesConfiguration/extensions@2024-11-01'
     extensionType: 'microsoft.flux'
     autoUpgradeMinorVersion: true
     releaseTrain: 'Stable'
+    // Disable Flux multi-tenancy enforcement. With it enabled (the default
+    // since extension v1.9), the Azure Flux agent injects
+    // `serviceAccountName: flux-applier` into managed Kustomizations and runs
+    // the OSS controllers with `--default-service-account=flux-applier`. On
+    // AKS Automatic that path is now blocked: the platform's
+    // protect-system-namespaces ValidatingAdmissionPolicy denies impersonating
+    // the flux-applier service account, so every reconcile fails with
+    // `dry-run failed (Forbidden): failed to get server groups`. With
+    // enforcement off the controllers apply as their own exempt flux-system
+    // identities, which can write to protected namespaces and create the
+    // admission webhooks cert-manager and CloudNativePG require.
+    configurationSettings: {
+      'multiTenancy.enforce': 'false'
+    }
     scope: {
       cluster: {
         releaseNamespace: 'flux-system'
       }
     }
-    // Disable Flux multi-tenancy enforcement. With it on (default since
-    // extension v1.9) the agent injects `serviceAccountName: flux-applier`
-    // and the controllers impersonate that SA; AKS Automatic's
-    // protect-system-namespaces ValidatingAdmissionPolicy denies the
-    // impersonation, failing every reconcile with `dry-run failed
-    // (Forbidden)`. With enforcement off the controllers apply as their own
-    // exempt flux-system identities.
-    configurationSettings: {
-      'multiTenancy.enforce': 'false'
-    }
   }
 }
 
-resource gitopsConfig 'Microsoft.KubernetesConfiguration/fluxConfigurations@2024-11-01' = {
+resource gitopsConfig 'Microsoft.KubernetesConfiguration/fluxConfigurations@2024-11-01' = if (activateGitOps) {
   name: configurationName
   scope: aks
   properties: {
     scope: 'cluster'
-    // SPI-owned GitOps objects (GitRepository, Kustomizations) live in
-    // osdu-flux, NOT the extension's flux-system: AKS Automatic's
-    // protect-system-namespace-objects policy denies deployer writes to
-    // flux-system, so the CLI seeds ConfigMaps/secrets into osdu-flux and
-    // the Flux config must reconcile from the same namespace.
-    namespace: 'osdu-flux'
+    namespace: gitopsNamespace
     sourceKind: 'GitRepository'
-    gitRepository: {
-      url: repoUrl
-      repositoryRef: {
-        branch: repoBranch
-      }
-      syncIntervalInSeconds: 600
-      timeoutInSeconds: 600
-    }
+    gitRepository: union(gitRepositoryBase, gitRepositoryAuth)
     kustomizations: {
       stack: {
         path: './software/stacks/osdu/profiles/${profile}'
@@ -115,5 +128,5 @@ resource gitopsConfig 'Microsoft.KubernetesConfiguration/fluxConfigurations@2024
   ]
 }
 
-output configurationName string = gitopsConfig.name
+output configurationName string = activateGitOps ? gitopsConfig.name : ''
 output extensionName string = fluxExtension.name

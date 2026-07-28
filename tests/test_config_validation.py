@@ -22,7 +22,8 @@ exceeds the 24-char Storage account limit.
 import pytest
 from pydantic import ValidationError
 
-from spi.config import Config
+from spi.config import Config, Profile
+from spi.images import ImageSource
 
 
 def _validation_message(exc_info: pytest.ExceptionInfo) -> str:
@@ -43,6 +44,21 @@ class TestValidPartitions:
     def test_default_partitions(self):
         cfg = Config(env="dev1")
         assert cfg.data_partitions == ["opendes"]
+
+    def test_application_insights_can_be_enabled(self):
+        cfg = Config(env="dev1", application_insights=True)
+        assert cfg.application_insights is True
+
+    def test_ghcr_images_are_the_default_baseline(self):
+        cfg = Config(env="dev1")
+        assert cfg.image_source == ImageSource.GHCR
+        assert cfg.image_org == "Azure"
+        assert cfg.image_tag == "main-snapshot"
+        assert cfg.image_ref == ""
+
+    def test_minimal_profile_deploys_middleware_only(self):
+        cfg = Config(env="dev1", profile=Profile.MINIMAL)
+        assert cfg.profile.value == "minimal"
 
     def test_empty_env_still_valid(self):
         cfg = Config(env="", data_partitions=["p1"])

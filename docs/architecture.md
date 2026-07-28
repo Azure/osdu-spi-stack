@@ -13,7 +13,7 @@ SPI Stack deploys the OSDU platform on Azure with a hybrid provisioning model: B
 
 SPI Stack has three control planes working together:
 
-1. **The `spi` CLI** bootstraps the environment. It creates the resource group, submits Bicep deployments for the cluster (`infra/aks.bicep`) and the rest of the Azure PaaS surface (`infra/main.bicep`), bootstraps the cluster (namespaces, StorageClasses, ServiceAccount, `osdu-config` ConfigMap), submits a third Bicep deployment (`infra/flux.bicep`) that activates the AKS Flux extension, then writes a small set of runtime Key Vault secrets once in-cluster middleware is Ready.
+1. **The `spi` CLI** bootstraps the environment. It creates the resource group, submits the selected cluster Bicep deployment (`infra/aks.bicep` for Automatic or `infra/aks-base.bicep` for Base + NAP) and the Azure PaaS surface (`infra/main.bicep`), bootstraps the cluster (namespaces, StorageClasses, ServiceAccount, `osdu-config` ConfigMap), submits `infra/flux.bicep` to activate the AKS Flux extension, then writes the runtime Key Vault secrets.
 2. **Flux CD** manages desired-state reconciliation. It watches this Git repository and the OCI chart registry, and continuously converges the cluster to match.
 3. **Kubernetes operators** (ECK, CNPG, cert-manager, trust-manager) manage the lifecycle of individual middleware systems beneath the Flux layer.
 
@@ -51,13 +51,16 @@ The deployment pipeline has two phases: the CLI's Bicep-driven bootstrap (top) a
 | Phase | Mechanism | What |
 |-------|-----------|------|
 | 1. Resource Group | `az group create` | Resource group for the environment |
-| 2. AKS + managed Istio | Bicep (`infra/aks.bicep`, AVM `container-service/managed-cluster`) | AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio |
+| 2. AKS + managed Istio | Raw Bicep (`infra/aks.bicep` or `infra/aks-base.bicep`) | Automatic 1.36 by default; optional Base + NAP; BYO VNet + NAT gateway |
 | 3. Azure PaaS | Bicep (`infra/main.bicep`) | Managed Identity + federated credentials, Key Vault + static metadata secrets, ACR, Cosmos DB Gremlin + per-partition SQL, per-partition Service Bus (topics + subscriptions), common + per-partition Storage, RBAC role assignments |
 | 4. K8s bootstrap | `kubectl apply` | Namespaces, StorageClasses, `workload-identity-sa`, `osdu-config` ConfigMap, `spi-ingress-config` ConfigMap |
 | 5. Flux activation | Bicep (`infra/flux.bicep`) | AKS Flux extension + `fluxConfigurations` with two Kustomizations (stack profile, ingress mode) |
 | 6. Runtime KV secrets | `az keyvault secret set` | Per-partition Elasticsearch credentials, Redis hostname and password, written from the generated seed (no wait for middleware) |
 
-A full `spi up` typically takes ~45-50 minutes, dominated by AKS Automatic provisioning (~30 min) with PaaS Bicep (~3 min), K8s bootstrap (~1 min), and the Flux extension Bicep (~10-15 min) filling the remainder. `spi up --dry-run` runs `az deployment group what-if` against both Bicep templates and skips everything after phase 1.
+A full `spi up` typically takes ~45-50 minutes, dominated by AKS provisioning
+and the Flux extension. `spi up --dry-run` runs `az deployment group what-if`
+against the selected AKS template and `main.bicep`, then skips Kubernetes
+bootstrap and GitOps activation.
 
 ## Runtime Architecture
 
@@ -104,9 +107,15 @@ The ingress profile (`software/stacks/osdu/ingress/<mode>/`) adds Kustomizations
 
 Layers 0a through 4b are byte-identical between the two profiles, so middleware validated under `minimal` behaves the same under `core`. Because `minimal` never creates `spi-osdu-services`, it pairs with the `<mode>-minimal` ingress trees, which omit the OSDU HTTPRoute Kustomization that would otherwise stall on that dependency. See [ADR-024](decisions/024-middleware-only-minimal-profile.md).
 
-## AKS Automatic
+## AKS Deployment Modes
 
-SPI Stack uses AKS Automatic, which provides:
+AKS Automatic 1.36 is the zero-flag default. `spi up --aks-mode base` preserves
+the Base SKU + Node Autoprovisioning topology. The choice is written to the
+resource group and cannot be changed in place. Both modes use the same
+Karpenter NodePools, `spi-pool` placement labels, managed Istio integration,
+Flux stack, and OSDU services.
+
+Automatic provides:
 
 | Feature | What it does |
 |---------|-------------|
@@ -127,7 +136,11 @@ Safeguards are non-bypassable, so every pod must comply:
 - Resource requests and limits defined
 - Liveness and readiness probes defined
 
-The local `osdu-spi-service` Helm chart bakes these into its templates so services comply at authoring time. See [ADR-002](decisions/002-aks-automatic.md) and [ADR-004](decisions/004-local-helm-chart-safeguards.md).
+The local `osdu-spi-service` Helm chart bakes these into its templates so
+services also retain the same posture on Base. See
+[ADR-002](decisions/002-aks-automatic.md),
+[ADR-004](decisions/004-local-helm-chart-safeguards.md), and
+[ADR-033](decisions/033-selectable-aks-deployment-modes.md).
 
 ## Ingress Profiles
 

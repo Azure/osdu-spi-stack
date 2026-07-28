@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SPI CLI - Deploy OSDU SPI Stack on Azure AKS Automatic."""
+"""SPI CLI - Deploy OSDU SPI Stack on Azure AKS."""
 
 import os
 from typing import List, Optional
@@ -23,21 +23,33 @@ from rich.table import Table
 
 from . import __version__
 from .checks import PREREQ_TOOLS, check_prerequisites
-from .config import Config, IngressMode, Profile
+from .config import BASE_NAME, AksMode, Config, IngressMode, Profile
 from .console import console, display_result, display_yaml
-from .guard import get_suspend_status, verify_spi_cluster
+from .guard import (
+    DEFAULT_FLUX_NAMESPACE,
+    SPI_GITREPOSITORY,
+    get_suspend_status,
+    resolve_flux_namespace,
+    verify_spi_cluster,
+)
+from .identity import decode_jwt_claims, projected_user_ids
 from .images import (
+    DEFAULT_GHCR_ORG,
+    DEFAULT_GHCR_TAG,
     DEFAULT_IMAGE_BRANCH,
+    IMAGE_LOCK_CONFIGMAP,
+    IMAGE_LOCK_NAMESPACE,
     ImageResolutionError,
+    ImageSource,
     render_image_lock_configmap,
     resolve_image_lock,
 )
-from .ingress import resolve_acme_email, resolve_ingress_mode
-from .shell import kubectl_apply_yaml, run_command
+from .ingress import ensure_istio_revision_published, resolve_acme_email, resolve_ingress_mode
+from .shell import kubectl_apply_yaml, kubectl_json, run_command
 
 app = typer.Typer(
     name="spi",
-    help="SPI Stack - deploy, monitor, and manage OSDU on Azure AKS Automatic.",
+    help="SPI Stack - deploy, monitor, and manage OSDU on Azure AKS.",
     add_completion=False,
 )
 
@@ -59,10 +71,10 @@ def main(
         help="Show the spi version and exit.",
     ),
 ) -> None:
-    """SPI Stack - deploy, monitor, and manage OSDU on Azure AKS Automatic."""
+    """SPI Stack - deploy, monitor, and manage OSDU on Azure AKS."""
 
 
-def _show_config(config: Config):
+def _show_config(config: Config, *, show_application_insights: bool = True):
     table = Table(title="SPI Stack Deployment", border_style="cyan")
     table.add_column("Setting", style="cyan")
     table.add_column("Value", style="green")
@@ -73,10 +85,26 @@ def _show_config(config: Config):
     table.add_row("Cluster Name", config.cluster_name)
     table.add_row("Resource Group", config.resource_group)
     table.add_row("Location", config.location)
+    table.add_row(
+        "AKS Mode",
+        "Automatic 1.36"
+        if config.aks_mode == AksMode.AUTOMATIC
+        else "Base + Node Autoprovisioning",
+    )
     table.add_row("Repository", config.repo_url)
     table.add_row("Branch", config.repo_branch)
     table.add_row("Data Partitions", ", ".join(config.data_partitions))
     table.add_row("Key Vault", config.keyvault_name)
+    selector = config.image_ref or config.image_tag
+    image_value = f"{config.image_source.value}:{selector}"
+    if config.image_source == ImageSource.GHCR:
+        image_value = f"{image_value} ({config.image_org})"
+    table.add_row("Service Images", image_value)
+    if show_application_insights:
+        table.add_row(
+            "Application Insights",
+            "enabled" if config.application_insights else "disabled (dummy configuration)",
+        )
     table.add_row("Ingress Mode", config.ingress_mode.value)
     if config.ingress_mode == IngressMode.DNS and config.dns_zone:
         table.add_row("DNS Zone", f"{config.dns_zone} (rg: {config.dns_zone_rg})")
@@ -86,6 +114,10 @@ def _show_config(config: Config):
         table.add_row("AAD Client ID", f"{aad_override} [dim](env override)[/dim]")
     else:
         table.add_row("AAD Client ID", "[dim](default: UAMI client id)[/dim]")
+    table.add_row(
+        "Creator Access",
+        ", ".join(config.creator_user_ids) if config.creator_user_ids else "[dim]disabled[/dim]",
+    )
 
     console.print(table)
 
@@ -118,8 +150,23 @@ def _build_config(
     dns_zone: str = "",
     ingress_prefix: str = "",
     acme_email: str = "",
+    creator_user_ids: Optional[List[str]] = None,
     name_suffix: str = "",
+    aks_mode: AksMode = AksMode.AUTOMATIC,
+    application_insights: bool = False,
+    image_source: ImageSource = ImageSource.GHCR,
+    image_org: str = DEFAULT_GHCR_ORG,
+    image_tag: Optional[str] = None,
+    image_ref: str = "",
 ) -> Config:
+    resolved_tag = image_tag
+    resolved_ref = image_ref
+    if image_source == ImageSource.GHCR and resolved_tag is None and not resolved_ref:
+        resolved_tag = DEFAULT_GHCR_TAG
+    if image_source == ImageSource.COMMUNITY:
+        resolved_tag = ""
+        resolved_ref = resolved_ref or DEFAULT_IMAGE_BRANCH
+
     return Config.from_env(
         env=env,
         name_suffix=name_suffix,
@@ -132,7 +179,169 @@ def _build_config(
         dns_zone=dns_zone,
         ingress_prefix=ingress_prefix,
         acme_email=acme_email,
+        creator_user_ids=creator_user_ids or [],
+        aks_mode=aks_mode,
+        application_insights=application_insights,
+        image_source=image_source,
+        image_org=image_org,
+        image_tag=resolved_tag or "",
+        image_ref=resolved_ref,
     )
+
+
+def _resolve_creator_user_ids(seed_creator: bool, override: str) -> list[str]:
+    """Resolve the current Azure caller exactly as the gateway projects it."""
+
+    requested = override.strip()
+    if not seed_creator:
+        if requested:
+            raise ValueError("--creator-user-id cannot be used with --no-seed-creator")
+        return []
+    if requested:
+        if "\n" in requested or "\r" in requested:
+            raise ValueError("--creator-user-id must be a single-line value")
+        return [requested]
+
+    result = run_command(
+        [
+            "az",
+            "account",
+            "get-access-token",
+            "--resource",
+            "https://management.azure.com/",
+            "--query",
+            "accessToken",
+            "--output",
+            "tsv",
+        ],
+        description="Resolve Stack creator identity",
+        display=False,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise ValueError(
+            "Unable to resolve the current Azure caller for Entitlements initialization. "
+            "Run 'az login', pass --creator-user-id, or use --no-seed-creator."
+        )
+    return projected_user_ids(decode_jwt_claims(result.stdout.strip()))
+
+
+def _resolve_image_selection(
+    *,
+    image_source: Optional[ImageSource],
+    image_org: Optional[str],
+    image_tag: Optional[str],
+    image_ref: Optional[str],
+    image_branch: Optional[str],
+    current: Optional[tuple[ImageSource, str, str, str]] = None,
+) -> tuple[ImageSource, str, str, str]:
+    """Resolve explicit image options against a deployment's current selection."""
+    for option_name, value in (
+        ("--image-org", image_org),
+        ("--image-tag", image_tag),
+        ("--image-ref", image_ref),
+        ("--image-branch", image_branch),
+    ):
+        if value is not None and not value.strip():
+            raise ValueError(f"{option_name} must not be empty")
+
+    image_org = image_org.strip() if image_org is not None else None
+    image_tag = image_tag.strip() if image_tag is not None else None
+    image_ref = image_ref.strip() if image_ref is not None else None
+    image_branch = image_branch.strip() if image_branch is not None else None
+
+    if image_tag is not None and image_ref is not None:
+        raise ValueError("--image-tag and --image-ref cannot be used together")
+    if image_branch is not None and (image_tag is not None or image_ref is not None):
+        raise ValueError("--image-branch cannot be combined with --image-tag or --image-ref")
+    if image_branch is not None and image_source not in (None, ImageSource.COMMUNITY):
+        raise ValueError("--image-branch is a legacy community-image option")
+
+    base_source, base_org, base_tag, base_ref = current or (
+        ImageSource.GHCR,
+        DEFAULT_GHCR_ORG,
+        DEFAULT_GHCR_TAG,
+        "",
+    )
+
+    if image_branch is not None:
+        return ImageSource.COMMUNITY, "", "", image_branch
+
+    inferred_source = (
+        ImageSource.GHCR
+        if image_source is None
+        and (image_tag is not None or image_ref is not None or image_org is not None)
+        else None
+    )
+    source = image_source or inferred_source or base_source
+    source_changed = image_source is not None and source != base_source
+    source_changed = source_changed or (inferred_source is not None and source != base_source)
+
+    if source_changed:
+        if source == ImageSource.GHCR:
+            tag, ref = DEFAULT_GHCR_TAG, ""
+        else:
+            tag, ref = "", DEFAULT_IMAGE_BRANCH
+    else:
+        tag, ref = base_tag, base_ref
+
+    if image_tag is not None:
+        if source != ImageSource.GHCR:
+            raise ValueError("--image-tag is supported only with --image-source ghcr")
+        tag, ref = image_tag, ""
+    elif image_ref is not None:
+        if source != ImageSource.GHCR:
+            raise ValueError(
+                "--image-ref is for GHCR Git refs; use --image-branch for community images"
+            )
+        tag, ref = "", image_ref
+
+    if source == ImageSource.GHCR:
+        if image_org is not None:
+            org = image_org
+        elif source_changed or base_source != ImageSource.GHCR:
+            org = DEFAULT_GHCR_ORG
+        else:
+            org = base_org or DEFAULT_GHCR_ORG
+    else:
+        if image_org is not None:
+            raise ValueError("--image-org is supported only with --image-source ghcr")
+        org = ""
+
+    return source, org, tag, ref
+
+
+def _read_image_lock_selection() -> tuple[ImageSource, str, str, str]:
+    """Read the source, organization, and selector pinned in the live image lock."""
+    configmap = kubectl_json(["get", "configmap", IMAGE_LOCK_CONFIGMAP, "-n", IMAGE_LOCK_NAMESPACE])
+    if configmap is None:
+        raise RuntimeError(
+            f"Unable to read {IMAGE_LOCK_NAMESPACE}/{IMAGE_LOCK_CONFIGMAP}; "
+            "specify an image source and selector explicitly"
+        )
+
+    data = configmap.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{IMAGE_LOCK_NAMESPACE}/{IMAGE_LOCK_CONFIGMAP} has no image-lock data")
+
+    raw_source = data.get("IMAGE_SOURCE", ImageSource.COMMUNITY.value)
+    try:
+        source = ImageSource(raw_source)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{IMAGE_LOCK_NAMESPACE}/{IMAGE_LOCK_CONFIGMAP} has invalid IMAGE_SOURCE {raw_source!r}"
+        ) from exc
+
+    if source == ImageSource.GHCR:
+        tag = data.get("IMAGE_TAG", "")
+        ref = data.get("IMAGE_REF", "")
+        if not tag and not ref:
+            tag = DEFAULT_GHCR_TAG
+        org = data.get("IMAGE_ORG", "") or DEFAULT_GHCR_ORG
+        return source, org, tag, ref
+
+    ref = data.get("IMAGE_REF") or data.get("IMAGE_BRANCH") or DEFAULT_IMAGE_BRANCH
+    return source, "", "", ref
 
 
 def _resolve_name_suffix(env: str, for_up: bool) -> str:
@@ -184,6 +393,134 @@ def _resolve_name_suffix(env: str, for_up: bool) -> str:
         if rg_exists.returncode == 0 and rg_exists.stdout.strip().lower() == "true":
             write_rg_suffix_tag(rg, suffix)
     return suffix
+
+
+def _resolve_application_insights(
+    env: str,
+    requested: Optional[bool],
+    for_up: bool,
+) -> bool:
+    """Resolve and preserve the environment's Application Insights mode.
+
+    New environments default to disabled. Once an environment has been
+    created, its mode is immutable so an idempotent rerun cannot silently
+    orphan paid resources or rewrite service configuration.
+    """
+    from .azure_infra import (
+        detect_existing_application_insights,
+        detect_existing_log_analytics,
+        read_deployed_application_insights_mode,
+        read_rg_application_insights_tag,
+        resource_group_has_resources,
+        write_rg_application_insights_tag,
+    )
+
+    environment_label = env or "base"
+    rg = f"{BASE_NAME}-{env}" if env else BASE_NAME
+    persisted = read_rg_application_insights_tag(rg)
+    if persisted is not None:
+        if requested is not None and requested != persisted:
+            raise RuntimeError(
+                f"Environment {environment_label!r} was created with Application Insights "
+                f"{'enabled' if persisted else 'disabled'}. The setting cannot be "
+                "changed in place; run 'spi down' and create a new environment."
+            )
+        return persisted
+
+    rg_exists = run_command(
+        ["az", "group", "exists", "--name", rg],
+        description=f"Check resource group exists: {rg}",
+        display=False,
+        check=False,
+    )
+    if rg_exists.returncode != 0:
+        raise RuntimeError(
+            f"Unable to determine whether resource group {rg} exists: "
+            f"{rg_exists.stderr.strip() or rg_exists.stdout.strip()}"
+        )
+    exists = rg_exists.stdout.strip().lower() == "true"
+    if exists and not resource_group_has_resources(rg):
+        resolved = bool(requested)
+        if for_up:
+            write_rg_application_insights_tag(rg, resolved)
+        return resolved
+    component_exists = detect_existing_application_insights(rg, env) if exists else False
+    workspace_exists = (
+        detect_existing_log_analytics(rg, env) if exists and not component_exists else False
+    )
+    deployed_mode = (
+        read_deployed_application_insights_mode(rg, env)
+        if exists and not component_exists and not workspace_exists
+        else None
+    )
+    inferred = component_exists or workspace_exists or deployed_mode is True
+
+    if exists and requested is not None and requested != inferred:
+        raise RuntimeError(
+            f"Existing environment {environment_label!r} has Application Insights "
+            f"{'enabled' if inferred else 'disabled'}. The setting cannot be changed "
+            "in place; run 'spi down' and create a new environment."
+        )
+
+    resolved = inferred if requested is None else requested
+    if for_up and exists:
+        write_rg_application_insights_tag(rg, resolved)
+    return resolved
+
+
+def _resolve_aks_mode(
+    env: str,
+    requested: "AksMode | None",
+    for_up: bool,
+) -> AksMode:
+    """Resolve, validate, and preserve the environment's AKS topology."""
+    from .azure_infra import (
+        detect_existing_aks_mode,
+        read_rg_aks_mode_tag,
+        write_rg_aks_mode_tag,
+    )
+
+    environment_label = env or "base"
+    rg = f"{BASE_NAME}-{env}" if env else BASE_NAME
+    cluster_name = rg
+    persisted = read_rg_aks_mode_tag(rg)
+
+    rg_exists = run_command(
+        ["az", "group", "exists", "--name", rg],
+        description=f"Check resource group exists: {rg}",
+        display=False,
+        check=False,
+    )
+    if rg_exists.returncode != 0:
+        raise RuntimeError(
+            f"Unable to determine whether resource group {rg} exists: "
+            f"{rg_exists.stderr.strip() or rg_exists.stdout.strip()}"
+        )
+    exists = rg_exists.stdout.strip().lower() == "true"
+    actual = detect_existing_aks_mode(rg, cluster_name) if exists else None
+
+    if persisted is not None and actual is not None and persisted != actual:
+        raise RuntimeError(
+            f"Environment {environment_label!r} is tagged for AKS {persisted.value}, "
+            f"but the live cluster is {actual.value}. Repair the tag or cluster before rerunning."
+        )
+
+    established = actual or persisted
+    if established is not None:
+        if requested is not None and requested != established:
+            raise RuntimeError(
+                f"Environment {environment_label!r} was created with AKS "
+                f"{established.value}. The mode cannot be changed in place; run "
+                "'spi down' and create a new environment."
+            )
+        if for_up and exists and persisted is None:
+            write_rg_aks_mode_tag(rg, established)
+        return established
+
+    resolved = requested or AksMode.AUTOMATIC
+    if for_up and exists:
+        write_rg_aks_mode_tag(rg, resolved)
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +589,12 @@ def up(
         "--location",
         help="Azure region (eastus2/centralus have shown API Server VNet Integration capacity constraints)",
     ),
+    aks_mode: Optional[AksMode] = typer.Option(
+        None,
+        "--aks-mode",
+        help="AKS topology: automatic (default) or base (Base SKU + Node Autoprovisioning). "
+        "The choice is preserved on reruns.",
+    ),
     data_partitions: Optional[List[str]] = typer.Option(
         None, "--partition", help="Data partition names (can specify multiple)"
     ),
@@ -277,6 +620,17 @@ def up(
         "--acme-email",
         help="Contact email for Let's Encrypt ACME account. Also honors SPI_ACME_EMAIL.",
     ),
+    seed_creator: bool = typer.Option(
+        True,
+        "--seed-creator/--no-seed-creator",
+        help="Seed the current Azure caller into Entitlements root groups during init.",
+    ),
+    creator_user_id: str = typer.Option(
+        "",
+        "--creator-user-id",
+        help="Override the creator identifier projected as x-user-id. "
+        "Defaults to the current Azure CLI token claims.",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -286,12 +640,39 @@ def up(
     refresh_images: bool = typer.Option(
         True,
         "--refresh-images/--no-refresh-images",
-        help="Resolve current OSDU master image tags and write the Flux image lock.",
+        help="Resolve service images and write the Flux image lock.",
     ),
-    image_branch: str = typer.Option(
-        DEFAULT_IMAGE_BRANCH,
+    image_source: Optional[ImageSource] = typer.Option(
+        None,
+        "--image-source",
+        help="Service image source: ghcr (SPI service forks) or community.",
+    ),
+    image_org: Optional[str] = typer.Option(
+        None,
+        "--image-org",
+        help="GitHub organization containing SPI service repositories and GHCR packages.",
+    ),
+    image_tag: Optional[str] = typer.Option(
+        None,
+        "--image-tag",
+        help="Exact GHCR tag shared by the service fleet, such as main-snapshot "
+        "or a coordinated release tag.",
+    ),
+    image_ref: Optional[str] = typer.Option(
+        None,
+        "--image-ref",
+        help="Advanced: resolve the same Git ref to a sha-* image in every service repository.",
+    ),
+    image_branch: Optional[str] = typer.Option(
+        None,
         "--image-branch",
-        help="OSDU image branch suffix to resolve from the community registry.",
+        help="Legacy alias for community image branches.",
+    ),
+    application_insights: Optional[bool] = typer.Option(
+        None,
+        "--application-insights/--no-application-insights",
+        help="Deploy workspace-based Application Insights. New environments default "
+        "to disabled; the choice is preserved on reruns.",
     ),
 ):
     """Provision Azure infrastructure and deploy the OSDU SPI stack."""
@@ -302,7 +683,7 @@ def up(
     if dry_run:
         title += "\n[warning]DRY RUN: previewing Bicep changes only[/warning]"
     else:
-        title += "\nAKS Automatic + Azure PaaS + Flux CD GitOps"
+        title += "\nAKS + Azure PaaS + Flux CD GitOps"
 
     console.print(Panel(title, border_style="cyan"))
     check_prerequisites(PREREQ_TOOLS)
@@ -311,6 +692,37 @@ def up(
     # derived resource names are stable across `spi up` re-runs and don't
     # collide with deployments in other subscriptions.
     name_suffix = _resolve_name_suffix(env, for_up=True)
+    try:
+        resolved_aks_mode = _resolve_aks_mode(
+            env,
+            requested=aks_mode,
+            for_up=not dry_run,
+        )
+        resolved_application_insights = _resolve_application_insights(
+            env,
+            requested=application_insights,
+            for_up=not dry_run,
+        )
+    except RuntimeError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=2)
+    try:
+        resolved_creator_user_ids = _resolve_creator_user_ids(seed_creator, creator_user_id)
+        (
+            resolved_image_source,
+            resolved_image_org,
+            resolved_image_tag,
+            resolved_image_ref,
+        ) = _resolve_image_selection(
+            image_source=image_source,
+            image_org=image_org,
+            image_tag=image_tag,
+            image_ref=image_ref,
+            image_branch=image_branch,
+        )
+    except ValueError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=2)
 
     config = _build_config(
         profile=profile,
@@ -323,7 +735,14 @@ def up(
         dns_zone=dns_zone,
         ingress_prefix=ingress_prefix,
         acme_email=resolve_acme_email(acme_email),
+        creator_user_ids=resolved_creator_user_ids,
         name_suffix=name_suffix,
+        aks_mode=resolved_aks_mode,
+        application_insights=resolved_application_insights,
+        image_source=resolved_image_source,
+        image_org=resolved_image_org,
+        image_tag=resolved_image_tag,
+        image_ref=resolved_image_ref,
     )
 
     _show_config(config)
@@ -335,7 +754,6 @@ def up(
             config,
             dry_run=dry_run,
             refresh_images=refresh_images,
-            image_branch=image_branch,
         )
         if dry_run:
             console.print(
@@ -368,11 +786,20 @@ def down(
     console.print(Panel("[bold]SPI Stack Cleanup[/bold]", border_style="cyan"))
     check_prerequisites(["az"])
 
-    # Read-only lookup so the displayed config table reflects what's in
-    # Azure. cleanup_azure itself only deletes the resource group.
     name_suffix = _resolve_name_suffix(env, for_up=False)
-    config = _build_config(env=env, name_suffix=name_suffix)
-    _show_config(config)
+    # Teardown must stay available even when the recorded mode disagrees with
+    # the cluster, which is exactly the state an operator needs to clean up.
+    try:
+        aks_mode = _resolve_aks_mode(env, requested=None, for_up=False)
+    except RuntimeError as exc:
+        console.print(f"[warning]{exc}[/warning]")
+        aks_mode = AksMode.AUTOMATIC
+    config = _build_config(
+        env=env,
+        name_suffix=name_suffix,
+        aks_mode=aks_mode,
+    )
+    _show_config(config, show_application_insights=False)
 
     from .deploy import cleanup_azure
 
@@ -415,6 +842,51 @@ def status(
         render_status()
 
 
+def _flux_resource_names(kind: str, namespace: str) -> List[str]:
+    """Names of all Flux resources of ``kind`` in ``namespace``.
+
+    Raises RuntimeError if the kubectl listing itself fails. A failed query
+    must not be mistaken for "no resources": CI-mode suspend (ADR-032) would
+    then report a successful freeze while HelmReleases keep reconciling, the
+    exact failure this path exists to prevent. ``kubectl_json`` returns None
+    on command failure and a dict (possibly with an empty ``items``) on success.
+    """
+    data = kubectl_json(["get", kind, "-n", namespace])
+    if data is None:
+        raise RuntimeError(
+            f"Failed to list Flux {kind} resources in namespace '{namespace}'; "
+            "refusing to continue because cluster state could not be read."
+        )
+    return [
+        item["metadata"]["name"]
+        for item in data.get("items", [])
+        if item.get("metadata", {}).get("name")
+    ]
+
+
+def _set_flux_suspend(namespace: str, suspend: bool) -> None:
+    """Suspend or resume the SPI Stack's GitRepository, Kustomizations, and HelmReleases.
+
+    The deploy lane (ADR-032) requires the cluster in CI mode -- all Flux reconcilers
+    frozen -- so a ``kubectl set image`` is not drift-corrected back to the chart's
+    pinned image. Suspending the GitRepository source alone (ADR-014) is not enough:
+    the Kustomizations and, critically, the HelmReleases keep reconciling the cached
+    artifact and revert the deployed image. Freeze all three.
+    """
+    patch = '{"spec":{"suspend":true}}' if suspend else '{"spec":{"suspend":false}}'
+    verb = "Suspend" if suspend else "Resume"
+    targets = [("gitrepository", [SPI_GITREPOSITORY])]
+    for kind in ("kustomization", "helmrelease"):
+        targets.append((kind, _flux_resource_names(kind, namespace)))
+    for kind, names in targets:
+        for name in names:
+            run_command(
+                ["kubectl", "patch", kind, name, "-n", namespace, "--type=merge", "-p", patch],
+                description=f"{verb} {kind}/{name}",
+                check=False,
+            )
+
+
 @app.command()
 def reconcile(
     suspend: bool = typer.Option(False, "--suspend", help="Freeze: stop Flux auto-reconciliation"),
@@ -424,12 +896,33 @@ def reconcile(
     refresh_images: bool = typer.Option(
         False,
         "--refresh-images",
-        help="Resolve current OSDU master image tags and update osdu-image-lock before reconciling.",
+        help="Resolve service images and update osdu-image-lock before reconciling.",
     ),
-    image_branch: str = typer.Option(
-        DEFAULT_IMAGE_BRANCH,
+    image_source: Optional[ImageSource] = typer.Option(
+        None,
+        "--image-source",
+        help="Service image source: ghcr (SPI service forks) or community.",
+    ),
+    image_org: Optional[str] = typer.Option(
+        None,
+        "--image-org",
+        help="GitHub organization containing SPI service repositories and GHCR packages.",
+    ),
+    image_tag: Optional[str] = typer.Option(
+        None,
+        "--image-tag",
+        help="Exact GHCR tag shared by the service fleet, such as main-snapshot "
+        "or a coordinated release tag.",
+    ),
+    image_ref: Optional[str] = typer.Option(
+        None,
+        "--image-ref",
+        help="Advanced: resolve the same Git ref to a sha-* image in every service repository.",
+    ),
+    image_branch: Optional[str] = typer.Option(
+        None,
         "--image-branch",
-        help="OSDU image branch suffix to resolve from the community registry.",
+        help="Legacy alias for community image branches.",
     ),
 ):
     """Force Flux to reconcile the git source and stack."""
@@ -443,53 +936,85 @@ def reconcile(
             "[error]--refresh-images cannot be combined with --suspend or --resume.[/error]"
         )
         raise typer.Exit(code=1)
+    if not refresh_images and any(
+        option is not None
+        for option in (image_source, image_org, image_tag, image_ref, image_branch)
+    ):
+        console.print("[error]Image selector options require --refresh-images.[/error]")
+        raise typer.Exit(code=2)
 
     ctx = verify_spi_cluster()
     console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
     if suspend:
-        console.print("\n[bold]Suspending GitRepository...[/bold]")
-        run_command(
-            [
-                "kubectl",
-                "patch",
-                "gitrepository",
-                "osdu-spi-stack-system",
-                "-n",
-                "osdu-flux",
-                "-p",
-                '{"spec":{"suspend":true}}',
-                "--type=merge",
-            ],
-            description="Suspend GitRepository (freeze reconciliation)",
+        ns = resolve_flux_namespace()
+        console.print(f"\n[bold]Entering CI mode: freezing Flux reconciliation in '{ns}'...[/bold]")
+        _set_flux_suspend(ns, True)
+        console.print(
+            "[warning]GitRepository, Kustomizations, and HelmReleases suspended.[/warning]"
         )
-        console.print("[warning]GitRepository suspended.[/warning]")
-        console.print("[dim]Run 'uv run spi reconcile --resume' to unfreeze.[/dim]")
+        console.print(
+            "[dim]The cluster is pinned and safe for deploy-lane CI (ADR-032). "
+            "Run 'uv run spi reconcile --resume' to unfreeze.[/dim]"
+        )
         return
 
+    # An environment created before the revision was published would let Flux
+    # apply an empty istio.io/rev and drop sidecar injection. This must run for
+    # BOTH paths: plain `spi reconcile` also pulls the new commit and annotates
+    # every Kustomization including spi-namespaces, so it can render the empty
+    # label just as readily as --resume can.
+    try:
+        ensure_istio_revision_published()
+    except RuntimeError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+
     if resume:
-        console.print("\n[bold]Resuming GitRepository...[/bold]")
-        run_command(
-            [
-                "kubectl",
-                "patch",
-                "gitrepository",
-                "osdu-spi-stack-system",
-                "-n",
-                "osdu-flux",
-                "-p",
-                '{"spec":{"suspend":false}}',
-                "--type=merge",
-            ],
-            description="Resume GitRepository (unfreeze reconciliation)",
-        )
-        console.print("[success]GitRepository resumed.[/success]")
+        ns = resolve_flux_namespace()
+        console.print(f"\n[bold]Resuming Flux reconciliation in '{ns}'...[/bold]")
+        _set_flux_suspend(ns, False)
+        console.print("[success]GitRepository, Kustomizations, and HelmReleases resumed.[/success]")
         return
 
     if refresh_images:
-        console.print("\n[bold]Resolving OSDU service images...[/bold]")
         try:
-            resolved = resolve_image_lock(branch=image_branch)
+            current_selection = _read_image_lock_selection()
+        except RuntimeError as exc:
+            if (
+                image_source is None
+                and image_tag is None
+                and image_ref is None
+                and image_branch is None
+            ):
+                console.print(f"[error]{exc}[/error]")
+                raise typer.Exit(code=1)
+            current_selection = None
+
+        try:
+            resolved_source, resolved_org, resolved_tag, resolved_ref = _resolve_image_selection(
+                image_source=image_source,
+                image_org=image_org,
+                image_tag=image_tag,
+                image_ref=image_ref,
+                image_branch=image_branch,
+                current=current_selection,
+            )
+        except ValueError as exc:
+            console.print(f"[error]{exc}[/error]")
+            raise typer.Exit(code=2)
+
+        selector = resolved_ref or resolved_tag
+        console.print(
+            f"\n[bold]Resolving {resolved_source.value} service images at {selector}...[/bold]"
+        )
+        try:
+            resolved = resolve_image_lock(
+                source=resolved_source,
+                tag=resolved_tag,
+                ref=resolved_ref,
+                org=resolved_org,
+            )
         except ImageResolutionError as exc:
             console.print(f"[error]Unable to resolve OSDU service images: {exc}[/error]")
             raise typer.Exit(code=1)
@@ -499,7 +1024,13 @@ def reconcile(
                 f"  [success]{name}[/success] -> {image.repository.split('/')[-1]}:{image.tag[:12]}"
             )
 
-        image_lock_yaml = render_image_lock_configmap(resolved, branch=image_branch)
+        image_lock_yaml = render_image_lock_configmap(
+            resolved,
+            source=resolved_source,
+            tag=resolved_tag,
+            ref=resolved_ref,
+            org=resolved_org,
+        )
         display_yaml(image_lock_yaml, "ConfigMap: osdu-image-lock")
         kubectl_apply_yaml(image_lock_yaml, "apply osdu-image-lock ConfigMap")
         display_result("osdu-image-lock ConfigMap updated")
@@ -516,28 +1047,23 @@ def reconcile(
         )
 
     ts = datetime.datetime.now().isoformat()
-    console.print("\n[bold]Reconciling...[/bold]")
+    ns = resolve_flux_namespace()
+    console.print(f"\n[bold]Reconciling (namespace '{ns}')...[/bold]")
 
     run_command(
         [
             "kubectl",
             "annotate",
             "--overwrite",
-            "gitrepository/osdu-spi-stack-system",
+            f"gitrepository/{SPI_GITREPOSITORY}",
             "-n",
-            "osdu-flux",
+            ns,
             f"reconcile.fluxcd.io/requestedAt={ts}",
         ],
         description="Trigger GitRepository reconciliation",
     )
 
-    for name in [
-        "osdu-spi-stack",
-        "osdu-spi-stack-system-stack",
-        "stack",
-        "spi-osdu-services",
-        "spi-osdu-reference",
-    ]:
+    for name in _flux_resource_names("kustomization", ns):
         run_command(
             [
                 "kubectl",
@@ -545,7 +1071,7 @@ def reconcile(
                 "--overwrite",
                 f"kustomization/{name}",
                 "-n",
-                "osdu-flux",
+                ns,
                 f"reconcile.fluxcd.io/requestedAt={ts}",
             ],
             description=f"Trigger Kustomization reconciliation ({name})",
@@ -666,3 +1192,86 @@ def update(
                 border_style="green",
             )
         )
+
+
+@app.command()
+def onboard(
+    service: str = typer.Option(..., "--service", help="Service short name (e.g. partition)."),
+    repo: str = typer.Option(
+        ..., "--repo", help="Target GitHub repo as org/repo (e.g. my-org/partition)."
+    ),
+    aks_cluster: str = typer.Option(
+        ..., "--aks-cluster", help="AKS cluster name to grant deploy access to."
+    ),
+    aks_rg: str = typer.Option(..., "--aks-rg", help="Resource group of the AKS cluster."),
+    identities_rg: str = typer.Option(
+        ..., "--identities-rg", help="Resource group for the CI managed identity."
+    ),
+    namespace: str = typer.Option(
+        "osdu", "--namespace", help="Kubernetes namespace the service Deployment lives in."
+    ),
+    flux_namespace: str = typer.Option(
+        DEFAULT_FLUX_NAMESPACE,
+        "--flux-namespace",
+        help="Namespace holding the Flux Kustomizations (this stack uses osdu-flux).",
+    ),
+    partition: str = typer.Option(
+        "opendes",
+        "--partition",
+        help="Data partition whose entitlements groups the CI identity is seeded into.",
+    ),
+    keyvault: Optional[str] = typer.Option(
+        None,
+        "--keyvault",
+        help="Key Vault name to grant Secrets User on (for acceptance-test secrets).",
+    ),
+    gateway_url: Optional[str] = typer.Option(
+        None,
+        "--gateway-url",
+        help="Cluster ingress base URL; written as the GATEWAY_URL repo variable when provided.",
+    ),
+    no_data_access_token_env: Optional[str] = typer.Option(
+        None,
+        "--no-data-access-token-env",
+        help=(
+            "Opt this repo into a no-data-access token and choose its test env name. "
+            "Storage defaults to NO_DATA_ACCESS_TESTER_ACCESS_TOKEN; an existing repo "
+            "profile value is reused. Pass an empty value to disable."
+        ),
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan without making changes."),
+    force_rewrite_secrets: bool = typer.Option(
+        False,
+        "--force-rewrite-secrets",
+        help="Overwrite AZURE_* repo secrets even if already present.",
+    ),
+):
+    """Grant a GitHub service-fork repo permission to deploy into this cluster.
+
+    Cluster-side half of CI/CD onboarding (design SS9.4.A): creates a managed identity +
+    federated credentials + Azure RBAC and, for test profiles that opt in, creates or reuses
+    the shared no-data-access identity without RBAC or entitlements. It then writes the
+    AZURE_* secrets and repo->cluster link variables onto the target repo. Idempotent on
+    re-run; running it against a NEW cluster seamlessly re-homes the repo. Use --dry-run
+    to preview.
+    """
+    from .onboard import OnboardInputs
+    from .onboard import onboard as _run_onboard
+
+    _run_onboard(
+        OnboardInputs(
+            service=service,
+            repo=repo,
+            aks_cluster=aks_cluster,
+            aks_rg=aks_rg,
+            identities_rg=identities_rg,
+            namespace=namespace,
+            flux_namespace=flux_namespace,
+            partition=partition,
+            keyvault=keyvault,
+            gateway_url=gateway_url,
+            no_data_access_token_env=no_data_access_token_env,
+            dry_run=dry_run,
+            force_rewrite_secrets=force_rewrite_secrets,
+        )
+    )

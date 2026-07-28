@@ -9,6 +9,11 @@
 partitions:
   - opendes
 
+# -- Identity projected by the ingress JWT filter and added to the root
+#    Entitlements groups after tenant provisioning. Empty disables creator
+#    seeding; the CLI enables it by default and resolves the current Azure caller.
+creatorUserIds: []
+
 # -- Azure Entra tenant ID the Workload Identity SA is federated against. The
 #    MSAL exchange needs this to build the authority URL. Injected at runtime
 #    by the AKS Workload Identity webhook as AZURE_TENANT_ID, so we pull it

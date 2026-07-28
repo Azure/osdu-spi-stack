@@ -1,6 +1,5 @@
-# Namespaces are created by the CLI bootstrap (with Istio injection labels).
-# This manifest ensures they exist if Flux runs before the CLI bootstrap.
-# NOTE: Update istio.io/rev when the AKS managed Istio revision changes.
+# Namespaces are created by the CLI bootstrap. Flux uses the same runtime Istio
+# revision from spi-ingress-config so it cannot drift the osdu label afterward.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -21,4 +20,10 @@ metadata:
   name: osdu
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack
-    istio.io/rev: asm-1-28
+    # Substituted from the spi-ingress-config ConfigMap (ADR-034). The default
+    # is defence in depth, not the intended value: Flux renders an UNDEFINED
+    # variable as an empty string rather than failing, and an empty istio.io/rev
+    # silently disables sidecar injection for every OSDU service. A cluster
+    # created before this key was published would otherwise be relabelled to ""
+    # on the first reconcile after upgrading.
+    istio.io/rev: ${ISTIO_REVISION:=asm-1-30}

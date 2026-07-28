@@ -94,3 +94,68 @@ class TestDeployerOidFromArmToken:
         with patch("spi.azure_infra.run_command") as run:
             run.return_value = self._result(stdout="garbage")
             assert _deployer_oid_from_arm_token() == ""
+
+
+def test_resolver_prefers_the_arm_token_over_microsoft_graph():
+    """Regression: _resolve_deployer_principal went straight to Graph, so a tenant
+    whose Conditional Access blocks Graph (AADSTS530084) but permits ARM would fail
+    -- and for a service principal it failed silently, skipping the Key Vault grant
+    and only surfacing later during secret writes, after AKS already existed."""
+    from spi import azure_infra
+
+    account = json.dumps({"user": {"type": "user", "name": "someone@example.com"}})
+
+    with (
+        patch.object(azure_infra, "run_command") as run,
+        patch.object(azure_infra, "_deployer_oid_from_arm_token", return_value="arm-oid") as arm,
+    ):
+        run.return_value = MagicMock(stdout=account, returncode=0)
+        oid, principal_type = azure_infra._resolve_deployer_principal()
+
+    assert oid == "arm-oid"
+    assert principal_type == "User"
+    arm.assert_called_once()
+    # Graph must not be consulted when the ARM token already yielded the object ID.
+    for call in run.call_args_list:
+        assert "signed-in-user" not in call.args[0]
+
+
+def test_resolver_falls_back_to_graph_when_the_arm_token_yields_nothing():
+    """The ARM path is preferred, not mandatory: keep the Graph fallback working."""
+    from spi import azure_infra
+
+    account = json.dumps({"user": {"type": "user", "name": "someone@example.com"}})
+
+    def fake_run(cmd, **kwargs):
+        if "signed-in-user" in cmd:
+            return MagicMock(stdout="graph-oid\n", returncode=0)
+        return MagicMock(stdout=account, returncode=0)
+
+    with (
+        patch.object(azure_infra, "run_command", side_effect=fake_run),
+        patch.object(azure_infra, "_deployer_oid_from_arm_token", return_value=""),
+    ):
+        oid, principal_type = azure_infra._resolve_deployer_principal()
+
+    assert oid == "graph-oid"
+    assert principal_type == "User"
+
+
+def test_resolver_uses_the_arm_token_for_service_principals_too():
+    """The SP path previously degraded to an empty OID on Graph failure, which
+    silently skipped the Key Vault Secrets Officer assignment."""
+    from spi import azure_infra
+
+    account = json.dumps({"user": {"type": "servicePrincipal", "name": "app-id"}})
+
+    with (
+        patch.object(azure_infra, "run_command") as run,
+        patch.object(azure_infra, "_deployer_oid_from_arm_token", return_value="sp-arm-oid"),
+    ):
+        run.return_value = MagicMock(stdout=account, returncode=0)
+        oid, principal_type = azure_infra._resolve_deployer_principal()
+
+    assert oid == "sp-arm-oid"
+    assert principal_type == "ServicePrincipal"
+    for call in run.call_args_list:
+        assert "sp" not in call.args[0][:3] or "show" not in call.args[0]

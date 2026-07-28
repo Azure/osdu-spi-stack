@@ -24,6 +24,7 @@ spec:
     image:
       repository: ${PARTITION_IMAGE_REPOSITORY}
       tag: "${PARTITION_IMAGE_TAG}"
+      digest: "${PARTITION_IMAGE_DIGEST}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu
@@ -45,5 +46,12 @@ spec:
         value: "true"
       - name: REDIS_DATABASE
         value: "1"
+      # Override the OSDU image default redis.expiration=3600 (1h). The partition
+      # list cache (getAllPartitions) caches an empty result if it is queried
+      # before partition-init creates the partition; a short TTL lets that stale
+      # entry self-heal within ~2 min, so indexer-queue (which re-lists every 60s)
+      # discovers the partition and starts indexing without a manual restart.
+      - name: REDIS_EXPIRATION
+        value: "120"
       - name: PARTITION_SPRING_LOGGING_LEVEL
         value: DEBUG

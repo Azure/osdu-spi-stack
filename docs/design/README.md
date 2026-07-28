@@ -17,7 +17,7 @@ Design docs reference ADRs for decision rationale. They do not re-justify decisi
 | Doc | Answers |
 |---|---|
 | [Deployment lifecycle](deployment-lifecycle.md) | What actually happens in the ~45-50 minutes that `spi up` takes, from CLI invocation to a healthy cluster |
-| [Bicep architecture](bicep-architecture.md) | How `infra/` is organised, why three top-level templates, what AVM does for us, where the imperative seams live |
+| [Bicep architecture](bicep-architecture.md) | How `infra/` is organised, why three top-level templates exist, and where the imperative seams live |
 | [Flux reconciliation](flux-reconciliation.md) | The layer DAG, `dependsOn` mechanics, the `osdu-image-lock` substitution loop, suspend and resume |
 | [Workload Identity](workload-identity.md) | One UAMI, one ServiceAccount, the token federation chain, what the JWT projection in ADR-016 does after the bearer arrives |
 | [Gateway and ingress](gateway-ingress.md) | The three ingress modes (`azure`, `dns`, `ip`) concretely, what each provisions, how to switch, how to debug a 404 |

@@ -24,15 +24,24 @@ The CLI is doing the minimum work needed to hand off to Flux. Every `az` and `ku
 
 The sequence inside `deploy.deploy_azure()` is:
 
-1. **Config resolution.** `Config.from_env()` takes `--env`, `--profile`, `--partition`, `--ingress-mode`, and applies defaults (region, derived cluster name, profile-driven layer wiring). Pure Python, no external calls.
+1. **Config resolution.** `Config.from_env()` takes `--env`, `--aks-mode`,
+   `--profile`, `--partition`, and `--ingress-mode`. Automatic is the default;
+   the selected AKS mode is persisted and validated against existing clusters.
+   Unless disabled, the CLI also resolves the Azure caller for Entitlements
+   creator seeding.
 2. **Prerequisite check.** `check_prerequisites()` runs each tool in the registry (`az`, `bicep`, `kubectl`, `kubelogin`, `flux`, `helm`) and fails fast if anything is missing.
 3. **Resource group.** `az group create --name spi-stack-<env> --location <region>`. The one thing Bicep cannot do itself.
 4. **Key Vault soft-delete recovery.** If a prior `spi down` left a soft-deleted Key Vault with the same name, `az keyvault recover` brings it back so the upcoming Bicep deploy does not collide.
-5. **`infra/aks.bicep` deploy.** AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio. Via the AVM `container-service/managed-cluster` module. This is the slowest single step (~30 min).
+5. **Selected AKS Bicep deploy.** `infra/aks.bicep` creates Automatic 1.36;
+   `infra/aks-base.bicep` creates Base + NAP. Both use the BYO VNet, NAT gateway,
+   and managed Istio output contract.
 6. **`az aks get-credentials`** merges the kubeconfig.
-7. **`az aks mesh enable-istio-cni`.** The one Istio knob AVM v0.13.0 types out of the managed-cluster schema; the CLI patches it imperatively. See [ADR-008](../decisions/008-bicep-for-azure-provisioning.md).
+7. **`az aks mesh enable-istio-cni`.** The resource provider rejects the Istio CNI knob at create time, so the CLI patches it imperatively. See [ADR-008](../decisions/008-bicep-for-azure-provisioning.md).
 8. **`infra/main.bicep` deploy.** Identity, RBAC, Key Vault (with Bicep-resolved secrets), ACR, Cosmos DB Gremlin, per-partition (Cosmos SQL + Service Bus + Storage), common Storage, optional `external-dns-*` for `dns` ingress. (The VNet is provisioned by `aks.bicep`, not here.)
-9. **K8s bootstrap.** `kubectl apply` for namespaces, StorageClasses, the middleware secret seed (`spi-secrets`) plus the `platform`/`osdu` credential Secrets, `workload-identity-sa` (in `platform` and `osdu`), the `osdu-config` ConfigMap, the `spi-ingress-config` ConfigMap, the `osdu-image-lock` ConfigMap (resolved live from the OSDU community registry per [ADR-017](../decisions/017-osdu-image-lock.md)), the `spi-init-values` ConfigMap, and the Istio JWT projection resources from [ADR-016](../decisions/016-istio-jwt-projection.md).
+9. **K8s bootstrap.** `kubectl apply` for namespaces, StorageClasses, generated
+   secrets, Workload Identity ServiceAccounts, OSDU/ingress/init ConfigMaps,
+   Istio JWT projection, and the immutable service image lock. GHCR is the
+   default image source; community GitLab remains selectable.
 10. **`infra/flux.bicep` deploy.** Activates the AKS Flux extension and creates the `fluxConfigurations` resource with two top-level Kustomizations: `stack` (pointing at `./software/stacks/osdu/profiles/<profile>`) and `ingress` (pointing at `./software/stacks/osdu/ingress/<mode>`).
 11. **Runtime Key Vault secrets.** The CLI writes the in-cluster middleware secrets to Key Vault (per-partition Elasticsearch credentials, Redis hostname/password) directly from the generated seed passwords — no wait for middleware Ready, since the values are known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md).
 12. **Suspend pin.** `_pin_gitops_source()` waits up to 120s for `gitrepository/osdu-spi-stack-system` to reach `Ready=True`, then `kubectl patch spec.suspend: true`. See [ADR-014](../decisions/014-suspend-gitops-after-deploy.md).
@@ -51,8 +60,7 @@ L0a  spi-namespaces
        |
        +--> L0b  spi-nodepools                            (ADR-018)
        +--> L1   spi-cert-manager, spi-trust-manager,
-       |          spi-eck-operator, spi-cnpg-operator,
-       |          spi-gateway
+       |          spi-eck-operator, spi-cnpg-operator
        |          |
        |          +--> L2   spi-elasticsearch, spi-redis, spi-postgresql
        |                     |
@@ -71,7 +79,7 @@ L0a  spi-namespaces
                                                              +--> L6  spi-osdu-reference
 ```
 
-Each edge is a `dependsOn` entry. Each dependency gates on the parent's health check. See [flux reconciliation](flux-reconciliation.md) for the full mechanics.
+The selected ingress profile adds the sole L1 `spi-gateway` owner and its L6 routes. Each edge is a `dependsOn` entry. Each dependency gates on the parent's health check. See [flux reconciliation](flux-reconciliation.md) for the full mechanics.
 
 Rough timing on the default profile with a freshly-deployed cluster:
 

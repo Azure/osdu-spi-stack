@@ -26,6 +26,7 @@ spec:
     image:
       repository: ${WORKFLOW_IMAGE_REPOSITORY}
       tag: "${WORKFLOW_IMAGE_TAG}"
+      digest: "${WORKFLOW_IMAGE_DIGEST}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu

@@ -3,9 +3,9 @@
 //
 // AKS Automatic cluster + managed Istio.
 //
-// Scope: only the AKS cluster. The cluster uses a system-assigned
-// managed identity (required by Automatic when the managed vnet path is
-// used). Workload identity for pods is a SEPARATE user-assigned identity
+// Scope: only the AKS cluster. The cluster uses a user-assigned managed
+// identity because Automatic with a BYO VNet requires one. Workload identity
+// for pods is a SEPARATE user-assigned identity
 // created in infra/main.bicep after this template outputs the OIDC
 // issuer URL for federated credentials.
 //
@@ -32,7 +32,7 @@ param kubernetesVersion string = '1.36'
 @description('VM size for the system pool. D4lds_v5 has a 150 GiB cache that fits the 128 GiB default ephemeral OS disk.')
 param systemPoolVmSize string = 'Standard_D4lds_v5'
 
-@description('Availability zones for the system pool. Default is all three; override for regions with zonal capacity or quota gaps (e.g. eastus2 rejects zone 2 for some VM sizes).')
+@description('Availability zones for the system pool. The Automatic SKU validates this against its recommended values, so all three zones are required unless a region genuinely offers fewer.')
 param availabilityZones array = [
   '1'
   '2'
@@ -267,3 +267,5 @@ output clusterName string = clusterName
 output clusterResourceId string = aksCluster.id
 output oidcIssuerUrl string = aksCluster.properties.?oidcIssuerProfile.?issuerURL ?? ''
 output clusterPrincipalId string = clusterIdentity.properties.principalId
+output kubeletIdentityObjectId string = aksCluster.properties.?identityProfile.?kubeletidentity.?objectId ?? ''
+output istioRevision string = 'asm-1-30'

@@ -116,7 +116,7 @@ spec:
 
       containers:
         - name: {{ include "osdu-spi-service.name" . }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else }}:{{ .Values.image.tag }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
@@ -151,8 +151,12 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ .Values.configMapRef }}
-          {{- if or .Values.env .Values.elasticTls .Values.redisTls }}
           env:
+            # Per-service cloud role name so App Insights / Azure Monitor can
+            # distinguish the OSDU services (otherwise all telemetry reports as
+            # "unknown_service:java"). The App Insights Java agent reads this.
+            - name: APPLICATIONINSIGHTS_ROLE_NAME
+              value: {{ include "osdu-spi-service.name" . | quote }}
             {{- if or .Values.elasticTls .Values.redisTls }}
             - name: JAVA_TOOL_OPTIONS
               value: "-Djavax.net.ssl.trustStore=/truststore/cacerts -Djavax.net.ssl.trustStorePassword=changeit"
@@ -161,7 +165,6 @@ spec:
             - name: {{ .name }}
               value: {{ .value | quote }}
             {{- end }}
-          {{- end }}
           {{- if or .Values.elasticTls .Values.redisTls .Values.volumeMounts }}
           volumeMounts:
             {{- if or .Values.elasticTls .Values.redisTls }}

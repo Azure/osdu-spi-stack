@@ -31,7 +31,7 @@ import subprocess
 import typer
 
 from .console import console
-from .shell import kubectl_apply_yaml
+from .shell import kubectl_apply_yaml, resolve_command
 
 SEED_NAME = "spi-secrets"
 SEED_NAMESPACE = "osdu-flux"
@@ -67,7 +67,7 @@ def _kubectl_apply_secret(namespace: str, name: str, literals: dict):
     for k, v in literals.items():
         cmd.append(f"--from-literal={k}={v}")
 
-    create = subprocess.run(cmd, capture_output=True, text=True)
+    create = subprocess.run(resolve_command(cmd), capture_output=True, text=True)
     if create.returncode != 0:
         console.print(f"  [error]Failed to generate secret {namespace}/{name}[/error]")
         raise typer.Exit(code=1)
@@ -77,7 +77,9 @@ def _kubectl_apply_secret(namespace: str, name: str, literals: dict):
 
 def _get_seed() -> dict | None:
     result = subprocess.run(
-        ["kubectl", "get", "secret", SEED_NAME, "-n", SEED_NAMESPACE, "-o", "jsonpath={.data}"],
+        resolve_command(
+            ["kubectl", "get", "secret", SEED_NAME, "-n", SEED_NAMESPACE, "-o", "jsonpath={.data}"]
+        ),
         capture_output=True,
         text=True,
     )
