@@ -36,6 +36,6 @@ spec:
       backendRefs:
         - group: ""
           kind: Service
-          name: airflow-webserver
+          name: airflow-api-server
           namespace: platform
           port: 8080

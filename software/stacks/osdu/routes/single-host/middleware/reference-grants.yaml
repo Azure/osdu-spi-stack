@@ -26,4 +26,4 @@ spec:
   to:
     - group: ""
       kind: Service
-      name: airflow-webserver
+      name: airflow-api-server
