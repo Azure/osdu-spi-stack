@@ -10,7 +10,7 @@ The Azure-provider OSDU service images (`*-service-azure:*`) include an in-proce
 
 This filter chain is part of the service image; it cannot be disabled by configuration. Choosing the Azure provider therefore implies a runtime contract that something in the request path must extract the JWT payload and surface it as a header the service understands.
 
-A separate reference implementation exists for the same provider that satisfies this contract by combining three Istio resources: a `RequestAuthentication` that validates the bearer and parks the decoded payload as Envoy dynamic metadata, an `EnvoyFilter` whose Lua reads that metadata and writes `x-app-id` / `x-user-id`, and a permissive `PeerAuthentication`. A different reference implementation that uses non-Azure OSDU images takes a simpler route (`RequestAuthentication` plus `AuthorizationPolicy` keyed on JWT claims), but that route depends on service code that consumes Istio's `RequestPrincipal` directly, which the Azure provider does not.
+Satisfying this contract takes three Istio resources working together: a `RequestAuthentication` that validates the bearer and parks the decoded payload as Envoy dynamic metadata, an `EnvoyFilter` whose Lua reads that metadata and writes `x-app-id` / `x-user-id`, and a permissive `PeerAuthentication`. The simpler claim-based route (`RequestAuthentication` plus `AuthorizationPolicy` keyed on JWT claims) depends on service code that consumes Istio's `RequestPrincipal` directly, which the Azure provider does not.
 
 ## Decision
 
@@ -22,7 +22,7 @@ Resources:
 - `EnvoyFilter` `spi-osdu-identity-filter` in the `osdu` namespace, applied to `SIDECAR_INBOUND`. Its Lua reads `envoy.filters.http.jwt_authn` dynamic metadata and writes `x-app-id` / `x-user-id`. The branch that special-cases `aud == https://management.azure.com/` replaces both headers with the OSDU UAMI client id, matching the audience presented by Workload Identity tokens.
 - `PeerAuthentication` `spi-osdu-mtls` mode `PERMISSIVE` in `osdu`, defensive against managed-mesh defaults that could otherwise break the init Jobs.
 
-A per-service default-deny `AuthorizationPolicy` is not adopted. Treated as defense in depth, it keeps a request with a missing or invalid bearer from reaching the service at all. The Azure-provider services already enforce identity in the Spring filter chain, so the second layer is duplicative for the bootstrap problem, and applying default-deny to services already serving traffic carries a wider blast radius than the rest of this change. It remains available as a later hardening pass.
+A per-service default-deny `AuthorizationPolicy` is not adopted. As defense in depth it keeps a request with a missing or invalid bearer from reaching the service at all. The Azure-provider services already enforce identity in the Spring filter chain, so the second layer is duplicative for the bootstrap problem, and applying default-deny to services already serving traffic carries a wider blast radius than the rest of this change. It remains available as a later hardening pass.
 
 ## Consequences
 

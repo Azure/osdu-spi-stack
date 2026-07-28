@@ -13,7 +13,7 @@ For production GitOps, continuous reconciliation is the central feature. For SPI
 3. **AI-driven churn.** Agents and skills that modify the repo can land changes faster than humans review their effect. One PR can disrupt every live cluster at once.
 4. **Loss of reproducibility.** When debugging, knowing the exact commit an environment is running matters. With auto-reconciliation, "the environment" is whatever happens to be latest.
 
-The CLI already exposes `spi reconcile --suspend` and `spi reconcile --resume` (the `reconcile` command in `src/spi/cli.py`), but these are opt-in and most users do not discover them until something goes wrong. The safe default and the discoverable one are not the same setting.
+The CLI already exposes `spi reconcile --suspend` and `spi reconcile --resume` (the `reconcile` command in `src/spi/cli.py`), but both are opt-in: nothing in the default `spi up` path invokes or surfaces them. The safe default and the discoverable one are not the same setting.
 
 ## Decision
 

@@ -12,7 +12,7 @@ The placement choice matters because the same CRs need to evolve with workload s
 
 Author Karpenter `NodePool` and `AKSNodeClass` resources as Flux-managed workload manifests in `software/components/nodepools/`, reconciled by the `spi-nodepools` Kustomization at Layer 0b of the core profile (after `spi-namespaces`, before any layer that schedules workloads).
 
-Two NodePools today:
+Two NodePools:
 
 - `platform`: taint `workload=platform:NoSchedule`, requirements `Dsv5` family, 8 vCPU, >30 GiB RAM, premium-capable, on-demand. Hosts stateful middleware.
 - `osdu`: same shape, taint `workload=osdu:NoSchedule`. Hosts OSDU services.
@@ -31,4 +31,4 @@ Rejected:
 - Workload isolation is enforced at the scheduler. Platform pods declare `tolerations` and `nodeSelector: spi-pool=platform` (label renamed from `agentpool`, see [ADR-022](022-spi-pool-node-label.md)) in their charts; OSDU services declare the matching osdu pair. Mis-tolerated pods stay `Pending` rather than landing on the wrong pool.
 - The Layer 0b position means NodePools are present before Layer 1 operators reconcile, so the first ECK or CNPG pod schedules on the correct pool without a Karpenter cold-start delay against unlabeled nodes.
 - Adding a new workload domain (e.g., a future ingest pool) is a new NodePool + AKSNodeClass pair under `software/components/nodepools/` and a chart-level toleration. No infra-side change.
-- The disruption settings (`WhenEmptyOrUnderutilized`, 5 min) are tuned for dev/test churn. Production-style workloads want longer windows and `WhenEmpty` only; that is a tuning concern, not a structural change.
+- The disruption settings (`WhenEmptyOrUnderutilized`, 5 min) are tuned for dev/test churn. Production tuning is unvalidated here; the expected direction is longer windows and `WhenEmpty` only. Either way it is a tuning concern, not a structural change.

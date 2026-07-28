@@ -140,13 +140,15 @@ Reject a page that:
 A mechanical first pass:
 
 ```bash
-grep -nwiE "currently|leverage|utilize|seamless|robust|streamline|obviously|probably|likely|perhaps|arguably" docs/decisions/0*.md docs/design/*.md docs/architecture.md
+grep -nwiE "currently|today|leverage|utilize|seamless|robust|streamline|obviously|probably|likely|perhaps|arguably" docs/decisions/0*.md docs/design/*.md docs/architecture.md
 grep -nE "in review|will soon|note that|in order to|we believe|—" docs/decisions/0*.md docs/design/*.md docs/architecture.md
 ```
 
 `-w` matters: without it, API values such as Karpenter's
 `WhenEmptyOrUnderutilized` match the word list. A hit is a prompt to read the
 sentence, not an automatic failure; a banned word inside a quoted identifier
-or error message stays, and "currently" is legitimate in a design doc when it
-marks status ("currently impossible, but defensive against a future
-precondition job").
+or error message stays, and "currently" or "today" is legitimate in a design
+doc when it marks status ("currently impossible, but defensive against a
+future precondition job"). "Current" stays out of the pattern: its indexical
+use ("tracks the current Airflow major") is a standing condition, and the
+dateable use ("current AKS restricts") is rare enough to catch by reading.

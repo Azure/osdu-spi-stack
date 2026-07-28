@@ -11,7 +11,7 @@ deciders: "danielscholl"
 
 Karpenter NodePools and workload node selectors previously used the
 `agentpool` label to steer middleware onto the `platform` pool and OSDU
-services onto the `osdu` pool. Current AKS restricts `agentpool` as a
+services onto the `osdu` pool. AKS restricts `agentpool` as a
 reserved system label: NodePool manifests that set it in
 `spec.template.metadata.labels` are rejected at admission
 (`label "agentpool" is restricted`), which blocked the entire nodepool

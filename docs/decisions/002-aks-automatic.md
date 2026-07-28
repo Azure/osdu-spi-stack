@@ -15,7 +15,7 @@ Deploy the cluster as AKS Automatic (`sku.name: Automatic`). The stack consumes 
 - **Karpenter** for node auto-provisioning; no manual node pools. Our workload NodePool CRs (ADR-007, Layer 0b) are still user-declared but Karpenter honors them.
 - **Managed Istio** service mesh and ingress gateway. Istio installation, upgrades, and CNI chaining are Azure-managed.
 - **Deployment Safeguards** enforced as a non-bypassable `ValidatingAdmissionPolicy` (non-root, seccomp `RuntimeDefault`, capability drop, resource requests and limits, probes). ADR-004 covers how our workloads comply.
-- **Key Vault CSI** secret provider (available for future use; most services today read from Key Vault via SDK + Workload Identity).
+- **Key Vault CSI** secret provider (available but largely unused; the services read from Key Vault via SDK + Workload Identity).
 - **Cilium CNI** in overlay mode.
 - **Managed Prometheus** and **Container Insights** for metrics and logs into Azure Monitor and Log Analytics.
 
