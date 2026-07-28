@@ -26,10 +26,12 @@ Hybrid model:
   - Key Vault soft-delete recovery is imperative pre-check (ARM cannot
     branch on a list-deleted query).
   - Everything else (Managed Identity, federated credentials, Key Vault
-    creation + metadata secrets + Cosmos primary keys via ``listKeys()``,
-    ACR, CosmosDB Gremlin + SQL, Service Bus + topics/subs, Storage +
-    containers/tables, RBAC role assignments) is declared in Bicep at
-    ``infra/main.bicep`` and deployed with ``az deployment group create``.
+    creation + metadata secrets, ACR, CosmosDB Gremlin + SQL, Service Bus
+    + topics/subs, Storage + containers/tables, RBAC role assignments) is
+    declared in Bicep at ``infra/main.bicep`` and deployed with
+    ``az deployment group create``. Local auth is disabled on the Cosmos
+    and Service Bus accounts (ADR-027), so no key material is resolved;
+    key/connection secrets are ``DISABLED`` placeholders.
   - Runtime-only Key Vault secrets that depend on in-cluster seed
     passwords (tbl-storage-endpoint, redis-*, {partition}-elastic-*)
     are still written by the CLI from ``runtime_bootstrap.py`` after
@@ -765,7 +767,7 @@ def provision_azure_infra(config: Config, dry_run: bool = False) -> Dict[str, An
       5. Deploy the main Bicep template (or run what-if preview if
          ``dry_run`` is True). This deploys all PaaS resources AND
          populates Key Vault metadata secrets (tenant-id, endpoints,
-         Cosmos primary keys via ``listKeys()``) declaratively.
+         ``DISABLED`` key/connection placeholders) declaratively.
     """
     outputs: Dict[str, Any] = {}
 

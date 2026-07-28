@@ -33,24 +33,39 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _code(path: Path) -> str:
+    # Bicep source with // comment lines stripped, so prose mentioning
+    # listKeys() does not trip the assertions below.
+    lines = _read(path).splitlines()
+    return "\n".join(line for line in lines if not line.lstrip().startswith("//"))
+
+
+def _resource_block(path: Path, symbolic_name: str) -> str:
+    # The chunk from `resource <symbolic_name>` to the next resource declaration.
+    chunks = _code(path).split("\nresource ")
+    matches = [c for c in chunks if c.startswith(f"{symbolic_name} ")]
+    assert matches, f"resource {symbolic_name} not found in {path.name}"
+    return matches[0]
+
+
 def test_gremlin_disables_local_auth():
-    assert "disableLocalAuth: true" in _read(GREMLIN)
+    assert "disableLocalAuth: true" in _resource_block(GREMLIN, "gremlinAccount")
 
 
 def test_partition_disables_local_auth_on_cosmos_and_service_bus():
-    # One occurrence for the Cosmos SQL account, one for the Service Bus namespace.
-    assert _read(PARTITION).count("disableLocalAuth: true") >= 2
+    assert "disableLocalAuth: true" in _resource_block(PARTITION, "cosmosAccount")
+    assert "disableLocalAuth: true" in _resource_block(PARTITION, "serviceBusNamespace")
 
 
-def test_no_cosmos_key_material_written():
-    # listKeys() on a Cosmos account is rejected once local auth is disabled;
-    # guard against a primary-key write creeping back onto any account.
+def test_no_key_material_resolved_anywhere():
+    # listKeys() on a Cosmos account is rejected once local auth is disabled,
+    # and no other account (Service Bus, Storage) may resolve keys either.
     offenders = [
         p.relative_to(REPO_ROOT)
         for p in INFRA_DIR.rglob("*.bicep")
-        if "primaryMasterKey" in _read(p)
+        if "listKeys(" in _code(p) or "primaryMasterKey" in _code(p)
     ]
-    assert not offenders, f"Cosmos key material resolved in: {offenders}"
+    assert not offenders, f"key material resolved in: {offenders}"
 
 
 def test_service_bus_local_auth_not_parameterized():

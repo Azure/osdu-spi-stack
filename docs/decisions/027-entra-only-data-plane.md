@@ -44,10 +44,12 @@ compliant by construction in every tenant.
 Chosen option: "Entra-only everywhere". `disableLocalAuth: true` is hardcoded on
 the Cosmos Gremlin account, every per-partition Cosmos SQL account, and every
 per-partition Service Bus namespace. Because `listKeys()` is not permitted on a
-Cosmos account with local auth disabled, all Cosmos key writes are removed and
-the corresponding Key Vault secrets (`graph-db-primary-key`,
-`{p}-cosmos-primary-key`, `system-cosmos-primary-key`, `{p}-cosmos-connection`,
-`{p}-sb-connection`) carry the literal `DISABLED`. The
+Cosmos account with local auth disabled, all Cosmos key writes are removed:
+`graph-db-primary-key` is no longer written (nothing in the deployment
+references it by name), and the per-partition secrets
+(`{p}-cosmos-primary-key`, `system-cosmos-primary-key`,
+`{p}-cosmos-connection`, `{p}-sb-connection`) carry the literal `DISABLED`
+because the partition record references them by name. The
 `serviceBusDisableLocalAuth` parameter is removed; there is no longer a
 per-tenant knob. The data-plane role assignments introduced in ADR-021 (Cosmos
 SQL Built-in Data Contributor, Gremlin Data Contributor, Service Bus Data
@@ -57,9 +59,8 @@ This supersedes ADR-021. The dual-path model kept keys as a compatibility path
 for community images that authenticate with keys or SAS. Those images still read
 the key secrets and will fail against a `DISABLED` value until they are replaced
 with Workload-Identity-capable images. Wiring every OSDU service to authenticate
-through Workload Identity depends on the pinned custom-image supply chain
-(ADR-032) and is tracked separately; this ADR covers the infrastructure posture
-only.
+through Workload Identity depends on a custom-image supply chain and is tracked
+separately; this ADR covers the infrastructure posture only.
 
 ### Consequences
 
@@ -69,7 +70,7 @@ only.
   (Workload Identity), removing the `serviceBusDisableLocalAuth` branch and the
   "does it deploy here" ambiguity.
 - Bad, because community OSDU images that still authenticate with keys or SAS
-  break until custom Workload-Identity images land (ADR-032); the key and
+  break until custom Workload-Identity images land; the per-partition key and
   connection secrets are retained as `DISABLED` placeholders only to satisfy the
   partition-record schema.
 - Neutral, because Cosmos data-plane roles remain Cosmos-native

@@ -31,8 +31,8 @@ param isPrimaryPartition bool = false
 @description('Key Vault name that receives the Cosmos primary key. Empty string skips the secret write.')
 param keyVaultName string = ''
 
-@description('Principal ID (object ID) of the OSDU managed identity that accesses Cosmos SQL data. Empty string skips the SQL data-plane role assignment.')
-param principalId string = ''
+@description('Principal ID (object ID) of the OSDU managed identity that accesses Cosmos SQL data.')
+param principalId string
 
 // ──────────────────────────────────────────────────────────
 // Data definitions (ported from azure_infra.py)
@@ -213,7 +213,7 @@ resource osduSystemDbContainerResources 'Microsoft.DocumentDB/databaseAccounts/s
 // propagate.
 var sqlDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
 
-resource osduIdentitySqlDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2023-11-15' = if (!empty(principalId)) {
+resource osduIdentitySqlDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2023-11-15' = {
   parent: cosmosAccount
   name: guid(cosmosAccount.id, principalId, sqlDataContributorRoleId)
   properties: {
