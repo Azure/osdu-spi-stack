@@ -1,7 +1,7 @@
-# OSDU SPI Stack -- Agent Context
+# OSDU SPI Stack -- Deep Reference
 
-Azure-native OSDU deployment using AKS Automatic + Azure PaaS + Flux CD GitOps.
-Repository: `Azure/osdu-spi-stack`
+Detailed agent context for `Azure/osdu-spi-stack`. Loaded on demand by the
+`prime` skill; the always-loaded summary lives in `AGENTS.md`.
 
 ## Project Layout
 
@@ -52,7 +52,8 @@ software/
 
 docs/
   architecture.md          System architecture document
-  decisions/               24 ADRs
+  decisions/               ADRs (see docs/decisions/README.md for the index)
+  design/                  Subsystem design docs
   diagrams/                Excalidraw architecture diagram
 ```
 
@@ -74,11 +75,7 @@ uv run spi reconcile --suspend               # Freeze GitOps
 uv run spi reconcile --resume                # Unfreeze GitOps
 ```
 
-## Writing Conventions
-
-- No em dashes; use commas, periods, or semicolons.
-- Every az/kubectl command displayed transparently via Rich panels.
-- Azure resource names derived from --env flag for isolation.
+Azure resource names are derived from the `--env` flag for isolation.
 
 ## Documentation Style (docs/)
 
