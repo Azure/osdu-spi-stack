@@ -50,6 +50,10 @@ def generate_name_suffix() -> str:
 
 
 class Profile(str, Enum):
+    # Infra plus activated GitOps only. Flux reconciles empty stack and ingress
+    # trees. Namespaces, secrets, ConfigMap, and ServiceAccount come from the CLI
+    # bootstrap; no operators, cert/trust-manager, Gateway, middleware, or services.
+    BARE = "bare"
     # Middleware only: operators, cert/trust-manager, Gateway, Elasticsearch,
     # Redis, PostgreSQL, Airflow. Stops before layer 5 (no OSDU services).
     MINIMAL = "minimal"
@@ -172,6 +176,21 @@ class Config(BaseModel):
                     f"suffix), exceeding the {_STORAGE_NAME_MAX_LEN}-char Azure "
                     f"limit. Shorten the env (currently {self.env!r}) or the "
                     f"partition name."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_bare_profile(self) -> "Config":
+        if self.profile is Profile.BARE:
+            if self.ingress_mode is not IngressMode.AZURE:
+                raise ValueError(
+                    "profile 'bare' deploys no ingress substrate; "
+                    f"ingress_mode '{self.ingress_mode.value}' is not supported"
+                )
+            if self.dns_zone:
+                raise ValueError(
+                    "profile 'bare' deploys no ingress substrate; "
+                    "dns_zone is not supported with profile 'bare'"
                 )
         return self
 
