@@ -51,4 +51,4 @@ When writing a new design doc, copy the shape of an existing one and replace the
 
 **Write a new ADR instead when** you are making a fresh architectural choice, not explaining an existing one. Design docs document the present; ADRs capture the decision moment.
 
-**Writing style**: no em dashes, no incident narrative, descriptive headings.
+**Writing style**: fixed in [docs/STYLE.md](../STYLE.md), including the design-doc genre rules (status-marked present tense, explain rather than justify, imperative recipes).

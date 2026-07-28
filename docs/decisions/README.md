@@ -17,7 +17,7 @@ For more information [see](https://adr.github.io/).
 
 ## ADR Style
 
-ADRs record decisions, not engineering logs. Keep them short and forward-facing so a reader can grok the decision in a single pass. The prose style (voice, word list, review checklist) is fixed in [STYLE.md](STYLE.md); the structural rules below complement it.
+ADRs record decisions, not engineering logs. Keep them short and forward-facing so a reader can grok the decision in a single pass. The prose style (voice, word list, review checklist) is fixed in [docs/STYLE.md](../STYLE.md); the structural rules below complement it.
 
 - **No `## Validation` sections.** Phase-by-phase acceptance logs belong in the PR description, not in the ADR.
 - **No post-acceptance `## Amendment` sections.** If a decision needs revising, write a new ADR that supersedes it. Inline amendments re-open a record that should be closed.
