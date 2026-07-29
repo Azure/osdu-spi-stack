@@ -9,40 +9,27 @@ out-of-band.
 
 GitHub Actions workflows in this repo authenticate to Azure via OpenID
 Connect (OIDC) federated credentials — no client secrets are stored in
-GitHub. Two credential scopes are intentionally separate:
-
-- Repository secrets serve pull-request/main validation against the existing
-  CI subscription.
-- `azure-smoke` environment secrets serve Smoke + Sweeper against the backing
-  smoke subscription.
-
-This separation lets Smoke move subscriptions without repointing PR validation.
+GitHub. The federation is one App Registration with three federated
+credentials, one per OIDC context the workflows run as.
 
 ### Already configured
 
-The repository-level validation identity has:
+App Registration `osdu-spi-stack-github` exists in the
+`<SUBSCRIPTION_NAME>` subscription with:
 
 | Resource | Value |
 |---|---|
 | App / Client ID | `<APP_CLIENT_ID>` |
-| Federated subject (PR builds) | `repo:Azure/osdu-spi-stack:pull_request` |
-| Federated subject (main builds) | `repo:Azure/osdu-spi-stack:ref:refs/heads/main` |
-| RBAC | Contributor access to the validation subscription/RG |
+| Federated context (PR builds) | Pull request |
+| Federated context (main builds) | `refs/heads/main` |
+| Federated context (Smoke + Sweeper) | Environment `azure-smoke` |
+| RBAC | `Contributor` + `User Access Administrator` at subscription scope |
+
+The exact `sub` values are controlled by the repository's GitHub OIDC subject
+customization and must match the Entra federated credentials exactly. Do not
+infer or copy a subject shape from this document.
 
 GitHub repo secrets:
-- `AZURE_CLIENT_ID`
-- `AZURE_TENANT_ID`
-- `AZURE_SUBSCRIPTION_ID`
-
-The Smoke/Sweeper identity has:
-
-| Resource | Value |
-|---|---|
-| App / Client ID | `<SMOKE_APP_CLIENT_ID>` |
-| Federated subject | The exact immutable `environment:azure-smoke` subject emitted by GitHub |
-| RBAC | `Contributor` + `User Access Administrator` on the smoke subscription |
-
-GitHub environment secrets on `azure-smoke`:
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
 - `AZURE_SUBSCRIPTION_ID`
@@ -51,48 +38,54 @@ Azure resources used by CI:
 - Resource group `spi-ci-whatif` (in `centralus`) — read-only target for the
   `bicep-whatif` validation job.
 
-### To reproduce the Smoke/Sweeper identity
+### To reproduce from scratch
 
 ```bash
 # 1. Create App Registration + Service Principal
-APP_ID=$(az ad app create --display-name "osdu-spi-stack-smoke-github" --query appId -o tsv)
+APP_ID=$(az ad app create --display-name "osdu-spi-stack-github" --query appId -o tsv)
 az ad sp create --id "$APP_ID"
 
-# 2. Add one environment-scoped federated credential.
-# SUBJECT must be the exact immutable subject emitted by GitHub, not a guessed
-# name-based value. It has this shape:
-# repository_owner_id:<owner-id>:repository_id:<repo-id>:environment:azure-smoke
-SUBJECT="<IMMUTABLE_AZURE_SMOKE_SUBJECT>"
-az ad app federated-credential create --id "$APP_ID" --parameters "{
-  \"name\": \"github-environment-azure-smoke\",
-  \"issuer\": \"https://token.actions.githubusercontent.com\",
-  \"subject\": \"$SUBJECT\",
-  \"audiences\": [\"api://AzureADTokenExchange\"]
-}"
+# 2. Add one federated credential for each context. Replace every placeholder
+# with the exact subject emitted by GitHub for this repository's current OIDC
+# customization; the subject format itself is deliberately not prescribed here.
+for ENTRY in \
+  "pull-request:<PULL_REQUEST_SUBJECT>" \
+  "main:<MAIN_BRANCH_SUBJECT>" \
+  "azure-smoke:<AZURE_SMOKE_ENVIRONMENT_SUBJECT>"; do
+  NAME="${ENTRY%%:*}"
+  SUBJECT="${ENTRY#*:}"
+  az ad app federated-credential create --id "$APP_ID" --parameters "{
+    \"name\": \"github-$NAME\",
+    \"issuer\": \"https://token.actions.githubusercontent.com\",
+    \"subject\": \"$SUBJECT\",
+    \"audiences\": [\"api://AzureADTokenExchange\"]
+  }"
+done
 
 # 3. RBAC at subscription scope (Contributor + UAA for smoke deploys)
 SUB="/subscriptions/<SUBSCRIPTION_ID>"
 az role assignment create --role "Contributor" --assignee "$APP_ID" --scope "$SUB"
 az role assignment create --role "User Access Administrator" --assignee "$APP_ID" --scope "$SUB"
 
-# 4. Ungated azure-smoke environment, restricted to protected branches.
+# 4. GitHub repository secrets
+gh secret set AZURE_CLIENT_ID --body "$APP_ID" --repo Azure/osdu-spi-stack
+gh secret set AZURE_TENANT_ID --body "<TENANT_ID>" --repo Azure/osdu-spi-stack
+gh secret set AZURE_SUBSCRIPTION_ID --body "<SUBSCRIPTION_ID>" --repo Azure/osdu-spi-stack
+
+# 5. Pre-create the bicep-whatif RG
+az group create --name "spi-ci-whatif" --location "centralus" \
+  --tags purpose=ci-whatif owner=osdu-spi-stack
+
+# 6. Ungated azure-smoke environment for scheduled and manual Smoke/Sweeper
 gh api -X PUT "repos/Azure/osdu-spi-stack/environments/azure-smoke" \
   --input - <<EOF
 {
   "wait_timer": 0,
   "reviewers": [],
-  "deployment_branch_policy": {
-    "protected_branches": true,
-    "custom_branch_policies": false
-  },
+  "deployment_branch_policy": null,
   "can_admins_bypass": true
 }
 EOF
-
-# 5. Environment secrets (do not overwrite repository-level validation secrets)
-gh secret set AZURE_CLIENT_ID --env azure-smoke --body "$APP_ID" --repo Azure/osdu-spi-stack
-gh secret set AZURE_TENANT_ID --env azure-smoke --body "<TENANT_ID>" --repo Azure/osdu-spi-stack
-gh secret set AZURE_SUBSCRIPTION_ID --env azure-smoke --body "<SUBSCRIPTION_ID>" --repo Azure/osdu-spi-stack
 ```
 
 ### Tightening the RBAC scope (follow-up)
@@ -160,8 +153,9 @@ gate. A required reviewer leaves the cron run in `waiting`; because Smoke also
 uses one concurrency group, that waiting run blocks every later schedule and
 turns the daily reliability signal into a series of silent cancellations.
 
-Both scheduled and manual runs use this same environment. Keeping the name
-stable also keeps the existing federated subject valid:
-`repo:Azure/osdu-spi-stack:environment:azure-smoke`.
+Smoke and Sweeper use this same environment. With no environment-level
+`AZURE_*` secrets configured, they inherit the existing repository secrets.
+Environment secrets can override them later if these two workflows move to a
+different subscription.
 
 The orphan-RG sweeper is the cleanup backstop for full-workflow cancellation.
