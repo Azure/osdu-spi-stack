@@ -7,6 +7,15 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 
 ## [Unreleased]
 
+### Added
+- `spi up --profile bare` deploys infrastructure and activates GitOps
+  only: Flux reconciles empty stack and ingress trees while the CLI
+  bootstrap seeds namespaces, secrets, the `osdu-config` ConfigMap, and
+  the Workload Identity ServiceAccount. `--ingress-mode` and `--dns-zone`
+  are rejected with `bare`. Use it for Bicep, Workload Identity, or RBAC
+  iteration, then re-run `spi up` with `minimal` or `core` to add
+  workloads (ADR-024, issue #42).
+
 ### Changed
 - Local (key/SAS) authentication is now disabled on every Cosmos DB (Gremlin
   and per-partition SQL) and Service Bus account: `disableLocalAuth: true` is

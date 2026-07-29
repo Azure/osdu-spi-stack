@@ -101,8 +101,9 @@ The ingress profile (`software/stacks/osdu/ingress/<mode>/`) adds Kustomizations
 |---------|--------|---------|
 | `minimal` | 0a-4b | Middleware only: operators, cert-manager, trust-manager, Gateway, Elasticsearch, Redis, PostgreSQL, Airflow, CA bundles. No OSDU services. |
 | `core` (default) | 0a-6 | Everything in `minimal`, plus the OSDU services, partition/entitlements bootstrap, schema load, and reference services. |
+| `bare` | none | Nothing. Infra plus activated GitOps only; Flux reconciles empty stack and ingress trees. |
 
-Layers 0a through 4b are byte-identical between the two profiles, so middleware validated under `minimal` behaves the same under `core`. Because `minimal` never creates `spi-osdu-services`, it pairs with the `<mode>-minimal` ingress trees, which omit the OSDU HTTPRoute Kustomization that would otherwise stall on that dependency. See [ADR-024](decisions/024-middleware-only-minimal-profile.md).
+Layers 0a through 4b are byte-identical between the `minimal` and `core` profiles, so middleware validated under `minimal` behaves the same under `core`. Because `minimal` never creates `spi-osdu-services`, it pairs with the `<mode>-minimal` ingress trees, which omit the OSDU HTTPRoute Kustomization that would otherwise stall on that dependency. See [ADR-024](decisions/024-middleware-only-minimal-profile.md).
 
 ## AKS Automatic
 
