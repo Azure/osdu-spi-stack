@@ -1,0 +1,8 @@
+# SPI Stack - Bare ingress profile
+#
+# Deliberately empty. The bare profile deploys no cert-manager or Gateway, so
+# no ingress mode can serve traffic. Flux selects this tree for bare regardless
+# of the requested ingress mode.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []

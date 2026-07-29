@@ -321,9 +321,9 @@ def deploy_azure(
     caller can inspect what would change without actually provisioning.
     """
     image_lock_yaml = ""
-    # The minimal profile deploys no OSDU services, so nothing consumes the
-    # lock ConfigMap; skip the community-registry roundtrip entirely.
-    if refresh_images and not dry_run and config.profile is not Profile.MINIMAL:
+    # Only core deploys OSDU services that consume the image lock. Minimal and
+    # bare skip the community-registry roundtrip entirely.
+    if refresh_images and not dry_run and config.profile is Profile.CORE:
         # Resolve before provisioning so registry/API failures stop quickly and
         # never leave a partially configured cluster with a mixed image set.
         image_lock_yaml = _resolve_image_lock(image_branch)
@@ -353,14 +353,16 @@ def deploy_azure(
     _create_istio_auth(config, infra_outputs)
     _create_spi_init_values(config)
 
-    # Phase 4b: Ingress mode resolution (requires live cluster + Istio LB)
-    resolve_post_deploy_inputs(config)
-    create_ingress_config(
-        config=config,
-        external_dns_client_id=infra_outputs.get("external_dns_client_id", ""),
-        tenant_id=infra_outputs.get("tenant_id", ""),
-        gateway_ip=get_ingress_ip(),
-    )
+    # Phase 4b: Ingress mode resolution (requires live cluster + Istio LB).
+    # Bare deploys no Gateway, so there is nothing to configure.
+    if config.profile is not Profile.BARE:
+        resolve_post_deploy_inputs(config)
+        create_ingress_config(
+            config=config,
+            external_dns_client_id=infra_outputs.get("external_dns_client_id", ""),
+            tenant_id=infra_outputs.get("tenant_id", ""),
+            gateway_ip=get_ingress_ip(),
+        )
 
     # Phase 5: GitOps activation (Flux extension + Kustomization via Bicep)
     console.print("\n[bold]Deploying Flux extension and GitOps config via Bicep...[/bold]")
@@ -376,10 +378,15 @@ def deploy_azure(
         resource_group=config.resource_group,
         deployment_name=f"spi-flux-{config.env or 'base'}",
     )
-    display_result(
-        f"GitOps activated for profile: {config.profile.value}, "
-        f"ingress: {config.ingress_mode.value}"
-    )
+    if config.profile is Profile.BARE:
+        display_result(
+            "GitOps activated for profile: bare (empty reconciliation; no middleware or ingress)"
+        )
+    else:
+        display_result(
+            f"GitOps activated for profile: {config.profile.value}, "
+            f"ingress: {config.ingress_mode.value}"
+        )
 
     # Phase 6: Non-blocking runtime writes.
     # Cross-namespace CA copies and the Redis Istio DestinationRule moved

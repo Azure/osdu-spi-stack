@@ -23,6 +23,7 @@ param repoBranch string = 'main'
 
 @description('Profile path segment under software/stacks/osdu/profiles (e.g., "core").')
 @allowed([
+  'bare'
   'minimal'
   'core'
 ])
@@ -39,12 +40,14 @@ param ingressMode string = 'azure'
 @description('Name of the fluxConfigurations resource on the cluster.')
 param configurationName string = 'osdu-spi-stack-system'
 
-// The minimal profile deploys no OSDU services, so it needs the ingress
-// tree that omits the OSDU HTTPRoute Kustomization; that one dependsOn
-// spi-osdu-services and would otherwise stall on DependencyNotReady.
-var ingressPath = profile == 'minimal'
-  ? './software/stacks/osdu/ingress/${ingressMode}-minimal'
-  : './software/stacks/osdu/ingress/${ingressMode}'
+// The bare profile has no ingress substrate and always selects its empty tree;
+// ingressMode is unused. Minimal omits the OSDU HTTPRoute Kustomization because
+// that dependsOn spi-osdu-services and would otherwise stall on DependencyNotReady.
+var ingressPath = profile == 'bare'
+  ? './software/stacks/osdu/ingress/bare'
+  : profile == 'minimal'
+    ? './software/stacks/osdu/ingress/${ingressMode}-minimal'
+    : './software/stacks/osdu/ingress/${ingressMode}'
 
 resource aks 'Microsoft.ContainerService/managedClusters@2024-10-01' existing = {
   name: clusterName
