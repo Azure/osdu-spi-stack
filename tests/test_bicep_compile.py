@@ -20,12 +20,12 @@ when the Azure CLI is not installed (e.g., contributor laptops without az).
 
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from spi.config import Profile
+from spi.shell import run_subprocess
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INFRA_DIR = REPO_ROOT / "infra"
@@ -43,8 +43,8 @@ def _bicep_files():
     ids=lambda p: str(p.relative_to(REPO_ROOT)),
 )
 def test_bicep_compiles(bicep_file: Path):
-    result = subprocess.run(
-        [AZ, "bicep", "build", "--file", str(bicep_file), "--stdout"],
+    result = run_subprocess(
+        ["az", "bicep", "build", "--file", str(bicep_file), "--stdout"],
         capture_output=True,
         text=True,
     )
@@ -61,8 +61,8 @@ def test_bicepparam_files_compile():
     param_files = sorted((INFRA_DIR / "params").glob("*.bicepparam"))
     assert param_files, "expected at least one .bicepparam in infra/params/"
     for pf in param_files:
-        result = subprocess.run(
-            [AZ, "bicep", "build-params", "--file", str(pf), "--stdout"],
+        result = run_subprocess(
+            ["az", "bicep", "build-params", "--file", str(pf), "--stdout"],
             capture_output=True,
             text=True,
         )
