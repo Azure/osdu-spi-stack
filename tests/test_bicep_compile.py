@@ -29,14 +29,14 @@ from spi.config import Profile
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INFRA_DIR = REPO_ROOT / "infra"
-AZ = shutil.which("az")
+AZ = shutil.which("az") or ""
 
 
 def _bicep_files():
     return sorted(INFRA_DIR.rglob("*.bicep"))
 
 
-@pytest.mark.skipif(AZ is None, reason="Azure CLI not installed")
+@pytest.mark.skipif(not AZ, reason="Azure CLI not installed")
 @pytest.mark.parametrize(
     "bicep_file",
     _bicep_files(),
@@ -55,7 +55,7 @@ def test_bicep_compiles(bicep_file: Path):
     )
 
 
-@pytest.mark.skipif(AZ is None, reason="Azure CLI not installed")
+@pytest.mark.skipif(not AZ, reason="Azure CLI not installed")
 def test_bicepparam_files_compile():
     """Each .bicepparam file must resolve against its referenced template."""
     param_files = sorted((INFRA_DIR / "params").glob("*.bicepparam"))

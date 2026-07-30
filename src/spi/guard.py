@@ -61,24 +61,26 @@ def _has_spi_fingerprint() -> bool:
         return False
     # Resource group matches cluster name for spi-stack deployments
     result = subprocess.run(
-        resolve_command([
-            "az",
-            "k8s-configuration",
-            "flux",
-            "show",
-            "--resource-group",
-            cluster_name,
-            "--cluster-name",
-            cluster_name,
-            "--cluster-type",
-            "managedClusters",
-            "--name",
-            "osdu-spi-stack-system",
-            "--query",
-            "provisioningState",
-            "--output",
-            "tsv",
-        ]),
+        resolve_command(
+            [
+                "az",
+                "k8s-configuration",
+                "flux",
+                "show",
+                "--resource-group",
+                cluster_name,
+                "--cluster-name",
+                cluster_name,
+                "--cluster-type",
+                "managedClusters",
+                "--name",
+                "osdu-spi-stack-system",
+                "--query",
+                "provisioningState",
+                "--output",
+                "tsv",
+            ]
+        ),
         capture_output=True,
         text=True,
     )

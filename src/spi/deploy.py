@@ -218,20 +218,22 @@ def _write_keyvault_bootstrap_secrets(
     for name, value in secrets_to_write:
         while True:
             result = subprocess.run(
-                resolve_command([
-                    "az",
-                    "keyvault",
-                    "secret",
-                    "set",
-                    "--vault-name",
-                    keyvault_name,
-                    "--name",
-                    name,
-                    "--value",
-                    value,
-                    "--output",
-                    "none",
-                ]),
+                resolve_command(
+                    [
+                        "az",
+                        "keyvault",
+                        "secret",
+                        "set",
+                        "--vault-name",
+                        keyvault_name,
+                        "--name",
+                        name,
+                        "--value",
+                        value,
+                        "--output",
+                        "none",
+                    ]
+                ),
                 capture_output=True,
                 text=True,
             )
@@ -266,15 +268,17 @@ def _pin_gitops_source() -> None:
     console.print("\n[bold]Pinning environment to deploy commit...[/bold]")
 
     wait_result = subprocess.run(
-        resolve_command([
-            "kubectl",
-            "wait",
-            "--for=condition=Ready",
-            f"gitrepository/{GITREPO_NAME}",
-            "-n",
-            "osdu-flux",
-            "--timeout=120s",
-        ]),
+        resolve_command(
+            [
+                "kubectl",
+                "wait",
+                "--for=condition=Ready",
+                f"gitrepository/{GITREPO_NAME}",
+                "-n",
+                "osdu-flux",
+                "--timeout=120s",
+            ]
+        ),
         capture_output=True,
         text=True,
         encoding="utf-8",
