@@ -54,6 +54,20 @@ def test_run_subprocess_escapes_windows_batch_arguments():
     assert "&" not in command_line.replace("^&", "")
 
 
+def test_run_subprocess_rejects_percent_in_windows_batch_executable():
+    executable = r"C:\tools%PATH%\az.cmd"
+    with (
+        mock.patch("spi.shell.os.name", "nt"),
+        mock.patch("spi.shell.shutil.which", return_value=executable),
+        mock.patch("spi.shell.subprocess.run") as run,
+        pytest.raises(ValueError, match="Windows batch executable paths") as error,
+    ):
+        run_subprocess(["az", "version"])
+
+    assert repr(executable) in str(error.value)
+    run.assert_not_called()
+
+
 def test_escape_batch_arg_escapes_cmd_operators():
     assert _escape_batch_arg("a^b<c>d|e(f)") == r'^"a^^b^<c^>d^|e^(f^)^"'
 

@@ -100,6 +100,9 @@ def _escape_batch_arg(arg: str) -> str:
 
 def _build_batch_command_line(exe: str, args: List[str]) -> str:
     """Build an lpCommandLine string that preserves arguments through cmd.exe."""
+    if "%" in exe:
+        raise ValueError(f"Windows batch executable paths cannot contain percent signs: {exe!r}")
+
     parts = [f'"{exe}"']
     parts.extend(_escape_batch_arg(arg) for arg in args)
     return " ".join(parts)
