@@ -21,6 +21,7 @@ helper used by status/info/guard where panel output would be noise.
 """
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -32,6 +33,9 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from .console import console
+
+_BATCH_SUFFIXES = (".cmd", ".bat")
+_CMD_METACHARACTERS = frozenset('&|<>()^"')
 
 TRANSIENT_KUBECTL_ERRORS = (
     "connection refused",
@@ -61,6 +65,52 @@ def resolve_command(cmd_list: List[str]) -> List[str]:
     if executable:
         return [executable, *cmd_list[1:]]
     return cmd_list
+
+
+def _is_batch(path: str) -> bool:
+    """Return whether path names a Windows batch command."""
+    return os.name == "nt" and path.lower().endswith(_BATCH_SUFFIXES)
+
+
+def _escape_batch_arg(arg: str) -> str:
+    """Quote an argument for the MSVCRT and cmd.exe parsing layers."""
+    if any(char in arg for char in "%\r\n"):
+        raise ValueError(
+            f"Windows batch arguments cannot contain percent signs or newlines: {arg!r}"
+        )
+
+    quoted = ['"']
+    backslashes = 0
+    for char in arg:
+        if char == "\\":
+            backslashes += 1
+            continue
+
+        if char == '"':
+            quoted.append("\\" * (backslashes * 2 + 1))
+        else:
+            quoted.append("\\" * backslashes)
+        backslashes = 0
+        quoted.append(char)
+
+    quoted.append("\\" * (backslashes * 2))
+    quoted.append('"')
+    return "".join(f"^{char}" if char in _CMD_METACHARACTERS else char for char in quoted)
+
+
+def _build_batch_command_line(exe: str, args: List[str]) -> str:
+    """Build an lpCommandLine string that preserves arguments through cmd.exe."""
+    parts = [f'"{exe}"']
+    parts.extend(_escape_batch_arg(arg) for arg in args)
+    return " ".join(parts)
+
+
+def run_subprocess(cmd_list: List[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """Resolve and run a command, safely escaping Windows batch shims."""
+    resolved = resolve_command(cmd_list)
+    if resolved and _is_batch(resolved[0]):
+        return subprocess.run(_build_batch_command_line(resolved[0], resolved[1:]), **kwargs)
+    return subprocess.run(resolved, **kwargs)
 
 
 def run_command(
