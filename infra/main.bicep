@@ -93,8 +93,8 @@ param dnsZoneName string = ''
 @description('Resource group that contains the Azure DNS zone. Required when dnsZoneName is set.')
 param dnsZoneResourceGroup string = ''
 
-@description('Object ID of the deployer service principal. When set, grants the deployer Key Vault Secrets Officer so the post-deploy bootstrap step can write runtime secrets. Empty string is fine for local dev users with RG Owner.')
-param deployerPrincipalId string = ''
+@description('Object ID of the deployer. Grants Key Vault Secrets Officer so the post-deploy bootstrap step can write runtime secrets.')
+param deployerPrincipalId string
 
 @description('Principal type of deployerPrincipalId. Human deployers must pass User.')
 @allowed([

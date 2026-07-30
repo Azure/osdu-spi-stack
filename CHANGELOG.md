@@ -38,6 +38,9 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   are not supported.
 
 ### Fixed
+- Local `spi up` now resolves the deployer object ID from the cached ARM token
+  before creating any Azure resource, so Key Vault Secrets Officer is granted
+  without requiring `SPI_DEPLOYER_OID` or Microsoft Graph access.
 - `spi info --show-secrets --json` no longer emits credential values
   (CodeQL `py/clear-text-logging-sensitive-data`): JSON output carries
   secret references (`namespace/name#key`) since it is the form most
