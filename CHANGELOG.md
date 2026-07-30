@@ -38,6 +38,9 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   are not supported.
 
 ### Fixed
+- Native Windows can now run `spi` when CLIs such as Azure CLI are installed
+  through `.cmd` shims; direct subprocess calls resolve the executable through
+  `PATHEXT` before execution.
 - `spi info --show-secrets --json` no longer emits credential values
   (CodeQL `py/clear-text-logging-sensitive-data`): JSON output carries
   secret references (`namespace/name#key`) since it is the form most
