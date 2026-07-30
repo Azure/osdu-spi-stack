@@ -58,6 +58,11 @@ BATCH_SUFFIXES = (".cmd", ".bat")
 
 # Characters cmd.exe leaves alone outside quotes; anything else forces quoting.
 _BATCH_UNQUOTED = "#$*+-./:?@\\_"
+_WINDOWS_CMD_EXE = os.path.join(
+    os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows",
+    "System32",
+    "cmd.exe",
+)
 
 
 class BatchArgumentError(ValueError):
@@ -130,7 +135,7 @@ def build_batch_command_line(script: str, args: Sequence[str]) -> str:
     if '"' in script or script.endswith("\\"):
         raise BatchArgumentError(f"batch shim path is not usable by cmd.exe: {script}")
 
-    parts = [f'cmd.exe /e:ON /v:OFF /d /c ""{script}"']
+    parts = [f'"{_WINDOWS_CMD_EXE}" /e:ON /v:OFF /d /c ""{script}"']
     parts.extend(escape_batch_argument(arg) for arg in args)
     return " ".join(parts) + '"'
 

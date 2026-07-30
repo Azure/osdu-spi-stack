@@ -29,6 +29,7 @@ def fake_windows(monkeypatch):
     """Pretend we are on Windows with az installed as a .cmd shim."""
     monkeypatch.setattr(shell, "_is_windows", lambda: True)
     monkeypatch.setattr(shell.os.path, "abspath", lambda p: p)
+    monkeypatch.setattr(shell, "_WINDOWS_CMD_EXE", r"C:\Windows\System32\cmd.exe")
 
     def fake_which(program):
         return {
@@ -53,7 +54,9 @@ def test_windows_exe_keeps_argv_list(fake_windows):
 def test_batch_shim_becomes_escaped_command_line(fake_windows):
     prepared = shell.prepare_command(["az", "bicep", "build", "--file", r"C:\src\a&b\main.bicep"])
     assert isinstance(prepared, str)
-    assert prepared.startswith('cmd.exe /e:ON /v:OFF /d /c ""C:\\Program Files\\Azure CLI')
+    assert prepared.startswith(
+        '"C:\\Windows\\System32\\cmd.exe" /e:ON /v:OFF /d /c ""C:\\Program Files\\Azure CLI'
+    )
     # The metacharacter stays inside the quoted argument instead of splitting.
     assert r'"C:\src\a&b\main.bicep"' in prepared
     assert prepared.endswith('"')
