@@ -33,6 +33,7 @@ from spi.azure_infra import (
     _resolve_deployer_principal,
     provision_azure_infra,
 )
+from spi.cli import _resolve_up_context
 from spi.config import Config
 
 # Synthetic fixture values; never real principal or tenant identifiers.
@@ -205,3 +206,25 @@ def test_unresolved_deployer_fails_before_resource_group_creation(monkeypatch):
         provision_azure_infra(Config(env="test"))
 
     create_rg.assert_not_called()
+
+
+def test_unresolved_deployer_fails_before_suffix_persistence():
+    account = {
+        "id": "subscription-id",
+        "tenantId": TID,
+        "name": "subscription",
+        "user": {"type": "user", "name": "user@example.com"},
+    }
+
+    with (
+        patch("spi.azure_infra._get_azure_account", return_value=account),
+        patch(
+            "spi.azure_infra._resolve_deployer_principal",
+            side_effect=typer.Exit(code=1),
+        ),
+        patch("spi.cli._resolve_name_suffix") as resolve_suffix,
+        pytest.raises(typer.Exit),
+    ):
+        _resolve_up_context("test")
+
+    resolve_suffix.assert_not_called()

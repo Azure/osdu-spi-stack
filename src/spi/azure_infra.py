@@ -49,7 +49,7 @@ import base64
 import json
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import typer
 
@@ -785,7 +785,27 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────
 
 
-def provision_azure_infra(config: Config, dry_run: bool = False) -> Dict[str, Any]:
+def _get_azure_account() -> Dict[str, Any]:
+    """Return the active Azure account without mutating Azure state."""
+    console.print("\n[bold]Verifying Azure login...[/bold]")
+    result = run_command(
+        ["az", "account", "show", "--output", "json"],
+        description="Check Azure subscription",
+    )
+    account = json.loads(result.stdout)
+    console.print(
+        f"  [info]Subscription: {account.get('name', 'unknown')} ({account.get('id', '')})[/info]"
+    )
+    return account
+
+
+def provision_azure_infra(
+    config: Config,
+    dry_run: bool = False,
+    *,
+    account: Optional[Dict[str, Any]] = None,
+    deployer_principal: Optional[Tuple[str, str]] = None,
+) -> Dict[str, Any]:
     """Provision all Azure PaaS resources. Returns infra_outputs for K8s bootstrap.
 
     Order:
@@ -802,21 +822,16 @@ def provision_azure_infra(config: Config, dry_run: bool = False) -> Dict[str, An
     """
     outputs: Dict[str, Any] = {}
 
-    console.print("\n[bold]Verifying Azure login...[/bold]")
-    result = run_command(
-        ["az", "account", "show", "--output", "json"],
-        description="Check Azure subscription",
-    )
-    account = json.loads(result.stdout)
+    if account is None:
+        account = _get_azure_account()
     outputs["tenant_id"] = account.get("tenantId", "")
     outputs["subscription_id"] = account.get("id", "")
-    console.print(
-        f"  [info]Subscription: {account.get('name', 'unknown')} ({account.get('id', '')})[/info]"
-    )
 
     # Resolve before any Azure mutation. The same identity is used for AKS
     # cluster-admin and Key Vault Secrets Officer.
-    deployer_principal_id, deployer_principal_type = _resolve_deployer_principal(account)
+    if deployer_principal is None:
+        deployer_principal = _resolve_deployer_principal(account)
+    deployer_principal_id, deployer_principal_type = deployer_principal
 
     create_resource_group(config)
 

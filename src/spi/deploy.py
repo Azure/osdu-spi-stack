@@ -23,6 +23,7 @@ and writes the KV runtime secrets that OSDU services read at startup.
 import os
 import subprocess
 import time
+from typing import Any, Dict, Optional, Tuple
 
 import typer
 
@@ -313,6 +314,8 @@ def deploy_azure(
     dry_run: bool = False,
     refresh_images: bool = True,
     image_branch: str = DEFAULT_IMAGE_BRANCH,
+    azure_account: Optional[Dict[str, Any]] = None,
+    deployer_principal: Optional[Tuple[str, str]] = None,
 ) -> None:
     """Provision Azure infra, bootstrap Kubernetes, deploy via GitOps.
 
@@ -337,7 +340,12 @@ def deploy_azure(
         config.dns_zone_rg = rg
 
     # Phase 1-3: Azure infrastructure
-    infra_outputs = provision_azure_infra(config, dry_run=dry_run)
+    infra_outputs = provision_azure_infra(
+        config,
+        dry_run=dry_run,
+        account=azure_account,
+        deployer_principal=deployer_principal,
+    )
 
     if dry_run:
         return
