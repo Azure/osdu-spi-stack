@@ -24,14 +24,13 @@ Owns every decision that depends on the ingress mode:
 
 import json
 import os
-import subprocess
 from typing import Optional
 
 import typer
 
 from .config import Config, IngressMode
 from .console import console, display_result, display_yaml
-from .shell import kubectl_apply_yaml, kubectl_json, resolve_command
+from .shell import kubectl_apply_yaml, kubectl_json, run_subprocess
 
 ISTIO_INGRESS_NAMESPACE = "aks-istio-ingress"
 # Istio with gatewayClassName=istio provisions a LoadBalancer Service
@@ -64,8 +63,8 @@ def discover_dns_zone() -> tuple:
     Lists zones; returns the single one if exactly one exists. Raises
     typer.Exit on zero or multiple (with an instructive message).
     """
-    result = subprocess.run(
-        resolve_command(["az", "network", "dns", "zone", "list", "-o", "json"]),
+    result = run_subprocess(
+        ["az", "network", "dns", "zone", "list", "-o", "json"],
         capture_output=True,
         text=True,
     )

@@ -152,7 +152,7 @@ def run_command(
         command_syntax = Syntax(formatted_cmd, "bash", theme="monokai", line_numbers=False)
         console.print(Panel(command_syntax, title=title, border_style=style))
 
-    result = subprocess.run(resolve_command(cmd_list), capture_output=capture_output, text=text)
+    result = run_subprocess(cmd_list, capture_output=capture_output, text=text)
 
     if check and result.returncode != 0:
         if result.stderr and result.stderr.strip():
@@ -172,8 +172,8 @@ def kubectl_apply_yaml(
     """Apply YAML via kubectl with retry/backoff for transient API failures."""
     delay = base_delay
     for attempt in range(1, retries + 1):
-        proc = subprocess.run(
-            resolve_command(["kubectl", "apply", "-f", "-"]),
+        proc = run_subprocess(
+            ["kubectl", "apply", "-f", "-"],
             input=yaml_content,
             capture_output=True,
             text=True,
@@ -205,8 +205,8 @@ def kubectl_json(args: List[str]) -> Optional[Dict[str, Any]]:
     Used by status/info/guard for background state reads where the
     transparent command panel from ``run_command`` would be noise.
     """
-    cmd = resolve_command(["kubectl"] + args + ["-o", "json"])
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    cmd = ["kubectl"] + args + ["-o", "json"]
+    result = run_subprocess(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         return None
     try:
