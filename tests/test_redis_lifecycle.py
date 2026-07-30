@@ -17,7 +17,7 @@ def _redis_values() -> dict:
     return document["spec"]["values"]
 
 
-def test_redis_pvcs_delete_only_when_statefulsets_are_deleted():
+def test_redis_pvcs_delete_on_scale_down_and_statefulset_removal():
     values = _redis_values()
 
     for role in ("master", "replica"):
