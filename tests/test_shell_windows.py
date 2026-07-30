@@ -118,17 +118,23 @@ def test_run_process_passes_prepared_command(monkeypatch):
 def test_windows_batch_shim_e2e(tmp_path):
     """End-to-end: verify that metacharacter arguments reach the batch shim unchanged.
 
-    A temporary .cmd probe echoes its first argument verbatim. Running it
+    A temporary .cmd probe echoes its first argument via ``%1`` (which preserves
+    the surrounding double-quotes that build_batch_command_line adds). Running it
     through run_process with an argument that contains a cmd.exe metacharacter
     (``&``) confirms that the escaping in build_batch_command_line is actually
     effective, not just textually correct.
+
+    Note: ``%~1`` is intentionally avoided here. It strips the surrounding quotes,
+    exposing the bare ``&`` to cmd.exe's metacharacter scanner (which would split
+    the echo into two commands). Real batch shims use ``%*``, which preserves the
+    surrounding quotes and passes them intact to the target executable.
     """
     probe = tmp_path / "probe.cmd"
-    probe.write_text("@echo off\necho %~1\n", encoding="utf-8")
+    probe.write_text("@echo off\necho %1\n", encoding="utf-8")
     result = shell.run_process(
         [str(probe), "a&b"],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == "a&b"
+    assert result.stdout.strip() == '"a&b"'
