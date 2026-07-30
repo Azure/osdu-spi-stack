@@ -38,6 +38,9 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   are not supported.
 
 ### Fixed
+- Returning from `minimal` or `core` to `bare` now deletes Redis cache PVCs
+  and their `Delete`-policy Azure disks. Scaling replicas down also removes
+  their unused claims; rolling upgrades retain active claims.
 - `spi info --show-secrets --json` no longer emits credential values
   (CodeQL `py/clear-text-logging-sensitive-data`): JSON output carries
   secret references (`namespace/name#key`) since it is the form most
