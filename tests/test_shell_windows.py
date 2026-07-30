@@ -19,6 +19,8 @@ faking the platform probe and the PATH lookup, and the escaping helpers are
 pure string functions.
 """
 
+import sys
+
 import pytest
 
 from spi import shell
@@ -110,3 +112,23 @@ def test_run_process_passes_prepared_command(monkeypatch):
     assert shell.run_process(["kubectl", "get", "pods"], capture_output=True) == "result"
     assert seen["cmd"] == ["kubectl", "get", "pods"]
     assert seen["kwargs"] == {"capture_output": True}
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows cmd.exe")
+def test_windows_batch_shim_e2e(tmp_path):
+    """End-to-end: verify that metacharacter arguments reach the batch shim unchanged.
+
+    A temporary .cmd probe echoes its first argument verbatim. Running it
+    through run_process with an argument that contains a cmd.exe metacharacter
+    (``&``) confirms that the escaping in build_batch_command_line is actually
+    effective, not just textually correct.
+    """
+    probe = tmp_path / "probe.cmd"
+    probe.write_text("@echo off\necho %~1\n", encoding="utf-8")
+    result = shell.run_process(
+        [str(probe), "a&b"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == "a&b"
