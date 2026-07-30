@@ -38,6 +38,10 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   are not supported.
 
 ### Fixed
+- Windows batch shims such as `az.cmd` no longer reinterpret arguments containing
+  cmd metacharacters (`&`, `^`, `<`, `>`, `|`, parentheses, or quotes). Arguments
+  containing `%` or newlines are rejected with a clear error instead of being
+  silently altered.
 - Native Windows can now run `spi` when CLIs such as Azure CLI are installed
   through `.cmd` shims; direct subprocess calls resolve the executable through
   `PATHEXT` before execution.
