@@ -18,13 +18,21 @@
 flux/helm command should be visible to the operator. ``kubectl_apply_yaml``
 retries on transient kube-API errors. ``kubectl_json`` is the silent query
 helper used by status/info/guard where panel output would be noise.
+
+Every process launch goes through ``run_process`` so Windows batch shims
+(``az.cmd`` and friends) receive arguments exactly as written; see
+``prepare_command`` for the details.
 """
 
 import json
+import os
+import platform
 import shlex
+import shutil
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+import unicodedata
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import typer
 from rich.panel import Panel
@@ -44,6 +52,111 @@ TRANSIENT_KUBECTL_ERRORS = (
     "the server is currently unable to handle the request",
     "tls handshake timeout",
 )
+
+
+BATCH_SUFFIXES = (".cmd", ".bat")
+
+# Characters cmd.exe leaves alone outside quotes; anything else forces quoting.
+_BATCH_UNQUOTED = "#$*+-./:?@\\_"
+
+
+class BatchArgumentError(ValueError):
+    """An argument cannot be passed safely through a Windows batch shim."""
+
+
+def _is_windows() -> bool:
+    return platform.system().lower() == "windows"
+
+
+def _is_batch_file(program: str) -> bool:
+    return program.lower().endswith(BATCH_SUFFIXES)
+
+
+def _batch_arg_needs_quotes(arg: str) -> bool:
+    """Quote unless every character is known to survive cmd.exe unquoted."""
+    if not arg or arg.endswith("\\"):
+        return True
+    for ch in arg:
+        if ch.isascii():
+            if not (ch.isalnum() or ch in _BATCH_UNQUOTED):
+                return True
+        elif unicodedata.category(ch) == "Cc":
+            return True
+    return False
+
+
+def escape_batch_argument(arg: str) -> str:
+    """Escape one argument so a batch file receives it verbatim.
+
+    cmd.exe re-parses the command line it hands to a ``.cmd``/``.bat`` shim,
+    so plain quoting is not enough: ``%NAME%`` would still expand. Quoting
+    covers metacharacters (``&``, ``|``, ``^``, ...) and each ``%`` is
+    neutralised with the ``%%cd:~,%`` no-op substring expansion.
+    """
+    if any(ch in arg for ch in ("\r", "\n", "\0")):
+        raise BatchArgumentError(
+            "argument contains a newline or NUL character, which cannot be "
+            "passed through a Windows batch shim"
+        )
+
+    quote = _batch_arg_needs_quotes(arg)
+    parts: List[str] = ['"'] if quote else []
+    backslashes = 0
+    for ch in arg:
+        if ch == "\\":
+            backslashes += 1
+        else:
+            if ch == '"':
+                # Double the run of backslashes, then escape the quote.
+                parts.append("\\" * backslashes)
+                parts.append('"')
+            elif ch == "%":
+                parts.append("%%cd:~,")
+            backslashes = 0
+        parts.append(ch)
+    if quote:
+        parts.append("\\" * backslashes)
+        parts.append('"')
+    return "".join(parts)
+
+
+def build_batch_command_line(script: str, args: Sequence[str]) -> str:
+    """Build a ``cmd.exe`` command line that invokes a batch shim safely.
+
+    ``/e:ON`` keeps command extensions (the ``%%cd:~,%`` trick needs them),
+    ``/v:OFF`` disables delayed expansion so ``!VAR!`` stays literal, and
+    ``/d`` skips AutoRun commands.
+    """
+    if '"' in script or script.endswith("\\"):
+        raise BatchArgumentError(f"batch shim path is not usable by cmd.exe: {script}")
+
+    parts = [f'cmd.exe /e:ON /v:OFF /d /c ""{script}"']
+    parts.extend(escape_batch_argument(arg) for arg in args)
+    return " ".join(parts) + '"'
+
+
+def prepare_command(cmd_list: Sequence[str]) -> Union[str, List[str]]:
+    """Return the argv (or Windows command line) to hand to ``subprocess``.
+
+    On POSIX the argv list is returned untouched. On Windows the program is
+    resolved through ``PATH`` so ``.cmd``/``.bat`` shims (Azure CLI, helm,
+    flux, ...) are found; when the resolved program is such a shim, a fully
+    escaped ``cmd.exe`` command line is returned instead of an argv list so
+    Python's default quoting cannot be undone by batch re-parsing.
+    """
+    args = list(cmd_list)
+    if not args or not _is_windows():
+        return args
+
+    program = shutil.which(args[0]) or args[0]
+    if not _is_batch_file(program):
+        return [program, *args[1:]]
+    return build_batch_command_line(os.path.abspath(program), args[1:])
+
+
+def run_process(cmd_list: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """``subprocess.run`` with Windows batch-shim handling applied."""
+    return subprocess.run(prepare_command(cmd_list), **kwargs)
 
 
 def run_command(
@@ -85,7 +198,11 @@ def run_command(
         command_syntax = Syntax(formatted_cmd, "bash", theme="monokai", line_numbers=False)
         console.print(Panel(command_syntax, title=title, border_style=style))
 
-    result = subprocess.run(cmd_list, capture_output=capture_output, text=text)
+    try:
+        result = run_process(cmd_list, capture_output=capture_output, text=text)
+    except BatchArgumentError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
 
     if check and result.returncode != 0:
         if result.stderr and result.stderr.strip():
@@ -105,7 +222,7 @@ def kubectl_apply_yaml(
     """Apply YAML via kubectl with retry/backoff for transient API failures."""
     delay = base_delay
     for attempt in range(1, retries + 1):
-        proc = subprocess.run(
+        proc = run_process(
             ["kubectl", "apply", "-f", "-"],
             input=yaml_content,
             capture_output=True,
@@ -139,7 +256,7 @@ def kubectl_json(args: List[str]) -> Optional[Dict[str, Any]]:
     transparent command panel from ``run_command`` would be noise.
     """
     cmd = ["kubectl"] + args + ["-o", "json"]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    result = run_process(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         return None
     try:

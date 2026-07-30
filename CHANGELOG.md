@@ -38,6 +38,16 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   are not supported.
 
 ### Fixed
+- Windows: `az`, `helm`, and `flux` are often installed as `.cmd`/`.bat`
+  shims, and Windows relaunches those through `cmd.exe`, which re-parses the
+  forwarded arguments. Values containing CMD metacharacters were mangled: a
+  path such as `C:\src\a&b\template.bicep` split at `&`, and `%NAME%`
+  sequences expanded from the local environment. Every process launch now
+  goes through `spi.shell.run_process`, which resolves the shim itself and
+  builds a fully escaped `cmd.exe /e:ON /v:OFF /d /c` command line
+  (arguments quoted, `%` neutralised, delayed expansion off). `spi check` no
+  longer needs `shell=True`, and the Bicep compile test harness uses the same
+  launcher (issue #49).
 - `spi info --show-secrets --json` no longer emits credential values
   (CodeQL `py/clear-text-logging-sensitive-data`): JSON output carries
   secret references (`namespace/name#key`) since it is the form most

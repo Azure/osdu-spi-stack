@@ -14,10 +14,8 @@
 
 """In-cluster bootstrap: namespaces, StorageClasses, Gateway API CRDs."""
 
-import subprocess
-
 from .console import console, display_result, display_yaml
-from .shell import kubectl_apply_yaml, kubectl_json, run_command
+from .shell import kubectl_apply_yaml, kubectl_json, run_command, run_process
 from .templates import storage_class
 
 STORAGE_CLASSES = ["pg-storageclass", "redis-storageclass", "es-storageclass"]
@@ -48,7 +46,7 @@ def ensure_namespaces(istio_revision: str = "") -> None:
     console.print(f"  [info]Istio revision: {istio_revision}[/info]")
 
     for ns in ["osdu-flux", "foundation", "platform"]:
-        subprocess.run(
+        run_process(
             ["kubectl", "create", "namespace", ns],
             capture_output=True,
             text=True,

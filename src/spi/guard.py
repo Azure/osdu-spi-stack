@@ -19,18 +19,17 @@ before status/info/reconcile modify it. Set ``SPI_SKIP_GUARD=1`` to bypass.
 """
 
 import os
-import subprocess
 
 import typer
 
 from .config import BASE_NAME
 from .console import console
-from .shell import kubectl_json
+from .shell import kubectl_json, run_process
 
 
 def _get_current_context() -> str:
     """Return the current kubectl context name, or empty string on failure."""
-    result = subprocess.run(
+    result = run_process(
         ["kubectl", "config", "current-context"],
         capture_output=True,
         text=True,
@@ -60,7 +59,7 @@ def _has_spi_fingerprint() -> bool:
     if not cluster_name:
         return False
     # Resource group matches cluster name for spi-stack deployments
-    result = subprocess.run(
+    result = run_process(
         [
             "az",
             "k8s-configuration",
