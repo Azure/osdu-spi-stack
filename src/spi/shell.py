@@ -21,11 +21,15 @@ helper used by status/info/guard where panel output would be noise.
 """
 
 import json
+import ntpath
+import os
+import platform
+import re
 import shlex
 import shutil
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import typer
 from rich.panel import Panel
@@ -46,21 +50,99 @@ TRANSIENT_KUBECTL_ERRORS = (
     "tls handshake timeout",
 )
 
+_SAFE_BATCH_ARGUMENT = re.compile(r"[A-Za-z0-9_@+=:,./\\-]+")
+_BATCH_SUFFIXES = {".bat", ".cmd"}
+PreparedCommand = Union[List[str], str]
 
-def resolve_command(cmd_list: List[str]) -> List[str]:
-    """Resolve the executable path for direct subprocess calls.
 
-    Windows often exposes CLIs such as Azure CLI as ``az.cmd``. PowerShell can
-    resolve ``az`` through PATHEXT, but ``subprocess.run(["az", ...])`` with
-    ``shell=False`` cannot. Resolve the first argv element up front so callers
-    keep transparent argv lists without relying on shell execution.
-    """
+class BatchArgumentError(ValueError):
+    """Raised when an argument cannot be represented safely through cmd.exe."""
+
+
+def _validate_batch_value(value: str, label: str) -> None:
+    if any(character in value for character in ("\0", "\r", "\n")):
+        raise BatchArgumentError(f"{label} contains a NUL or newline character")
+
+
+def _quote_windows_argument(argument: str) -> str:
+    """Quote one argument using the MSVCRT backslash and double-quote rules."""
+    quoted = ['"']
+    backslashes = 0
+    for character in argument:
+        if character == "\\":
+            backslashes += 1
+            continue
+        if character == '"':
+            quoted.append("\\" * (backslashes * 2 + 1))
+        else:
+            quoted.append("\\" * backslashes)
+        quoted.append(character)
+        backslashes = 0
+    quoted.append("\\" * (backslashes * 2))
+    quoted.append('"')
+    return "".join(quoted)
+
+
+def escape_batch_argument(argument: str) -> str:
+    """Escape one value for the batch script argument list."""
+    _validate_batch_value(argument, "Batch argument")
+    needs_quotes = (
+        not argument or argument.endswith("\\") or _SAFE_BATCH_ARGUMENT.fullmatch(argument) is None
+    )
+    escaped = argument.replace("%", "%%cd:~,%")
+    return _quote_windows_argument(escaped) if needs_quotes else escaped
+
+
+def _cmd_executable() -> str:
+    windows_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+    if not ntpath.isabs(windows_root):
+        windows_root = r"C:\Windows"
+    return ntpath.join(windows_root, "System32", "cmd.exe")
+
+
+def build_batch_command_line(script: str, args: List[str]) -> str:
+    """Build a cmd.exe command line that preserves every batch-script argument."""
+    _validate_batch_value(script, "Batch script path")
+    if not script or '"' in script or script.endswith("\\"):
+        raise BatchArgumentError(
+            "Batch script path must be non-empty and cannot contain a quote or end in a backslash"
+        )
+
+    escaped_script = script.replace("%", "%%cd:~,%")
+    command = [
+        _quote_windows_argument(_cmd_executable()),
+        "/e:ON",
+        "/v:OFF",
+        "/d",
+        f'/c ""{escaped_script}"',
+        *(escape_batch_argument(argument) for argument in args),
+    ]
+    return " ".join(command) + '"'
+
+
+def prepare_command(cmd_list: List[str]) -> PreparedCommand:
+    """Prepare argv for direct execution, including Windows batch shims."""
     if not cmd_list:
         return cmd_list
+    if platform.system() != "Windows":
+        return cmd_list
+
     executable = shutil.which(cmd_list[0])
-    if executable:
-        return [executable, *cmd_list[1:]]
-    return cmd_list
+    if not executable:
+        return cmd_list
+    if ntpath.splitext(executable)[1].lower() in _BATCH_SUFFIXES:
+        return build_batch_command_line(executable, cmd_list[1:])
+    return [executable, *cmd_list[1:]]
+
+
+def resolve_command(cmd_list: List[str]) -> PreparedCommand:
+    """Compatibility wrapper for callers migrating to ``run_process``."""
+    return prepare_command(cmd_list)
+
+
+def run_process(cmd_list: List[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """Run a command through the platform-safe launch path."""
+    return subprocess.run(prepare_command(cmd_list), **kwargs)
 
 
 def run_command(
