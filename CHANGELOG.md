@@ -40,7 +40,9 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 ### Fixed
 - Native Windows can now run `spi` when CLIs such as Azure CLI are installed
   through `.cmd` shims; direct subprocess calls resolve the executable through
-  `PATHEXT` before execution.
+  `PATHEXT` before execution. Batch launches now escape arguments containing
+  CMD metacharacters such as `&`, `%`, and `^`, preventing paths, parameters,
+  and secret values from being reinterpreted by `cmd.exe` (issue #49).
 - `spi info --show-secrets --json` no longer emits credential values
   (CodeQL `py/clear-text-logging-sensitive-data`): JSON output carries
   secret references (`namespace/name#key`) since it is the form most
