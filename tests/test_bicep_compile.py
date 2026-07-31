@@ -18,6 +18,7 @@ Guards against schema drift that would only surface at deploy time. Skipped
 when the Azure CLI is not installed (e.g., contributor laptops without az).
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -26,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from spi.config import Profile
+from spi.shell import resolve_command
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INFRA_DIR = REPO_ROOT / "infra"
@@ -44,7 +46,7 @@ def _bicep_files():
 )
 def test_bicep_compiles(bicep_file: Path):
     result = subprocess.run(
-        [AZ, "bicep", "build", "--file", str(bicep_file), "--stdout"],
+        resolve_command([AZ, "bicep", "build", "--file", str(bicep_file), "--stdout"]),
         capture_output=True,
         text=True,
     )
@@ -62,7 +64,7 @@ def test_bicepparam_files_compile():
     assert param_files, "expected at least one .bicepparam in infra/params/"
     for pf in param_files:
         result = subprocess.run(
-            [AZ, "bicep", "build-params", "--file", str(pf), "--stdout"],
+            resolve_command([AZ, "bicep", "build-params", "--file", str(pf), "--stdout"]),
             capture_output=True,
             text=True,
         )
@@ -71,6 +73,26 @@ def test_bicepparam_files_compile():
             f"stdout:\n{result.stdout}\n"
             f"stderr:\n{result.stderr}"
         )
+
+
+@pytest.mark.skipif(os.name != "nt" or not AZ, reason="Windows Azure CLI batch parsing test")
+def test_bicep_compiles_from_path_with_cmd_metacharacters(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPI_BICEP_PATH_PROBE", "EXPANDED")
+    source_dir = tmp_path / "a&b%SPI_BICEP_PATH_PROBE%"
+    source_dir.mkdir()
+    bicep_file = source_dir / "probe.bicep"
+    bicep_file.write_text(
+        "targetScope = 'resourceGroup'\noutput value string = 'literal'\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        resolve_command([AZ, "bicep", "build", "--file", str(bicep_file), "--stdout"]),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_flux_bicep_allows_every_profile():

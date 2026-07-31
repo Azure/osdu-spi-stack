@@ -21,6 +21,7 @@ helper used by status/info/guard where panel output would be noise.
 """
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -47,20 +48,108 @@ TRANSIENT_KUBECTL_ERRORS = (
 )
 
 
-def resolve_command(cmd_list: List[str]) -> List[str]:
-    """Resolve the executable path for direct subprocess calls.
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _quote_windows_batch_fragment(value: str) -> str:
+    """Quote one fragment for cmd.exe followed by the Windows runtime parser."""
+    quoted = ['"']
+    backslashes = 0
+
+    for char in value:
+        if char == "\\":
+            backslashes += 1
+            continue
+        if char == '"':
+            quoted.append("\\" * (backslashes * 2))
+            quoted.append('""')
+            backslashes = 0
+            continue
+        if backslashes:
+            quoted.append("\\" * backslashes)
+            backslashes = 0
+        quoted.append(char)
+
+    if backslashes:
+        quoted.append("\\" * (backslashes * 2))
+    quoted.append('"')
+    return "".join(quoted)
+
+
+def _quote_windows_batch_argument(value: str) -> str:
+    """Preserve an argument through cmd.exe and a batch shim's ``%*`` expansion.
+
+    Quoting protects CMD metacharacters. Percent-delimited expressions need an
+    extra boundary before the closing percent so cmd.exe does not treat them as
+    environment-variable references. Adjacent quoted and unquoted fragments
+    are recombined by the target runtime into the original argument.
+    """
+    fragments: list[str] = []
+    segment_start = 0
+    index = 0
+
+    while index < len(value):
+        if value[index] != "%":
+            index += 1
+            continue
+
+        closing_percent = value.find("%", index + 1)
+        if closing_percent >= 0:
+            fragments.append(_quote_windows_batch_fragment(value[segment_start:closing_percent]))
+            fragments.append("%")
+            segment_start = closing_percent + 1
+            index = closing_percent + 1
+            continue
+
+        # Batch positional/for-variable forms such as %1, %*, %~dp0, or %A
+        # do not require a closing percent. Put a quote boundary immediately
+        # after the percent when the next character is safe outside quotes.
+        if index + 1 < len(value):
+            next_char = value[index + 1]
+            if next_char not in '"\\^&|<>()!% \t\r\n':
+                fragments.append(_quote_windows_batch_fragment(value[segment_start : index + 1]))
+                fragments.append(next_char)
+                segment_start = index + 2
+                index += 2
+                continue
+
+        index += 1
+
+    fragments.append(_quote_windows_batch_fragment(value[segment_start:]))
+    return "".join(fragments)
+
+
+def _serialize_windows_batch_command(cmd_list: List[str]) -> str:
+    executable, *arguments = cmd_list
+    return " ".join(
+        [
+            _quote_windows_batch_fragment(executable),
+            *(_quote_windows_batch_argument(argument) for argument in arguments),
+        ]
+    )
+
+
+def resolve_command(cmd_list: List[str]) -> List[str] | str:
+    """Resolve and safely prepare a command for direct subprocess calls.
 
     Windows often exposes CLIs such as Azure CLI as ``az.cmd``. PowerShell can
     resolve ``az`` through PATHEXT, but ``subprocess.run(["az", ...])`` with
-    ``shell=False`` cannot. Resolve the first argv element up front so callers
-    keep transparent argv lists without relying on shell execution.
+    ``shell=False`` cannot. Batch shims also reparse their arguments through
+    cmd.exe, so serialize those invocations explicitly to preserve literal
+    metacharacters and percent expressions. Native executables and non-Windows
+    platforms continue to receive ordinary argv lists.
     """
     if not cmd_list:
         return cmd_list
     executable = shutil.which(cmd_list[0])
     if executable:
-        return [executable, *cmd_list[1:]]
-    return cmd_list
+        resolved = [executable, *cmd_list[1:]]
+    else:
+        resolved = cmd_list
+    if _is_windows() and resolved[0].lower().endswith((".cmd", ".bat")):
+        return _serialize_windows_batch_command(resolved)
+    return resolved
 
 
 def run_command(

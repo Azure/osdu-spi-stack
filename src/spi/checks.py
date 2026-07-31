@@ -22,6 +22,7 @@ from typing import List, Optional, TypedDict
 import typer
 
 from .console import console
+from .shell import resolve_command
 
 # ---------------------------------------------------------------------------
 # Tool registry -- single source of truth for CLI prerequisites
@@ -117,10 +118,6 @@ def detect_platform() -> str:
     return "unknown"
 
 
-def _is_windows() -> bool:
-    return platform.system().lower() == "windows"
-
-
 # ---------------------------------------------------------------------------
 # Tool checking
 # ---------------------------------------------------------------------------
@@ -136,11 +133,10 @@ def check_tool_status(name: str, check_args: Optional[list] = None) -> tuple:
         cmd = [name] + args
     try:
         result = subprocess.run(
-            cmd,
+            resolve_command(cmd),
             capture_output=True,
             text=True,
             timeout=10,
-            shell=_is_windows(),
         )
         if result.returncode == 0:
             output = result.stdout.strip() or result.stderr.strip()
