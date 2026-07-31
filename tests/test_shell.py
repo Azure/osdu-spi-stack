@@ -46,13 +46,13 @@ def test_resolve_command_serializes_windows_batch_arguments():
     with (
         mock.patch("spi.shell.shutil.which", return_value=r"C:\tools\az.CMD"),
         mock.patch("spi.shell._is_windows", return_value=True),
-        mock.patch.dict(os.environ, {"COMSPEC": r"C:\Windows\System32\cmd.exe"}),
+        mock.patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
     ):
         command = resolve_command(["az", "version", "a&b", "100%PATH%"])
 
     assert command == (
         '"C:\\Windows\\System32\\cmd.exe" /d /v:off /s /c '
-        '""C:\\tools\\az.CMD" "version" "a&b" "100%PATH"%"""'
+        '""C:\\tools\\az.CMD" "version" "a&b" "100"^%"PATH"^%"""'
     )
 
 
@@ -60,14 +60,25 @@ def test_resolve_command_keeps_backslash_after_unmatched_percent_quoted():
     with (
         mock.patch("spi.shell.shutil.which", return_value=r"C:\tools\az.CMD"),
         mock.patch("spi.shell._is_windows", return_value=True),
-        mock.patch.dict(os.environ, {"COMSPEC": r"C:\Windows\System32\cmd.exe"}),
+        mock.patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
     ):
         command = resolve_command(["az", "version", r"C:\src\100%\template.bicep", "sentinel"])
 
     assert command == (
         '"C:\\Windows\\System32\\cmd.exe" /d /v:off /s /c '
-        '""C:\\tools\\az.CMD" "version" "C:\\src\\100%\\template.bicep" "sentinel""'
+        '""C:\\tools\\az.CMD" "version" "C:\\src\\100"^%"\\template.bicep" "sentinel""'
     )
+
+
+@pytest.mark.parametrize("value", ["a\nb", "a\rb", "a\r\nb"])
+def test_resolve_command_rejects_line_breaks_for_windows_batch_shims(value):
+    with (
+        mock.patch("spi.shell.shutil.which", return_value=r"C:\tools\az.CMD"),
+        mock.patch("spi.shell._is_windows", return_value=True),
+        mock.patch.dict(os.environ, {"SystemRoot": r"C:\Windows"}),
+        pytest.raises(ValueError, match="carriage return or newline"),
+    ):
+        resolve_command(["az", "version", value])
 
 
 def test_resolve_command_keeps_windows_native_executables_as_argv():
@@ -108,6 +119,12 @@ def test_resolve_command_preserves_arguments_through_percent_star_batch_shim(tmp
         "",
         'json={"spec":{"suspend":true}}',
         "a&100%SPI_CMD_EXPANSION_PROBE% b!",
+        "%COMSPEC:C=&echo SPI_INJECTED&%",
+        "sentinel-after-replacement-expression",
+        "%PATH:C=X%",
+        "sentinel-after-path-replacement",
+        "%COMSPEC:~0,3%",
+        "sentinel-after-substring-expression",
         r"C:\src\100%\template.bicep",
         "sentinel-after-percent-backslash",
         r"a%\ b",

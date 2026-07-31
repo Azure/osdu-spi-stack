@@ -64,6 +64,23 @@ jobs:
           path: coverage.xml
           if-no-files-found: ignore
 
+  windows-command-shims:
+    name: windows-command-shims
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Require Azure CLI batch shim
+        shell: pwsh
+        run: |
+          $az = Get-Command az.cmd -ErrorAction Stop
+          Write-Host "Azure CLI shim: $($az.Source)"
+      - name: Windows batch shim and Bicep regressions
+        run: uv run pytest -q tests/test_shell.py tests/test_bicep_compile.py
+
   manifests:
     name: manifests
     runs-on: ubuntu-latest

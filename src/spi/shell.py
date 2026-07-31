@@ -21,6 +21,7 @@ helper used by status/info/guard where panel output would be noise.
 """
 
 import json
+import ntpath
 import os
 import shlex
 import shutil
@@ -80,48 +81,29 @@ def _quote_windows_batch_fragment(value: str) -> str:
 def _quote_windows_batch_argument(value: str) -> str:
     """Preserve an argument through cmd.exe and a batch shim's ``%*`` expansion.
 
-    Quoting protects CMD metacharacters. Percent-delimited expressions need an
-    extra boundary before the closing percent so cmd.exe does not treat them as
-    environment-variable references. Adjacent quoted and unquoted fragments
-    are recombined by the target runtime into the original argument.
+    Quoting protects CMD metacharacters. Every percent is caret-escaped outside
+    quoted fragments so environment, replacement, substring, positional, and
+    for-variable expansions remain literal. The target runtime recombines the
+    adjacent fragments into the original argument.
     """
-    fragments: list[str] = []
-    segment_start = 0
-    index = 0
+    return "^%".join(_quote_windows_batch_fragment(fragment) for fragment in value.split("%"))
 
-    while index < len(value):
-        if value[index] != "%":
-            index += 1
-            continue
 
-        closing_percent = value.find("%", index + 1)
-        if closing_percent >= 0:
-            fragments.append(_quote_windows_batch_fragment(value[segment_start:closing_percent]))
-            fragments.append("%")
-            segment_start = closing_percent + 1
-            index = closing_percent + 1
-            continue
-
-        # Batch positional/for-variable forms such as %1, %*, %~dp0, or %A
-        # do not require a closing percent. Put a quote boundary immediately
-        # after the percent when the next character is safe outside quotes.
-        if index + 1 < len(value):
-            next_char = value[index + 1]
-            if next_char not in '"\\^&|<>()!% \t\r\n':
-                fragments.append(_quote_windows_batch_fragment(value[segment_start : index + 1]))
-                fragments.append(next_char)
-                segment_start = index + 2
-                index += 2
-                continue
-
-        index += 1
-
-    fragments.append(_quote_windows_batch_fragment(value[segment_start:]))
-    return "".join(fragments)
+def _windows_command_processor() -> str:
+    system_root = os.environ.get("SystemRoot")
+    if system_root:
+        return ntpath.join(system_root, "System32", "cmd.exe")
+    return shutil.which("cmd.exe") or "cmd.exe"
 
 
 def _serialize_windows_batch_command(cmd_list: List[str]) -> str:
-    command_processor = os.environ.get("COMSPEC") or shutil.which("cmd.exe") or "cmd.exe"
+    for index, value in enumerate(cmd_list):
+        if "\r" in value or "\n" in value:
+            raise ValueError(
+                f"Windows batch command argument {index} contains a carriage return or newline"
+            )
+
+    command_processor = _windows_command_processor()
     batch_command = " ".join(_quote_windows_batch_argument(value) for value in cmd_list)
     return f'{_quote_windows_batch_fragment(command_processor)} /d /v:off /s /c "{batch_command}"'
 
