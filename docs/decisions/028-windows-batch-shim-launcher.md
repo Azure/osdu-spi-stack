@@ -20,7 +20,7 @@ secret values through exactly this channel.
 
 ## Decision Drivers
 
-- Argument values must reach the tool byte-for-byte as written, through both
+- Argument values must reach the tool exactly as written, through both
   hostile parse stages (cmd.exe command-line phases, then the batch file's
   `%*` substitution into the target's argv parser).
 - One launch path for the whole codebase; a fix that each call site must
@@ -33,20 +33,29 @@ secret values through exactly this channel.
 
 ## Considered Options
 
-- Escape and launch through an explicit `cmd.exe` command line, mirroring the
-  Rust standard library's CVE-2024-24576 mitigation
+- Escape and launch through an explicit `cmd.exe` command line, applying the
+  mitigations published for the CVE-2024-24576 (BatBadBut) class
 - Keep `shell=True` on Windows and pre-quote arguments per call site
 - Bypass shims by invoking each tool's underlying executable directly
+- Reject any argument containing `%` when the target is a batch shim
 
 ## Decision Outcome
 
 Chosen option: "Escape and launch through an explicit `cmd.exe` command
-line", because it is the only approach with a proven public lineage (Rust
-std's `%%cd:~,%` percent neutralization and MSVCRT quote doubling), keeps a
-single chokepoint (`spi.shell.run_process`), and needs no per-tool knowledge
-of where a shim's real executable lives. Every argument is quoted; there is
-no unquoted fast path and no input rejection beyond newline and NUL, which
-cmd.exe genuinely cannot deliver.
+line", because it keeps a single chokepoint (`spi.shell.run_process`), needs
+no per-tool knowledge of where a shim's real executable lives, and preserves
+the values the CLI actually passes. Every argument is quoted; there is no
+unquoted fast path. Rejecting `%` outright was considered and declined: the
+CLI legitimately passes values containing `%`, and the escaping is verified
+end to end on a native Windows runner rather than assumed, so rejection would
+trade working behavior for an unnecessary hard failure. The only rejected
+inputs are newline and NUL, which cmd.exe genuinely cannot deliver.
+
+The percent neutralization (`%%cd:~,%`) and MSVCRT quote doubling are
+established techniques for this class rather than inventions of this repo,
+but the guarantee here rests on the end-to-end test, not on lineage: the
+Windows CI job asserts the decoded argv a target receives through a real
+`%*`-forwarding shim, so a wrong assumption fails the build.
 
 Scope: the guarantee is stated for standard `%*`-forwarding shims (which is
 what Azure CLI ships). A shim that re-parses its arguments again with

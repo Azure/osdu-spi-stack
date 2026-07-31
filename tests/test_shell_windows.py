@@ -18,8 +18,8 @@ The contract of issue #49 is that a target behind a ``%*``-forwarding batch
 shim receives its argv exactly as the caller wrote it. These tests assert
 the decoded argv, not any intermediate representation: a real ``.cmd`` shim
 forwards ``%*`` to a real Python process that JSON-dumps ``sys.argv``. The
-shim itself lives in a directory whose name contains ``%VAR%``, ``&`` and a
-space, so the shim-path half of the command line is proven too.
+shim itself lives in a directory whose name contains ``%VAR%``, ``&``, ``^``,
+``!`` and a space, so the shim-path half of the command line is proven too.
 """
 
 import json
@@ -32,8 +32,9 @@ from spi.shell import run_process
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="requires cmd.exe")
 
-# Every argument is followed by a sentinel so a desync (an escaping bug that
-# splits, merges, or shifts arguments) fails loudly instead of by luck.
+# Sentinels follow the riskiest arguments so a desync (an escaping bug that
+# splits, merges, or shifts arguments) is attributable to its cause; the
+# whole-list equality below is what actually detects one.
 HOSTILE_ARGUMENTS = [
     r"C:\src\a&b\template.bicep",
     "s1",
@@ -64,7 +65,7 @@ HOSTILE_ARGUMENTS = [
 
 
 def _make_probe(tmp_path):
-    shim_dir = tmp_path / "shim%SPI_E2E_PROBE% & dir"
+    shim_dir = tmp_path / "shim%SPI_E2E_PROBE% & ^caret !bang dir"
     shim_dir.mkdir()
     probe = shim_dir / "argv_probe.py"
     probe.write_text("import json, sys; print(json.dumps(sys.argv[1:]))", encoding="utf-8")

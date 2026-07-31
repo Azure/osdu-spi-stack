@@ -39,16 +39,16 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 
 ### Fixed
 - Native Windows can run `spi` when CLIs such as Azure CLI are installed as
-  `.cmd`/`.bat` batch shims (issue #49, ADR-028). Every process launch goes
-  through `spi.shell.run_process`: the program resolves through `PATHEXT`,
-  and a batch shim is launched through an explicit `cmd.exe` command line
-  with every argument escaped, so values containing CMD metacharacters,
-  `%NAME%` expansion syntax, quotes, or whitespace reach the tool exactly
-  as written. The guarantee covers standard `%*`-forwarding shims; an
-  argument containing a newline or NUL is reported as a normal command
-  failure (without echoing the value) instead of being silently corrupted.
-  `spi check` no longer needs `shell=True`, and the Bicep compile harness
-  uses the same launcher.
+  `.cmd`/`.bat` batch shims (issue #49, ADR-028). Every process the CLI
+  launches goes through `spi.shell.run_process`: the program resolves
+  through `PATHEXT`, and a batch shim is launched via an explicit `cmd.exe`
+  command line with every argument escaped, so values containing CMD
+  metacharacters, `%NAME%` expansion syntax, quotes, or whitespace reach the
+  tool exactly as written. The guarantee covers standard `%*`-forwarding
+  shims; an argument containing a newline or NUL is reported as a normal
+  command failure (without echoing the value) instead of being silently
+  corrupted. `spi check` no longer needs `shell=True`, and the Bicep compile
+  harness uses the same launcher.
 - `spi info --show-secrets --json` no longer emits credential values
   (CodeQL `py/clear-text-logging-sensitive-data`): JSON output carries
   secret references (`namespace/name#key`) since it is the form most

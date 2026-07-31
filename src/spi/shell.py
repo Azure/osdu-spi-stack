@@ -19,13 +19,13 @@ flux/helm command should be visible to the operator. ``kubectl_apply_yaml``
 retries on transient kube-API errors. ``kubectl_json`` is the silent query
 helper used by status/info/guard where panel output would be noise.
 
-Every launch goes through ``run_process``. On native Windows, CLIs such as
+Every process the CLI launches goes through ``run_process``. On native Windows, CLIs such as
 Azure CLI install as ``.cmd`` batch shims; ``CreateProcess`` cannot run a
 batch file, so the OS relaunches it through ``cmd.exe``, which re-parses the
 flat command line (``shell=False`` constrains Python, not the OS). For those
 shims ``prepare_command`` builds an explicit ``cmd.exe`` command line with
-every argument escaped, mirroring the Rust standard library's mitigation for
-CVE-2024-24576 (BatBadBut). Scope: the guarantee holds for standard
+every argument escaped, applying the mitigations published for the
+CVE-2024-24576 (BatBadBut) class. Scope: the guarantee holds for standard
 ``%*``-forwarding shims such as ``az.cmd``. A shim that re-parses its
 arguments again (``call``, ``%~1`` re-expansion, ``setlocal
 enabledelayedexpansion``) defeats any command-line escaping scheme, and
@@ -76,7 +76,7 @@ def escape_batch_argument(value: str) -> str:
 
     The argument must survive two parsers. For cmd.exe, quoting protects
     metacharacters and each ``%`` is neutralized with the ``%%cd:~,%``
-    empty-substring expansion (the Rust std mitigation; it relies on command
+    empty-substring expansion; it relies on command
     extensions, on ``CD`` being a defined dynamic variable, and on batch
     ``%*`` substitution text not being re-scanned for expansion). For the
     target's MSVCRT argv parser, backslash runs before a quote are doubled

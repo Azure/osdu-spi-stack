@@ -96,7 +96,7 @@ def test_windows_batch_shim_becomes_escaped_command_line():
         ("%%", '"%%cd:~,%%%cd:~,%"'),
         ('json={"spec":{"suspend":true}}', '"json={""spec"":{""suspend"":true}}"'),
         ('say "hi', '"say ""hi"'),
-        ("a\\\"b", '"a\\\\""b"'),
+        ('a\\"b', '"a\\\\""b"'),
         ("C:\\tmp\\", '"C:\\tmp\\\\"'),
         ("--from-literal=k=v", '"--from-literal=k=v"'),
     ],
