@@ -24,9 +24,10 @@ on:
         description: "Deployment profile"
         type: choice
         options:
+          - bare
           - core
           - minimal
-        default: core
+        default: bare
 
 permissions:
   contents: read
@@ -52,9 +53,13 @@ jobs:
       rg: ${{ steps.env.outputs.rg }}
       suffix: ${{ steps.env.outputs.suffix }}
       created: ${{ steps.env.outputs.created }}
+      profile: ${{ steps.env.outputs.profile }}
     env:
       ENV_SUFFIX: ${{ inputs.env_suffix || format('run{0}', github.run_id) }}
-      PROFILE: ${{ inputs.profile || 'core' }}
+      # Start the scheduled reliability trend at the infra + empty GitOps rung.
+      # Once bare is stable, promote the default to minimal without changing
+      # the provision/verify/teardown workflow shape.
+      PROFILE: ${{ inputs.profile || 'bare' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -149,7 +154,9 @@ jobs:
           echo "rg=$RG" >> "$GITHUB_OUTPUT"
           echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
           echo "created=$CREATED_UTC" >> "$GITHUB_OUTPUT"
+          echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"
           echo "Resource group: $RG"
+          echo "Profile: $PROFILE"
 
       - name: Quota guard (max 2 in-flight CI smoke RGs)
         run: |
@@ -234,6 +241,7 @@ jobs:
         run: bash scripts/wait_for_flux_ready.sh --timeout 2700
 
       - name: Acceptance probe (gateway reachable)
+        if: ${{ needs.provision.outputs.profile != 'bare' }}
         run: |
           set -euo pipefail
           # Smoke-level probe: gateway service exists and the Istio gateway
@@ -243,6 +251,7 @@ jobs:
           kubectl get pods -n aks-istio-ingress --field-selector=status.phase=Running
 
       - name: Acceptance probe (HTTPS terminates)
+        if: ${{ needs.provision.outputs.profile != 'bare' }}
         run: |
           set -euo pipefail
           # A pod-level probe cannot catch a dead TLS path: cert-manager
