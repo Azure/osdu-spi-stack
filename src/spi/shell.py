@@ -65,7 +65,12 @@ def _validate_batch_value(value: str, label: str) -> None:
 
 
 def _quote_windows_argument(argument: str) -> str:
-    """Quote one argument for cmd.exe followed by MSVCRT parsing."""
+    """Quote one argument for cmd.exe followed by MSVCRT parsing.
+
+    Embedded quotes become "" (never \\"): a quote must leave cmd's quote
+    state unchanged at every parse pass, and modern MSVCRT collapses ""
+    inside a quoted argument back to one literal quote.
+    """
     quoted = ['"']
     backslashes = 0
     for character in argument:
@@ -73,7 +78,7 @@ def _quote_windows_argument(argument: str) -> str:
             backslashes += 1
             continue
         if character == '"':
-            quoted.append("\\" * (backslashes * 2 + 1))
+            quoted.append("\\" * (backslashes * 2))
             quoted.append('""')
         else:
             quoted.append("\\" * backslashes)

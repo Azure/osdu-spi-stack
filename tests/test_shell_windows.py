@@ -70,7 +70,7 @@ def test_prepare_command_builds_escaped_batch_command_line():
         ("a|b", '"a|b"'),
         ("a^b", '"a^b"'),
         ("100%PATH%", '"100%%cd:~,%PATH%%cd:~,%"'),
-        ('tags."spi-name-suffix"', '"tags.\\""spi-name-suffix\\"""'),
+        ('tags."spi-name-suffix"', '"tags.""spi-name-suffix"""'),
     ],
 )
 def test_escape_batch_argument(argument: str, expected: str):
@@ -184,11 +184,15 @@ def test_kubectl_json_uses_run_process():
         'tags."spi-name-suffix"',
         'x" & echo not-a-command & rem"',
         "C:\\tmp\\",
+        r"C:\src\a&b\main.bicep",
     ],
 )
 def test_run_process_round_trips_metacharacters_through_batch(tmp_path, argument: str):
+    # The shim mirrors az.cmd: forward %* to an MSVCRT executable that parses argv.
+    printer = tmp_path / "printargs.py"
+    printer.write_text('import sys\nprint("[" + sys.argv[1] + "]")\n')
     shim = tmp_path / "echo-arg.cmd"
-    shim.write_bytes(b"@echo [%~1]\r\n")
+    shim.write_bytes(f'@"{sys.executable}" "%~dp0printargs.py" %*\r\n'.encode())
 
     result = run_process([str(shim), argument], capture_output=True, text=True, check=True)
 
