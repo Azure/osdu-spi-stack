@@ -15,7 +15,7 @@
 """SPI CLI - Deploy OSDU SPI Stack on Azure AKS Automatic."""
 
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import typer
 from rich.panel import Panel
@@ -188,6 +188,18 @@ def _resolve_name_suffix(env: str, for_up: bool) -> str:
     return suffix
 
 
+def _resolve_up_context(
+    env: str,
+) -> Tuple[str, Dict[str, Any], Tuple[str, str]]:
+    """Resolve read-only Azure identity state before suffix persistence."""
+    from .azure_infra import _get_azure_account, _resolve_deployer_principal
+
+    account = _get_azure_account()
+    deployer_principal = _resolve_deployer_principal(account)
+    name_suffix = _resolve_name_suffix(env, for_up=True)
+    return name_suffix, account, deployer_principal
+
+
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
@@ -325,10 +337,9 @@ def up(
     console.print(Panel(title, border_style="cyan"))
     check_prerequisites(PREREQ_TOOLS)
 
-    # Resolve the persistent suffix from the RG tag (or mint a new one) so
-    # derived resource names are stable across `spi up` re-runs and don't
-    # collide with deployments in other subscriptions.
-    name_suffix = _resolve_name_suffix(env, for_up=True)
+    # Resolve the deployer before suffix persistence so an identity failure
+    # cannot mutate an existing untagged resource group.
+    name_suffix, azure_account, deployer_principal = _resolve_up_context(env)
 
     config = _build_config(
         profile=profile,
@@ -354,6 +365,8 @@ def up(
             dry_run=dry_run,
             refresh_images=refresh_images,
             image_branch=image_branch,
+            azure_account=azure_account,
+            deployer_principal=deployer_principal,
         )
         if dry_run:
             console.print(

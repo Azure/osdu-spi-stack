@@ -28,6 +28,10 @@ param identityName = 'spi-stack-dev1-osdu-identity'
 param keyVaultName = 'osdudev1'
 param acrName = 'osdudev1'
 
+// Replace with the object ID of the principal running a manual deployment.
+param deployerPrincipalId = '00000000-0000-0000-0000-000000000000'
+param deployerPrincipalType = 'User'
+
 param dataPartitions = [
   'opendes'
 ]
