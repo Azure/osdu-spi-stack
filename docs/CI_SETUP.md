@@ -76,17 +76,25 @@ gh secret set AZURE_SUBSCRIPTION_ID --body "<SUBSCRIPTION_ID>" --repo Azure/osdu
 az group create --name "spi-ci-whatif" --location "centralus" \
   --tags purpose=ci-whatif owner=osdu-spi-stack
 
-# 6. Ungated azure-smoke environment for scheduled and manual Smoke/Sweeper
+# 6. Reviewer-free azure-smoke environment, restricted to protected branches
 gh api -X PUT "repos/Azure/osdu-spi-stack/environments/azure-smoke" \
   --input - <<EOF
 {
   "wait_timer": 0,
   "reviewers": [],
-  "deployment_branch_policy": null,
+  "deployment_branch_policy": {
+    "protected_branches": true,
+    "custom_branch_policies": false
+  },
   "can_admins_bypass": true
 }
 EOF
 ```
+
+The environment-scoped OIDC subject is branch-agnostic. Restricting deployments
+to protected branches prevents a workflow modified on an arbitrary branch from
+obtaining the subscription-scoped identity, while scheduled runs from protected
+`main` remain reviewer-free.
 
 ### Tightening the RBAC scope (follow-up)
 

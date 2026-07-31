@@ -20,6 +20,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SMOKE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "smoke.yml"
 SWEEPER_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sweeper.yml"
+CI_SETUP = REPO_ROOT / "docs" / "CI_SETUP.md"
 
 
 def _workflow(path: Path = SMOKE_WORKFLOW) -> dict[str, Any]:
@@ -64,3 +65,13 @@ def test_every_smoke_job_and_the_sweeper_use_the_same_environment():
         "azure-smoke"
     }
     assert sweeper["environment"] == "azure-smoke"
+
+
+def test_smoke_environment_is_reviewer_free_and_protected_branch_only():
+    setup = CI_SETUP.read_text(encoding="utf-8")
+    environment_setup = setup.split("# 6.", maxsplit=1)[1].split("```", maxsplit=1)[0]
+
+    assert '"reviewers": []' in environment_setup
+    assert '"protected_branches": true' in environment_setup
+    assert '"custom_branch_policies": false' in environment_setup
+    assert '"deployment_branch_policy": null' not in environment_setup
