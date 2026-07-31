@@ -10,12 +10,16 @@ import sys
 from unittest import mock
 
 import pytest
+import typer
 
 from spi.shell import (
     BatchArgumentError,
     build_batch_command_line,
     escape_batch_argument,
+    kubectl_apply_yaml,
+    kubectl_json,
     prepare_command,
+    run_command,
     run_process,
 )
 
@@ -107,6 +111,61 @@ def test_run_process_forwards_prepared_command_and_kwargs():
     assert result is completed
     prepare.assert_called_once_with(["az", "account", "show"])
     run.assert_called_once_with("prepared", capture_output=True, text=True)
+
+
+def test_run_command_uses_run_process():
+    completed = subprocess.CompletedProcess(["az"], 0, stdout="", stderr="")
+    with mock.patch("spi.shell.run_process", return_value=completed) as run:
+        result = run_command(["az", "account", "show"], display=False)
+
+    assert result is completed
+    run.assert_called_once_with(
+        ["az", "account", "show"],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_run_command_reports_batch_argument_error():
+    error = BatchArgumentError("Batch argument contains a newline")
+    with (
+        mock.patch("spi.shell.run_process", side_effect=error),
+        mock.patch("spi.shell.console.print") as print_message,
+        pytest.raises(typer.Exit) as raised,
+    ):
+        run_command(["az", "bad\nargument"], display=False)
+
+    assert raised.value.exit_code == 1
+    print_message.assert_called_once_with("[error]Batch argument contains a newline[/error]")
+
+
+def test_kubectl_apply_yaml_uses_run_process():
+    completed = subprocess.CompletedProcess(["kubectl"], 0, stdout="", stderr="")
+    with mock.patch("spi.shell.run_process", return_value=completed) as run:
+        result = kubectl_apply_yaml("apiVersion: v1", "apply test object")
+
+    assert result is completed
+    run.assert_called_once_with(
+        ["kubectl", "apply", "-f", "-"],
+        input="apiVersion: v1",
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_kubectl_json_uses_run_process():
+    completed = subprocess.CompletedProcess(["kubectl"], 0, stdout='{"items": []}', stderr="")
+    with mock.patch("spi.shell.run_process", return_value=completed) as run:
+        result = kubectl_json(["get", "pods"])
+
+    assert result == {"items": []}
+    run.assert_called_once_with(
+        ["kubectl", "get", "pods", "-o", "json"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires cmd.exe")
