@@ -121,13 +121,9 @@ def _quote_windows_batch_argument(value: str) -> str:
 
 
 def _serialize_windows_batch_command(cmd_list: List[str]) -> str:
-    executable, *arguments = cmd_list
-    return " ".join(
-        [
-            _quote_windows_batch_fragment(executable),
-            *(_quote_windows_batch_argument(argument) for argument in arguments),
-        ]
-    )
+    command_processor = os.environ.get("COMSPEC") or shutil.which("cmd.exe") or "cmd.exe"
+    batch_command = " ".join(_quote_windows_batch_argument(value) for value in cmd_list)
+    return f'{_quote_windows_batch_fragment(command_processor)} /d /v:off /s /c "{batch_command}"'
 
 
 def resolve_command(cmd_list: List[str]) -> List[str] | str:
@@ -136,9 +132,10 @@ def resolve_command(cmd_list: List[str]) -> List[str] | str:
     Windows often exposes CLIs such as Azure CLI as ``az.cmd``. PowerShell can
     resolve ``az`` through PATHEXT, but ``subprocess.run(["az", ...])`` with
     ``shell=False`` cannot. Batch shims also reparse their arguments through
-    cmd.exe, so serialize those invocations explicitly to preserve literal
-    metacharacters and percent expressions. Native executables and non-Windows
-    platforms continue to receive ordinary argv lists.
+    cmd.exe, so launch a known command processor and serialize the shim path and
+    arguments explicitly to preserve literal metacharacters and percent
+    expressions. Native executables and non-Windows platforms continue to
+    receive ordinary argv lists.
     """
     if not cmd_list:
         return cmd_list

@@ -46,20 +46,28 @@ def test_resolve_command_serializes_windows_batch_arguments():
     with (
         mock.patch("spi.shell.shutil.which", return_value=r"C:\tools\az.CMD"),
         mock.patch("spi.shell._is_windows", return_value=True),
+        mock.patch.dict(os.environ, {"COMSPEC": r"C:\Windows\System32\cmd.exe"}),
     ):
         command = resolve_command(["az", "version", "a&b", "100%PATH%"])
 
-    assert command == '"C:\\tools\\az.CMD" "version" "a&b" "100%PATH"%""'
+    assert command == (
+        '"C:\\Windows\\System32\\cmd.exe" /d /v:off /s /c '
+        '""C:\\tools\\az.CMD" "version" "a&b" "100%PATH"%"""'
+    )
 
 
 def test_resolve_command_keeps_backslash_after_unmatched_percent_quoted():
     with (
         mock.patch("spi.shell.shutil.which", return_value=r"C:\tools\az.CMD"),
         mock.patch("spi.shell._is_windows", return_value=True),
+        mock.patch.dict(os.environ, {"COMSPEC": r"C:\Windows\System32\cmd.exe"}),
     ):
         command = resolve_command(["az", "version", r"C:\src\100%\template.bicep", "sentinel"])
 
-    assert command == ('"C:\\tools\\az.CMD" "version" "C:\\src\\100%\\template.bicep" "sentinel"')
+    assert command == (
+        '"C:\\Windows\\System32\\cmd.exe" /d /v:off /s /c '
+        '""C:\\tools\\az.CMD" "version" "C:\\src\\100%\\template.bicep" "sentinel""'
+    )
 
 
 def test_resolve_command_keeps_windows_native_executables_as_argv():
@@ -76,18 +84,20 @@ def test_resolve_command_keeps_windows_native_executables_as_argv():
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows batch parsing test")
 def test_resolve_command_preserves_arguments_through_percent_star_batch_shim(tmp_path, monkeypatch):
-    probe = tmp_path / "argv_probe.py"
-    shim = tmp_path / "argv_probe.cmd"
+    monkeypatch.setenv("SPI_CMD_PATH_PROBE", "EXPANDED")
+    shim_dir = tmp_path / "shim%SPI_CMD_PATH_PROBE% & dir"
+    shim_dir.mkdir()
+    probe = shim_dir / "argv_probe.py"
+    shim = shim_dir / "argv_probe.cmd"
     probe.write_text(
         "import json, sys; print(json.dumps(sys.argv[1:]))",
         encoding="utf-8",
     )
     shim.write_text(
-        '@echo off\r\n"%SPI_TEST_PYTHON%" "%SPI_TEST_PROBE%" %*\r\n',
+        '@echo off\r\n"%SPI_TEST_PYTHON%" "%~dp0argv_probe.py" %*\r\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("SPI_TEST_PYTHON", sys.executable)
-    monkeypatch.setenv("SPI_TEST_PROBE", str(probe))
     monkeypatch.setenv("SPI_CMD_EXPANSION_PROBE", "EXPANDED")
 
     arguments = [
