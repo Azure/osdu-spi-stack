@@ -33,11 +33,17 @@ secret values through exactly this channel.
 
 ## Considered Options
 
-- Escape and launch through an explicit `cmd.exe` command line, applying the
-  mitigations published for the CVE-2024-24576 (BatBadBut) class
-- Keep `shell=True` on Windows and pre-quote arguments per call site
-- Bypass shims by invoking each tool's underlying executable directly
-- Reject any argument containing `%` when the target is a batch shim
+- **Selected.** Escape and launch through an explicit `cmd.exe` command line,
+  applying the mitigations published for the CVE-2024-24576 (BatBadBut) class
+- Keep `shell=True` on Windows and pre-quote arguments per call site.
+  Rejected: it puts the escaping burden on every call site, so a missed site
+  silently reintroduces the bug.
+- Bypass shims by invoking each tool's underlying executable directly.
+  Rejected: it requires per-tool knowledge of each shim's internal layout,
+  which changes with the vendor's installer.
+- Reject any argument containing `%` when the target is a batch shim.
+  Rejected: the CLI legitimately passes values containing `%`, so this trades
+  working behavior for an unnecessary hard failure.
 
 ## Decision Outcome
 
@@ -45,11 +51,9 @@ Chosen option: "Escape and launch through an explicit `cmd.exe` command
 line", because it keeps a single chokepoint (`spi.shell.run_process`), needs
 no per-tool knowledge of where a shim's real executable lives, and preserves
 the values the CLI actually passes. Every argument is quoted; there is no
-unquoted fast path. Rejecting `%` outright was considered and declined: the
-CLI legitimately passes values containing `%`, and the escaping is verified
-end to end on a native Windows runner rather than assumed, so rejection would
-trade working behavior for an unnecessary hard failure. The only rejected
-inputs are newline and NUL, which cmd.exe genuinely cannot deliver.
+unquoted fast path, and the escaping is verified end to end on a native
+Windows runner rather than assumed. The only rejected inputs are newline and
+NUL, which cmd.exe genuinely cannot deliver.
 
 The percent neutralization (`%%cd:~,%`) and MSVCRT quote doubling are
 established techniques for this class rather than inventions of this repo,
