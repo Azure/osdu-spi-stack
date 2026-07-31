@@ -65,7 +65,7 @@ def _validate_batch_value(value: str, label: str) -> None:
 
 
 def _quote_windows_argument(argument: str) -> str:
-    """Quote one argument using the MSVCRT backslash and double-quote rules."""
+    """Quote one argument for cmd.exe followed by MSVCRT parsing."""
     quoted = ['"']
     backslashes = 0
     for character in argument:
@@ -74,9 +74,10 @@ def _quote_windows_argument(argument: str) -> str:
             continue
         if character == '"':
             quoted.append("\\" * (backslashes * 2 + 1))
+            quoted.append('""')
         else:
             quoted.append("\\" * backslashes)
-        quoted.append(character)
+            quoted.append(character)
         backslashes = 0
     quoted.append("\\" * (backslashes * 2))
     quoted.append('"')
@@ -86,8 +87,8 @@ def _quote_windows_argument(argument: str) -> str:
 def escape_batch_argument(argument: str) -> str:
     """Escape one value for the batch script argument list."""
     _validate_batch_value(argument, "Batch argument")
-    if '"' in argument:
-        raise BatchArgumentError("Batch argument cannot contain a double quote")
+    if argument.count('"') % 2:
+        raise BatchArgumentError("Batch argument contains an unmatched double quote")
     needs_quotes = (
         not argument or argument.endswith("\\") or _SAFE_BATCH_ARGUMENT.fullmatch(argument) is None
     )

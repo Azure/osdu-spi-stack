@@ -64,6 +64,18 @@ jobs:
           path: coverage.xml
           if-no-files-found: ignore
 
+  test-windows:
+    name: test-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: pytest Windows shell
+        run: uv run pytest tests/test_shell_windows.py -v
+
   manifests:
     name: manifests
     runs-on: ubuntu-latest

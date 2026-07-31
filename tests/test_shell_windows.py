@@ -70,6 +70,7 @@ def test_prepare_command_builds_escaped_batch_command_line():
         ("a|b", '"a|b"'),
         ("a^b", '"a^b"'),
         ("100%PATH%", '"100%%cd:~,%PATH%%cd:~,%"'),
+        ('tags."spi-name-suffix"', '"tags.\\""spi-name-suffix\\"""'),
     ],
 )
 def test_escape_batch_argument(argument: str, expected: str):
@@ -80,9 +81,9 @@ def test_escape_batch_argument_uses_msvcrt_backslash_rules():
     assert escape_batch_argument("C:\\tmp\\") == '"C:\\tmp\\\\"'
 
 
-@pytest.mark.parametrize("argument", ['say "hi"', 'x" & calc & rem'])
-def test_escape_batch_argument_rejects_double_quotes(argument: str):
-    with pytest.raises(BatchArgumentError, match="double quote"):
+@pytest.mark.parametrize("argument", ['say "hi', 'x" & calc & rem'])
+def test_escape_batch_argument_rejects_unmatched_double_quotes(argument: str):
+    with pytest.raises(BatchArgumentError, match="unmatched double quote"):
         escape_batch_argument(argument)
 
 
@@ -174,10 +175,21 @@ def test_kubectl_json_uses_run_process():
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires cmd.exe")
-def test_run_process_round_trips_metacharacters_through_batch(tmp_path):
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "a&b",
+        "%PATH%",
+        "a^b",
+        'tags."spi-name-suffix"',
+        'x" & echo not-a-command & rem"',
+        "C:\\tmp\\",
+    ],
+)
+def test_run_process_round_trips_metacharacters_through_batch(tmp_path, argument: str):
     shim = tmp_path / "echo-arg.cmd"
     shim.write_bytes(b"@echo [%~1]\r\n")
 
-    result = run_process([str(shim), "a&b"], capture_output=True, text=True, check=True)
+    result = run_process([str(shim), argument], capture_output=True, text=True, check=True)
 
-    assert result.stdout.strip() == "[a&b]"
+    assert result.stdout.strip() == f"[{argument}]"
