@@ -76,9 +76,14 @@ def test_escape_batch_argument(argument: str, expected: str):
     assert escape_batch_argument(argument) == expected
 
 
-def test_escape_batch_argument_uses_msvcrt_quote_rules():
-    assert escape_batch_argument('say "hi"') == '"say \\"hi\\""'
+def test_escape_batch_argument_uses_msvcrt_backslash_rules():
     assert escape_batch_argument("C:\\tmp\\") == '"C:\\tmp\\\\"'
+
+
+@pytest.mark.parametrize("argument", ['say "hi"', 'x" & calc & rem'])
+def test_escape_batch_argument_rejects_double_quotes(argument: str):
+    with pytest.raises(BatchArgumentError, match="double quote"):
+        escape_batch_argument(argument)
 
 
 @pytest.mark.parametrize("argument", ["bad\0arg", "bad\rarg", "bad\narg"])

@@ -86,6 +86,8 @@ def _quote_windows_argument(argument: str) -> str:
 def escape_batch_argument(argument: str) -> str:
     """Escape one value for the batch script argument list."""
     _validate_batch_value(argument, "Batch argument")
+    if '"' in argument:
+        raise BatchArgumentError("Batch argument cannot contain a double quote")
     needs_quotes = (
         not argument or argument.endswith("\\") or _SAFE_BATCH_ARGUMENT.fullmatch(argument) is None
     )
