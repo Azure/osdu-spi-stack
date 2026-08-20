@@ -38,6 +38,14 @@ spec:
       count: 1
       containerPorts:
         redis: 6380
+      # Redis is a cache, not a durable data store. Active PVCs survive pod
+      # restarts and rolling updates; delete claims for scaled-down replicas
+      # and removed StatefulSets (for example minimal/core -> bare) so lifecycle
+      # changes do not leave billable unattached disks behind.
+      persistentVolumeClaimRetentionPolicy:
+        enabled: true
+        whenScaled: Delete
+        whenDeleted: Delete
       persistence:
         enabled: true
         storageClass: redis-storageclass
@@ -77,6 +85,10 @@ spec:
       replicaCount: 2
       containerPorts:
         redis: 6380
+      persistentVolumeClaimRetentionPolicy:
+        enabled: true
+        whenScaled: Delete
+        whenDeleted: Delete
       persistence:
         enabled: true
         storageClass: redis-storageclass

@@ -38,6 +38,9 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   are not supported.
 
 ### Fixed
+- Returning from `minimal` or `core` to `bare` now deletes Redis cache PVCs
+  and their `Delete`-policy Azure disks. Scaling replicas down also removes
+  their unused claims; rolling upgrades retain active claims.
 - Native Windows can run `spi` when CLIs such as Azure CLI are installed as
   `.cmd`/`.bat` batch shims (issue #49, ADR-028). Every process the CLI
   launches goes through `spi.shell.run_process`: the program resolves
