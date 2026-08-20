@@ -164,7 +164,10 @@ def run_process(cmd_list: List[str], **kwargs: Any) -> subprocess.CompletedProce
         prepared = prepare_command(cmd_list)
     except BatchArgumentError as exc:
         program = cmd_list[0] if cmd_list else ""
-        return subprocess.CompletedProcess(cmd_list, 1, stdout="", stderr=f"{program}: {exc}")
+        error = f"{program}: {exc}"
+        if kwargs.get("text", False):
+            return subprocess.CompletedProcess(cmd_list, 1, stdout="", stderr=error)
+        return subprocess.CompletedProcess(cmd_list, 1, stdout=b"", stderr=error.encode())
     return subprocess.run(prepared, **kwargs)
 
 
