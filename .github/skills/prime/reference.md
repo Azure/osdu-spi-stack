@@ -9,7 +9,7 @@ Detailed agent context for `Azure/osdu-spi-stack`. Loaded on demand by the
 src/spi/                  Python CLI (Typer + Rich + Pydantic)
   cli.py                  Commands: check, up, down, status, info, reconcile, update
   config.py               Config model (Azure-only, Profile enum)
-  checks.py               Tool prerequisites (az, bicep, kubectl, kubelogin, flux, helm)
+  checks.py               Tool prerequisites (az, bicep, kubectl, kubelogin, flux)
   deploy.py               Orchestrates: infra -> bootstrap -> GitOps (deploy_azure)
   azure_infra.py          RG + AKS imperative, PaaS via Bicep (provision_azure_infra)
   bicep.py                az deployment group create wrapper
@@ -142,7 +142,7 @@ Services use Azure SPI images from the OSDU community registry:
 
 ## Deployment Workflow
 
-1. `spi check` -- verify az, bicep, kubectl, kubelogin, flux, helm installed
+1. `spi check` -- verify az, bicep, kubectl, kubelogin, flux installed
 2. `spi up --env dev1` -- provisions Azure infra (~45-50 min, mostly AKS Automatic), bootstraps K8s, activates GitOps
    - RG + AKS via `az` CLI
    - Identity + KV + ACR + CosmosDB + Service Bus + Storage + RBAC via
