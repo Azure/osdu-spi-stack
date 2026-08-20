@@ -218,7 +218,7 @@ Everything is discovered by the CLI:
 uv run spi check
 ```
 
-**Required tools**: az, bicep, kubectl, kubelogin, flux, helm
+**Required tools**: az, bicep, kubectl, kubelogin, flux
 
 **System requirements**: Azure subscription with permissions to create resource groups and AKS clusters.
 
