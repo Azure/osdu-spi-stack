@@ -13,5 +13,4 @@ def test_helm_is_not_a_required_local_prerequisite():
 
 
 def test_spi_up_prerequisite_list_excludes_helm():
-    assert checks.PREREQ_TOOLS == ["az", "bicep", "kubectl", "kubelogin", "flux"]
-
+    assert set(checks.PREREQ_TOOLS) == {"az", "bicep", "kubectl", "kubelogin", "flux"}
