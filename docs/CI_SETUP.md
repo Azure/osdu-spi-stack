@@ -10,7 +10,7 @@ out-of-band.
 GitHub Actions workflows in this repo authenticate to Azure via OpenID
 Connect (OIDC) federated credentials — no client secrets are stored in
 GitHub. The federation is one App Registration with three federated
-credentials, one per OIDC subject the workflows run as.
+credentials, one per OIDC context the workflows run as.
 
 ### Already configured
 
@@ -20,10 +20,14 @@ App Registration `osdu-spi-stack-github` exists in the
 | Resource | Value |
 |---|---|
 | App / Client ID | `<APP_CLIENT_ID>` |
-| Federated subject (PR builds) | `repo:Azure/osdu-spi-stack:pull_request` |
-| Federated subject (main builds) | `repo:Azure/osdu-spi-stack:ref:refs/heads/main` |
-| Federated subject (smoke env) | `repo:Azure/osdu-spi-stack:environment:azure-smoke` |
+| Federated context (PR builds) | Pull request |
+| Federated context (main builds) | `refs/heads/main` |
+| Federated context (Smoke + Sweeper) | Environment `azure-smoke` |
 | RBAC | `Contributor` + `User Access Administrator` at subscription scope |
+
+The exact `sub` values are controlled by the repository's GitHub OIDC subject
+customization and must match the Entra federated credentials exactly. Do not
+infer or copy a subject shape from this document.
 
 GitHub repo secrets:
 - `AZURE_CLIENT_ID`
@@ -41,14 +45,17 @@ Azure resources used by CI:
 APP_ID=$(az ad app create --display-name "osdu-spi-stack-github" --query appId -o tsv)
 az ad sp create --id "$APP_ID"
 
-# 2. Add federated credentials for each OIDC subject
-for SUBJECT in \
-  "repo:Azure/osdu-spi-stack:pull_request" \
-  "repo:Azure/osdu-spi-stack:ref:refs/heads/main" \
-  "repo:Azure/osdu-spi-stack:environment:azure-smoke"; do
-  SHORT_NAME=$(echo "$SUBJECT" | sed 's|repo:Azure/osdu-spi-stack:||; s|[:/]|-|g')
+# 2. Add one federated credential for each context. Replace every placeholder
+# with the exact subject emitted by GitHub for this repository's current OIDC
+# customization; the subject format itself is deliberately not prescribed here.
+for ENTRY in \
+  "pull-request:<PULL_REQUEST_SUBJECT>" \
+  "main:<MAIN_BRANCH_SUBJECT>" \
+  "azure-smoke:<AZURE_SMOKE_ENVIRONMENT_SUBJECT>"; do
+  NAME="${ENTRY%%:*}"
+  SUBJECT="${ENTRY#*:}"
   az ad app federated-credential create --id "$APP_ID" --parameters "{
-    \"name\": \"github-$SHORT_NAME\",
+    \"name\": \"github-$NAME\",
     \"issuer\": \"https://token.actions.githubusercontent.com\",
     \"subject\": \"$SUBJECT\",
     \"audiences\": [\"api://AzureADTokenExchange\"]
@@ -60,7 +67,7 @@ SUB="/subscriptions/<SUBSCRIPTION_ID>"
 az role assignment create --role "Contributor" --assignee "$APP_ID" --scope "$SUB"
 az role assignment create --role "User Access Administrator" --assignee "$APP_ID" --scope "$SUB"
 
-# 4. GitHub repo secrets
+# 4. GitHub repository secrets
 gh secret set AZURE_CLIENT_ID --body "$APP_ID" --repo Azure/osdu-spi-stack
 gh secret set AZURE_TENANT_ID --body "<TENANT_ID>" --repo Azure/osdu-spi-stack
 gh secret set AZURE_SUBSCRIPTION_ID --body "<SUBSCRIPTION_ID>" --repo Azure/osdu-spi-stack
@@ -69,16 +76,25 @@ gh secret set AZURE_SUBSCRIPTION_ID --body "<SUBSCRIPTION_ID>" --repo Azure/osdu
 az group create --name "spi-ci-whatif" --location "centralus" \
   --tags purpose=ci-whatif owner=osdu-spi-stack
 
-# 6. azure-smoke environment with required reviewer
+# 6. Reviewer-free azure-smoke environment, restricted to protected branches
 gh api -X PUT "repos/Azure/osdu-spi-stack/environments/azure-smoke" \
   --input - <<EOF
 {
   "wait_timer": 0,
-  "reviewers": [{"type": "User", "id": $(gh api user --jq .id)}],
-  "deployment_branch_policy": null
+  "reviewers": [],
+  "deployment_branch_policy": {
+    "protected_branches": true,
+    "custom_branch_policies": false
+  },
+  "can_admins_bypass": true
 }
 EOF
 ```
+
+The environment-scoped OIDC subject is branch-agnostic. Restricting deployments
+to protected branches prevents a workflow modified on an arbitrary branch from
+obtaining the subscription-scoped identity, while scheduled runs from protected
+`main` remain reviewer-free.
 
 ### Tightening the RBAC scope (follow-up)
 
@@ -101,7 +117,7 @@ The JSON spec at `docs/branch-protection.json` enforces:
 
 | Setting | Value |
 |---|---|
-| Required status checks | `lint`, `typecheck`, `test`, `manifests`, `bicep-whatif` |
+| Required status checks | `lint`, `typecheck`, `test`, `windows-shims`, `manifests`, `bicep-whatif` |
 | Strict status checks | Branches must be up-to-date before merging |
 | Direct pushes | Blocked |
 | Force pushes | Blocked |
@@ -139,9 +155,15 @@ gh api repos/Azure/osdu-spi-stack/branches/main/protection \
 
 ## GitHub Environment `azure-smoke`
 
-Used by `smoke.yml` (and any other Azure-touching workflow that should be
-gated). Required reviewer = `@danielscholl`.
+Used by all three `smoke.yml` jobs. It deliberately has no protection rule:
+scheduled smoke must provision, verify, and tear down without a human approval
+gate. A required reviewer leaves the cron run in `waiting`; because Smoke also
+uses one concurrency group, that waiting run blocks every later schedule and
+turns the daily reliability signal into a series of silent cancellations.
 
-**Limitation**: Required-reviewer gates apply only to `workflow_dispatch`
-invocations, *not* to scheduled (cron) runs. Scheduled smoke runs proceed
-without human approval — the orphan-RG sweeper is the safety net for that.
+Smoke and Sweeper use this same environment. With no environment-level
+`AZURE_*` secrets configured, they inherit the existing repository secrets.
+Environment secrets can override them later if these two workflows move to a
+different subscription.
+
+The orphan-RG sweeper is the cleanup backstop for full-workflow cancellation.

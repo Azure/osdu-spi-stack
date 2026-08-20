@@ -47,11 +47,32 @@ This keeps flat, readable trees per combination rather than conditional overlays
 
 `tests/test_profiles.py` asserts, for every `Profile` × `IngressMode` pairing, that the trees exist, that every referenced path exists, and that no `dependsOn` names a Kustomization the pairing does not declare.
 
+### Profile removal and middleware data
+
+Changing `minimal` or `core` to `bare` removes the middleware HelmReleases and
+their active workloads. Redis is explicitly a cache (ADR-003), so its
+StatefulSets use `persistentVolumeClaimRetentionPolicy` with
+`whenDeleted: Delete` and `whenScaled: Delete`: rolling upgrades preserve data,
+while deliberate profile removal or replica-count reduction deletes unused
+PVCs and their `Delete`-policy Azure disks instead of leaving billable
+unattached volumes. Redis replicas rebuild from the remaining master when
+scaled up again.
+
+Operator CRDs are different. Helm deliberately retains CRDs on uninstall to
+avoid cluster-wide data loss. The operator custom resources and workloads are
+pruned, but the CRD definitions may remain after returning to `bare`. `bare`
+therefore promises no active middleware or OSDU workloads; it does not perform
+destructive cluster-scoped CRD cleanup.
+
 ### Consequences
 
 - Good, because every accepted `--profile` value resolves to a tree that reconciles to Ready.
 - Good, because middleware work gets a deploy with no OSDU services, and the layers it exercises are identical to `core`.
 - Good, because the dangling-dependency class of bug is now caught by a unit test rather than by a timed-out cloud deploy.
+- Good, because returning to `bare` removes Redis cache volumes and their Azure
+  disks instead of leaking storage cost.
 - Bad, because each ingress mode carries a near-duplicate `-minimal` stack file; edits to shared blocks such as the cert issuers touch two files per mode.
 - Bad, because `ip` + `minimal` deploys no ingress at all, so middleware UIs need `kubectl port-forward` on that combination.
+- Neutral, because Helm-installed operator CRDs can remain after profile
+  removal; they have no running workload or Azure storage cost.
 - Neutral, because `full` was never deployable; removing it breaks no working configuration.

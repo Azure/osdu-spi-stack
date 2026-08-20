@@ -5,6 +5,7 @@
       { "context": "lint", "app_id": -1 },
       { "context": "typecheck", "app_id": -1 },
       { "context": "test", "app_id": -1 },
+      { "context": "windows-shims", "app_id": -1 },
       { "context": "manifests", "app_id": -1 },
       { "context": "bicep-whatif", "app_id": -1 }
     ]

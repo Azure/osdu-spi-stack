@@ -70,3 +70,4 @@ Create an ADR for any decision that could plausibly have gone a different way an
 | [025](025-tls-certificates-in-platform.md) | TLS Certificates in platform with Gateway ReferenceGrants | Accepted |
 | [026](026-airflow-3.md) | Airflow 3, Single-Engine | Accepted |
 | [027](027-entra-only-data-plane.md) | Entra-Only Data Plane: Disable Local Auth on Cosmos and Service Bus | Accepted |
+| [028](028-windows-batch-shim-launcher.md) | Windows Batch Shim Launcher via an Escaped cmd.exe Command Line | Accepted |
