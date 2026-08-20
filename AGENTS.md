@@ -6,7 +6,7 @@ workloads from this repository. Repo: `Azure/osdu-spi-stack`.
 
 The only tool you need for repo work is [`uv`](https://docs.astral.sh/uv/); it manages
 Python, dependencies, and every command below. Deploying to Azure additionally
-requires `az`, `bicep`, `kubectl`, `kubelogin`, `flux`, and `helm`, which
+requires `az`, `bicep`, `kubectl`, `kubelogin`, and `flux`, which
 `uv run spi check` verifies.
 
 ## Repository map
