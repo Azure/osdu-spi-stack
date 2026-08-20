@@ -33,6 +33,10 @@ concurrency:
 
 jobs:
   sweep:
+    # Use the same environment-scoped OIDC identity and subscription as Smoke,
+    # otherwise the backstop would search the old repository-level subscription
+    # and never find orphaned resource groups created by the new smoke target.
+    environment: azure-smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

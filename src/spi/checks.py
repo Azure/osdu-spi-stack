@@ -22,6 +22,7 @@ from typing import List, Optional, TypedDict
 import typer
 
 from .console import console
+from .shell import run_process
 
 # ---------------------------------------------------------------------------
 # Tool registry -- single source of truth for CLI prerequisites
@@ -89,15 +90,6 @@ TOOL_REGISTRY: dict[str, ToolInfo] = {
             "windows": "winget install FluxCD.Flux",
         },
     },
-    "helm": {
-        "check_args": ["version", "--short"],
-        "description": "Helm package manager",
-        "install": {
-            "darwin": "brew install helm",
-            "linux": "curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash",
-            "windows": "winget install Helm.Helm",
-        },
-    },
 }
 
 
@@ -117,10 +109,6 @@ def detect_platform() -> str:
     return "unknown"
 
 
-def _is_windows() -> bool:
-    return platform.system().lower() == "windows"
-
-
 # ---------------------------------------------------------------------------
 # Tool checking
 # ---------------------------------------------------------------------------
@@ -135,12 +123,11 @@ def check_tool_status(name: str, check_args: Optional[list] = None) -> tuple:
         args = check_args or info.get("check_args", ["--version"])
         cmd = [name] + args
     try:
-        result = subprocess.run(
+        result = run_process(
             cmd,
             capture_output=True,
             text=True,
             timeout=10,
-            shell=_is_windows(),
         )
         if result.returncode == 0:
             output = result.stdout.strip() or result.stderr.strip()
