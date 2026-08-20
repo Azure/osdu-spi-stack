@@ -90,15 +90,6 @@ TOOL_REGISTRY: dict[str, ToolInfo] = {
             "windows": "winget install FluxCD.Flux",
         },
     },
-    "helm": {
-        "check_args": ["version", "--short"],
-        "description": "Helm package manager",
-        "install": {
-            "darwin": "brew install helm",
-            "linux": "curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash",
-            "windows": "winget install Helm.Helm",
-        },
-    },
 }
 
 
