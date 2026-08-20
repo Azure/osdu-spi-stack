@@ -158,6 +158,30 @@ class TestResolveDeployerPrincipal:
         assert graph.call_args.args[0][:4] == ["az", "ad", "sp", "show"]
         assert graph.call_args.kwargs["check"] is False
 
+    def test_graph_fallback_resolves_signed_in_user(self, monkeypatch):
+        monkeypatch.delenv("SPI_DEPLOYER_OID", raising=False)
+        monkeypatch.delenv("SPI_DEPLOYER_TYPE", raising=False)
+        account = {"user": {"type": "user", "name": "user@example.com"}}
+        result = MagicMock(returncode=0, stdout=OID + "\n")
+
+        with (
+            patch("spi.azure_infra._deployer_oid_from_arm_token", return_value=""),
+            patch("spi.azure_infra.run_command", return_value=result) as graph,
+        ):
+            assert _resolve_deployer_principal(account) == (OID, "User")
+
+        assert graph.call_args.args[0] == [
+            "az",
+            "ad",
+            "signed-in-user",
+            "show",
+            "--query",
+            "id",
+            "--output",
+            "tsv",
+        ]
+        assert graph.call_args.kwargs["check"] is False
+
     def test_unresolved_oid_fails_with_actionable_error(self, monkeypatch):
         monkeypatch.delenv("SPI_DEPLOYER_OID", raising=False)
         monkeypatch.delenv("SPI_DEPLOYER_TYPE", raising=False)
