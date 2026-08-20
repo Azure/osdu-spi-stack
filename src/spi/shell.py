@@ -78,7 +78,7 @@ def escape_batch_argument(value: str) -> str:
     metacharacters and each ``%`` is neutralized with the ``%%cd:~,%``
     empty-substring expansion; it relies on command
     extensions, on ``CD`` being a defined dynamic variable, and on batch
-    ``%*`` substitution text not being re-scanned for expansion). For the
+    ``%*`` substitution text not being re-scanned for expansion. For the
     target's MSVCRT argv parser, backslash runs before a quote are doubled
     and an embedded quote becomes ``""``, which keeps cmd's quote state
     balanced for any input, so no quote-parity restriction is needed. Every
