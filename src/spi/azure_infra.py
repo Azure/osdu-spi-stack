@@ -49,7 +49,9 @@ import base64
 import json
 import os
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
+
+import typer
 
 from .bicep import run_bicep_deployment
 from .config import RG_SUFFIX_TAG, Config
@@ -235,7 +237,12 @@ def detect_legacy_keyvault(resource_group: str, env: str) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
-def create_aks_automatic(config: Config, dry_run: bool = False) -> Dict[str, Any]:
+def create_aks_automatic(
+    config: Config,
+    deployer_principal_id: str,
+    deployer_principal_type: str,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
     """Create an AKS Automatic cluster + managed Istio via Bicep.
 
     The cluster is declared in ``infra/aks.bicep`` using the AVM
@@ -345,7 +352,12 @@ def create_aks_automatic(config: Config, dry_run: bool = False) -> Dict[str, Any
     # explicit cluster-admin role assignment before kubectl can create
     # namespaces. Role-assignment propagation to AKS typically takes
     # 2-3 minutes; this step blocks until the permission becomes active.
-    _grant_deployer_cluster_admin(config, aks_outputs.get("clusterResourceId", ""))
+    _grant_deployer_cluster_admin(
+        config,
+        aks_outputs.get("clusterResourceId", ""),
+        deployer_principal_id,
+        deployer_principal_type,
+    )
 
     # Deployment Safeguards are not relaxed here. On the Automatic SKU
     # they are enforced via a non-bypassable ValidatingAdmissionPolicy
@@ -356,7 +368,12 @@ def create_aks_automatic(config: Config, dry_run: bool = False) -> Dict[str, Any
     return aks_outputs
 
 
-def _grant_deployer_cluster_admin(config: Config, cluster_resource_id: str):
+def _grant_deployer_cluster_admin(
+    config: Config,
+    cluster_resource_id: str,
+    deployer_principal_id: str,
+    deployer_principal_type: str,
+):
     """Grant the signed-in principal cluster-admin on the AKS cluster and wait for propagation.
 
     Required because AKS Automatic enforces Azure RBAC for Kubernetes and
@@ -368,43 +385,6 @@ def _grant_deployer_cluster_admin(config: Config, cluster_resource_id: str):
         console.print("[warning]Cluster resource ID unavailable; skipping RBAC grant.[/warning]")
         return
 
-    account_result = run_command(
-        ["az", "account", "show", "--output", "json"],
-        description="Resolve signed-in principal",
-        display=False,
-    )
-    account = json.loads(account_result.stdout)
-    principal_type = "User" if account.get("user", {}).get("type") == "user" else "ServicePrincipal"
-    # Honor SPI_DEPLOYER_OID when set (CI passes it from a step that runs
-    # while the GitHub OIDC JWT is still within its 5-minute lifetime).
-    # `az ad` commands bypass the MSAL access-token cache and re-do the
-    # federated exchange, which fails ~20 min into spi up with AADSTS700024.
-    user_oid = os.environ.get("SPI_DEPLOYER_OID", "").strip()
-    if not user_oid:
-        # Prefer decoding `oid` from the cached ARM access token: it is the
-        # principal's object ID for users and service principals alike, and
-        # needs no Microsoft Graph token, which Conditional Access token
-        # protection can refuse to issue (AADSTS530084) even when ARM access
-        # is fine. Graph lookups below are the fallback.
-        user_oid = _deployer_oid_from_arm_token()
-    if not user_oid:
-        if principal_type == "ServicePrincipal":
-            # `az ad signed-in-user show` calls Graph `/me`, which is
-            # delegated-flow-only. For SP auth, look up the SP by its appId
-            # (returned in account.user.name) to get its objectId.
-            app_id = account.get("user", {}).get("name", "")
-            user_oid = run_command(
-                ["az", "ad", "sp", "show", "--id", app_id, "--query", "id", "--output", "tsv"],
-                description="Get deployer object ID (service principal)",
-                display=False,
-            ).stdout.strip()
-        else:
-            user_oid = run_command(
-                ["az", "ad", "signed-in-user", "show", "--query", "id", "--output", "tsv"],
-                description="Get deployer object ID",
-                display=False,
-            ).stdout.strip()
-
     console.print("\n[bold]Granting deployer cluster-admin...[/bold]")
     run_command(
         [
@@ -415,22 +395,22 @@ def _grant_deployer_cluster_admin(config: Config, cluster_resource_id: str):
             "--role",
             "Azure Kubernetes Service RBAC Cluster Admin",
             "--assignee-object-id",
-            user_oid,
+            deployer_principal_id,
             "--assignee-principal-type",
-            principal_type,
+            deployer_principal_type,
             "--scope",
             cluster_resource_id,
             "--output",
             "none",
         ],
-        description=f"Assign cluster-admin to {user_oid[:8]}...",
+        description=f"Assign cluster-admin to {deployer_principal_id[:8]}...",
         # Idempotent: on re-deploys the assignment already exists and the
         # CLI returns non-zero. We tolerate that and fall through to the
         # ARM-side verification below, which distinguishes a real failure
         # from a benign "already exists".
         check=False,
     )
-    _verify_role_assignment_recorded(user_oid, cluster_resource_id)
+    _verify_role_assignment_recorded(deployer_principal_id, cluster_resource_id)
     _wait_for_cluster_rbac()
 
 
@@ -651,7 +631,12 @@ def _recover_soft_deleted_keyvault(config: Config):
 # ─────────────────────────────────────────────────────────────
 
 
-def _build_bicep_params(config: Config, oidc_issuer: str) -> Dict[str, Any]:
+def _build_bicep_params(
+    config: Config,
+    oidc_issuer: str,
+    deployer_principal_id: str,
+    deployer_principal_type: str,
+) -> Dict[str, Any]:
     """Translate Config into the parameter dict consumed by infra/main.bicep."""
     s = config.name_suffix
     return {
@@ -675,21 +660,21 @@ def _build_bicep_params(config: Config, oidc_issuer: str) -> Dict[str, Any]:
         # conditional modules in main.bicep no-op when dnsZoneName is empty.
         "dnsZoneName": config.dns_zone,
         "dnsZoneResourceGroup": config.dns_zone_rg,
-        # Deployer OID -- used by rbac.bicep to grant KV Secrets Officer
-        # so Phase 6 (`az keyvault secret set`) succeeds. Empty string is
-        # fine for local users with RG Owner. The principal type must match
-        # the actual identity or ARM rejects the role assignment with
-        # UnmatchedPrincipalType.
-        "deployerPrincipalId": os.environ.get("SPI_DEPLOYER_OID", "").strip(),
-        "deployerPrincipalType": _deployer_principal_type(),
+        # Used by rbac.bicep to grant Key Vault Secrets Officer before the
+        # post-deploy `az keyvault secret set` handoff. Azure RG Owner does not
+        # grant Key Vault data-plane access.
+        "deployerPrincipalId": deployer_principal_id,
+        "deployerPrincipalType": deployer_principal_type,
     }
 
 
-def _deployer_principal_type() -> str:
+def _deployer_principal_type(account: Optional[Dict[str, Any]] = None) -> str:
     """Principal type of the logged-in az identity (User vs ServicePrincipal)."""
     override = os.environ.get("SPI_DEPLOYER_TYPE", "").strip()
     if override in ("User", "ServicePrincipal"):
         return override
+    if account is not None:
+        return "User" if account.get("user", {}).get("type") == "user" else "ServicePrincipal"
     result = run_command(
         ["az", "account", "show", "--query", "user.type", "--output", "tsv"],
         description="Get deployer principal type",
@@ -697,6 +682,52 @@ def _deployer_principal_type() -> str:
         display=False,
     )
     return "User" if (result.stdout or "").strip() == "user" else "ServicePrincipal"
+
+
+def _resolve_deployer_principal(account: Dict[str, Any]) -> tuple[str, str]:
+    """Resolve the deployer object ID without requiring Microsoft Graph.
+
+    CI can provide ``SPI_DEPLOYER_OID`` while its GitHub OIDC assertion is
+    fresh. Local users and service principals use the ``oid`` from the cached
+    ARM access token. Graph is a best-effort fallback only: Conditional Access
+    can refuse a Graph token even when ARM access is valid.
+    """
+
+    principal_type = _deployer_principal_type(account)
+    principal_id = os.environ.get("SPI_DEPLOYER_OID", "").strip()
+    if principal_id:
+        return principal_id, principal_type
+
+    principal_id = _deployer_oid_from_arm_token()
+    if principal_id:
+        return principal_id, principal_type
+
+    if principal_type == "ServicePrincipal":
+        app_id = account.get("user", {}).get("name", "")
+        if app_id:
+            result = run_command(
+                ["az", "ad", "sp", "show", "--id", app_id, "--query", "id", "--output", "tsv"],
+                description="Get deployer object ID (service principal)",
+                display=False,
+                check=False,
+            )
+            principal_id = (result.stdout or "").strip()
+    else:
+        result = run_command(
+            ["az", "ad", "signed-in-user", "show", "--query", "id", "--output", "tsv"],
+            description="Get deployer object ID",
+            display=False,
+            check=False,
+        )
+        principal_id = (result.stdout or "").strip()
+
+    if not principal_id:
+        console.print(
+            "[error]Unable to resolve the deployer object ID from the ARM token or "
+            "Microsoft Graph. Set SPI_DEPLOYER_OID and retry.[/error]"
+        )
+        raise typer.Exit(code=1)
+    return principal_id, principal_type
 
 
 def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -754,7 +785,27 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
 # ─────────────────────────────────────────────────────────────
 
 
-def provision_azure_infra(config: Config, dry_run: bool = False) -> Dict[str, Any]:
+def _get_azure_account() -> Dict[str, Any]:
+    """Return the active Azure account without mutating Azure state."""
+    console.print("\n[bold]Verifying Azure login...[/bold]")
+    result = run_command(
+        ["az", "account", "show", "--output", "json"],
+        description="Check Azure subscription",
+    )
+    account = json.loads(result.stdout)
+    console.print(
+        f"  [info]Subscription: {account.get('name', 'unknown')} ({account.get('id', '')})[/info]"
+    )
+    return account
+
+
+def provision_azure_infra(
+    config: Config,
+    dry_run: bool = False,
+    *,
+    account: Optional[Dict[str, Any]] = None,
+    deployer_principal: Optional[Tuple[str, str]] = None,
+) -> Dict[str, Any]:
     """Provision all Azure PaaS resources. Returns infra_outputs for K8s bootstrap.
 
     Order:
@@ -771,17 +822,16 @@ def provision_azure_infra(config: Config, dry_run: bool = False) -> Dict[str, An
     """
     outputs: Dict[str, Any] = {}
 
-    console.print("\n[bold]Verifying Azure login...[/bold]")
-    result = run_command(
-        ["az", "account", "show", "--output", "json"],
-        description="Check Azure subscription",
-    )
-    account = json.loads(result.stdout)
+    if account is None:
+        account = _get_azure_account()
     outputs["tenant_id"] = account.get("tenantId", "")
     outputs["subscription_id"] = account.get("id", "")
-    console.print(
-        f"  [info]Subscription: {account.get('name', 'unknown')} ({account.get('id', '')})[/info]"
-    )
+
+    # Resolve before any Azure mutation. The same identity is used for AKS
+    # cluster-admin and Key Vault Secrets Officer.
+    if deployer_principal is None:
+        deployer_principal = _resolve_deployer_principal(account)
+    deployer_principal_id, deployer_principal_type = deployer_principal
 
     create_resource_group(config)
 
@@ -789,7 +839,12 @@ def provision_azure_infra(config: Config, dry_run: bool = False) -> Dict[str, An
     # we run what-if on aks.bicep (returning an empty dict) and pass an
     # empty issuer so identity.bicep omits federated credentials from
     # the main.bicep preview.
-    aks_outputs = create_aks_automatic(config, dry_run=dry_run)
+    aks_outputs = create_aks_automatic(
+        config,
+        deployer_principal_id,
+        deployer_principal_type,
+        dry_run=dry_run,
+    )
     oidc_issuer = aks_outputs.get("oidcIssuerUrl", "")
 
     if not dry_run:
@@ -801,7 +856,12 @@ def provision_azure_infra(config: Config, dry_run: bool = False) -> Dict[str, An
         "  [info]Identity, KeyVault, ACR, CosmosDB, Service Bus, Storage, "
         "and RBAC role assignments are declared in infra/main.bicep.[/info]"
     )
-    bicep_params = _build_bicep_params(config, oidc_issuer)
+    bicep_params = _build_bicep_params(
+        config,
+        oidc_issuer,
+        deployer_principal_id,
+        deployer_principal_type,
+    )
     bicep_outputs = run_bicep_deployment(
         template_path=str(INFRA_MAIN_BICEP),
         parameters=bicep_params,

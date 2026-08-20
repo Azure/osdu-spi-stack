@@ -145,6 +145,19 @@ def test_run_process_reports_unrepresentable_argument_as_failed_launch():
     assert "bad" not in result.stderr
 
 
+def test_run_process_reports_unrepresentable_argument_as_bytes_by_default():
+    with (
+        mock.patch("spi.shell.platform.system", return_value="Windows"),
+        mock.patch("spi.shell.shutil.which", return_value=r"C:\tools\az.cmd"),
+        mock.patch("spi.shell.subprocess.run") as run,
+    ):
+        result = run_process(["az", "bad\nvalue"], capture_output=True)
+
+    run.assert_not_called()
+    assert result.stdout == b""
+    assert b"newline or NUL" in result.stderr
+
+
 def test_run_process_forwards_kwargs_to_subprocess():
     completed = subprocess.CompletedProcess(["kubectl"], 0)
     with (

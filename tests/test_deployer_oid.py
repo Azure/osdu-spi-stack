@@ -23,7 +23,18 @@ import base64
 import json
 from unittest.mock import MagicMock, patch
 
-from spi.azure_infra import _decode_jwt_claim, _deployer_oid_from_arm_token
+import pytest
+import typer
+
+from spi.azure_infra import (
+    _build_bicep_params,
+    _decode_jwt_claim,
+    _deployer_oid_from_arm_token,
+    _resolve_deployer_principal,
+    provision_azure_infra,
+)
+from spi.cli import _resolve_up_context
+from spi.config import Config
 
 # Synthetic fixture values; never real principal or tenant identifiers.
 OID = "11111111-2222-4333-8444-555555555555"
@@ -94,3 +105,150 @@ class TestDeployerOidFromArmToken:
         with patch("spi.azure_infra.run_command") as run:
             run.return_value = self._result(stdout="garbage")
             assert _deployer_oid_from_arm_token() == ""
+
+
+class TestResolveDeployerPrincipal:
+    def test_environment_override_wins_without_arm_or_graph(self, monkeypatch):
+        monkeypatch.setenv("SPI_DEPLOYER_OID", OID)
+        monkeypatch.setenv("SPI_DEPLOYER_TYPE", "ServicePrincipal")
+        account = {"user": {"type": "user", "name": "ignored"}}
+
+        with (
+            patch("spi.azure_infra._deployer_oid_from_arm_token") as arm,
+            patch("spi.azure_infra.run_command") as run,
+        ):
+            assert _resolve_deployer_principal(account) == (OID, "ServicePrincipal")
+
+        arm.assert_not_called()
+        run.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("account", "expected_type"),
+        [
+            ({"user": {"type": "user", "name": "user@example.com"}}, "User"),
+            ({"user": {"type": "servicePrincipal", "name": "client-id"}}, "ServicePrincipal"),
+        ],
+    )
+    def test_arm_token_oid_works_for_users_and_service_principals(
+        self, monkeypatch, account, expected_type
+    ):
+        monkeypatch.delenv("SPI_DEPLOYER_OID", raising=False)
+        monkeypatch.delenv("SPI_DEPLOYER_TYPE", raising=False)
+
+        with (
+            patch("spi.azure_infra._deployer_oid_from_arm_token", return_value=OID),
+            patch("spi.azure_infra.run_command") as graph,
+        ):
+            assert _resolve_deployer_principal(account) == (OID, expected_type)
+
+        graph.assert_not_called()
+
+    def test_graph_is_a_best_effort_fallback(self, monkeypatch):
+        monkeypatch.delenv("SPI_DEPLOYER_OID", raising=False)
+        monkeypatch.delenv("SPI_DEPLOYER_TYPE", raising=False)
+        account = {"user": {"type": "servicePrincipal", "name": "client-id"}}
+        result = MagicMock(returncode=0, stdout=OID + "\n")
+
+        with (
+            patch("spi.azure_infra._deployer_oid_from_arm_token", return_value=""),
+            patch("spi.azure_infra.run_command", return_value=result) as graph,
+        ):
+            assert _resolve_deployer_principal(account) == (OID, "ServicePrincipal")
+
+        assert graph.call_args.args[0][:4] == ["az", "ad", "sp", "show"]
+        assert graph.call_args.kwargs["check"] is False
+
+    def test_graph_fallback_resolves_signed_in_user(self, monkeypatch):
+        monkeypatch.delenv("SPI_DEPLOYER_OID", raising=False)
+        monkeypatch.delenv("SPI_DEPLOYER_TYPE", raising=False)
+        account = {"user": {"type": "user", "name": "user@example.com"}}
+        result = MagicMock(returncode=0, stdout=OID + "\n")
+
+        with (
+            patch("spi.azure_infra._deployer_oid_from_arm_token", return_value=""),
+            patch("spi.azure_infra.run_command", return_value=result) as graph,
+        ):
+            assert _resolve_deployer_principal(account) == (OID, "User")
+
+        assert graph.call_args.args[0] == [
+            "az",
+            "ad",
+            "signed-in-user",
+            "show",
+            "--query",
+            "id",
+            "--output",
+            "tsv",
+        ]
+        assert graph.call_args.kwargs["check"] is False
+
+    def test_unresolved_oid_fails_with_actionable_error(self, monkeypatch):
+        monkeypatch.delenv("SPI_DEPLOYER_OID", raising=False)
+        monkeypatch.delenv("SPI_DEPLOYER_TYPE", raising=False)
+        account = {"user": {"type": "user", "name": "user@example.com"}}
+        result = MagicMock(returncode=1, stdout="")
+
+        with (
+            patch("spi.azure_infra._deployer_oid_from_arm_token", return_value=""),
+            patch("spi.azure_infra.run_command", return_value=result),
+            pytest.raises(typer.Exit),
+        ):
+            _resolve_deployer_principal(account)
+
+
+def test_bicep_params_receive_resolved_deployer_identity():
+    params = _build_bicep_params(
+        Config(env="test"),
+        "https://oidc.example/",
+        OID,
+        "User",
+    )
+
+    assert params["deployerPrincipalId"] == OID
+    assert params["deployerPrincipalType"] == "User"
+
+
+def test_unresolved_deployer_fails_before_resource_group_creation(monkeypatch):
+    monkeypatch.delenv("SPI_DEPLOYER_OID", raising=False)
+    account_result = MagicMock(
+        stdout=json.dumps(
+            {
+                "id": "subscription-id",
+                "tenantId": TID,
+                "name": "subscription",
+                "user": {"type": "user", "name": "user@example.com"},
+            }
+        )
+    )
+
+    with (
+        patch("spi.azure_infra.run_command", return_value=account_result),
+        patch("spi.azure_infra._resolve_deployer_principal", side_effect=typer.Exit(code=1)),
+        patch("spi.azure_infra.create_resource_group") as create_rg,
+        pytest.raises(typer.Exit),
+    ):
+        provision_azure_infra(Config(env="test"))
+
+    create_rg.assert_not_called()
+
+
+def test_unresolved_deployer_fails_before_suffix_persistence():
+    account = {
+        "id": "subscription-id",
+        "tenantId": TID,
+        "name": "subscription",
+        "user": {"type": "user", "name": "user@example.com"},
+    }
+
+    with (
+        patch("spi.azure_infra._get_azure_account", return_value=account),
+        patch(
+            "spi.azure_infra._resolve_deployer_principal",
+            side_effect=typer.Exit(code=1),
+        ),
+        patch("spi.cli._resolve_name_suffix") as resolve_suffix,
+        pytest.raises(typer.Exit),
+    ):
+        _resolve_up_context("test")
+
+    resolve_suffix.assert_not_called()
