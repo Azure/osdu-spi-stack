@@ -24,6 +24,8 @@ Resources:
 
 A per-service default-deny `AuthorizationPolicy` is not adopted. As defense in depth it keeps a request with a missing or invalid bearer from reaching the service at all. The Azure-provider services already enforce identity in the Spring filter chain, so the second layer is duplicative for the bootstrap problem, and applying default-deny to services already serving traffic carries a wider blast radius than the rest of this change. It remains available as a later hardening pass.
 
+**Amendment (2026-08-21):** Sidecar injection is a prerequisite for these resources to execute at all, so the `osdu` namespace `istio.io/rev` label is no longer pinned in Git. It is sourced from the live cluster revision via the `osdu-flux/spi-cluster-config` ConfigMap and Flux substitution.
+
 ## Consequences
 
 - The CLI-applied resources are present before any caller is expected to authenticate, so the bootstrap Jobs and ongoing service-to-service traffic both see populated `x-app-id` headers.

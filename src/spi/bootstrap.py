@@ -12,21 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""In-cluster bootstrap: namespaces, StorageClasses, Gateway API CRDs."""
+"""In-cluster bootstrap: namespaces, ConfigMaps, StorageClasses, Gateway API CRDs."""
+
+import json
 
 from .console import console, display_result, display_yaml
 from .shell import kubectl_apply_yaml, kubectl_json, run_command, run_process
 from .templates import storage_class
 
 STORAGE_CLASSES = ["pg-storageclass", "redis-storageclass", "es-storageclass"]
+ISTIO_REVISION_CONFIGMAP = "spi-cluster-config"
+ISTIO_REVISION_NAMESPACE = "osdu-flux"
+ISTIO_REVISION_KEY = "ISTIO_REVISION"
 
 
-def _detect_istio_revision() -> str:
+def _detect_istio_revision() -> str | None:
     """Detect the installed Istio ASM revision from the cluster.
 
     The istiod deployment is named ``istiod-<revision>`` (e.g.
     ``istiod-asm-1-30``); the aks-istio-system namespace itself carries no
     ``istio.io/rev`` label, so the deployment name is the reliable source.
+    Returns ``None`` when the cluster query fails or no ``istiod-*``
+    deployment is visible, so callers can distinguish "detection failed"
+    from an actual revision.
     """
     data = kubectl_json(["get", "deploy", "-n", "aks-istio-system"])
     if data and data.get("items"):
@@ -34,15 +42,15 @@ def _detect_istio_revision() -> str:
             name = item.get("metadata", {}).get("name", "")
             if name.startswith("istiod-"):
                 return name.removeprefix("istiod-")
-    return "asm-1-30"
+    return None
 
 
-def ensure_namespaces(istio_revision: str = "") -> None:
+def ensure_namespaces(istio_revision: str = "") -> str:
     """Create namespaces with Istio sidecar injection labels."""
     console.print("\n[bold]Ensuring namespaces...[/bold]")
 
     if not istio_revision:
-        istio_revision = _detect_istio_revision()
+        istio_revision = _detect_istio_revision() or "asm-1-30"
     console.print(f"  [info]Istio revision: {istio_revision}[/info]")
 
     for ns in ["osdu-flux", "foundation", "platform"]:
@@ -66,6 +74,42 @@ metadata:
     kubectl_apply_yaml(yaml_content, "create namespace osdu")
 
     display_result("Namespaces ready")
+    return istio_revision
+
+
+def render_istio_revision_configmap(istio_revision: str) -> str:
+    """Render the Flux substitution ConfigMap for the live Istio revision."""
+
+    lines = [
+        "apiVersion: v1",
+        "kind: ConfigMap",
+        "metadata:",
+        f"  name: {ISTIO_REVISION_CONFIGMAP}",
+        f"  namespace: {ISTIO_REVISION_NAMESPACE}",
+        "  labels:",
+        "    app.kubernetes.io/managed-by: osdu-spi-stack",
+        "data:",
+        f"  {ISTIO_REVISION_KEY}: {json.dumps(istio_revision)}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def create_istio_revision_configmap(istio_revision: str = "") -> None:
+    """Apply the ConfigMap that carries the detected Istio revision for Flux."""
+
+    if not istio_revision:
+        detected = _detect_istio_revision()
+        if not detected:
+            console.print(
+                f"[warning]Could not detect the Istio revision; leaving the existing "
+                f"{ISTIO_REVISION_CONFIGMAP} ConfigMap unchanged.[/warning]"
+            )
+            return
+        istio_revision = detected
+    yaml_content = render_istio_revision_configmap(istio_revision)
+    display_yaml(yaml_content, f"ConfigMap: {ISTIO_REVISION_CONFIGMAP}")
+    kubectl_apply_yaml(yaml_content, f"apply {ISTIO_REVISION_CONFIGMAP} ConfigMap")
+    display_result(f"{ISTIO_REVISION_CONFIGMAP} ConfigMap created")
 
 
 def create_storage_classes() -> None:
