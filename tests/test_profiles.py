@@ -40,6 +40,9 @@ KUSTOMIZATION_KIND = "Kustomization"
 FLUX_API_PREFIX = "kustomize.toolkit.fluxcd.io/"
 NAMESPACES_MANIFEST = REPO_ROOT / "software" / "components" / "namespaces" / "namespaces.yaml"
 
+SUBSTITUTE_ANNOTATION = "kustomize.toolkit.fluxcd.io/substitute"
+VAR_TOKEN = re.compile(r"\$\{[A-Za-z_][A-Za-z_0-9]*\}")
+
 
 def _flux_kustomizations(tree: Path):
     """Yield every Flux Kustomization doc declared under a stack directory."""
@@ -66,6 +69,41 @@ def _dependency_names(tree: Path) -> set:
 
 def _referenced_paths(tree: Path) -> set:
     return {k["spec"]["path"] for k in _flux_kustomizations(tree)}
+
+
+def _substituted_paths() -> set:
+    """Yield every path whose Kustomization runs Flux postBuild substitution."""
+    trees = [
+        t for t in itertools.chain(PROFILES_DIR.iterdir(), INGRESS_DIR.iterdir()) if t.is_dir()
+    ]
+    return {
+        item["spec"]["path"]
+        for tree in trees
+        for item in _flux_kustomizations(tree)
+        if item["spec"].get("postBuild", {}).get("substituteFrom")
+    }
+
+
+def _opts_out_of_substitution(doc) -> bool:
+    meta = doc.get("metadata") or {}
+    annotations = meta.get("annotations") or {}
+    labels = meta.get("labels") or {}
+    return "disabled" in (
+        annotations.get(SUBSTITUTE_ANNOTATION),
+        labels.get(SUBSTITUTE_ANNOTATION),
+    )
+
+
+def _multiline_strings(node):
+    """Yield every multi-line string value in a manifest, where scripts live."""
+    if isinstance(node, dict):
+        for value in node.values():
+            yield from _multiline_strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _multiline_strings(value)
+    elif isinstance(node, str) and "\n" in node:
+        yield node
 
 
 def _kustomization(tree: Path, name: str):
@@ -172,6 +210,45 @@ class TestSchemaLoadImageSubstitution:
         image = job["spec"]["template"]["spec"]["containers"][0]["image"]
 
         assert image == "${SCHEMA_LOAD_IMAGE_REPOSITORY}:${SCHEMA_LOAD_IMAGE_TAG}"
+
+    def test_schema_load_script_keeps_its_shell_references(self):
+        doc = yaml.safe_load((STACKS / "schema-load" / "script.yaml").read_text(encoding="utf-8"))
+        script = doc["data"]["bootstrap.sh"]
+
+        assert _opts_out_of_substitution(doc)
+        assert "${SCHEMA_INFO_URL}" in script
+        assert "${DATA_PARTITION}" in script
+
+
+class TestSubstitutionLeavesScriptsIntact:
+    """Flux envsubst runs over every resource a Kustomization builds, not just
+    the file holding the placeholder, and replaces unknown ${VAR} with an empty
+    string. A script under a substituted path is shredded unless it opts out.
+    """
+
+    def test_embedded_scripts_opt_out_of_substitution(self):
+        offenders = []
+        for rel in sorted(_substituted_paths()):
+            directory = REPO_ROOT / rel.removeprefix("./")
+            for path in sorted(directory.glob("*.yaml")):
+                if path.name == "kustomization.yaml":
+                    continue
+                for doc in yaml.safe_load_all(path.read_text(encoding="utf-8")):
+                    if not doc or _opts_out_of_substitution(doc):
+                        continue
+                    tokens = sorted(
+                        {t for body in _multiline_strings(doc) for t in VAR_TOKEN.findall(body)}
+                    )
+                    if tokens:
+                        name = (doc.get("metadata") or {}).get("name")
+                        rel_path = path.relative_to(REPO_ROOT).as_posix()
+                        offenders.append(f"{rel_path} ({doc.get('kind')}/{name}): {tokens}")
+
+        assert not offenders, (
+            f"embedded scripts under a postBuild-substituted path: {offenders}. "
+            f"Flux would blank out each reference; annotate the resource with "
+            f"{SUBSTITUTE_ANNOTATION}: disabled."
+        )
 
 
 class TestMinimalProfileScope:
