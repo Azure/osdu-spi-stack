@@ -38,6 +38,10 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   are not supported.
 
 ### Fixed
+- `spi update` now refuses the unsafe in-process `uv tool install --force`
+  replacement path on Windows and prints the equivalent command to run from a
+  new terminal, preventing orphaned `spi.exe` launchers with missing package
+  environments (issue #70).
 - Local `spi up` now resolves the deployer object ID from the cached ARM token
   before creating any Azure resource, so Key Vault Secrets Officer is granted
   without requiring `SPI_DEPLOYER_OID` or Microsoft Graph access.

@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import platform
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -276,6 +277,13 @@ def run_upgrade(
     """
     _require_https(wheel_url)
     if installer == "uv":
+        if platform.system() == "Windows":
+            raise UpdateError(
+                "uv self-update is disabled on Windows because replacing the "
+                "active tool environment can orphan the spi launcher. Run this "
+                "from a new terminal instead:\n"
+                f"uv tool install --force {wheel_url}"
+            )
         cmd = ["uv", "tool", "install", "--force", wheel_url]
     else:
         cmd = ["pipx", "install", "--force", wheel_url]
