@@ -32,3 +32,9 @@ Rejected:
 - Manual re-run is `kubectl delete job schema-load -n osdu` followed by `flux reconcile kustomization spi-osdu-schema-load --with-source`. Flux re-applies the Job.
 - The loader tag depends on OSDU community registry retention. Mirroring the image to the SPI ACR (already provisioned) is an available follow-up if retention becomes a problem.
 - Only the schema-service is seeded. Reference data, legal tags, entitlements root groups, and partition initialization are out of scope and remain future work.
+
+### Amendment (2026-08-21)
+
+The loader image is now resolved through the live image lock instead of a Git
+pin. `force: true` on its Flux Kustomization replaces the Job when the resolved
+tag changes, because Kubernetes does not permit Job Pod template updates.

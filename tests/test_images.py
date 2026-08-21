@@ -71,7 +71,7 @@ def test_resolve_image_selects_newest_immutable_sha(monkeypatch):
     assert resolved.digest == "sha256:new"
 
 
-def test_render_image_lock_contains_service_keys_without_schema_load():
+def test_render_image_lock_contains_schema_load_service_keys():
     resolved = {
         name: ResolvedImage(
             name=name,
@@ -93,7 +93,8 @@ def test_render_image_lock_contains_service_keys_without_schema_load():
     assert 'IMAGE_BRANCH: "master"' in yaml
     assert "PARTITION_IMAGE_REPOSITORY" in yaml
     assert "INDEXER_QUEUE_IMAGE_TAG" in yaml
-    assert "SCHEMA_LOAD_IMAGE_TAG" not in yaml
+    assert "SCHEMA_LOAD_IMAGE_REPOSITORY" in yaml
+    assert "SCHEMA_LOAD_IMAGE_TAG" in yaml
 
 
 def test_gitlab_get_retries_transient_timeouts(monkeypatch):

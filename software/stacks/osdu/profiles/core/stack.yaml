@@ -378,6 +378,13 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/stacks/osdu/schema-load
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: osdu-image-lock
+  # A changed image tag updates the Job Pod template, an immutable field.
+  # Force replacement lets the loader run against the resolved schema version.
+  force: true
   prune: true
   wait: true
   # Matches the Job's activeDeadlineSeconds (1800s) plus headroom for

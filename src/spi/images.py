@@ -72,14 +72,10 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
     "entitlements": ImageRegistryEntry(400, "entitlements", "services/entitlements.yaml"),
     "legal": ImageRegistryEntry(74, "legal", "services/legal.yaml"),
     "schema": ImageRegistryEntry(26, "schema-service", "services/schema.yaml"),
-    # The schema-load Job is intentionally not part of the live image lock.
-    # A completed Kubernetes Job cannot be updated in place, so it remains a
-    # Git default that the resolver script can refresh for new deployments.
     "schema-load": ImageRegistryEntry(
         26,
         "schema-service-schema-load",
         "schema-load/job.yaml",
-        image_lock=False,
     ),
     "storage": ImageRegistryEntry(44, "storage", "services/storage.yaml"),
     "search": ImageRegistryEntry(19, "search-service", "services/search.yaml"),

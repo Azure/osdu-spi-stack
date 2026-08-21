@@ -154,6 +154,26 @@ class TestIstioRevisionSubstitution:
         assert not hardcoded, f"hardcoded istio revisions found: {hardcoded}"
 
 
+class TestSchemaLoadImageSubstitution:
+    def test_schema_load_substitutes_image_lock_and_replaces_immutable_job(self):
+        item = _kustomization(PROFILES_DIR / Profile.CORE.value, "spi-osdu-schema-load")
+        substitute_from = item["spec"]["postBuild"]["substituteFrom"]
+
+        assert any(
+            source.get("kind") == "ConfigMap"
+            and source.get("name") == "osdu-image-lock"
+            and source.get("optional") is not True
+            for source in substitute_from
+        )
+        assert item["spec"]["force"] is True
+
+    def test_schema_load_job_uses_image_lock_variables(self):
+        job = yaml.safe_load((STACKS / "schema-load" / "job.yaml").read_text(encoding="utf-8"))
+        image = job["spec"]["template"]["spec"]["containers"][0]["image"]
+
+        assert image == "${SCHEMA_LOAD_IMAGE_REPOSITORY}:${SCHEMA_LOAD_IMAGE_TAG}"
+
+
 class TestMinimalProfileScope:
     """The minimal profile is middleware-only: nothing at layer 5 or above."""
 
