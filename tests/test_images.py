@@ -21,6 +21,7 @@ from spi.images import (
     image_lock_names,
     render_image_lock_configmap,
     resolve_image,
+    resolve_images,
 )
 
 
@@ -95,6 +96,68 @@ def test_render_image_lock_contains_schema_load_service_keys():
     assert "INDEXER_QUEUE_IMAGE_TAG" in yaml
     assert "SCHEMA_LOAD_IMAGE_REPOSITORY" in yaml
     assert "SCHEMA_LOAD_IMAGE_TAG" in yaml
+
+
+def test_schema_load_resolves_from_selected_schema_tag(monkeypatch):
+    older_sha = "a" * 40
+    schema_sha = "b" * 40
+    loader_newest_sha = "c" * 40
+
+    def fake_gitlab_get(url: str):
+        if "registry/repositories?" in url:
+            if "search=schema-service-schema-load-master" in url:
+                return [
+                    {
+                        "id": 456,
+                        "name": "schema-service-schema-load-master",
+                        "location": "community.opengroup.org:5555/osdu/schema-load-master",
+                    }
+                ]
+            if "search=schema-service-master" in url:
+                return [
+                    {
+                        "id": 123,
+                        "name": "schema-service-master",
+                        "location": "community.opengroup.org:5555/osdu/schema-service-master",
+                    }
+                ]
+        if url.endswith("/registry/repositories/123/tags?per_page=100&page=1"):
+            return [{"name": older_sha}, {"name": schema_sha}]
+        if url.endswith("/registry/repositories/456/tags?per_page=100&page=1"):
+            return [{"name": schema_sha}, {"name": loader_newest_sha}]
+        if url.endswith(f"/registry/repositories/123/tags/{older_sha}"):
+            return {
+                "name": older_sha,
+                "created_at": "2026-05-01T00:00:00+00:00",
+                "digest": "sha256:schema-old",
+            }
+        if url.endswith(f"/registry/repositories/123/tags/{schema_sha}"):
+            return {
+                "name": schema_sha,
+                "created_at": "2026-05-21T00:00:00+00:00",
+                "digest": "sha256:schema-new",
+            }
+        if url.endswith(f"/registry/repositories/456/tags/{schema_sha}"):
+            return {
+                "name": schema_sha,
+                "created_at": "2026-05-20T00:00:00+00:00",
+                "digest": "sha256:loader-matched",
+            }
+        if url.endswith(f"/registry/repositories/456/tags/{loader_newest_sha}"):
+            return {
+                "name": loader_newest_sha,
+                "created_at": "2026-05-22T00:00:00+00:00",
+                "digest": "sha256:loader-newest",
+            }
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+
+    resolved = resolve_images(branch="master", names=("schema", "schema-load"))
+
+    assert resolved["schema"].tag == schema_sha
+    assert resolved["schema-load"].tag == schema_sha
+    assert resolved["schema-load"].digest == "sha256:loader-matched"
 
 
 def test_gitlab_get_retries_transient_timeouts(monkeypatch):

@@ -577,6 +577,7 @@ def reconcile(
         "osdu-spi-stack-system-stack",
         "stack",
         "spi-osdu-services",
+        "spi-osdu-schema-load",
         "spi-osdu-reference",
     ]:
         run_command(

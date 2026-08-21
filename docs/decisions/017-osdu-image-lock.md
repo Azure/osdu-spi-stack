@@ -15,15 +15,15 @@ ADR-004 (a local Helm chart per service) and ADR-009 (Flux for in-cluster reconc
 
 ## Decision
 
-Resolve OSDU image tags **per `spi up` run**, write them into a single `osdu-image-lock` ConfigMap in `flux-system`, and have every service Kustomization consume that ConfigMap via Flux `postBuild.substituteFrom`. The image lock is generated, not committed.
+Resolve OSDU image tags **per `spi up` run**, write them into a single `osdu-image-lock` ConfigMap in `osdu-flux`, and have each service and schema-load Kustomization consume that ConfigMap via Flux `postBuild.substituteFrom`. The image lock is generated, not committed.
 
 Shape:
 
-- `src/spi/images.py` queries the GitLab registry API for each service in `IMAGE_REGISTRY`, finds the newest immutable SHA tag on the configured branch (default `master`), and renders the ConfigMap.
+- `src/spi/images.py` queries the GitLab registry API for each service in `IMAGE_REGISTRY`, finds the newest immutable SHA tag on the configured branch (default `master`), and renders the ConfigMap. The schema-load image is resolved from the selected schema-service SHA and fails fast if that exact loader tag is absent.
 - The lock is applied during K8s bootstrap (Phase 4) before Flux reconciles. Keys are uppercase service names: `PARTITION_IMAGE`, `PARTITION_IMAGE_TAG`, `PARTITION_IMAGE_DIGEST`, etc.
 - Service Kustomizations under `software/stacks/osdu/profiles/core/` reference the ConfigMap with `spec.postBuild.substituteFrom`, so `${PARTITION_IMAGE}` in a YAML expands at apply time. Service Helm chart values stay generic; the lock holds the pin.
-- `spi reconcile --refresh-images` re-resolves and re-applies the ConfigMap, then reconciles the service Kustomizations. Updates are explicit, not silent.
-- The schema-load Job is intentionally excluded from the live lock (`image_lock: False`). A completed Kubernetes Job cannot be updated in place, so the schema-load tag stays a Git default that `scripts/resolve-image-tags.py --update` advances on demand.
+- `spi reconcile --refresh-images` re-resolves and re-applies the ConfigMap, then reconciles the service Kustomizations and `spi-osdu-schema-load` before `spi-osdu-reference`. Updates are explicit, not silent.
+- The schema-load Job is included in the live lock. Because a completed Kubernetes Job cannot be updated in place, its Flux Kustomization uses `force: true` so a changed image tag replaces the Job and re-runs the loader.
 
 Rejected:
 
@@ -38,4 +38,4 @@ Rejected:
 - Image refreshes are deliberate, not ambient. `spi reconcile --refresh-images` is the supported path; nothing else moves tags.
 - Adding a new OSDU service to the stack is one entry in `IMAGE_REGISTRY` plus one service YAML that consumes `${SERVICE_IMAGE}`. No template changes.
 - The image lock depends on the GitLab community registry being reachable from the CLI host. `spi check` covers tool prerequisites; registry reachability surfaces as a hard error during Phase 4.
-- Adding non-service images (e.g., a one-shot loader Job that completes once) is a `image_lock=False` entry so the Job's resource template stays in Git rather than chasing a live ConfigMap. Refresh goes through `scripts/resolve-image-tags.py --update`.
+- Adding a one-shot image to the live lock requires its Kustomization to tolerate immutable resource updates, for example `force: true` on Jobs whose Pod templates include lock substitutions.

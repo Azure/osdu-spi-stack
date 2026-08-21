@@ -55,7 +55,7 @@ def update_yaml_file(filepath: Path, repository: str, tag: str) -> bool:
          (used by software/stacks/osdu/services/*.yaml)
       2. Kubernetes core Pod spec combined form:
              image: "foo/bar:sha"
-         (used by the schema-load Job at software/stacks/osdu/schema-load/job.yaml)
+         (legacy static manifests only; live-locked manifests keep placeholders)
     """
     content = filepath.read_text()
 

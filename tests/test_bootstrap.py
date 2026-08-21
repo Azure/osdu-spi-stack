@@ -24,6 +24,7 @@ from spi.bootstrap import (
     ensure_namespaces,
     render_istio_revision_configmap,
 )
+from spi.images import ResolvedImage
 
 
 def _deploy_list(*names: str) -> dict:
@@ -152,3 +153,35 @@ class TestReconcileRefreshesClusterConfig:
 
     def test_suspend_leaves_configmap_alone(self):
         self._invoke("--suspend").assert_not_called()
+
+    def test_refresh_images_reconciles_schema_load_before_reference(self):
+        runner = CliRunner()
+        resolved = {
+            "schema": ResolvedImage(
+                name="schema",
+                repository="community.opengroup.org:5555/osdu/schema-service-master",
+                tag="1" * 40,
+                created_at="2026-05-22T00:00:00+00:00",
+                digest="sha256:schema",
+            )
+        }
+
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.resolve_image_lock", return_value=resolved),
+            patch("spi.cli.render_image_lock_configmap", return_value="kind: ConfigMap\n"),
+            patch("spi.cli.kubectl_apply_yaml"),
+            patch("spi.cli.run_command") as run_command,
+        ):
+            result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
+
+        assert result.exit_code == 0, result.output
+        reconciled = [
+            args[3].removeprefix("kustomization/")
+            for call in run_command.call_args_list
+            if (args := call.args[0])[3].startswith("kustomization/")
+        ]
+        assert "spi-osdu-schema-load" in reconciled
+        assert reconciled.index("spi-osdu-schema-load") < reconciled.index("spi-osdu-reference")
