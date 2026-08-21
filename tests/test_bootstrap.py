@@ -181,8 +181,10 @@ class TestReconcileRefreshesClusterConfig:
         reconciled = []
         for call in run_command.call_args_list:
             args = call.args[0]
-            if args[3].startswith("kustomization/"):
-                reconciled.append(args[3].removeprefix("kustomization/"))
-        assert "spi-osdu-schema-load" in reconciled
-        assert "spi-osdu-reference" in reconciled
-        assert reconciled.index("spi-osdu-schema-load") < reconciled.index("spi-osdu-reference")
+            if args[:3] == ["flux", "reconcile", "kustomization"]:
+                reconciled.append(args[3])
+        assert reconciled == [
+            "spi-osdu-services",
+            "spi-osdu-schema-load",
+            "spi-osdu-reference",
+        ]

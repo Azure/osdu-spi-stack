@@ -110,6 +110,38 @@ def _show_next_steps(config: Config):
     console.print(table)
 
 
+def _trigger_kustomization(name: str, requested_at: str) -> None:
+    run_command(
+        [
+            "kubectl",
+            "annotate",
+            "--overwrite",
+            f"kustomization/{name}",
+            "-n",
+            "osdu-flux",
+            f"reconcile.fluxcd.io/requestedAt={requested_at}",
+        ],
+        description=f"Trigger Kustomization reconciliation ({name})",
+        check=False,
+    )
+
+
+def _reconcile_kustomization(name: str) -> None:
+    run_command(
+        [
+            "flux",
+            "reconcile",
+            "kustomization",
+            name,
+            "-n",
+            "osdu-flux",
+            "--timeout",
+            "20m",
+        ],
+        description=f"Trigger and wait for Kustomization reconciliation ({name})",
+    )
+
+
 def _build_config(
     profile: Profile = Profile.CORE,
     env: str = "",
@@ -576,23 +608,15 @@ def reconcile(
         "osdu-spi-stack",
         "osdu-spi-stack-system-stack",
         "stack",
+    ]:
+        _trigger_kustomization(name, ts)
+
+    for name in [
         "spi-osdu-services",
         "spi-osdu-schema-load",
         "spi-osdu-reference",
     ]:
-        run_command(
-            [
-                "kubectl",
-                "annotate",
-                "--overwrite",
-                f"kustomization/{name}",
-                "-n",
-                "osdu-flux",
-                f"reconcile.fluxcd.io/requestedAt={ts}",
-            ],
-            description=f"Trigger Kustomization reconciliation ({name})",
-            check=False,
-        )
+        _reconcile_kustomization(name)
 
     console.print("[success]Reconciliation triggered.[/success]")
 
