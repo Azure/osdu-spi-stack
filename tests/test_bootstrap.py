@@ -184,4 +184,5 @@ class TestReconcileRefreshesClusterConfig:
             if args[3].startswith("kustomization/"):
                 reconciled.append(args[3].removeprefix("kustomization/"))
         assert "spi-osdu-schema-load" in reconciled
+        assert "spi-osdu-reference" in reconciled
         assert reconciled.index("spi-osdu-schema-load") < reconciled.index("spi-osdu-reference")
