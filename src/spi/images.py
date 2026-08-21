@@ -270,37 +270,40 @@ def resolve_images(
     """
 
     requested = list(names or IMAGE_REGISTRY.keys())
+    schema_load_requested = SCHEMA_LOAD_SERVICE_NAME in requested
     resolved: dict[str, ResolvedImage] = {}
     errors: list[str] = []
 
     for name in requested:
-        if name == SCHEMA_LOAD_SERVICE_NAME:
+        if name == SCHEMA_LOAD_SERVICE_NAME or (
+            name == SCHEMA_SERVICE_NAME and schema_load_requested
+        ):
             continue
         entry = IMAGE_REGISTRY[name]
         try:
             resolved[name] = resolve_image(name, entry, branch)
         except Exception as exc:
-            if name == SCHEMA_SERVICE_NAME and SCHEMA_LOAD_SERVICE_NAME in requested:
+            errors.append(str(exc))
+
+    if schema_load_requested:
+        try:
+            schema_image = resolve_image(
+                SCHEMA_SERVICE_NAME,
+                IMAGE_REGISTRY[SCHEMA_SERVICE_NAME],
+                branch,
+            )
+            if SCHEMA_SERVICE_NAME in requested:
+                resolved[SCHEMA_SERVICE_NAME] = schema_image
+        except Exception as exc:
+            if SCHEMA_SERVICE_NAME in requested:
                 errors.append(
                     f"{exc}; {SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag"
                 )
             else:
-                errors.append(str(exc))
-
-    if SCHEMA_LOAD_SERVICE_NAME in requested:
-        schema_image = resolved.get(SCHEMA_SERVICE_NAME)
-        if schema_image is None and SCHEMA_SERVICE_NAME not in requested:
-            try:
-                schema_image = resolve_image(
-                    SCHEMA_SERVICE_NAME,
-                    IMAGE_REGISTRY[SCHEMA_SERVICE_NAME],
-                    branch,
-                )
-            except Exception as exc:
                 errors.append(
                     f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag: {exc}"
                 )
-        if schema_image is not None:
+        else:
             try:
                 resolved[SCHEMA_LOAD_SERVICE_NAME] = resolve_image_tag(
                     SCHEMA_LOAD_SERVICE_NAME,
