@@ -70,13 +70,21 @@ Copy the wheel URL for any version from that release's page under
 
 ### Upgrade
 
-After the first install, `spi` upgrades itself — no URL needed, same on every
-platform:
+After the first install, `spi` checks GitHub Releases and upgrades itself with
+no URL needed:
 
 ```bash
 spi update           # check for a newer version and install it
 spi update --check   # check only; do not install
 spi update --force   # reinstall even if already on the latest version
+```
+
+On native Windows installs managed by `uv`, `spi update` intentionally exits
+before replacing the active tool environment. Run the manual recovery command it
+prints from a new terminal instead:
+
+```bash
+uv tool install --force <wheel-url>
 ```
 
 > **Note:** `uv tool install git+https://github.com/...@vX.Y.Z` also works,
