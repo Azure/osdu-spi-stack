@@ -24,12 +24,14 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Iterable, Mapping
 
 GITLAB_HOST = "https://community.opengroup.org"
 DEFAULT_IMAGE_BRANCH = "master"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"
+SCHEMA_SERVICE_NAME = "schema"
+SCHEMA_LOAD_SERVICE_NAME = "schema-load"
 
 _SHA_TAG_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -72,14 +74,10 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
     "entitlements": ImageRegistryEntry(400, "entitlements", "services/entitlements.yaml"),
     "legal": ImageRegistryEntry(74, "legal", "services/legal.yaml"),
     "schema": ImageRegistryEntry(26, "schema-service", "services/schema.yaml"),
-    # The schema-load Job is intentionally not part of the live image lock.
-    # A completed Kubernetes Job cannot be updated in place, so it remains a
-    # Git default that the resolver script can refresh for new deployments.
     "schema-load": ImageRegistryEntry(
         26,
         "schema-service-schema-load",
         "schema-load/job.yaml",
-        image_lock=False,
     ),
     "storage": ImageRegistryEntry(44, "storage", "services/storage.yaml"),
     "search": ImageRegistryEntry(19, "search-service", "services/search.yaml"),
@@ -181,6 +179,11 @@ def _registry_tags(project_id: int, repo_id: int) -> list[dict]:
     return tags
 
 
+def _registry_repository(project_id: int, image_name: str) -> dict | None:
+    repos = _registry_repositories(project_id, image_name)
+    return next((repo for repo in repos if repo.get("name") == image_name), None)
+
+
 def _tag_detail(project_id: int, repo_id: int, tag: str) -> dict:
     quoted_tag = urllib.parse.quote(tag, safe="")
     return gitlab_get(
@@ -208,8 +211,7 @@ def resolve_image(service_name: str, entry: ImageRegistryEntry, branch: str) -> 
     """Resolve the newest immutable image tag for a service."""
 
     image_name = f"{entry.image}-{branch}"
-    repos = _registry_repositories(entry.project_id, image_name)
-    repo = next((r for r in repos if r.get("name") == image_name), None)
+    repo = _registry_repository(entry.project_id, image_name)
     if not repo:
         raise ImageResolutionError(f"{service_name}: registry repository {image_name!r} not found")
 
@@ -227,6 +229,37 @@ def resolve_image(service_name: str, entry: ImageRegistryEntry, branch: str) -> 
     )
 
 
+def resolve_image_tag(
+    service_name: str,
+    entry: ImageRegistryEntry,
+    branch: str,
+    tag: str,
+) -> ResolvedImage:
+    """Resolve a service image only if the exact tag exists."""
+
+    image_name = f"{entry.image}-{branch}"
+    repo = _registry_repository(entry.project_id, image_name)
+    if not repo:
+        raise ImageResolutionError(f"{service_name}: registry repository {image_name!r} not found")
+
+    try:
+        detail = _tag_detail(entry.project_id, repo["id"], tag)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise ImageResolutionError(
+                f"{service_name}: tag {tag!r} not found in {image_name!r}"
+            ) from exc
+        raise
+
+    return ResolvedImage(
+        name=service_name,
+        repository=repo["location"],
+        tag=detail["name"],
+        created_at=detail.get("created_at", ""),
+        digest=detail.get("digest", ""),
+    )
+
+
 def resolve_images(
     branch: str = DEFAULT_IMAGE_BRANCH,
     names: Iterable[str] | None = None,
@@ -237,25 +270,105 @@ def resolve_images(
     """
 
     requested = list(names or IMAGE_REGISTRY.keys())
+    schema_load_requested = SCHEMA_LOAD_SERVICE_NAME in requested
     resolved: dict[str, ResolvedImage] = {}
     errors: list[str] = []
 
     for name in requested:
+        if name == SCHEMA_LOAD_SERVICE_NAME or (
+            name == SCHEMA_SERVICE_NAME and schema_load_requested
+        ):
+            continue
         entry = IMAGE_REGISTRY[name]
         try:
             resolved[name] = resolve_image(name, entry, branch)
         except Exception as exc:
             errors.append(str(exc))
 
+    if schema_load_requested:
+        try:
+            schema_image = resolve_image(
+                SCHEMA_SERVICE_NAME,
+                IMAGE_REGISTRY[SCHEMA_SERVICE_NAME],
+                branch,
+            )
+            if SCHEMA_SERVICE_NAME in requested:
+                resolved[SCHEMA_SERVICE_NAME] = schema_image
+        except Exception as exc:
+            if SCHEMA_SERVICE_NAME in requested:
+                errors.append(str(exc))
+                errors.append(f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag")
+            else:
+                errors.append(
+                    f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag: {exc}"
+                )
+        else:
+            try:
+                resolved[SCHEMA_LOAD_SERVICE_NAME] = resolve_image_tag(
+                    SCHEMA_LOAD_SERVICE_NAME,
+                    IMAGE_REGISTRY[SCHEMA_LOAD_SERVICE_NAME],
+                    branch,
+                    schema_image.tag,
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+
     if errors:
         raise ImageResolutionError("; ".join(errors))
-    return resolved
+    return {name: resolved[name] for name in requested}
 
 
 def resolve_image_lock(branch: str = DEFAULT_IMAGE_BRANCH) -> dict[str, ResolvedImage]:
     """Resolve the images controlled by the live Flux image lock."""
 
     return resolve_images(branch=branch, names=image_lock_names())
+
+
+def image_lock_missing_schema_load(lock_data: Mapping[str, str]) -> bool:
+    """Report whether an existing lock predates schema-load's inclusion."""
+
+    key = image_lock_key(SCHEMA_LOAD_SERVICE_NAME)
+    return not (lock_data.get(f"{key}_IMAGE_REPOSITORY") and lock_data.get(f"{key}_IMAGE_TAG"))
+
+
+def schema_load_lock_patch(
+    lock_data: Mapping[str, str],
+    branch: str = DEFAULT_IMAGE_BRANCH,
+) -> dict[str, str]:
+    """Return the loader entries missing from an existing image lock.
+
+    Locks generated before schema-load joined the live lock carry a schema pin
+    but no loader keys, and the Job requires them (ADR-013). The loader is
+    resolved from the schema tag the lock already records, so the backfill
+    keeps the loader on the running service's commit instead of jumping to the
+    newest master build.
+    """
+
+    schema_tag = lock_data.get(f"{image_lock_key(SCHEMA_SERVICE_NAME)}_IMAGE_TAG", "")
+    if not schema_tag:
+        raise ImageResolutionError(
+            f"{SCHEMA_LOAD_SERVICE_NAME}: image lock records no schema image tag to match"
+        )
+
+    image = resolve_image_tag(
+        SCHEMA_LOAD_SERVICE_NAME,
+        IMAGE_REGISTRY[SCHEMA_LOAD_SERVICE_NAME],
+        lock_data.get("IMAGE_BRANCH") or branch,
+        schema_tag,
+    )
+
+    key = image_lock_key(SCHEMA_LOAD_SERVICE_NAME)
+    patch = {
+        f"{key}_IMAGE": image.image,
+        f"{key}_IMAGE_REPOSITORY": image.repository,
+        f"{key}_IMAGE_TAG": image.tag,
+        f"{key}_IMAGE_CREATED_AT": image.created_at,
+        f"{key}_IMAGE_DIGEST": image.digest,
+    }
+    count = lock_data.get("IMAGE_COUNT", "")
+    if count.isdigit():
+        patch["IMAGE_COUNT"] = str(int(count) + 1)
+    return patch
 
 
 def _yaml_string(value: str) -> str:

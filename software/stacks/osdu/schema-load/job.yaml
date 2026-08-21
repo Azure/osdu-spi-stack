@@ -55,7 +55,12 @@ spec:
             defaultMode: 0755
       containers:
         - name: loader
-          image: community.opengroup.org:5555/osdu/platform/system/schema-service/schema-service-schema-load-master:ae8d35e5452ddd8d47bd395be06f3bcc4d0062a7
+          # Resolved live from the osdu-image-lock ConfigMap, on the same SHA
+          # selected for schema-service (ADR-013). No static default: a pinned
+          # SHA goes stale as upstream prunes it. A lock that predates
+          # schema-load's inclusion is backfilled by `spi reconcile` before
+          # Flux applies this Job.
+          image: ${SCHEMA_LOAD_IMAGE_REPOSITORY}:${SCHEMA_LOAD_IMAGE_TAG}
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
