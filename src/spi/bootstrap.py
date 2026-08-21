@@ -12,13 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""In-cluster bootstrap: namespaces, StorageClasses, Gateway API CRDs."""
+"""In-cluster bootstrap: namespaces, ConfigMaps, StorageClasses, Gateway API CRDs."""
+
+import json
 
 from .console import console, display_result, display_yaml
 from .shell import kubectl_apply_yaml, kubectl_json, run_command, run_process
 from .templates import storage_class
 
 STORAGE_CLASSES = ["pg-storageclass", "redis-storageclass", "es-storageclass"]
+ISTIO_REVISION_CONFIGMAP = "spi-cluster-config"
+ISTIO_REVISION_NAMESPACE = "osdu-flux"
+ISTIO_REVISION_KEY = "ISTIO_REVISION"
 
 
 def _detect_istio_revision() -> str:
@@ -37,7 +42,7 @@ def _detect_istio_revision() -> str:
     return "asm-1-30"
 
 
-def ensure_namespaces(istio_revision: str = "") -> None:
+def ensure_namespaces(istio_revision: str = "") -> str:
     """Create namespaces with Istio sidecar injection labels."""
     console.print("\n[bold]Ensuring namespaces...[/bold]")
 
@@ -66,6 +71,35 @@ metadata:
     kubectl_apply_yaml(yaml_content, "create namespace osdu")
 
     display_result("Namespaces ready")
+    return istio_revision
+
+
+def render_istio_revision_configmap(istio_revision: str) -> str:
+    """Render the Flux substitution ConfigMap for the live Istio revision."""
+
+    lines = [
+        "apiVersion: v1",
+        "kind: ConfigMap",
+        "metadata:",
+        f"  name: {ISTIO_REVISION_CONFIGMAP}",
+        f"  namespace: {ISTIO_REVISION_NAMESPACE}",
+        "  labels:",
+        "    app.kubernetes.io/managed-by: osdu-spi-stack",
+        "data:",
+        f"  {ISTIO_REVISION_KEY}: {json.dumps(istio_revision)}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def create_istio_revision_configmap(istio_revision: str = "") -> None:
+    """Apply the ConfigMap that carries the detected Istio revision for Flux."""
+
+    if not istio_revision:
+        istio_revision = _detect_istio_revision()
+    yaml_content = render_istio_revision_configmap(istio_revision)
+    display_yaml(yaml_content, "ConfigMap: spi-cluster-config")
+    kubectl_apply_yaml(yaml_content, "apply spi-cluster-config ConfigMap")
+    display_result("spi-cluster-config ConfigMap created")
 
 
 def create_storage_classes() -> None:

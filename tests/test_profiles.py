@@ -22,6 +22,7 @@ then stalls Flux on DependencyNotReady instead of failing up front.
 """
 
 import itertools
+import re
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,8 @@ INGRESS_DIR = STACKS / "ingress"
 
 KUSTOMIZATION_KIND = "Kustomization"
 FLUX_API_PREFIX = "kustomize.toolkit.fluxcd.io/"
+NAMESPACES_MANIFEST = REPO_ROOT / "software" / "components" / "namespaces" / "namespaces.yaml"
+ISTIO_REVISION_CONFIGMAP = "spi-cluster-config"
 
 
 def _flux_kustomizations(tree: Path):
@@ -63,6 +66,13 @@ def _dependency_names(tree: Path) -> set:
 
 def _referenced_paths(tree: Path) -> set:
     return {k["spec"]["path"] for k in _flux_kustomizations(tree)}
+
+
+def _kustomization(tree: Path, name: str):
+    for item in _flux_kustomizations(tree):
+        if item.get("metadata", {}).get("name") == name:
+            return item
+    raise AssertionError(f"{tree}/stack.yaml has no Kustomization named {name}")
 
 
 def _ingress_tree(profile: Profile, mode: IngressMode) -> Path:
@@ -117,6 +127,31 @@ class TestDependenciesResolve:
             for rel in sorted(_referenced_paths(tree)):
                 target = REPO_ROOT / rel.removeprefix("./")
                 assert target.is_dir(), f"{tree.name}/stack.yaml points at missing {rel}"
+
+
+class TestIstioRevisionSubstitution:
+    @pytest.mark.parametrize("profile", [Profile.CORE, Profile.MINIMAL], ids=lambda p: p.value)
+    def test_spi_namespaces_substitutes_revision_from_configmap(self, profile):
+        item = _kustomization(PROFILES_DIR / profile.value, "spi-namespaces")
+        substitute_from = item["spec"]["postBuild"]["substituteFrom"]
+        assert any(
+            source.get("kind") == "ConfigMap"
+            and source.get("name") == ISTIO_REVISION_CONFIGMAP
+            and source.get("optional") is False
+            for source in substitute_from
+        )
+
+    def test_namespaces_manifest_uses_istio_revision_placeholder(self):
+        text = NAMESPACES_MANIFEST.read_text(encoding="utf-8")
+        assert "istio.io/rev: ${ISTIO_REVISION}" in text
+
+    def test_no_hardcoded_asm_revision_labels_under_software(self):
+        hardcoded = []
+        pattern = re.compile(r"istio\.io/rev:\s*asm-1-")
+        for path in sorted((REPO_ROOT / "software").rglob("*.yaml")):
+            if pattern.search(path.read_text(encoding="utf-8")):
+                hardcoded.append(path.relative_to(REPO_ROOT).as_posix())
+        assert not hardcoded, f"hardcoded istio revisions found: {hardcoded}"
 
 
 class TestMinimalProfileScope:

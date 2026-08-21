@@ -30,6 +30,7 @@ import typer
 from .azure_infra import provision_azure_infra
 from .bicep import run_bicep_deployment
 from .bootstrap import (
+    create_istio_revision_configmap,
     create_storage_classes,
     ensure_namespaces,
     install_gateway_api_crds,
@@ -351,7 +352,8 @@ def deploy_azure(
         return
 
     # Phase 4: Kubernetes bootstrap
-    ensure_namespaces()
+    istio_revision = ensure_namespaces()
+    create_istio_revision_configmap(istio_revision)
     ensure_secrets()
     create_storage_classes()
     install_gateway_api_crds()

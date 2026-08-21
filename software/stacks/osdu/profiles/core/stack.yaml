@@ -28,6 +28,11 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/namespaces
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-cluster-config
+        optional: false
   prune: false
   wait: true
   timeout: 5m
