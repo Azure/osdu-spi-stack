@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from spi import images
 from spi.images import (
     ImageRegistryEntry,
+    ImageResolutionError,
     ResolvedImage,
     image_lock_names,
     render_image_lock_configmap,
@@ -158,6 +159,25 @@ def test_schema_load_resolves_from_selected_schema_tag(monkeypatch):
     assert resolved["schema"].tag == schema_sha
     assert resolved["schema-load"].tag == schema_sha
     assert resolved["schema-load"].digest == "sha256:loader-matched"
+
+
+def test_schema_load_dependency_error_is_reported_once(monkeypatch):
+    def fake_gitlab_get(url: str):
+        if "registry/repositories?" in url and "search=schema-service-master" in url:
+            return []
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+
+    try:
+        resolve_images(branch="master", names=("schema", "schema-load"))
+    except ImageResolutionError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected ImageResolutionError")
+
+    assert "schema: registry repository 'schema-service-master' not found" in message
+    assert message.count("schema-load: unable to resolve matching schema tag") == 1
 
 
 def test_gitlab_get_retries_transient_timeouts(monkeypatch):
