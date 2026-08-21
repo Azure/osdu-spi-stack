@@ -46,13 +46,13 @@ class TestDetectIstioRevision:
         ):
             assert _detect_istio_revision() == "asm-1-31"
 
-    def test_falls_back_when_no_istiod_deployment(self):
+    def test_returns_none_when_no_istiod_deployment(self):
         with patch("spi.bootstrap.kubectl_json", return_value=_deploy_list("aks-istio-egress")):
-            assert _detect_istio_revision() == "asm-1-30"
+            assert _detect_istio_revision() is None
 
-    def test_falls_back_when_cluster_query_fails(self):
+    def test_returns_none_when_cluster_query_fails(self):
         with patch("spi.bootstrap.kubectl_json", return_value=None):
-            assert _detect_istio_revision() == "asm-1-30"
+            assert _detect_istio_revision() is None
 
 
 class TestEnsureNamespaces:
@@ -79,6 +79,17 @@ class TestEnsureNamespaces:
         assert revision == "asm-1-29"
         assert "istio.io/rev: asm-1-29" in apply_yaml.call_args.args[0]
 
+    def test_falls_back_when_detection_fails(self):
+        with (
+            patch("spi.bootstrap.kubectl_json", return_value=None),
+            patch("spi.bootstrap.run_process"),
+            patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
+        ):
+            revision = ensure_namespaces()
+
+        assert revision == "asm-1-30"
+        assert "istio.io/rev: asm-1-30" in apply_yaml.call_args.args[0]
+
 
 class TestCreateIstioRevisionConfigmap:
     def test_applies_detected_revision_when_called_without_argument(self):
@@ -101,6 +112,15 @@ class TestCreateIstioRevisionConfigmap:
 
         kubectl_json.assert_not_called()
         assert f'{ISTIO_REVISION_KEY}: "asm-1-29"' in apply_yaml.call_args.args[0]
+
+    def test_aborts_without_applying_when_detection_fails(self):
+        with (
+            patch("spi.bootstrap.kubectl_json", return_value=None),
+            patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
+        ):
+            create_istio_revision_configmap()
+
+        apply_yaml.assert_not_called()
 
 
 class TestReconcileRefreshesClusterConfig:

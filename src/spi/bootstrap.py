@@ -26,12 +26,15 @@ ISTIO_REVISION_NAMESPACE = "osdu-flux"
 ISTIO_REVISION_KEY = "ISTIO_REVISION"
 
 
-def _detect_istio_revision() -> str:
+def _detect_istio_revision() -> str | None:
     """Detect the installed Istio ASM revision from the cluster.
 
     The istiod deployment is named ``istiod-<revision>`` (e.g.
     ``istiod-asm-1-30``); the aks-istio-system namespace itself carries no
     ``istio.io/rev`` label, so the deployment name is the reliable source.
+    Returns ``None`` when the cluster query fails or no ``istiod-*``
+    deployment is visible, so callers can distinguish "detection failed"
+    from an actual revision.
     """
     data = kubectl_json(["get", "deploy", "-n", "aks-istio-system"])
     if data and data.get("items"):
@@ -39,7 +42,7 @@ def _detect_istio_revision() -> str:
             name = item.get("metadata", {}).get("name", "")
             if name.startswith("istiod-"):
                 return name.removeprefix("istiod-")
-    return "asm-1-30"
+    return None
 
 
 def ensure_namespaces(istio_revision: str = "") -> str:
@@ -47,7 +50,7 @@ def ensure_namespaces(istio_revision: str = "") -> str:
     console.print("\n[bold]Ensuring namespaces...[/bold]")
 
     if not istio_revision:
-        istio_revision = _detect_istio_revision()
+        istio_revision = _detect_istio_revision() or "asm-1-30"
     console.print(f"  [info]Istio revision: {istio_revision}[/info]")
 
     for ns in ["osdu-flux", "foundation", "platform"]:
@@ -95,7 +98,14 @@ def create_istio_revision_configmap(istio_revision: str = "") -> None:
     """Apply the ConfigMap that carries the detected Istio revision for Flux."""
 
     if not istio_revision:
-        istio_revision = _detect_istio_revision()
+        detected = _detect_istio_revision()
+        if not detected:
+            console.print(
+                f"[warning]Could not detect the Istio revision; leaving the existing "
+                f"{ISTIO_REVISION_CONFIGMAP} ConfigMap unchanged.[/warning]"
+            )
+            return
+        istio_revision = detected
     yaml_content = render_istio_revision_configmap(istio_revision)
     display_yaml(yaml_content, f"ConfigMap: {ISTIO_REVISION_CONFIGMAP}")
     kubectl_apply_yaml(yaml_content, f"apply {ISTIO_REVISION_CONFIGMAP} ConfigMap")
