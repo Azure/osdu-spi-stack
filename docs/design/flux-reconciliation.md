@@ -109,6 +109,14 @@ spec:
 
 So changing the ConfigMap changes the resolved image on the next reconcile. The lock is the entire pin surface; no service YAML has a static image tag.
 
+## `postBuild.substituteFrom` for the cluster Istio revision
+
+`spi-namespaces` uses the same mechanism for one value: the managed Istio revision that labels the `osdu` namespace. The revision is a property of the cluster (`istiod-asm-1-30` in `aks-istio-system`), not of the repository, so `software/components/namespaces/namespaces.yaml` carries `istio.io/rev: ${ISTIO_REVISION}` and the Kustomization substitutes it from `osdu-flux/spi-cluster-config`.
+
+The CLI owns that ConfigMap. `spi up` writes it during the Kubernetes bootstrap, before Flux is installed, and every `spi reconcile` (including `--resume`) re-detects the live revision and re-applies it. That keeps clusters bootstrapped by an older CLI, and clusters whose AKS Istio revision was upgraded after the last deploy, on the correct value before any new commit is applied.
+
+The substitution is not marked `optional`. A missing ConfigMap fails `spi-namespaces` with `substitute from ConfigMap ... not found` and blocks the layers above it, which is the intended outcome: the alternative is labelling `osdu` with a guessed revision, which disables sidecar injection silently and surfaces much later as `app-id=` empty (see [workload identity](workload-identity.md)). Recovery is `spi reconcile`.
+
 ## Suspend and resume
 
 `spi up` ends with `kubectl patch gitrepository/osdu-spi-stack-system --type=merge -p '{"spec":{"suspend":true}}'`. This stops the source-controller from polling and stops Flux from auto-applying new revisions. It does **not** stop downstream Kustomizations from reconciling against the cached revision; Phase 2 runs to completion exactly as ADR-014 promises.

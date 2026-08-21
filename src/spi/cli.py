@@ -22,6 +22,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
+from .bootstrap import create_istio_revision_configmap
 from .checks import PREREQ_TOOLS, check_prerequisites
 from .config import Config, IngressMode, Profile
 from .console import console, display_result, display_yaml
@@ -497,6 +498,15 @@ def reconcile(
         console.print("[warning]GitRepository suspended.[/warning]")
         console.print("[dim]Run 'uv run spi reconcile --resume' to unfreeze.[/dim]")
         return
+
+    # spi-namespaces substitutes ISTIO_REVISION from spi-cluster-config, and
+    # that Kustomization gates every layer above it. Refresh the ConfigMap
+    # before any commit is applied so a cluster bootstrapped by an older CLI,
+    # or one whose managed Istio revision was upgraded since the last deploy,
+    # reconciles against the live revision instead of stalling on a missing
+    # or stale substitution source.
+    console.print("\n[bold]Refreshing cluster config for Flux substitution...[/bold]")
+    create_istio_revision_configmap()
 
     if resume:
         console.print("\n[bold]Resuming GitRepository...[/bold]")

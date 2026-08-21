@@ -1,6 +1,10 @@
-# Namespaces are created by the CLI bootstrap (with Istio injection labels).
-# This manifest ensures they exist if Flux runs before the CLI bootstrap.
-# Flux substitutes ISTIO_REVISION from osdu-flux/spi-cluster-config.
+# Namespaces are created by the CLI bootstrap (with Istio injection labels);
+# this manifest keeps them declared in Git so Flux corrects drift.
+# ISTIO_REVISION is substituted from the osdu-flux/spi-cluster-config
+# ConfigMap, which the CLI writes during `spi up` and refreshes on every
+# `spi reconcile`. The substitution is deliberately not optional: without the
+# ConfigMap this Kustomization fails loudly rather than labelling osdu with a
+# guessed revision that would silently disable sidecar injection (ADR-016).
 apiVersion: v1
 kind: Namespace
 metadata:
