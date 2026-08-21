@@ -316,6 +316,9 @@ def resolve_images(
 
     if errors:
         raise ImageResolutionError("; ".join(errors))
+    missing = [name for name in requested if name not in resolved]
+    if missing:
+        raise ImageResolutionError(f"missing resolved image(s): {', '.join(missing)}")
     return {name: resolved[name] for name in requested}
 
 

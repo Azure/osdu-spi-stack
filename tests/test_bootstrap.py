@@ -178,10 +178,10 @@ class TestReconcileRefreshesClusterConfig:
             result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
 
         assert result.exit_code == 0, result.output
-        reconciled = [
-            args[3].removeprefix("kustomization/")
-            for call in run_command.call_args_list
-            if (args := call.args[0])[3].startswith("kustomization/")
-        ]
+        reconciled = []
+        for call in run_command.call_args_list:
+            args = call.args[0]
+            if args[3].startswith("kustomization/"):
+                reconciled.append(args[3].removeprefix("kustomization/"))
         assert "spi-osdu-schema-load" in reconciled
         assert reconciled.index("spi-osdu-schema-load") < reconciled.index("spi-osdu-reference")
