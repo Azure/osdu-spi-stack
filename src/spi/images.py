@@ -295,6 +295,11 @@ def resolve_images(
                 errors.append(
                     f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag: {exc}"
                 )
+        elif schema_image is None:
+            errors.append(
+                f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve because "
+                f"{SCHEMA_SERVICE_NAME!r} did not resolve"
+            )
         if schema_image is not None:
             try:
                 resolved[SCHEMA_LOAD_SERVICE_NAME] = resolve_image_tag(
