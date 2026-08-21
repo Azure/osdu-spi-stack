@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import urllib.error
 from datetime import datetime, timezone
+from email.message import Message
+
+import pytest
 
 from spi import images
 from spi.images import (
@@ -22,6 +26,7 @@ from spi.images import (
     image_lock_names,
     render_image_lock_configmap,
     resolve_image,
+    resolve_image_tag,
     resolve_images,
 )
 
@@ -225,3 +230,136 @@ def test_gitlab_get_raises_after_exhausting_attempts(monkeypatch):
         assert "2 attempts" in str(exc)
     else:
         raise AssertionError("expected ImageResolutionError")
+
+
+def test_resolve_image_tag_missing_tag_raises_resolution_error(monkeypatch):
+    """A schema tag that never reached the loader repository (divergent
+    pipelines/retention) has to fail fast with a clear, service-specific
+    error instead of bubbling up a raw HTTPError."""
+
+    def fake_gitlab_get(url: str):
+        if "registry/repositories?" in url:
+            return [
+                {
+                    "id": 456,
+                    "name": "schema-service-schema-load-master",
+                    "location": "community.opengroup.org:5555/osdu/schema-load-master",
+                }
+            ]
+        raise AssertionError(f"unexpected URL: {url}")
+
+    def fake_tag_detail(project_id, repo_id, tag):
+        raise urllib.error.HTTPError("https://example.invalid", 404, "Not Found", Message(), None)
+
+    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+    monkeypatch.setattr(images, "_tag_detail", fake_tag_detail)
+
+    entry = ImageRegistryEntry(26, "schema-service-schema-load", "schema-load/job.yaml")
+
+    with pytest.raises(ImageResolutionError, match="tag .* not found"):
+        resolve_image_tag("schema-load", entry, "master", "a" * 40)
+
+
+def test_resolve_image_tag_propagates_non_404_http_error(monkeypatch):
+    """A non-404 HTTPError (e.g. a registry outage) is a transient/unknown
+    failure, not a missing-tag condition, and should not be masked as an
+    ImageResolutionError."""
+
+    def fake_gitlab_get(url: str):
+        if "registry/repositories?" in url:
+            return [
+                {
+                    "id": 456,
+                    "name": "schema-service-schema-load-master",
+                    "location": "community.opengroup.org:5555/osdu/schema-load-master",
+                }
+            ]
+        raise AssertionError(f"unexpected URL: {url}")
+
+    def fake_tag_detail(project_id, repo_id, tag):
+        raise urllib.error.HTTPError(
+            "https://example.invalid", 500, "Internal Server Error", Message(), None
+        )
+
+    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+    monkeypatch.setattr(images, "_tag_detail", fake_tag_detail)
+
+    entry = ImageRegistryEntry(26, "schema-service-schema-load", "schema-load/job.yaml")
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        resolve_image_tag("schema-load", entry, "master", "a" * 40)
+    assert exc_info.value.code == 500
+
+
+def test_resolve_images_schema_load_only_omits_schema(monkeypatch):
+    """Requesting only schema-load has to resolve schema as a dependency
+    without returning it, and use the loader-specific error message on
+    lookup failure."""
+    schema_sha = "b" * 40
+    loader_newest_sha = "c" * 40
+
+    def fake_gitlab_get(url: str):
+        if "registry/repositories?" in url:
+            if "search=schema-service-schema-load-master" in url:
+                return [
+                    {
+                        "id": 456,
+                        "name": "schema-service-schema-load-master",
+                        "location": "community.opengroup.org:5555/osdu/schema-load-master",
+                    }
+                ]
+            if "search=schema-service-master" in url:
+                return [
+                    {
+                        "id": 123,
+                        "name": "schema-service-master",
+                        "location": "community.opengroup.org:5555/osdu/schema-service-master",
+                    }
+                ]
+        if url.endswith("/registry/repositories/123/tags?per_page=100&page=1"):
+            return [{"name": schema_sha}]
+        if url.endswith("/registry/repositories/456/tags?per_page=100&page=1"):
+            return [{"name": schema_sha}, {"name": loader_newest_sha}]
+        if url.endswith(f"/registry/repositories/123/tags/{schema_sha}"):
+            return {
+                "name": schema_sha,
+                "created_at": "2026-05-21T00:00:00+00:00",
+                "digest": "sha256:schema-new",
+            }
+        if url.endswith(f"/registry/repositories/456/tags/{schema_sha}"):
+            return {
+                "name": schema_sha,
+                "created_at": "2026-05-20T00:00:00+00:00",
+                "digest": "sha256:loader-matched",
+            }
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+
+    resolved = resolve_images(branch="master", names=("schema-load",))
+
+    assert set(resolved) == {"schema-load"}
+    assert resolved["schema-load"].tag == schema_sha
+    assert resolved["schema-load"].digest == "sha256:loader-matched"
+
+
+def test_resolve_images_schema_load_only_reports_alternate_error(monkeypatch):
+    """When only schema-load is requested and the schema dependency lookup
+    fails, the error message should not claim the caller asked for schema."""
+
+    def fake_gitlab_get(url: str):
+        if "registry/repositories?" in url and "search=schema-service-master" in url:
+            return []
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+
+    with pytest.raises(ImageResolutionError) as exc_info:
+        resolve_images(branch="master", names=("schema-load",))
+
+    message = str(exc_info.value)
+    assert message.count(";") == 0
+    assert message == (
+        "schema-load: unable to resolve matching schema tag: "
+        "schema: registry repository 'schema-service-master' not found"
+    )

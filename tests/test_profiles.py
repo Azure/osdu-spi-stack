@@ -171,7 +171,12 @@ class TestSchemaLoadImageSubstitution:
         job = yaml.safe_load((STACKS / "schema-load" / "job.yaml").read_text(encoding="utf-8"))
         image = job["spec"]["template"]["spec"]["containers"][0]["image"]
 
-        assert image == "${SCHEMA_LOAD_IMAGE_REPOSITORY}:${SCHEMA_LOAD_IMAGE_TAG}"
+        assert image == (
+            "${SCHEMA_LOAD_IMAGE_REPOSITORY:="
+            "community.opengroup.org:5555/osdu/platform/system/schema-service/"
+            "schema-service-schema-load-master}:"
+            "${SCHEMA_LOAD_IMAGE_TAG:=ae8d35e5452ddd8d47bd395be06f3bcc4d0062a7}"
+        )
 
 
 class TestMinimalProfileScope:

@@ -10,6 +10,7 @@ injection and a missing ConfigMap stalls every layer above namespaces.
 Both the detection and the paths that write the ConfigMap are covered here.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -154,6 +155,28 @@ class TestReconcileRefreshesClusterConfig:
     def test_suspend_leaves_configmap_alone(self):
         self._invoke("--suspend").assert_not_called()
 
+    def test_refresh_images_exits_on_resolution_error(self):
+        """A registry lookup failure has to abort before annotating anything,
+        surfacing the error instead of reconciling against a stale lock."""
+        runner = CliRunner()
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            patch(
+                "spi.cli.resolve_image_lock",
+                side_effect=cli.ImageResolutionError("schema: registry repository not found"),
+            ),
+            patch("spi.cli.kubectl_apply_yaml") as apply_yaml,
+            patch("spi.cli.run_command") as run_command,
+        ):
+            result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
+
+        assert result.exit_code == 1
+        assert "Unable to resolve OSDU service images" in result.output
+        apply_yaml.assert_not_called()
+        run_command.assert_not_called()
+
     def test_refresh_images_reconciles_schema_load_before_reference(self):
         runner = CliRunner()
         resolved = {
@@ -166,6 +189,9 @@ class TestReconcileRefreshesClusterConfig:
             )
         }
 
+        def _run_command(cmd_list, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
         with (
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
@@ -173,7 +199,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.render_image_lock_configmap", return_value="kind: ConfigMap\n"),
             patch("spi.cli.kubectl_apply_yaml"),
-            patch("spi.cli.run_command") as run_command,
+            patch("spi.cli.run_command", side_effect=_run_command) as run_command,
         ):
             result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
 
@@ -188,3 +214,65 @@ class TestReconcileRefreshesClusterConfig:
             "spi-osdu-schema-load",
             "spi-osdu-reference",
         ]
+
+    def test_refresh_images_skips_missing_kustomizations(self):
+        """A minimal/bare profile has none of the core Layer 5 Kustomizations;
+        --refresh-images has to skip them instead of failing the whole
+        reconcile when `flux reconcile` can't find one.
+        """
+        runner = CliRunner()
+        resolved = {
+            "schema": ResolvedImage(
+                name="schema",
+                repository="community.opengroup.org:5555/osdu/schema-service-master",
+                tag="1" * 40,
+                created_at="2026-05-22T00:00:00+00:00",
+                digest="sha256:schema",
+            )
+        }
+
+        def _run_command(cmd_list, **kwargs):
+            if cmd_list[:2] == ["kubectl", "get"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="not found")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.resolve_image_lock", return_value=resolved),
+            patch("spi.cli.render_image_lock_configmap", return_value="kind: ConfigMap\n"),
+            patch("spi.cli.kubectl_apply_yaml"),
+            patch("spi.cli.run_command", side_effect=_run_command) as run_command,
+        ):
+            result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
+
+        assert result.exit_code == 0, result.output
+        reconciled = [
+            call.args[0][3]
+            for call in run_command.call_args_list
+            if call.args[0][:3] == ["flux", "reconcile", "kustomization"]
+        ]
+        assert reconciled == []
+
+    def test_default_reconcile_does_not_block_on_missing_kustomizations(self):
+        """A plain `spi reconcile` (no --refresh-images) has to keep tolerating
+        absent core Kustomizations on minimal/bare clusters, same as before
+        the ordered-wait behavior was introduced for image refreshes.
+        """
+        runner = CliRunner()
+
+        def _run_command(cmd_list, **kwargs):
+            if cmd_list[:3] == ["flux", "reconcile", "kustomization"]:
+                raise AssertionError("default reconcile must not block on flux reconcile")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.run_command", side_effect=_run_command),
+        ):
+            result = runner.invoke(cli.app, ["reconcile"])
+
+        assert result.exit_code == 0, result.output

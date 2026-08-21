@@ -126,6 +126,16 @@ def _trigger_kustomization(name: str, requested_at: str) -> None:
     )
 
 
+def _kustomization_exists(name: str) -> bool:
+    result = run_command(
+        ["kubectl", "get", "kustomization", name, "-n", "osdu-flux"],
+        description=f"Check Kustomization exists ({name})",
+        check=False,
+        display=False,
+    )
+    return result.returncode == 0
+
+
 def _reconcile_kustomization(name: str) -> None:
     run_command(
         [
@@ -136,7 +146,7 @@ def _reconcile_kustomization(name: str) -> None:
             "-n",
             "osdu-flux",
             "--timeout",
-            "20m",
+            "40m",
         ],
         description=f"Trigger and wait for Kustomization reconciliation ({name})",
     )
@@ -611,12 +621,28 @@ def reconcile(
     ]:
         _trigger_kustomization(name, ts)
 
-    for name in [
+    core_kustomizations = [
         "spi-osdu-services",
         "spi-osdu-schema-load",
         "spi-osdu-reference",
-    ]:
-        _reconcile_kustomization(name)
+    ]
+
+    if refresh_images:
+        # A resolved image tag has to reach schema-service before schema-load
+        # is force-recreated against it, and schema-load has to finish before
+        # reference re-seeds. Wait for each stage in order, but only for
+        # profiles that actually declare these Kustomizations.
+        console.print(
+            "\n[bold]Waiting for image refresh to propagate in dependency order...[/bold]"
+        )
+        for name in core_kustomizations:
+            if not _kustomization_exists(name):
+                console.print(f"  [dim]Skipping {name} (not present in this profile).[/dim]")
+                continue
+            _reconcile_kustomization(name)
+    else:
+        for name in core_kustomizations:
+            _trigger_kustomization(name, ts)
 
     console.print("[success]Reconciliation triggered.[/success]")
 

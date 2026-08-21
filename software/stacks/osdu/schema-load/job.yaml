@@ -55,7 +55,14 @@ spec:
             defaultMode: 0755
       containers:
         - name: loader
-          image: ${SCHEMA_LOAD_IMAGE_REPOSITORY}:${SCHEMA_LOAD_IMAGE_TAG}
+          # Defaults keep the Job resolvable on clusters whose osdu-image-lock
+          # predates schema-load's inclusion in the live lock (ADR-013); an
+          # operator running --refresh-images replaces them with the current
+          # schema-service-matched tag. The default tag below is only a
+          # last-known-good fallback (schema-service master, resolved 2026-05)
+          # and is expected to go stale as upstream prunes it; it is never
+          # relied on once the lock has been refreshed.
+          image: ${SCHEMA_LOAD_IMAGE_REPOSITORY:=community.opengroup.org:5555/osdu/platform/system/schema-service/schema-service-schema-load-master}:${SCHEMA_LOAD_IMAGE_TAG:=ae8d35e5452ddd8d47bd395be06f3bcc4d0062a7}
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
