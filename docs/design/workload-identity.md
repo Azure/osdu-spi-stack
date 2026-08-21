@@ -80,7 +80,7 @@ Step by step:
 4. **Confirm the Lua mapping.** The Lua reads `envoy.filters.http.jwt_authn` dynamic metadata. If the audience does not match one of the branches in the Lua, `x-app-id` is left empty even though `x-payload` was projected.
 5. **Confirm the audience list.** `kubectl get requestauthentication -n osdu -o yaml | grep -A5 audiences`. If `AAD_CLIENT_ID` is overridden and the AAD appid is missing here, that is the bug. Fix `deploy.py`'s `_create_istio_auth()` (which calls `istio_auth_resources()`), re-run the CLI step (or `kubectl apply` the generated RA manually), and retry.
 
-Three checks, each with a definitive answer. The full chain is small once you can name each link.
+Five checks, each with a definitive answer. The full chain is small once you can name each link.
 
 ## Worked example: how to add a new RBAC scope
 

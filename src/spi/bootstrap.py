@@ -97,9 +97,9 @@ def create_istio_revision_configmap(istio_revision: str = "") -> None:
     if not istio_revision:
         istio_revision = _detect_istio_revision()
     yaml_content = render_istio_revision_configmap(istio_revision)
-    display_yaml(yaml_content, "ConfigMap: spi-cluster-config")
-    kubectl_apply_yaml(yaml_content, "apply spi-cluster-config ConfigMap")
-    display_result("spi-cluster-config ConfigMap created")
+    display_yaml(yaml_content, f"ConfigMap: {ISTIO_REVISION_CONFIGMAP}")
+    kubectl_apply_yaml(yaml_content, f"apply {ISTIO_REVISION_CONFIGMAP} ConfigMap")
+    display_result(f"{ISTIO_REVISION_CONFIGMAP} ConfigMap created")
 
 
 def create_storage_classes() -> None:
