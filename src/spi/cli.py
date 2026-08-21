@@ -671,7 +671,14 @@ def update(
                 "set GITHUB_TOKEN or `gh auth login` to raise rate limits)[/info]"
             )
 
-    rc = _update.run_upgrade(installer, wheel_url, display=not silent)
+    try:
+        rc = _update.run_upgrade(installer, wheel_url, display=not silent)
+    except _update.UpdateError as exc:
+        if silent:
+            typer.echo(str(exc), err=True)
+        else:
+            console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
     if rc != 0:
         if silent:
             typer.echo(f"spi upgrade failed (exit {rc})", err=True)

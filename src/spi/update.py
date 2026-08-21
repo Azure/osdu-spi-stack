@@ -17,11 +17,11 @@
 End users install via:
     uv tool install <wheel-url-from-github-release>
 
-This module checks GitHub Releases for a newer version and re-runs
-`uv tool install --force <wheel-url>` (or the pipx equivalent) to upgrade
-in place. The canonical install path is a wheel-asset URL so the recorded
-version metadata is correct; `git+...@vX.Y.Z` is documented as a developer
-fallback only.
+This module checks GitHub Releases for a newer version and re-runs the
+installer with a wheel URL when that can safely upgrade the active install.
+Native Windows `uv` installs are refused with a manual recovery command instead.
+The canonical install path is a wheel-asset URL so the recorded version metadata
+is correct; `git+...@vX.Y.Z` is documented as a developer fallback only.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import platform
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -270,12 +271,20 @@ def run_upgrade(
 ) -> int:
     """Re-install spi from a GitHub Release wheel asset URL.
 
-    Both uv and pipx accept a direct URL to a wheel as the install spec.
-    `--force` replaces the existing installation atomically. Returns the
+    Both uv and pipx accept a direct URL to a wheel as the install spec. Native
+    Windows uv installs raise UpdateError with a manual recovery command because
+    replacing the active tool environment can orphan the launcher. Returns the
     subprocess exit code; run_command prints stderr on failure.
     """
     _require_https(wheel_url)
     if installer == "uv":
+        if platform.system() == "Windows":
+            raise UpdateError(
+                "uv self-update is disabled on Windows because replacing the "
+                "active tool environment can orphan the spi launcher. Run this "
+                "from a new terminal instead:\n"
+                f"uv tool install --force {wheel_url}"
+            )
         cmd = ["uv", "tool", "install", "--force", wheel_url]
     else:
         cmd = ["pipx", "install", "--force", wheel_url]
