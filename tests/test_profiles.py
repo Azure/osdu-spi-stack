@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from spi.bootstrap import ISTIO_REVISION_CONFIGMAP
 from spi.config import IngressMode, Profile
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -38,7 +39,6 @@ INGRESS_DIR = STACKS / "ingress"
 KUSTOMIZATION_KIND = "Kustomization"
 FLUX_API_PREFIX = "kustomize.toolkit.fluxcd.io/"
 NAMESPACES_MANIFEST = REPO_ROOT / "software" / "components" / "namespaces" / "namespaces.yaml"
-ISTIO_REVISION_CONFIGMAP = "spi-cluster-config"
 
 
 def _flux_kustomizations(tree: Path):
@@ -147,7 +147,7 @@ class TestIstioRevisionSubstitution:
 
     def test_no_hardcoded_asm_revision_labels_under_software(self):
         hardcoded = []
-        pattern = re.compile(r"istio\.io/rev:\s*asm-1-")
+        pattern = re.compile(r"""istio\.io/rev:\s*['"]?asm-1-""")
         for path in sorted((REPO_ROOT / "software").rglob("*.yaml")):
             if pattern.search(path.read_text(encoding="utf-8")):
                 hardcoded.append(path.relative_to(REPO_ROOT).as_posix())
