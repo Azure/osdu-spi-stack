@@ -296,9 +296,8 @@ def resolve_images(
                 resolved[SCHEMA_SERVICE_NAME] = schema_image
         except Exception as exc:
             if SCHEMA_SERVICE_NAME in requested:
-                errors.append(
-                    f"{exc}; {SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag"
-                )
+                errors.append(str(exc))
+                errors.append(f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag")
             else:
                 errors.append(
                     f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag: {exc}"
