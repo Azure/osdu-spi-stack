@@ -323,7 +323,7 @@ class TestSchemaLoadImageLockBackfill:
         }
     )
 
-    def _invoke(self, lock_stdout: str, resolution_error: str = ""):
+    def _invoke(self, lock_stdout: str, resolution_error: str = "", *args: str):
         runner = CliRunner()
 
         def _run_command(cmd_list, **kwargs):
@@ -349,7 +349,7 @@ class TestSchemaLoadImageLockBackfill:
             lock_patcher as lock_patch,
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
         ):
-            result = runner.invoke(cli.app, ["reconcile"])
+            result = runner.invoke(cli.app, ["reconcile", *args])
 
         assert result.exit_code == 0, result.output
         return lock_patch, run_command
@@ -403,3 +403,23 @@ class TestSchemaLoadImageLockBackfill:
 
         lock_patch.assert_called_once()
         assert self._patch_calls(run_command) == []
+
+    def test_resume_backfills_before_unsuspending_source(self):
+        """Resume has to backfill a legacy lock before Flux can fetch the new
+        schema-load manifest.
+        """
+        lock_patch, run_command = self._invoke(self.LEGACY_LOCK, "", "--resume")
+
+        lock_patch.assert_called_once()
+        commands = [call.args[0] for call in run_command.call_args_list]
+        configmap_patch = next(
+            index
+            for index, args in enumerate(commands)
+            if args[:3] == ["kubectl", "patch", "configmap"]
+        )
+        gitrepository_patch = next(
+            index
+            for index, args in enumerate(commands)
+            if args[:3] == ["kubectl", "patch", "gitrepository"]
+        )
+        assert configmap_patch < gitrepository_patch

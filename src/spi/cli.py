@@ -633,6 +633,9 @@ def reconcile(
     console.print("\n[bold]Refreshing cluster config for Flux substitution...[/bold]")
     create_istio_revision_configmap()
 
+    if not refresh_images:
+        _backfill_schema_load_lock(image_branch)
+
     if resume:
         console.print("\n[bold]Resuming GitRepository...[/bold]")
         run_command(
@@ -669,8 +672,6 @@ def reconcile(
         display_yaml(image_lock_yaml, "ConfigMap: osdu-image-lock")
         kubectl_apply_yaml(image_lock_yaml, "apply osdu-image-lock ConfigMap")
         display_result("osdu-image-lock ConfigMap updated")
-    else:
-        _backfill_schema_load_lock(image_branch)
 
     # Default: force reconcile
     if get_suspend_status():
