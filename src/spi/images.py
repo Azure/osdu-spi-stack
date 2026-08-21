@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Iterable, Mapping
 
 GITLAB_HOST = "https://community.opengroup.org"
 DEFAULT_IMAGE_BRANCH = "master"
@@ -322,6 +322,53 @@ def resolve_image_lock(branch: str = DEFAULT_IMAGE_BRANCH) -> dict[str, Resolved
     """Resolve the images controlled by the live Flux image lock."""
 
     return resolve_images(branch=branch, names=image_lock_names())
+
+
+def image_lock_missing_schema_load(lock_data: Mapping[str, str]) -> bool:
+    """Report whether an existing lock predates schema-load's inclusion."""
+
+    key = image_lock_key(SCHEMA_LOAD_SERVICE_NAME)
+    return not (lock_data.get(f"{key}_IMAGE_REPOSITORY") and lock_data.get(f"{key}_IMAGE_TAG"))
+
+
+def schema_load_lock_patch(
+    lock_data: Mapping[str, str],
+    branch: str = DEFAULT_IMAGE_BRANCH,
+) -> dict[str, str]:
+    """Return the loader entries missing from an existing image lock.
+
+    Locks generated before schema-load joined the live lock carry a schema pin
+    but no loader keys, and the Job requires them (ADR-013). The loader is
+    resolved from the schema tag the lock already records, so the backfill
+    keeps the loader on the running service's commit instead of jumping to the
+    newest master build.
+    """
+
+    schema_tag = lock_data.get(f"{image_lock_key(SCHEMA_SERVICE_NAME)}_IMAGE_TAG", "")
+    if not schema_tag:
+        raise ImageResolutionError(
+            f"{SCHEMA_LOAD_SERVICE_NAME}: image lock records no schema image tag to match"
+        )
+
+    image = resolve_image_tag(
+        SCHEMA_LOAD_SERVICE_NAME,
+        IMAGE_REGISTRY[SCHEMA_LOAD_SERVICE_NAME],
+        lock_data.get("IMAGE_BRANCH") or branch,
+        schema_tag,
+    )
+
+    key = image_lock_key(SCHEMA_LOAD_SERVICE_NAME)
+    patch = {
+        f"{key}_IMAGE": image.image,
+        f"{key}_IMAGE_REPOSITORY": image.repository,
+        f"{key}_IMAGE_TAG": image.tag,
+        f"{key}_IMAGE_CREATED_AT": image.created_at,
+        f"{key}_IMAGE_DIGEST": image.digest,
+    }
+    count = lock_data.get("IMAGE_COUNT", "")
+    if count.isdigit():
+        patch["IMAGE_COUNT"] = str(int(count) + 1)
+    return patch
 
 
 def _yaml_string(value: str) -> str:

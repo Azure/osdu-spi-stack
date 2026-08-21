@@ -14,6 +14,7 @@
 
 """SPI CLI - Deploy OSDU SPI Stack on Azure AKS Automatic."""
 
+import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -29,9 +30,13 @@ from .console import console, display_result, display_yaml
 from .guard import get_suspend_status, verify_spi_cluster
 from .images import (
     DEFAULT_IMAGE_BRANCH,
+    IMAGE_LOCK_CONFIGMAP,
+    IMAGE_LOCK_NAMESPACE,
     ImageResolutionError,
+    image_lock_missing_schema_load,
     render_image_lock_configmap,
     resolve_image_lock,
+    schema_load_lock_patch,
 )
 from .ingress import resolve_acme_email, resolve_ingress_mode
 from .shell import kubectl_apply_yaml, run_command
@@ -127,13 +132,28 @@ def _trigger_kustomization(name: str, requested_at: str) -> None:
 
 
 def _kustomization_exists(name: str) -> bool:
+    """Report whether a Kustomization is declared on this cluster.
+
+    `--ignore-not-found` keeps genuine absence (a profile that never declares
+    the resource) an empty result, while authorization errors, API timeouts,
+    and context failures still abort instead of being read as "not present".
+    """
     result = run_command(
-        ["kubectl", "get", "kustomization", name, "-n", "osdu-flux"],
+        [
+            "kubectl",
+            "get",
+            "kustomization",
+            name,
+            "-n",
+            "osdu-flux",
+            "--ignore-not-found",
+            "-o",
+            "name",
+        ],
         description=f"Check Kustomization exists ({name})",
-        check=False,
         display=False,
     )
-    return result.returncode == 0
+    return bool(result.stdout.strip())
 
 
 def _reconcile_kustomization(name: str) -> None:
@@ -150,6 +170,69 @@ def _reconcile_kustomization(name: str) -> None:
         ],
         description=f"Trigger and wait for Kustomization reconciliation ({name})",
     )
+
+
+def _backfill_schema_load_lock(image_branch: str) -> None:
+    """Add the schema-load entries to a lock generated before it joined.
+
+    The schema-load Job substitutes SCHEMA_LOAD_IMAGE_REPOSITORY and
+    SCHEMA_LOAD_IMAGE_TAG with no static fallback (ADR-013), so a cluster whose
+    osdu-image-lock predates that change has to have the lock updated before
+    Flux applies the manifest. The loader is resolved from the schema tag the
+    lock already pins, leaving every other service pin untouched.
+    """
+    result = run_command(
+        [
+            "kubectl",
+            "get",
+            "configmap",
+            IMAGE_LOCK_CONFIGMAP,
+            "-n",
+            IMAGE_LOCK_NAMESPACE,
+            "--ignore-not-found",
+            "-o",
+            "json",
+        ],
+        description=f"Read {IMAGE_LOCK_CONFIGMAP} ConfigMap",
+        display=False,
+    )
+    raw = result.stdout.strip()
+    if not raw:
+        # minimal/bare profiles never create the lock; nothing to backfill.
+        return
+
+    try:
+        lock_data = json.loads(raw).get("data") or {}
+    except json.JSONDecodeError:
+        console.print(f"[warning]{IMAGE_LOCK_CONFIGMAP} is not readable as JSON.[/warning]")
+        return
+
+    if not image_lock_missing_schema_load(lock_data):
+        return
+
+    console.print("\n[bold]Backfilling schema-load into the image lock...[/bold]")
+    try:
+        patch = schema_load_lock_patch(lock_data, branch=image_branch)
+    except ImageResolutionError as exc:
+        console.print(f"[warning]Unable to backfill the schema-load image: {exc}[/warning]")
+        console.print("[dim]Run 'spi reconcile --refresh-images' to resolve a fresh lock.[/dim]")
+        return
+
+    run_command(
+        [
+            "kubectl",
+            "patch",
+            "configmap",
+            IMAGE_LOCK_CONFIGMAP,
+            "-n",
+            IMAGE_LOCK_NAMESPACE,
+            "--type=merge",
+            "-p",
+            json.dumps({"data": patch}),
+        ],
+        description=f"Backfill schema-load entries in {IMAGE_LOCK_CONFIGMAP}",
+    )
+    display_result(f"{IMAGE_LOCK_CONFIGMAP} ConfigMap updated with schema-load")
 
 
 def _build_config(
@@ -586,6 +669,8 @@ def reconcile(
         display_yaml(image_lock_yaml, "ConfigMap: osdu-image-lock")
         kubectl_apply_yaml(image_lock_yaml, "apply osdu-image-lock ConfigMap")
         display_result("osdu-image-lock ConfigMap updated")
+    else:
+        _backfill_schema_load_lock(image_branch)
 
     # Default: force reconcile
     if get_suspend_status():

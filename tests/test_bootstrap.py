@@ -10,6 +10,7 @@ injection and a missing ConfigMap stalls every layer above namespaces.
 Both the detection and the paths that write the ConfigMap are covered here.
 """
 
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -139,7 +140,12 @@ class TestReconcileRefreshesClusterConfig:
         with (
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
-            patch("spi.cli.run_command"),
+            patch(
+                "spi.cli.run_command",
+                side_effect=lambda cmd_list, **kwargs: SimpleNamespace(
+                    returncode=0, stdout="", stderr=""
+                ),
+            ),
             patch("spi.cli.create_istio_revision_configmap") as configmap,
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
@@ -190,6 +196,12 @@ class TestReconcileRefreshesClusterConfig:
         }
 
         def _run_command(cmd_list, **kwargs):
+            if cmd_list[:3] == ["kubectl", "get", "kustomization"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f"kustomization.kustomize.toolkit.fluxcd.io/{cmd_list[3]}\n",
+                    stderr="",
+                )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with (
@@ -232,8 +244,9 @@ class TestReconcileRefreshesClusterConfig:
         }
 
         def _run_command(cmd_list, **kwargs):
-            if cmd_list[:2] == ["kubectl", "get"]:
-                return SimpleNamespace(returncode=1, stdout="", stderr="not found")
+            if cmd_list[:3] == ["kubectl", "get", "kustomization"]:
+                # --ignore-not-found: absence is an empty result, not a failure.
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with (
@@ -254,6 +267,21 @@ class TestReconcileRefreshesClusterConfig:
             if call.args[0][:3] == ["flux", "reconcile", "kustomization"]
         ]
         assert reconciled == []
+
+    def test_kustomization_probe_only_tolerates_genuine_absence(self):
+        """An authorization error or API timeout must not read as "absent" and
+        silently skip the dependent reconciliations, so the probe runs checked
+        and relies on --ignore-not-found for the absence case."""
+        with patch(
+            "spi.cli.run_command",
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ) as run_command:
+            assert cli._kustomization_exists("spi-osdu-services") is False
+
+        cmd_list = run_command.call_args.args[0]
+        assert "--ignore-not-found" in cmd_list
+        assert cmd_list[-2:] == ["-o", "name"]
+        assert run_command.call_args.kwargs.get("check", True) is True
 
     def test_default_reconcile_does_not_block_on_missing_kustomizations(self):
         """A plain `spi reconcile` (no --refresh-images) has to keep tolerating
@@ -276,3 +304,102 @@ class TestReconcileRefreshesClusterConfig:
             result = runner.invoke(cli.app, ["reconcile"])
 
         assert result.exit_code == 0, result.output
+
+
+class TestSchemaLoadImageLockBackfill:
+    """The schema-load Job substitutes its image from `osdu-image-lock` with no
+    static fallback (ADR-013). A cluster whose lock predates schema-load's
+    inclusion would render an unresolved image, so `spi reconcile` backfills
+    the loader entries before Flux applies the manifest.
+    """
+
+    LEGACY_LOCK = json.dumps(
+        {
+            "data": {
+                "IMAGE_BRANCH": "master",
+                "IMAGE_COUNT": "13",
+                "SCHEMA_IMAGE_TAG": "1" * 40,
+            }
+        }
+    )
+
+    def _invoke(self, lock_stdout: str, resolution_error: str = ""):
+        runner = CliRunner()
+
+        def _run_command(cmd_list, **kwargs):
+            if cmd_list[:3] == ["kubectl", "get", "configmap"]:
+                return SimpleNamespace(returncode=0, stdout=lock_stdout, stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        if resolution_error:
+            lock_patcher = patch(
+                "spi.cli.schema_load_lock_patch",
+                side_effect=cli.ImageResolutionError(resolution_error),
+            )
+        else:
+            lock_patcher = patch(
+                "spi.cli.schema_load_lock_patch",
+                return_value={"SCHEMA_LOAD_IMAGE_TAG": "1" * 40},
+            )
+
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            lock_patcher as lock_patch,
+            patch("spi.cli.run_command", side_effect=_run_command) as run_command,
+        ):
+            result = runner.invoke(cli.app, ["reconcile"])
+
+        assert result.exit_code == 0, result.output
+        return lock_patch, run_command
+
+    def _patch_calls(self, run_command):
+        return [
+            call.args[0]
+            for call in run_command.call_args_list
+            if call.args[0][:3] == ["kubectl", "patch", "configmap"]
+        ]
+
+    def test_legacy_lock_is_backfilled(self):
+        lock_patch, run_command = self._invoke(self.LEGACY_LOCK)
+
+        lock_patch.assert_called_once()
+        assert lock_patch.call_args.args[0]["SCHEMA_IMAGE_TAG"] == "1" * 40
+        patches = self._patch_calls(run_command)
+        assert len(patches) == 1
+        assert patches[0][3] == "osdu-image-lock"
+        assert json.loads(patches[0][-1]) == {"data": {"SCHEMA_LOAD_IMAGE_TAG": "1" * 40}}
+
+    def test_current_lock_is_left_alone(self):
+        current = json.dumps(
+            {
+                "data": {
+                    "SCHEMA_IMAGE_TAG": "1" * 40,
+                    "SCHEMA_LOAD_IMAGE_REPOSITORY": "registry/schema-load",
+                    "SCHEMA_LOAD_IMAGE_TAG": "1" * 40,
+                }
+            }
+        )
+        lock_patch, run_command = self._invoke(current)
+
+        lock_patch.assert_not_called()
+        assert self._patch_calls(run_command) == []
+
+    def test_absent_lock_is_skipped(self):
+        """minimal/bare profiles never create the lock."""
+        lock_patch, run_command = self._invoke("")
+
+        lock_patch.assert_not_called()
+        assert self._patch_calls(run_command) == []
+
+    def test_resolution_failure_warns_without_aborting(self):
+        """A loader tag the registry pruned cannot be backfilled, but the rest
+        of the reconcile still has to run."""
+        lock_patch, run_command = self._invoke(
+            self.LEGACY_LOCK,
+            resolution_error="schema-load: tag not found",
+        )
+
+        lock_patch.assert_called_once()
+        assert self._patch_calls(run_command) == []

@@ -363,3 +363,64 @@ def test_resolve_images_schema_load_only_reports_alternate_error(monkeypatch):
         "schema-load: unable to resolve matching schema tag: "
         "schema: registry repository 'schema-service-master' not found"
     )
+
+
+def test_image_lock_missing_schema_load_detects_legacy_lock():
+    legacy = {"SCHEMA_IMAGE_TAG": "a" * 40}
+    current = {
+        "SCHEMA_IMAGE_TAG": "a" * 40,
+        "SCHEMA_LOAD_IMAGE_REPOSITORY": "registry/schema-load",
+        "SCHEMA_LOAD_IMAGE_TAG": "a" * 40,
+    }
+
+    assert images.image_lock_missing_schema_load(legacy) is True
+    assert images.image_lock_missing_schema_load(current) is False
+
+
+def test_schema_load_lock_patch_resolves_from_recorded_schema_tag(monkeypatch):
+    """Backfilling a legacy lock has to reuse the schema tag it already pins,
+    so the loader matches the running service instead of jumping to master."""
+    schema_sha = "d" * 40
+
+    def fake_gitlab_get(url: str):
+        if "registry/repositories?" in url and "search=schema-service-schema-load-master" in url:
+            return [
+                {
+                    "id": 456,
+                    "name": "schema-service-schema-load-master",
+                    "location": "community.opengroup.org:5555/osdu/schema-load-master",
+                }
+            ]
+        if url.endswith(f"/registry/repositories/456/tags/{schema_sha}"):
+            return {
+                "name": schema_sha,
+                "created_at": "2026-05-20T00:00:00+00:00",
+                "digest": "sha256:loader-matched",
+            }
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+
+    patch = images.schema_load_lock_patch(
+        {"IMAGE_BRANCH": "master", "IMAGE_COUNT": "13", "SCHEMA_IMAGE_TAG": schema_sha}
+    )
+
+    assert patch["SCHEMA_LOAD_IMAGE_TAG"] == schema_sha
+    assert patch["SCHEMA_LOAD_IMAGE_REPOSITORY"] == (
+        "community.opengroup.org:5555/osdu/schema-load-master"
+    )
+    assert patch["SCHEMA_LOAD_IMAGE"] == (
+        f"community.opengroup.org:5555/osdu/schema-load-master:{schema_sha}"
+    )
+    assert patch["SCHEMA_LOAD_IMAGE_DIGEST"] == "sha256:loader-matched"
+    assert patch["IMAGE_COUNT"] == "14"
+
+
+def test_schema_load_lock_patch_without_schema_tag_raises(monkeypatch):
+    def fail(url: str):
+        raise AssertionError("registry must not be queried without a schema tag")
+
+    monkeypatch.setattr(images, "gitlab_get", fail)
+
+    with pytest.raises(ImageResolutionError, match="no schema image tag"):
+        images.schema_load_lock_patch({"IMAGE_BRANCH": "master"})

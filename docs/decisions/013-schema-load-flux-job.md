@@ -37,4 +37,7 @@ Rejected:
 
 The loader image is now resolved through the live image lock instead of a Git
 pin. `force: true` on its Flux Kustomization replaces the Job when the resolved
-tag changes, because Kubernetes does not permit Job Pod template updates.
+tag changes, because Kubernetes does not permit Job Pod template updates. The
+Job carries no static image default; a lock created before schema-load joined
+it is backfilled by `spi reconcile` from the schema tag the lock already pins,
+so no known-stale SHA survives in the manifest.

@@ -24,6 +24,7 @@ Shape:
 - Service Kustomizations under `software/stacks/osdu/profiles/core/` reference the ConfigMap with `spec.postBuild.substituteFrom`, so `${PARTITION_IMAGE}` in a YAML expands at apply time. Service Helm chart values stay generic; the lock holds the pin.
 - `spi reconcile --refresh-images` re-resolves and re-applies the ConfigMap, then reconciles the service Kustomizations and `spi-osdu-schema-load` before `spi-osdu-reference`. Updates are explicit, not silent.
 - The schema-load Job is included in the live lock. Because a completed Kubernetes Job cannot be updated in place, its Flux Kustomization uses `force: true` so a changed image tag replaces the Job and re-runs the loader.
+- The schema-load Job substitutes its image with no static default, so a lock generated before the loader joined would leave the Job unresolvable. `spi reconcile` backfills the missing `SCHEMA_LOAD_*` keys from the schema tag the lock already pins, leaving every other service pin untouched.
 
 Rejected:
 
