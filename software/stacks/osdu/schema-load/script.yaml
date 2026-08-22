@@ -18,6 +18,9 @@ kind: ConfigMap
 metadata:
   name: schema-load-scripts
   namespace: osdu
+  annotations:
+    # Without this, Flux postBuild substitution blanks out every ${VAR} below.
+    kustomize.toolkit.fluxcd.io/substitute: disabled
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack
     app.kubernetes.io/component: schema-load
