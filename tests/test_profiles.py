@@ -44,9 +44,8 @@ SUBSTITUTE_ANNOTATION = "kustomize.toolkit.fluxcd.io/substitute"
 PAYLOAD_FIELDS = ("data", "stringData")
 PAYLOAD_KINDS = ("ConfigMap", "Secret")
 # Flux envsubst covers POSIX parameter expansion, not just ${VAR}: ${VAR:=x},
-# ${VAR:-x}, ${#VAR} and ${VAR/a/b} are all rewritten. $${VAR} is the escape
-# that survives, so a token preceded by $ is deliberate and not a hazard.
-VAR_TOKEN = re.compile(r"(?<!\$)\$\{[^}]*\}")
+# ${VAR:-x}, ${#VAR} and ${VAR/a/b} are all rewritten.
+DOLLAR_RUN = re.compile(r"(?<!\$)(\$+)\{[^}]*\}")
 
 
 def _flux_kustomizations(tree: Path):
@@ -130,6 +129,16 @@ def _built_resources(directory: Path, seen: set | None = None):
             for doc in yaml.safe_load_all(target.read_text(encoding="utf-8")):
                 if doc:
                     yield target, doc
+
+
+def _rewritten_expansions(text: str) -> list:
+    """Return the expansions Flux would rewrite in a payload.
+
+    Flux collapses each $$ into one literal dollar, so an even-length dollar
+    run escapes the expansion outright while an odd-length run leaves a single
+    dollar still driving a substitution: $${VAR} survives, $$${VAR} does not.
+    """
+    return [match.group(0) for match in DOLLAR_RUN.finditer(text) if len(match.group(1)) % 2]
 
 
 def _payload_strings(doc):
@@ -276,7 +285,7 @@ class TestSubstitutionLeavesScriptsIntact:
                 if _opts_out_of_substitution(doc):
                     continue
                 tokens = sorted(
-                    {t for body in _payload_strings(doc) for t in VAR_TOKEN.findall(body)}
+                    {t for body in _payload_strings(doc) for t in _rewritten_expansions(body)}
                 )
                 if tokens:
                     name = (doc.get("metadata") or {}).get("name")
@@ -302,11 +311,17 @@ class TestSubstitutionLeavesScriptsIntact:
         "expansion",
         ["${VAR}", "${VAR:=default}", "${VAR:-default}", "${#VAR}", "${VAR/a/b}"],
     )
-    def test_token_pattern_matches_every_expansion_flux_rewrites(self, expansion):
-        assert VAR_TOKEN.findall(expansion) == [expansion]
+    def test_every_expansion_flux_rewrites_is_matched(self, expansion):
+        assert _rewritten_expansions(expansion) == [expansion]
 
-    def test_token_pattern_ignores_the_escaped_form(self):
-        assert VAR_TOKEN.findall("$${VAR}") == []
+    @pytest.mark.parametrize("dollars", [1, 3, 5])
+    def test_odd_dollar_runs_still_substitute(self, dollars):
+        expansion = "$" * dollars + "{VAR}"
+        assert _rewritten_expansions(expansion) == [expansion]
+
+    @pytest.mark.parametrize("dollars", [2, 4, 6])
+    def test_even_dollar_runs_are_escaped(self, dollars):
+        assert _rewritten_expansions("$" * dollars + "{VAR}") == []
 
 
 class TestMinimalProfileScope:
