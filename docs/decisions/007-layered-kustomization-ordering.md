@@ -6,6 +6,10 @@
 supersedes the Gateway placement in this decision. The original ordering below
 is preserved as the historical record.
 
+**Amendment (2026-08-24):** the schema-load layer timeout is 65 minutes, not the
+35 minutes recorded below. It now tracks the Job's `activeDeadlineSeconds`
+(3600s) plus headroom for image pull and reconcile overhead on a cold cluster.
+
 ## Context
 
 A Kubernetes workload graph has hard ordering constraints: CRDs before CRs, operators before instances, cert-manager before certs, middleware before consumers. Applying everything at once surfaces as CrashLoopBackOff and CRD-not-found errors that resolve eventually but obscure real failures.
