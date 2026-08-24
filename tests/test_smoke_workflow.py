@@ -115,6 +115,34 @@ def test_verify_gate_outlives_the_schema_load_and_reference_timeouts():
         "verify job timeout-minutes must exceed the wait_for_flux_ready.sh --timeout"
     )
 
+    # The verify job also runs checkout/tool-install/login/get-credentials
+    # steps before the wait starts, and the HTTPS acceptance probe can retry
+    # for a while after the wait succeeds. A margin that is only "> 0" over
+    # the wait timeout can be exhausted by those steps alone, letting the job
+    # get cancelled while its probes are still healthy. Require the margin to
+    # cover the probe's own worst-case retry budget plus a setup allowance.
+    probe_step = _steps(verify)["Acceptance probe (HTTPS terminates)"]["run"]
+    attempts_match = re.search(r"seq 1 (\d+)", probe_step)
+    max_time_match = re.search(r"--max-time (\d+)", probe_step)
+    sleep_match = re.search(r"sleep (\d+)", probe_step)
+    assert attempts_match and max_time_match and sleep_match, (
+        "could not parse the HTTPS acceptance probe's retry parameters"
+    )
+    probe_minutes = (
+        int(attempts_match.group(1)) * (int(max_time_match.group(1)) + int(sleep_match.group(1)))
+    ) / 60
+
+    setup_buffer_minutes = 15  # checkout, tool installs, az login, get-credentials
+    required_margin_minutes = probe_minutes + setup_buffer_minutes
+
+    margin_minutes = int(verify["timeout-minutes"]) - wait_timeout_minutes
+    assert margin_minutes >= required_margin_minutes, (
+        "verify job timeout-minutes must reserve enough margin over the "
+        "wait_for_flux_ready.sh --timeout to cover the HTTPS probe's own retry "
+        "budget plus setup headroom, so a healthy core run isn't cancelled while "
+        "its probes are still running"
+    )
+
 
 def test_smoke_environment_is_reviewer_free_and_protected_branch_only():
     setup = CI_SETUP.read_text(encoding="utf-8")

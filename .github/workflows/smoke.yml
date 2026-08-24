@@ -197,12 +197,14 @@ jobs:
     # cold cluster (activeDeadlineSeconds: 7200 plus Flux headroom, see
     # software/stacks/osdu/schema-load/job.yaml and
     # profiles/core/stack.yaml), and it only starts once L0a-L5a have
-    # already gone Ready. 210 covers ~30 min for those preceding layers,
+    # already gone Ready. 240 covers ~30 min for those preceding layers,
     # schema-load's full 125 min window, ~30 min for spi-osdu-reference
-    # (which depends on schema-load), and headroom for the login/kubectl
-    # setup and acceptance probes that follow. Keep this above the
-    # --timeout value below.
-    timeout-minutes: 210
+    # (which depends on schema-load), plus a 30-min margin over the
+    # --timeout value below: this job's own checkout/tool-install/login and
+    # AKS-credential steps run before that wait even starts, and the HTTPS
+    # acceptance probe after it can retry for up to 20 * (15s curl timeout +
+    # 30s sleep) = ~15 min. Keep this above the --timeout value below.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
 
