@@ -2,6 +2,10 @@
 
 **Status**: Accepted
 
+**Amendment (2026-08-24):** [ADR-029](029-single-flux-inventory-owner.md)
+supersedes the Gateway ownership implied by this decision. The original
+decision below is preserved as the historical record.
+
 ## Context
 
 The SPI Stack has three distinct ingress audiences:

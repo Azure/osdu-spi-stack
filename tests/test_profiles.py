@@ -347,3 +347,155 @@ class TestBareProfileScope:
 
     def test_ingress_tree_is_empty(self):
         assert list(_flux_kustomizations(INGRESS_DIR / "bare")) == []
+
+
+class TestSingleRenderer:
+    """One object, one Flux owner.
+
+    Two Kustomizations rendering the same object each write their own desired
+    state on every reconcile, so the object flip-flops and neither side ever
+    settles. This is what happened when a profile-level spi-gateway and an
+    ingress-level spi-gateway-tls both built software/components/gateway: the
+    base wrote HTTP:80 only, the TLS overlay wrote HTTP:80 plus HTTPS:443, and
+    the live Gateway's generation climbed on an idle cluster.
+
+    Byte-identical desired state is still contested ownership: either
+    Kustomization can delete the object from its inventory while pruning.
+    """
+
+    @staticmethod
+    def _root_owner(tree: Path) -> str:
+        """The top-level Kustomization that renders a tree's own documents."""
+        return f"<{tree.name} tree>"
+
+    @classmethod
+    def _renderings(cls, tree: Path) -> dict:
+        """Map object identity to the {owner: source file} set.
+
+        Both levels count. The top-level stack and ingress Kustomizations
+        render the Flux Kustomization documents in their tree, and each of
+        those renders whatever its spec.path builds. Recording only the
+        second level would miss two trees declaring one Kustomization
+        identity, which is contested ownership of that object just the same.
+        """
+        found: dict = {}
+        root = cls._root_owner(tree)
+        for item in _flux_kustomizations(tree):
+            name = item["metadata"]["name"]
+            found.setdefault((KUSTOMIZATION_KIND, item["metadata"]["namespace"], name), {})[
+                root
+            ] = tree.name
+            directory = REPO_ROOT / item["spec"]["path"].removeprefix("./")
+            for path, doc in _built_resources(directory):
+                meta = doc.get("metadata") or {}
+                key = (doc.get("kind"), meta.get("namespace") or "", meta.get("name"))
+                found.setdefault(key, {})[name] = path.relative_to(REPO_ROOT).as_posix()
+        return found
+
+    @pytest.mark.parametrize("pair", PAIRS, ids=PAIR_IDS)
+    def test_no_object_is_rendered_twice(self, pair):
+        profile, mode = pair
+        found: dict = {}
+        for tree in (PROFILES_DIR / profile.value, _ingress_tree(profile, mode)):
+            for key, owners in self._renderings(tree).items():
+                found.setdefault(key, {}).update(owners)
+
+        contested = {key: sorted(owners) for key, owners in found.items() if len(owners) > 1}
+
+        assert not contested, (
+            f"--profile {profile.value} --ingress-mode {mode.value} has objects claimed "
+            f"by more than one Kustomization: {contested}. Each owner re-applies its own "
+            "desired state every reconcile and the object never settles."
+        )
+
+    @pytest.mark.parametrize("pair", PAIRS, ids=PAIR_IDS)
+    def test_gateway_owner_is_the_ingress_tree(self, pair):
+        profile, mode = pair
+        key = ("Gateway", "aks-istio-ingress", "spi-gateway")
+        profile_owners = self._renderings(PROFILES_DIR / profile.value).get(key, {})
+        ingress_tree = _ingress_tree(profile, mode)
+        ingress_owners = self._renderings(ingress_tree).get(key, {})
+        if profile is Profile.BARE:
+            assert not profile_owners
+            assert not ingress_owners
+            return
+
+        assert not profile_owners, (
+            "the Gateway's listeners are ingress-mode specific, so only the ingress "
+            f"tree may render spi-gateway, found {sorted(profile_owners)}"
+        )
+        assert len(ingress_owners) == 1, (
+            f"{ingress_tree.name}/stack.yaml must render spi-gateway exactly once, "
+            f"found {sorted(ingress_owners)}"
+        )
+
+    def test_two_trees_declaring_one_kustomization_are_contested(self, tmp_path):
+        """The root trees own their Kustomization documents, so they count too.
+
+        Without the root-level record the guard walks only each child's
+        spec.path and two trees declaring the same child look clean.
+        """
+        doc = (
+            "apiVersion: kustomize.toolkit.fluxcd.io/v1\n"
+            "kind: Kustomization\n"
+            "metadata:\n"
+            "  name: spi-duplicate\n"
+            "  namespace: osdu-flux\n"
+            "spec:\n"
+            "  path: ./software/components/inventory-handoff\n"
+        )
+        trees = []
+        for name in ("first", "second"):
+            tree = tmp_path / name
+            tree.mkdir()
+            (tree / "stack.yaml").write_text(doc, encoding="utf-8")
+            trees.append(tree)
+
+        found: dict = {}
+        for tree in trees:
+            for key, owners in self._renderings(tree).items():
+                found.setdefault(key, {}).update(owners)
+
+        contested = {key: sorted(owners) for key, owners in found.items() if len(owners) > 1}
+        assert contested == {
+            (KUSTOMIZATION_KIND, "osdu-flux", "spi-duplicate"): ["<first tree>", "<second tree>"]
+        }
+
+    @pytest.mark.parametrize("profile", [Profile.CORE, Profile.MINIMAL], ids=lambda p: p.value)
+    def test_gateway_owner_name_is_shared_by_every_mode(self, profile):
+        """One child identity, so switching --ingress-mode never prunes it.
+
+        A per-mode name would make the top-level ingress Kustomization prune
+        the outgoing child, and its MirrorPrune deletion takes the Gateway
+        with it even once the incoming child has applied the object.
+        """
+        key = ("Gateway", "aks-istio-ingress", "spi-gateway")
+        owners = {
+            mode: sorted(self._renderings(_ingress_tree(profile, mode)).get(key, {}))
+            for mode in IngressMode
+        }
+
+        assert set(map(tuple, owners.values())) == {("spi-gateway-tls",)}, (
+            f"the {profile.value} profile renders the Gateway under more than one "
+            f"Kustomization name: {owners}"
+        )
+
+    @pytest.mark.parametrize("profile", [Profile.CORE, Profile.MINIMAL], ids=lambda p: p.value)
+    def test_legacy_gateway_inventory_is_orphaned(self, profile):
+        gateway = _kustomization(PROFILES_DIR / profile.value, "spi-gateway")
+        assert gateway["spec"]["path"] == "./software/components/inventory-handoff"
+        assert gateway["spec"]["prune"] is False
+        assert gateway["spec"]["deletionPolicy"] == "Orphan"
+
+    @pytest.mark.parametrize("profile", [Profile.CORE, Profile.MINIMAL], ids=lambda p: p.value)
+    def test_redis_source_handoff_disables_pruning(self, profile):
+        redis = _kustomization(PROFILES_DIR / profile.value, "spi-redis")
+        # Unlike retired inventories, Redis remains active and must be prunable later.
+        assert redis["spec"]["prune"] is False
+
+    @pytest.mark.parametrize("mode", ["dns", "dns-minimal"])
+    def test_legacy_external_dns_inventory_is_orphaned(self, mode):
+        external_dns = _kustomization(INGRESS_DIR / mode, "spi-external-dns")
+        assert external_dns["spec"]["path"] == "./software/components/inventory-handoff"
+        assert external_dns["spec"]["prune"] is False
+        assert external_dns["spec"]["deletionPolicy"] == "Orphan"
