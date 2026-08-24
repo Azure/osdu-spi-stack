@@ -9,7 +9,7 @@
 | Job | Owns | Timeout | OIDC login |
 |-----|------|---------|------------|
 | `provision` | `az group create` + `spi up` (AKS + PaaS + Flux extension Bicep) | 60 min | Fresh per job |
-| `verify` | `wait_for_flux_ready.sh` + acceptance probe + diagnostics-on-failure | 210 min | Fresh per job |
+| `verify` | `wait_for_flux_ready.sh` + acceptance probe + diagnostics-on-failure | 240 min | Fresh per job |
 | `teardown` | `az group delete --name <rg> --yes --no-wait` | 15 min | Fresh per job |
 
 `provision` exposes the resource group name as a job output (`needs.provision.outputs.rg`). `verify` consumes it to call `az aks get-credentials`. `teardown` consumes it to issue the deletion. The teardown step guards on an empty RG so a provision that died before "Resolve env name" no-ops cleanly.
