@@ -34,6 +34,7 @@ from .shell import kubectl_apply_yaml, kubectl_json, run_command, run_process
 
 ISTIO_INGRESS_NAMESPACE = "aks-istio-ingress"
 ISTIO_INGRESS_SERVICE = "aks-istio-ingressgateway-external"
+_ISTIO_INGRESS_NAMESPACES = (ISTIO_INGRESS_NAMESPACE, "istio-system")
 AZURE_DNS_LABEL_ANNOTATION = "service.beta.kubernetes.io/azure-dns-label-name"
 
 
@@ -129,13 +130,28 @@ def configure_ingress_service(config: Config) -> None:
 
 
 def get_ingress_ip() -> str:
-    """Return the current IP (or hostname) of the Istio ingress LB. Empty if unresolved."""
-    data = kubectl_json(["-n", ISTIO_INGRESS_NAMESPACE, "get", "svc", ISTIO_INGRESS_SERVICE])
-    if not data:
-        return ""
-    ingresses = data.get("status", {}).get("loadBalancer", {}).get("ingress", [])
-    if ingresses:
-        return ingresses[0].get("ip", "") or ingresses[0].get("hostname", "")
+    """Return an Istio ingress LB address, preferring the managed AKS Service."""
+    for namespace in _ISTIO_INGRESS_NAMESPACES:
+        data = kubectl_json(["get", "svc", "-n", namespace])
+        if not data:
+            continue
+        services = sorted(
+            data.get("items", []),
+            key=lambda service: (
+                service.get("metadata", {}).get("name") != ISTIO_INGRESS_SERVICE,
+                service.get("metadata", {}).get("name", ""),
+            ),
+        )
+        for service in services:
+            if service.get("spec", {}).get("type") != "LoadBalancer":
+                continue
+            addresses = []
+            for ingress in service.get("status", {}).get("loadBalancer", {}).get("ingress", []):
+                address = ingress.get("ip") or ingress.get("hostname")
+                if address:
+                    addresses.append(address)
+            if addresses:
+                return min(addresses)
     return ""
 
 

@@ -31,6 +31,7 @@ from rich.table import Table
 from .azure_infra import _cosmos_sql_name, _sb_name, _storage_name
 from .config import BASE_NAME
 from .console import console
+from .ingress import get_ingress_ip
 from .shell import kubectl_json
 
 # OSDU API services exposed via HTTPRoutes. Order preserved for display.
@@ -194,26 +195,10 @@ def _compute_endpoints(cfg: dict) -> tuple:
         return mode, base, endpoints, middleware
 
     # Fallback: ip mode or no ConfigMap yet.
-    ip = cfg.get("GATEWAY_IP", "") or _discover_gateway_ip()
+    ip = cfg.get("GATEWAY_IP", "") or get_ingress_ip()
     base = f"http://{ip}" if ip else ""
     endpoints = {svc: f"{base}{path}" for svc, path in _OSDU_API_PATHS} if base else {}
     return "ip", base, endpoints, {}
-
-
-def _discover_gateway_ip() -> str:
-    """Fallback: find the Istio ingress LB IP when the ConfigMap is missing."""
-    for ns in ["aks-istio-ingress", "istio-system"]:
-        data = kubectl_json(["get", "svc", "-n", ns])
-        if not data or "items" not in data:
-            continue
-        for svc in data["items"]:
-            if svc.get("spec", {}).get("type") != "LoadBalancer":
-                continue
-            for ing in svc.get("status", {}).get("loadBalancer", {}).get("ingress", []):
-                ip = ing.get("ip") or ing.get("hostname")
-                if ip:
-                    return ip
-    return ""
 
 
 def _get_live_credentials() -> list:

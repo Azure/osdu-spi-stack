@@ -38,6 +38,10 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   are not supported.
 
 ### Fixed
+- Ingress address discovery now scans LoadBalancer Services in the supported
+  Istio namespaces instead of requiring one hardcoded Service name. `spi up`
+  therefore records the available address in `GATEWAY_IP`, and `spi info`
+  reuses the same deterministic lookup (issue #85).
 - Azure ingress now binds to the AKS managed Istio LoadBalancer Service and
   applies the Azure DNS label directly during `spi up`. This reuses the
   existing public IP so the deterministic FQDN resolves and ACME HTTP-01 can
