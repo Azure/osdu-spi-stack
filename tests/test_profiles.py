@@ -387,9 +387,7 @@ class TestSingleRenderer:
             for key, owners in self._renderings(tree).items():
                 found.setdefault(key, {}).update(owners)
 
-        contested = {
-            key: sorted(owners) for key, owners in found.items() if len(owners) > 1
-        }
+        contested = {key: sorted(owners) for key, owners in found.items() if len(owners) > 1}
 
         assert not contested, (
             f"--profile {profile.value} --ingress-mode {mode.value} has objects claimed "
