@@ -3,12 +3,6 @@ kind: Kustomization
 # Azure-mode overlay: base gateway (HTTP:80 for ACME challenges) plus a
 # single HTTPS:443 listener bound to the auto-FQDN, terminated with a
 # Let's Encrypt cert issued via HTTP-01 on the same gateway.
-#
-# Also stamps service.beta.kubernetes.io/azure-dns-label-name onto the
-# LB Service that Istio generates for the Gateway. The annotation flows
-# Gateway -> Service via Istio's GatewayClass controller, then Azure's
-# cloud controller (running with its own identity that can write to
-# the AKS-locked node resource group) patches the PIP's dnsSettings.
 resources:
   - ../../components/gateway
   - certificate.yaml
@@ -36,8 +30,3 @@ patches:
           allowedRoutes:
             namespaces:
               from: All
-      - op: add
-        path: /spec/infrastructure
-        value:
-          annotations:
-            service.beta.kubernetes.io/azure-dns-label-name: "${DNS_LABEL}"

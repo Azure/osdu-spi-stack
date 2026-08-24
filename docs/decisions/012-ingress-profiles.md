@@ -2,6 +2,13 @@
 
 **Status**: Accepted
 
+**Amendment (2026-08-24):** [ADR-029](029-single-flux-inventory-owner.md)
+supersedes the Gateway ownership implied by this decision. The original
+decision below is preserved as the historical record.
+
+**Amendment (2026-08-24):** [ADR-039](039-bind-managed-istio-ingress.md)
+supersedes the ingress LoadBalancer Service topology in this decision.
+
 ## Context
 
 The SPI Stack has three distinct ingress audiences:
