@@ -203,7 +203,12 @@ class Config(BaseModel):
     def dns_label(self) -> str:
         """Azure-mode DNS label for the Istio ingress PIP.
 
-        The '-ingress' suffix identifies the endpoint and reduces the chance
-        of colliding with another globally unique Azure DNS label.
+        Env plus the per-deployment name suffix: cloudapp labels are a
+        region-global namespace, and an unsuffixed label can sit reserved by
+        an unreachable resource (DnsRecordIsReserved), which no deploy-side
+        retry can clear. A legacy deployment without a suffix keeps the old
+        cluster-name label so its FQDN does not change.
         """
+        if self.name_suffix:
+            return f"{self.env or BASE_NAME}-ingress-{self.name_suffix}"
         return f"{self.cluster_name}-ingress"

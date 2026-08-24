@@ -1,16 +1,42 @@
 # SPI Stack - Ingress profile: AZURE (default)
 #
 # Uses Azure's auto-assigned <label>.<region>.cloudapp.azure.com FQDN.
-# CLI patches the Istio ingress LB with service.beta.kubernetes.io/
-# azure-dns-label-name=<cluster-name>-ingress before this stack reconciles.
-# gateway-tls-single-host renders the whole Gateway: HTTP:80 plus an
+# spi-ingress-dns-label stamps service.beta.kubernetes.io/
+# azure-dns-label-name=<cluster-name>-ingress onto the add-on's ingress
+# Service; only the Flux controllers may write in aks-istio-ingress
+# (ADR-039). gateway-tls-single-host renders the whole Gateway: HTTP:80 plus an
 # HTTPS:443 listener bound to the FQDN. cert-manager issues the Let's
 # Encrypt cert via HTTP-01 against that same HTTP:80 listener. All OSDU
 # APIs and middleware UIs (Kibana /kibana, Airflow /airflow) live under
 # one host.
 #
 # Required variables in spi-ingress-config ConfigMap (osdu-flux):
-#   ACME_EMAIL, INGRESS_FQDN
+#   ACME_EMAIL, INGRESS_FQDN, DNS_LABEL
+
+---
+# Azure DNS label on the add-on's external ingress Service. Applied by
+# Flux because only the flux-system controllers are exempt from the
+# admission policy that denies writes in aks-istio-ingress (ADR-039).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-ingress-dns-label
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/azure-dns-label
+  prune: false
+  wait: true
+  timeout: 5m
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-ingress-config
 
 ---
 # Cert issuers (Let's Encrypt staging + prod).
@@ -73,6 +99,7 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-cert-manager-issuers
+    - name: spi-ingress-dns-label
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system

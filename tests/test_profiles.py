@@ -29,12 +29,11 @@ import pytest
 import yaml
 
 from spi.bootstrap import ISTIO_REVISION_CONFIGMAP
-from spi.config import Config, IngressMode, Profile
+from spi.config import IngressMode, Profile
 from spi.ingress import (
     AZURE_DNS_LABEL_ANNOTATION,
     ISTIO_INGRESS_NAMESPACE,
     ISTIO_INGRESS_SERVICE,
-    configure_ingress_service,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -597,35 +596,32 @@ class TestManagedIstioIngressService:
         address = f"{ISTIO_INGRESS_SERVICE}.{ISTIO_INGRESS_NAMESPACE}.svc.cluster.local"
         assert {"type": "Hostname", "value": address} in gateway["spec"]["addresses"]
 
-    def test_azure_mode_annotates_referenced_service(self, monkeypatch):
-        commands = []
-        monkeypatch.setattr(
-            "spi.ingress.run_command", lambda command, **_: commands.append(command)
+    @pytest.mark.parametrize("mode", ["azure", "azure-minimal"])
+    def test_azure_modes_stamp_dns_label_via_flux(self, mode):
+        label = _kustomization(INGRESS_DIR / mode, "spi-ingress-dns-label")
+        assert label["spec"]["path"] == "./software/components/azure-dns-label"
+        # The add-on owns the Service; Flux must never prune it.
+        assert label["spec"]["prune"] is False
+
+        gateway_tls = _kustomization(INGRESS_DIR / mode, "spi-gateway-tls")
+        depends = [dep["name"] for dep in gateway_tls["spec"]["dependsOn"]]
+        assert "spi-ingress-dns-label" in depends
+
+    def test_dns_label_manifest_targets_addon_service(self):
+        manifest = yaml.safe_load(
+            (REPO_ROOT / "software" / "components" / "azure-dns-label" / "service.yaml").read_text(
+                encoding="utf-8"
+            )
         )
+        assert manifest["kind"] == "Service"
+        assert manifest["metadata"]["name"] == ISTIO_INGRESS_SERVICE
+        assert manifest["metadata"]["namespace"] == ISTIO_INGRESS_NAMESPACE
+        annotations = manifest["metadata"]["annotations"]
+        assert annotations[AZURE_DNS_LABEL_ANNOTATION] == "${DNS_LABEL}"
+        assert annotations["kustomize.toolkit.fluxcd.io/prune"] == "disabled"
+        # A partial object: server-side apply must not claim spec fields.
+        assert "spec" not in manifest
 
-        config = Config(env="test", ingress_mode=IngressMode.AZURE)
-        configure_ingress_service(config)
-
-        assert commands == [
-            [
-                "kubectl",
-                "annotate",
-                "service",
-                ISTIO_INGRESS_SERVICE,
-                "--namespace",
-                ISTIO_INGRESS_NAMESPACE,
-                f"{AZURE_DNS_LABEL_ANNOTATION}={config.dns_label}",
-                "--overwrite",
-            ]
-        ]
-
-    @pytest.mark.parametrize("mode", [IngressMode.DNS, IngressMode.IP], ids=lambda mode: mode.value)
-    def test_other_modes_do_not_mutate_addon_service(self, mode, monkeypatch):
-        commands = []
-        monkeypatch.setattr(
-            "spi.ingress.run_command", lambda command, **_: commands.append(command)
-        )
-
-        configure_ingress_service(Config(env="test", ingress_mode=mode))
-
-        assert commands == []
+    @pytest.mark.parametrize("mode", ["dns", "dns-minimal", "ip", "ip-minimal"])
+    def test_other_modes_do_not_mutate_addon_service(self, mode):
+        assert "spi-ingress-dns-label" not in _declared_names(INGRESS_DIR / mode)

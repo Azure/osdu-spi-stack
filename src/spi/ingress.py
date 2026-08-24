@@ -30,7 +30,7 @@ import typer
 
 from .config import Config, IngressMode
 from .console import console, display_result, display_yaml
-from .shell import kubectl_apply_yaml, kubectl_json, run_command, run_process
+from .shell import kubectl_apply_yaml, kubectl_json, run_process
 
 ISTIO_INGRESS_NAMESPACE = "aks-istio-ingress"
 ISTIO_INGRESS_SERVICE = "aks-istio-ingressgateway-external"
@@ -101,32 +101,13 @@ def compute_ingress_fqdn(dns_label: str, location: str) -> str:
 
     The DNS label is applied by the Azure cloud controller when it sees the
     ``service.beta.kubernetes.io/azure-dns-label-name`` annotation on the
-    AKS managed Istio LoadBalancer Service. The AKS-provisioned PIPs live in
-    the locked-down node resource group and cannot be patched directly via
-    the deployer identity.
+    AKS managed Istio LoadBalancer Service. The annotation itself is applied
+    by Flux (software/components/azure-dns-label): admission policy denies
+    the write to every non-Flux identity, and the AKS-provisioned PIPs live
+    in the locked-down node resource group, so no imperative path exists
+    (ADR-039).
     """
     return f"{dns_label}.{location}.cloudapp.azure.com"
-
-
-def configure_ingress_service(config: Config) -> None:
-    """Apply Azure-mode settings to the AKS managed Istio ingress Service."""
-    if config.ingress_mode is not IngressMode.AZURE:
-        return
-
-    run_command(
-        [
-            "kubectl",
-            "annotate",
-            "service",
-            ISTIO_INGRESS_SERVICE,
-            "--namespace",
-            ISTIO_INGRESS_NAMESPACE,
-            f"{AZURE_DNS_LABEL_ANNOTATION}={config.dns_label}",
-            "--overwrite",
-        ],
-        description="set Azure DNS label on managed Istio ingress",
-    )
-    display_result(f"Azure DNS label applied to {ISTIO_INGRESS_SERVICE}")
 
 
 def get_ingress_ip() -> str:

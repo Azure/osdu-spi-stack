@@ -166,3 +166,17 @@ def test_deployer_principal_type_env_override(monkeypatch):
 
     monkeypatch.setenv("SPI_DEPLOYER_TYPE", "ServicePrincipal")
     assert azure_infra._deployer_principal_type() == "ServicePrincipal"
+
+
+class TestDnsLabel:
+    def test_suffixed_deployment_uses_env_and_suffix(self):
+        cfg = Config(env="dev1", name_suffix="8d32f")
+        assert cfg.dns_label == "dev1-ingress-8d32f"
+
+    def test_empty_env_falls_back_to_base_name(self):
+        cfg = Config(name_suffix="8d32f")
+        assert cfg.dns_label == "spi-stack-ingress-8d32f"
+
+    def test_legacy_deployment_keeps_cluster_name_label(self):
+        cfg = Config(env="dev1")
+        assert cfg.dns_label == f"{cfg.cluster_name}-ingress"
