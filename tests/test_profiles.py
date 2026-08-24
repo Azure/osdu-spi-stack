@@ -487,6 +487,11 @@ class TestSingleRenderer:
         assert gateway["spec"]["prune"] is False
         assert gateway["spec"]["deletionPolicy"] == "Orphan"
 
+    @pytest.mark.parametrize("profile", [Profile.CORE, Profile.MINIMAL], ids=lambda p: p.value)
+    def test_redis_source_handoff_disables_pruning(self, profile):
+        redis = _kustomization(PROFILES_DIR / profile.value, "spi-redis")
+        assert redis["spec"]["prune"] is False
+
     @pytest.mark.parametrize("mode", ["dns", "dns-minimal"])
     def test_legacy_external_dns_inventory_is_orphaned(self, mode):
         external_dns = _kustomization(INGRESS_DIR / mode, "spi-external-dns")

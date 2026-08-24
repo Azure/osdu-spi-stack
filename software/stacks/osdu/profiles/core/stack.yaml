@@ -232,7 +232,9 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/redis
-  prune: true
+  # Temporary source ownership handoff (ADR-029). Re-enable pruning after
+  # this reconciles once without the bitnami HelmRepository in its inventory.
+  prune: false
   wait: true
   timeout: 10m
 
