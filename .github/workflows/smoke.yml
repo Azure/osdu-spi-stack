@@ -193,7 +193,19 @@ jobs:
     needs: provision
     environment: azure-smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    # spi-osdu-schema-load alone can legitimately run for up to 155 min on a
+    # cold cluster (activeDeadlineSeconds: 9000, including a 1800s
+    # pod-startup allowance for node provisioning/scheduling/image pull,
+    # plus Flux headroom, see software/stacks/osdu/schema-load/job.yaml and
+    # profiles/core/stack.yaml), and it only starts once L0a-L5a have
+    # already gone Ready. 270 covers ~30 min for those preceding layers,
+    # schema-load's full 155 min window, ~30 min for spi-osdu-reference
+    # (which depends on schema-load), plus a 30-min margin over the
+    # --timeout value below: this job's own checkout/tool-install/login and
+    # AKS-credential steps run before that wait even starts, and the HTTPS
+    # acceptance probe after it can retry for up to 20 * (15s curl timeout +
+    # 30s sleep) = ~15 min. Keep this above the --timeout value below.
+    timeout-minutes: 270
     steps:
       - uses: actions/checkout@v7
 
@@ -238,7 +250,11 @@ jobs:
           kubelogin convert-kubeconfig -l azurecli
 
       - name: Wait for Flux Kustomizations to be Ready
-        run: bash scripts/wait_for_flux_ready.sh --timeout 2700
+        # 13800s (230 min): ~30 min for L0a-L5a, spi-osdu-schema-load's full
+        # 155 min cold-cluster window, and ~30 min for spi-osdu-reference,
+        # which depends on schema-load and only starts once it is Ready.
+        # Keep below the job's timeout-minutes above.
+        run: bash scripts/wait_for_flux_ready.sh --timeout 13800
 
       - name: Acceptance probe (gateway reachable)
         if: ${{ needs.provision.outputs.profile != 'bare' }}

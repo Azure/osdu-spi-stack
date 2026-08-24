@@ -9,7 +9,7 @@
 | Job | Owns | Timeout | OIDC login |
 |-----|------|---------|------------|
 | `provision` | `az group create` + `spi up` (AKS + PaaS + Flux extension Bicep) | 60 min | Fresh per job |
-| `verify` | `wait_for_flux_ready.sh` + acceptance probe + diagnostics-on-failure | 50 min | Fresh per job |
+| `verify` | `wait_for_flux_ready.sh` + acceptance probe + diagnostics-on-failure | 270 min | Fresh per job |
 | `teardown` | `az group delete --name <rg> --yes --no-wait` | 15 min | Fresh per job |
 
 `provision` exposes the resource group name as a job output (`needs.provision.outputs.rg`). `verify` consumes it to call `az aks get-credentials`. `teardown` consumes it to issue the deletion. The teardown step guards on an empty RG so a provision that died before "Resolve env name" no-ops cleanly.
@@ -36,7 +36,7 @@ The provision job's "Pre-create RG with sweeper tags" step is what makes the bac
 ## Observed timings (`centralus`)
 
 - `provision`: ~45 min (~30 min AKS Automatic Bicep + ~3 min PaaS Bicep + ~30s K8s bootstrap + ~10-15 min Flux extension Bicep)
-- `verify`: highly variable; `scripts/wait_for_flux_ready.sh --timeout 2700` allows up to 45 minutes for Flux to reconcile every Kustomization
+- `verify`: highly variable; `scripts/wait_for_flux_ready.sh --timeout 13800` allows up to 230 minutes for Flux to reconcile every Kustomization
 - `teardown`: under 15 seconds (fires-and-forgets the RG delete)
 
 The 60-minute provision timeout gives ~15 minutes of headroom over the worst observed run.

@@ -23,10 +23,19 @@ metadata:
     app.kubernetes.io/component: schema-load
 spec:
   backoffLimit: 2
-  # 30 min ceiling covers the worst-case startup: ~20 min precheck wait
-  # on a fresh cluster while the schema pod is still pulling, plus a few
-  # minutes for the ~1,386 schema POSTs and token exchange.
-  activeDeadlineSeconds: 1800
+  # 150 min ceiling covers every delay this Job can hit on a cold cluster.
+  # activeDeadlineSeconds starts counting when the Job becomes active, i.e.
+  # before the Pod is even scheduled, so it also includes node provisioning,
+  # scheduling, and image pull -- not just the time bootstrap.sh spends
+  # running. The issue's observed cold-start node provisioning took ~28 min;
+  # 1800s (30 min) is budgeted for that pod-startup phase. The remaining
+  # 7200s covers the script's own WAIT_DEADLINE_SECONDS=2700 (the schema
+  # endpoint can stay unavailable for up to 45 min after the Pod starts
+  # running; the observed worst case in #83 was ~33 min, so this leaves
+  # headroom) plus 3600s+ for the throttled POST of ~1,386 schemas, which can
+  # itself exceed 30 min. The Flux Kustomization timeout must remain longer
+  # than this deadline.
+  activeDeadlineSeconds: 9000
   # No ttlSecondsAfterFinished: this is a one-shot loader. Flux
   # reconciles this Kustomization every 10 min; a TTL would let the
   # controller delete the completed Job and the next reconcile would
