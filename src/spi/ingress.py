@@ -30,12 +30,11 @@ import typer
 
 from .config import Config, IngressMode
 from .console import console, display_result, display_yaml
-from .shell import kubectl_apply_yaml, kubectl_json, run_process
+from .shell import kubectl_apply_yaml, kubectl_json, run_command, run_process
 
 ISTIO_INGRESS_NAMESPACE = "aks-istio-ingress"
-# Istio with gatewayClassName=istio provisions a LoadBalancer Service
-# named "<gateway-name>-istio" per Gateway CR. Our Gateway is "spi-gateway".
-ISTIO_INGRESS_SERVICE = "spi-gateway-istio"
+ISTIO_INGRESS_SERVICE = "aks-istio-ingressgateway-external"
+AZURE_DNS_LABEL_ANNOTATION = "service.beta.kubernetes.io/azure-dns-label-name"
 
 
 def resolve_ingress_mode(cli_flag: Optional[IngressMode]) -> IngressMode:
@@ -101,13 +100,32 @@ def compute_ingress_fqdn(dns_label: str, location: str) -> str:
 
     The DNS label is applied by the Azure cloud controller when it sees the
     ``service.beta.kubernetes.io/azure-dns-label-name`` annotation on the
-    LoadBalancer Service, which is set via the Gateway's
-    ``spec.infrastructure.annotations`` (propagated by Istio to the
-    generated Service) in the single-host TLS overlay. The AKS-provisioned
-    PIPs live in the locked-down node resource group and cannot be patched
-    directly via the deployer identity.
+    AKS managed Istio LoadBalancer Service. The AKS-provisioned PIPs live in
+    the locked-down node resource group and cannot be patched directly via
+    the deployer identity.
     """
     return f"{dns_label}.{location}.cloudapp.azure.com"
+
+
+def configure_ingress_service(config: Config) -> None:
+    """Apply Azure-mode settings to the AKS managed Istio ingress Service."""
+    if config.ingress_mode is not IngressMode.AZURE:
+        return
+
+    run_command(
+        [
+            "kubectl",
+            "annotate",
+            "service",
+            ISTIO_INGRESS_SERVICE,
+            "--namespace",
+            ISTIO_INGRESS_NAMESPACE,
+            f"{AZURE_DNS_LABEL_ANNOTATION}={config.dns_label}",
+            "--overwrite",
+        ],
+        description="set Azure DNS label on managed Istio ingress",
+    )
+    display_result(f"Azure DNS label applied to {ISTIO_INGRESS_SERVICE}")
 
 
 def get_ingress_ip() -> str:

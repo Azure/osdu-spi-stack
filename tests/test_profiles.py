@@ -29,7 +29,13 @@ import pytest
 import yaml
 
 from spi.bootstrap import ISTIO_REVISION_CONFIGMAP
-from spi.config import IngressMode, Profile
+from spi.config import Config, IngressMode, Profile
+from spi.ingress import (
+    AZURE_DNS_LABEL_ANNOTATION,
+    ISTIO_INGRESS_NAMESPACE,
+    ISTIO_INGRESS_SERVICE,
+    configure_ingress_service,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STACKS = REPO_ROOT / "software" / "stacks" / "osdu"
@@ -499,3 +505,68 @@ class TestSingleRenderer:
         assert external_dns["spec"]["path"] == "./software/components/inventory-handoff"
         assert external_dns["spec"]["prune"] is False
         assert external_dns["spec"]["deletionPolicy"] == "Orphan"
+
+
+class TestManagedIstioIngressService:
+    def test_service_reference_is_rendered_or_documented_as_addon_provided(self):
+        identity = (ISTIO_INGRESS_NAMESPACE, ISTIO_INGRESS_SERVICE)
+        rendered = set()
+        for path in sorted((REPO_ROOT / "software").rglob("*.yaml")):
+            text = path.read_text(encoding="utf-8")
+            if "{{" in text:
+                continue
+            for doc in yaml.safe_load_all(text):
+                if doc and doc.get("kind") == "Service":
+                    metadata = doc.get("metadata") or {}
+                    rendered.add((metadata.get("namespace") or "default", metadata.get("name")))
+
+        design = (REPO_ROOT / "docs" / "design" / "gateway-ingress.md").read_text(encoding="utf-8")
+        documented_addon_service = (
+            ISTIO_INGRESS_SERVICE in design and "AKS managed Istio add-on" in design
+        )
+        assert identity in rendered or documented_addon_service, (
+            f"{identity} is referenced by the CLI but is neither rendered under software/ "
+            "nor documented as an AKS managed Istio add-on resource"
+        )
+
+    def test_gateway_binds_to_referenced_service(self):
+        gateway = yaml.safe_load(
+            (REPO_ROOT / "software" / "components" / "gateway" / "gateway.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        address = f"{ISTIO_INGRESS_SERVICE}.{ISTIO_INGRESS_NAMESPACE}.svc.cluster.local"
+        assert {"type": "Hostname", "value": address} in gateway["spec"]["addresses"]
+
+    def test_azure_mode_annotates_referenced_service(self, monkeypatch):
+        commands = []
+        monkeypatch.setattr(
+            "spi.ingress.run_command", lambda command, **_: commands.append(command)
+        )
+
+        config = Config(env="test", ingress_mode=IngressMode.AZURE)
+        configure_ingress_service(config)
+
+        assert commands == [
+            [
+                "kubectl",
+                "annotate",
+                "service",
+                ISTIO_INGRESS_SERVICE,
+                "--namespace",
+                ISTIO_INGRESS_NAMESPACE,
+                f"{AZURE_DNS_LABEL_ANNOTATION}={config.dns_label}",
+                "--overwrite",
+            ]
+        ]
+
+    @pytest.mark.parametrize("mode", [IngressMode.DNS, IngressMode.IP], ids=lambda mode: mode.value)
+    def test_other_modes_do_not_mutate_addon_service(self, mode, monkeypatch):
+        commands = []
+        monkeypatch.setattr(
+            "spi.ingress.run_command", lambda command, **_: commands.append(command)
+        )
+
+        configure_ingress_service(Config(env="test", ingress_mode=mode))
+
+        assert commands == []
