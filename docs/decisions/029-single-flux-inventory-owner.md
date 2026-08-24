@@ -51,19 +51,17 @@ take the Gateway with it. Route Kustomizations depend on that name. The name can
 be shortened to `spi-gateway` in a later rollout, once the profile-level handoff
 below is gone and the rename can carry its own handoff.
 
-The old profile-level `spi-gateway` Kustomization remains for one migration
-rollout, points at an empty kustomization, sets `prune: false`, and uses
-`deletionPolicy: Orphan`. It can be removed only after that state has
-reconciled on existing clusters.
+Any old owner that stops rendering an object first becomes an empty
+Kustomization with `prune: false` and `deletionPolicy: Orphan`. It remains in
+that orphaning state until the empty inventory has reconciled on existing
+clusters. Only a later rollout may remove or rename the old owner.
 
 The shared `bitnami` HelmRepository moves out of `software/components/redis`
 into `software/components/helm-sources`, owned by a `spi-helm-sources`
 Kustomization. Redis and `spi-external-dns-release` both depend on it, so
 ExternalDNS gets an ordering edge to the source it needs without gating on
-Redis's runtime health. `spi-redis` depends on `spi-helm-sources` too, so the
-new owner adopts the HelmRepository before the old owner reconciles and drops
-it from its inventory. The old `spi-external-dns` inventory uses the same empty,
-non-pruning orphan handoff and can be removed after reconciliation.
+Redis's runtime health. When the source leaves an old inventory, that old owner
+follows the same empty, non-pruning, orphaning handoff before removal.
 
 This supersedes the Gateway placement in ADR-007 and the shared Gateway
 ownership implied by ADR-012.
@@ -73,5 +71,5 @@ ownership implied by ADR-012.
 - Good, because one reconciler applies and prunes each object.
 - Good, because existing inventories cannot delete resources during handoff.
 - Good, because each ingress mode still renders the complete desired Gateway.
-- Bad, because temporary handoff Kustomizations remain visible for one
-  migration rollout and require a follow-up removal.
+- Bad, because handoff Kustomizations remain visible until their empty,
+  non-pruning, orphaning state has reconciled and a later rollout removes them.
