@@ -33,18 +33,26 @@ data:
     SCHEMA_INFO_URL="http://schema.osdu.svc.cluster.local/api/schema-service/v1/info"
     export AZURE_SCHEMA_URL
 
-    # Wait up to ~20 min for the schema service to return 200 on /info.
-    # spi-osdu-services waits for the HelmReleases to report Ready, which does
-    # not guarantee the schema endpoint is serving yet. On a fresh cluster the
-    # schema pod may still be pulling its image when this Job starts; 600
-    # attempts * 2s remains bounded by the Job's 60 min deadline.
+    # Wait up to WAIT_DEADLINE_SECONDS for the schema service to return 200
+    # on /info. spi-osdu-services waits for the HelmReleases to report
+    # Ready, which does not guarantee the schema endpoint is serving yet.
+    # On a fresh cluster the schema pod may still be pulling its image
+    # when this Job starts.
+    #
+    # The deadline is enforced from elapsed wall-clock time rather than a
+    # fixed attempt count: the urlopen timeout below adds up to 5s per
+    # attempt on top of the 2s sleep, so counting attempts alone
+    # under-estimates how long the loop can run. WAIT_DEADLINE_SECONDS
+    # leaves headroom below the Job's 60 min activeDeadlineSeconds for
+    # token acquisition and the schema load itself.
     #
     # The probe uses Python's urllib rather than curl: the image's
     # bundled curl has a libcurl/libssh2 ABI mismatch
     # (undefined symbol: libssh2_session_callback_set2) and exits
     # immediately with a symbol lookup error.
     echo "Waiting for schema service at ${SCHEMA_INFO_URL}..."
-    attempts=0
+    WAIT_DEADLINE_SECONDS=2700
+    start_ts=$(date +%s)
     until python - <<PY 2>/dev/null
     import sys, urllib.request
     try:
@@ -54,14 +62,14 @@ data:
     sys.exit(0 if code == 200 else 1)
     PY
     do
-      attempts=$((attempts + 1))
-      if [ "${attempts}" -ge 600 ]; then
-        echo "ERROR: schema service did not return 200 after ${attempts} attempts"
+      elapsed=$(( $(date +%s) - start_ts ))
+      if [ "${elapsed}" -ge "${WAIT_DEADLINE_SECONDS}" ]; then
+        echo "ERROR: schema service did not return 200 after ${elapsed}s"
         exit 1
       fi
       sleep 2
     done
-    echo "Schema service ready (after ${attempts} attempts)."
+    echo "Schema service ready (after $(( $(date +%s) - start_ts ))s)."
 
     echo "Acquiring bearer token via Workload Identity..."
     BEARER_TOKEN=$(python "${AZURE_DEPLOYMENTS_SUBDIR}/Token.py")
