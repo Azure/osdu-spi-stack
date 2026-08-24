@@ -51,6 +51,8 @@ data:
     # (undefined symbol: libssh2_session_callback_set2) and exits
     # immediately with a symbol lookup error.
     echo "Waiting for schema service at ${SCHEMA_INFO_URL}..."
+    # 2700 = 3600 (Job's activeDeadlineSeconds) - 900s headroom for token
+    # acquisition and the schema load.
     WAIT_DEADLINE_SECONDS=2700
     start_ts=$(date +%s)
     until python - <<PY 2>/dev/null
