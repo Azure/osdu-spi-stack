@@ -304,6 +304,10 @@ class TestSchemaLoadDeadline:
     # subtracted from the Job deadline before comparing against
     # WAIT_DEADLINE_SECONDS, or a slow cold-start node provisioning (~28 min
     # observed) can erode the claimed load headroom.
+    #
+    # Keep this value in sync with the 1800s pod-startup allowance
+    # documented in software/stacks/osdu/schema-load/job.yaml's
+    # activeDeadlineSeconds comment.
     POD_STARTUP_ALLOWANCE_SECONDS = 1800
 
     def test_job_deadline_leaves_load_headroom_beyond_the_service_wait(self):
