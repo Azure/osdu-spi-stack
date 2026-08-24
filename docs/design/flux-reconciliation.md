@@ -42,8 +42,9 @@ L1  spi-cert-manager          dependsOn: spi-namespaces
     spi-trust-manager         dependsOn: spi-cert-manager
     spi-eck-operator          dependsOn: spi-namespaces
     spi-cnpg-operator         dependsOn: spi-namespaces
+    spi-helm-sources          dependsOn: spi-namespaces           (ADR-029)
 L2  spi-elasticsearch         dependsOn: spi-eck-operator, spi-nodepools
-    spi-redis                 dependsOn: spi-cert-manager, spi-nodepools
+    spi-redis                 dependsOn: spi-cert-manager, spi-nodepools, spi-helm-sources
     spi-postgresql            dependsOn: spi-cnpg-operator, spi-nodepools
 L3  spi-airflow               dependsOn: spi-postgresql
 L4a spi-osdu-config           dependsOn: spi-namespaces
@@ -150,7 +151,7 @@ $ kubectl describe kustomization spi-bootstrap -n osdu-flux
    redis-disable-mtls not found
 ```
 
-The Istio CRD has not registered yet, or the namespace is wrong. `kubectl get crd | grep istio` confirms. Fix the upstream Gateway owner (`spi-gateway-tls` or `spi-gateway-ip`) or the AKS Istio extension, reconcile, and the chain unblocks layer by layer.
+The Istio CRD has not registered yet, or the namespace is wrong. `kubectl get crd | grep istio` confirms. Fix the upstream Gateway owner (`spi-gateway-tls`, declared by the selected ingress tree) or the AKS Istio extension, reconcile, and the chain unblocks layer by layer.
 
 The same pattern works for HelmRelease failures (`flux get helmreleases -n osdu-flux`), schema-load Job failures (`kubectl logs job/schema-load -n osdu`), and image substitution failures (`kubectl get cm osdu-image-lock -n osdu-flux -o yaml` shows the resolved values).
 

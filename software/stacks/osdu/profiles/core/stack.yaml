@@ -3,7 +3,8 @@
 #
 # Layer 0a: Namespaces
 # Layer 0b: Karpenter NodePools (platform + osdu)
-# Layer 1: Operators (ECK, CNPG) + cert-manager + trust-manager
+# Layer 1: Operators (ECK, CNPG) + cert-manager + trust-manager +
+#          shared Helm sources
 #          (the Gateway is owned by the ingress tree, ADR-029)
 # Layer 2: Middleware (Elasticsearch, Redis, PostgreSQL) -- on platform nodes
 # Layer 3: Airflow (depends on PostgreSQL) -- on platform nodes
@@ -167,6 +168,30 @@ spec:
   timeout: 5m
 
 ---
+# Layer 1e: Shared Helm sources (the bitnami HelmRepository used by both
+# Redis and, in the dns ingress modes, ExternalDNS). It has its own owner
+# so neither consumer's inventory can prune a source the other needs
+# (ADR-029).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-helm-sources
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/helm-sources
+  prune: true
+  wait: true
+  timeout: 5m
+
+---
 # Layer 2a: Elasticsearch
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -202,6 +227,7 @@ spec:
   dependsOn:
     - name: spi-cert-manager
     - name: spi-nodepools
+    - name: spi-helm-sources
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system

@@ -43,9 +43,15 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   both built `software/components/gateway`, so each reconcile reverted the
   other and the HTTPS listener plus `spec.infrastructure.annotations` never
   survived. The ingress tree is now the Gateway's sole renderer:
-  `spi-gateway-tls` renders the TLS overlays and `spi-gateway-ip` renders the
-  base component. Legacy inventories are retained as non-pruning orphan
-  handoffs for one rollout (ADR-029, issue #81).
+  every non-bare ingress mode declares one `spi-gateway-tls` Kustomization,
+  pointed at its TLS overlay or, for `ip`, at the base component. Legacy
+  inventories are retained as non-pruning orphan handoffs for one rollout
+  (ADR-029, issue #81).
+- The shared `bitnami` HelmRepository is no longer declared twice. It moved to
+  `software/components/helm-sources`, owned by the new `spi-helm-sources`
+  Kustomization, which Redis and ExternalDNS both depend on. ExternalDNS
+  therefore waits on the source it needs instead of on Redis's runtime health
+  (ADR-029).
 - `spi update` now refuses the unsafe in-process `uv tool install --force`
   replacement path on Windows and prints the equivalent command to run from a
   new terminal, preventing orphaned `spi.exe` launchers with missing package

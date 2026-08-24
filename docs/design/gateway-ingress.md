@@ -21,7 +21,7 @@ Each mode is a self-contained Flux Kustomization tree under `software/stacks/osd
 Some pieces are in every mode and live under `software/components/`:
 
 - **Managed Istio** from AKS Automatic (ADR-002). Provides the Gateway API implementation and the ingress LoadBalancer service.
-- **`Gateway` resource** in the `aks-istio-ingress` namespace. The base manifest under `software/components/gateway/` listens on HTTP:80; the `azure` and `dns` TLS overlays layer their HTTPS listeners on top. The selected ingress profile is its sole Flux renderer: `spi-gateway-tls` renders a complete TLS Gateway, while `spi-gateway-ip` renders the base for `ip`. The legacy stack-profile `spi-gateway` renders nothing and is retained temporarily as a non-pruning ownership handoff (ADR-029).
+- **`Gateway` resource** in the `aks-istio-ingress` namespace. The base manifest under `software/components/gateway/` listens on HTTP:80; the `azure` and `dns` TLS overlays layer their HTTPS listeners on top. The selected ingress profile is its sole Flux renderer, through one `spi-gateway-tls` Kustomization that every non-bare mode declares under that same name: the TLS modes point it at their overlay, `ip` points it at the base component. One name means switching `--ingress-mode` only rewrites `spec.path` instead of pruning one owner and creating another. The legacy stack-profile `spi-gateway` renders nothing and is retained temporarily as a non-pruning ownership handoff (ADR-029).
 - **cert-manager** for any mode that issues TLS (`azure`, `dns`).
 - **`spi-ingress-config` ConfigMap** in `osdu-flux`, written by the CLI during K8s bootstrap. Carries `GATEWAY_HOSTNAME`, `GATEWAY_LABEL`, `DNS_ZONE`, and similar values consumed by Flux `postBuild.substituteFrom`.
 
@@ -72,7 +72,7 @@ Intentionally minimal. The Istio ingress LB has a public IP; no hostname, no cer
 
 What `software/stacks/osdu/ingress/ip/` lands:
 
-- `spi-gateway-ip`, rendering `software/components/gateway` unmodified: HTTP:80 and nothing else.
+- `spi-gateway-tls`, rendering `software/components/gateway` unmodified: HTTP:80 and nothing else. The name is shared with the TLS modes so a mode switch keeps one Flux inventory (ADR-029).
 - HTTPRoutes bound to that listener with no `hostnames` field.
 - No cert issuer.
 - No Kibana, no Airflow UI routing (the workloads still exist; you reach them via port-forward).

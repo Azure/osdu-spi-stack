@@ -364,19 +364,32 @@ class TestSingleRenderer:
     """
 
     @staticmethod
-    def _renderings(tree: Path) -> dict:
-        """Map object identity to the {Kustomization: (file, rendered doc)} set."""
+    def _root_owner(tree: Path) -> str:
+        """The top-level Kustomization that renders a tree's own documents."""
+        return f"<{tree.name} tree>"
+
+    @classmethod
+    def _renderings(cls, tree: Path) -> dict:
+        """Map object identity to the {owner: source file} set.
+
+        Both levels count. The top-level stack and ingress Kustomizations
+        render the Flux Kustomization documents in their tree, and each of
+        those renders whatever its spec.path builds. Recording only the
+        second level would miss two trees declaring one Kustomization
+        identity, which is contested ownership of that object just the same.
+        """
         found: dict = {}
+        root = cls._root_owner(tree)
         for item in _flux_kustomizations(tree):
+            name = item["metadata"]["name"]
+            found.setdefault((KUSTOMIZATION_KIND, item["metadata"]["namespace"], name), {})[
+                root
+            ] = tree.name
             directory = REPO_ROOT / item["spec"]["path"].removeprefix("./")
             for path, doc in _built_resources(directory):
                 meta = doc.get("metadata") or {}
                 key = (doc.get("kind"), meta.get("namespace") or "", meta.get("name"))
-                rendering = (
-                    path.relative_to(REPO_ROOT).as_posix(),
-                    yaml.safe_dump(doc, sort_keys=True),
-                )
-                found.setdefault(key, {})[item["metadata"]["name"]] = rendering
+                found.setdefault(key, {})[name] = path.relative_to(REPO_ROOT).as_posix()
         return found
 
     @pytest.mark.parametrize("pair", PAIRS, ids=PAIR_IDS)
@@ -414,6 +427,57 @@ class TestSingleRenderer:
         assert len(ingress_owners) == 1, (
             f"{ingress_tree.name}/stack.yaml must render spi-gateway exactly once, "
             f"found {sorted(ingress_owners)}"
+        )
+
+    def test_two_trees_declaring_one_kustomization_are_contested(self, tmp_path):
+        """The root trees own their Kustomization documents, so they count too.
+
+        Without the root-level record the guard walks only each child's
+        spec.path and two trees declaring the same child look clean.
+        """
+        doc = (
+            "apiVersion: kustomize.toolkit.fluxcd.io/v1\n"
+            "kind: Kustomization\n"
+            "metadata:\n"
+            "  name: spi-duplicate\n"
+            "  namespace: osdu-flux\n"
+            "spec:\n"
+            "  path: ./software/components/inventory-handoff\n"
+        )
+        trees = []
+        for name in ("first", "second"):
+            tree = tmp_path / name
+            tree.mkdir()
+            (tree / "stack.yaml").write_text(doc, encoding="utf-8")
+            trees.append(tree)
+
+        found: dict = {}
+        for tree in trees:
+            for key, owners in self._renderings(tree).items():
+                found.setdefault(key, {}).update(owners)
+
+        contested = {key: sorted(owners) for key, owners in found.items() if len(owners) > 1}
+        assert contested == {
+            (KUSTOMIZATION_KIND, "osdu-flux", "spi-duplicate"): ["<first tree>", "<second tree>"]
+        }
+
+    @pytest.mark.parametrize("profile", [Profile.CORE, Profile.MINIMAL], ids=lambda p: p.value)
+    def test_gateway_owner_name_is_shared_by_every_mode(self, profile):
+        """One child identity, so switching --ingress-mode never prunes it.
+
+        A per-mode name would make the top-level ingress Kustomization prune
+        the outgoing child, and its MirrorPrune deletion takes the Gateway
+        with it even once the incoming child has applied the object.
+        """
+        key = ("Gateway", "aks-istio-ingress", "spi-gateway")
+        owners = {
+            mode: sorted(self._renderings(_ingress_tree(profile, mode)).get(key, {}))
+            for mode in IngressMode
+        }
+
+        assert set(map(tuple, owners.values())) == {("spi-gateway-tls",)}, (
+            f"the {profile.value} profile renders the Gateway under more than one "
+            f"Kustomization name: {owners}"
         )
 
     @pytest.mark.parametrize("profile", [Profile.CORE, Profile.MINIMAL], ids=lambda p: p.value)

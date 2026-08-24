@@ -3,10 +3,15 @@
 # The base Gateway and nothing else; see kustomization.yaml.
 ---
 # The Gateway: HTTP:80 only. Sole Flux owner of the object.
+#
+# The name is shared with the TLS modes on purpose: one child identity
+# across every non-bare mode means switching --ingress-mode rewrites this
+# Kustomization's spec.path instead of pruning one child and creating
+# another, which would delete the Gateway with it (ADR-029).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: spi-gateway-ip
+  name: spi-gateway-tls
   namespace: osdu-flux
   labels:
     spi-stack.layer: "1"

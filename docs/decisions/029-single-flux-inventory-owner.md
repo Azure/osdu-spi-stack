@@ -41,20 +41,29 @@ remove its objects after the new owner applies them.
 
 ## Decision Outcome
 
-The selected ingress tree is the Gateway's sole renderer. The `azure` and
-`dns` trees retain the live `spi-gateway-tls` Kustomization name and render the
-complete TLS overlay. The `ip` trees use `spi-gateway-ip` to render the base
-HTTP Gateway. Route Kustomizations depend on the mode's owner.
+The selected ingress tree is the Gateway's sole renderer. Every non-bare mode
+declares that owner under one name, `spi-gateway-tls`, which the TLS modes
+already carry on live clusters: the TLS modes point it at their overlay and the
+`ip` modes point it at the base component. A single child identity means
+switching `--ingress-mode` rewrites `spec.path` on an existing inventory rather
+than pruning one child and creating another, whose `MirrorPrune` deletion would
+take the Gateway with it. Route Kustomizations depend on that name. The name can
+be shortened to `spi-gateway` in a later rollout, once the profile-level handoff
+below is gone and the rename can carry its own handoff.
 
 The old profile-level `spi-gateway` Kustomization remains for one migration
 rollout, points at an empty kustomization, sets `prune: false`, and uses
 `deletionPolicy: Orphan`. It can be removed only after that state has
 reconciled on existing clusters.
 
-The shared `bitnami` HelmRepository is owned by `spi-redis`.
-`spi-external-dns-release` references that source and depends on `spi-redis`.
-The old `spi-external-dns` inventory uses the same empty, non-pruning orphan
-handoff and can be removed after reconciliation.
+The shared `bitnami` HelmRepository moves out of `software/components/redis`
+into `software/components/helm-sources`, owned by a `spi-helm-sources`
+Kustomization. Redis and `spi-external-dns-release` both depend on it, so
+ExternalDNS gets an ordering edge to the source it needs without gating on
+Redis's runtime health. `spi-redis` depends on `spi-helm-sources` too, so the
+new owner adopts the HelmRepository before the old owner reconciles and drops
+it from its inventory. The old `spi-external-dns` inventory uses the same empty,
+non-pruning orphan handoff and can be removed after reconciliation.
 
 This supersedes the Gateway placement in ADR-007 and the shared Gateway
 ownership implied by ADR-012.

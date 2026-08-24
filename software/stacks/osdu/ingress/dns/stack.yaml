@@ -62,7 +62,9 @@ spec:
 
 ---
 # ExternalDNS, reading HTTPRoute hostnames and syncing A records to
-# the Azure DNS zone via Workload Identity.
+# the Azure DNS zone via Workload Identity. Its chart comes from the
+# shared bitnami HelmRepository, so it waits on that source's owner and
+# not on Redis, whose runtime health it does not need (ADR-029).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -73,7 +75,7 @@ metadata:
 spec:
   interval: 10m
   dependsOn:
-    - name: spi-redis
+    - name: spi-helm-sources
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system

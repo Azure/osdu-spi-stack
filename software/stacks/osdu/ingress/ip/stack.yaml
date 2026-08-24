@@ -7,10 +7,16 @@
 # ExternalDNS, no Kibana, no TLS overlay.
 ---
 # The Gateway: HTTP:80 only. Sole Flux owner of the object.
+#
+# Every non-bare mode names this Kustomization spi-gateway-tls, the name
+# the TLS modes already carry on live clusters, so switching
+# --ingress-mode only changes this object's spec.path. A mode-specific
+# name would make the top-level ingress Kustomization prune the old child
+# and its MirrorPrune deletion take the Gateway with it (ADR-029).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: spi-gateway-ip
+  name: spi-gateway-tls
   namespace: osdu-flux
   labels:
     spi-stack.layer: "1"
@@ -39,7 +45,7 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-osdu-services
-    - name: spi-gateway-ip
+    - name: spi-gateway-tls
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
