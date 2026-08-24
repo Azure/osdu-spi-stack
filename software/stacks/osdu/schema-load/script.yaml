@@ -42,9 +42,13 @@ data:
     # The deadline is enforced from elapsed wall-clock time rather than a
     # fixed attempt count: the urlopen timeout below adds up to 5s per
     # attempt on top of the 2s sleep, so counting attempts alone
-    # under-estimates how long the loop can run. WAIT_DEADLINE_SECONDS
-    # leaves headroom below the Job's 120 min activeDeadlineSeconds for
-    # token acquisition and the schema load itself.
+    # under-estimates how long the loop can run. This timer only starts once
+    # bootstrap.sh is already running, so it does not cover the node
+    # provisioning, scheduling, and image pull time the Job's
+    # activeDeadlineSeconds also counts against; that pod-startup phase is
+    # budgeted separately in job.yaml. WAIT_DEADLINE_SECONDS leaves headroom
+    # below the Job's 150 min activeDeadlineSeconds for token acquisition and
+    # the schema load itself.
     #
     # The probe uses Python's urllib rather than curl: the image's
     # bundled curl has a libcurl/libssh2 ABI mismatch
@@ -52,8 +56,9 @@ data:
     # immediately with a symbol lookup error.
     echo "Waiting for schema service at ${SCHEMA_INFO_URL}..."
     # 2700 (45 min) covers the ~35 min a cold cluster can take to serve the
-    # schema endpoint and leaves 4500s of the Job's 7200s deadline for token
-    # acquisition and the throttled schema load.
+    # schema endpoint once the Pod is running, leaving 4500s of the Job's
+    # 9000s deadline for token acquisition and the throttled schema load
+    # (after the 1800s pod-startup allowance in job.yaml).
     WAIT_DEADLINE_SECONDS=2700
     start_ts=$(date +%s)
     until python - <<PY 2>/dev/null

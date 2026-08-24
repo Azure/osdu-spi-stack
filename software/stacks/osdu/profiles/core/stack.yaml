@@ -418,9 +418,9 @@ spec:
   force: true
   prune: true
   wait: true
-  # Matches the Job's activeDeadlineSeconds (7200s) plus headroom for
-  # image pull and reconcile overhead.
-  timeout: 125m
+  # Matches the Job's activeDeadlineSeconds (9000s, including the 1800s
+  # pod-startup allowance) plus headroom for reconcile overhead.
+  timeout: 155m
   healthChecks:
     - apiVersion: batch/v1
       kind: Job

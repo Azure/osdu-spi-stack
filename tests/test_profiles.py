@@ -296,6 +296,16 @@ class TestSchemaLoadDeadline:
             "and reconcile overhead"
         )
 
+    # activeDeadlineSeconds starts counting when the Job becomes active, which
+    # is before the Pod is even scheduled, so it also covers node
+    # provisioning, scheduling, and image pull. WAIT_DEADLINE_SECONDS is only
+    # measured from inside bootstrap.sh, once the Pod is already running, so
+    # it does not account for that startup phase. This allowance must be
+    # subtracted from the Job deadline before comparing against
+    # WAIT_DEADLINE_SECONDS, or a slow cold-start node provisioning (~28 min
+    # observed) can erode the claimed load headroom.
+    POD_STARTUP_ALLOWANCE_SECONDS = 1800
+
     def test_job_deadline_leaves_load_headroom_beyond_the_service_wait(self):
         jobs = [
             doc
@@ -310,12 +320,14 @@ class TestSchemaLoadDeadline:
         assert match, "bootstrap.sh must set a literal WAIT_DEADLINE_SECONDS"
         wait_deadline = int(match.group(1))
 
-        # The service wait must fit inside the Job deadline with at least an
-        # hour left for token acquisition and the throttled schema load, which
-        # on a cold cluster can itself exceed 30 min.
-        assert deadline - wait_deadline >= 3600, (
-            "WAIT_DEADLINE_SECONDS must leave at least 3600s of the Job deadline "
-            "for the schema load itself"
+        # The service wait must fit inside the Job deadline, after accounting
+        # for the pod-startup allowance the wait timer does not see, with at
+        # least an hour left for token acquisition and the throttled schema
+        # load, which on a cold cluster can itself exceed 30 min.
+        headroom = deadline - self.POD_STARTUP_ALLOWANCE_SECONDS - wait_deadline
+        assert headroom >= 3600, (
+            "WAIT_DEADLINE_SECONDS plus the pod-startup allowance must leave at "
+            "least 3600s of the Job deadline for the schema load itself"
         )
 
 

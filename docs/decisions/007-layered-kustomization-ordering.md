@@ -6,10 +6,12 @@
 supersedes the Gateway placement in this decision. The original ordering below
 is preserved as the historical record.
 
-**Amendment (2026-08-24):** the schema-load layer timeout is 125 minutes, not the
+**Amendment (2026-08-24):** the schema-load layer timeout is 155 minutes, not the
 35 minutes recorded below. It now tracks the Job's `activeDeadlineSeconds`
-(7200s, covering the cold-cluster wait for the schema endpoint plus the
-throttled schema load) plus headroom for image pull and reconcile overhead.
+(9000s: 1800s pod-startup allowance for node provisioning/scheduling/image
+pull, since the deadline starts before the Pod runs, plus 7200s covering the
+cold-cluster wait for the schema endpoint and the throttled schema load) plus
+headroom for reconcile overhead.
 
 ## Context
 
