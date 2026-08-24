@@ -23,10 +23,10 @@ metadata:
     app.kubernetes.io/component: schema-load
 spec:
   backoffLimit: 2
-  # 30 min ceiling covers the worst-case startup: ~20 min precheck wait
-  # on a fresh cluster while the schema pod is still pulling, plus a few
-  # minutes for the ~1,386 schema POSTs and token exchange.
-  activeDeadlineSeconds: 1800
+  # 60 min ceiling covers cold-cluster node provisioning and Cosmos DB
+  # throttling while the loader POSTs ~1,386 schemas. The Flux Kustomization
+  # timeout must remain longer than this deadline.
+  activeDeadlineSeconds: 3600
   # No ttlSecondsAfterFinished: this is a one-shot loader. Flux
   # reconciles this Kustomization every 10 min; a TTL would let the
   # controller delete the completed Job and the next reconcile would

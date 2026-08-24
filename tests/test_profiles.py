@@ -270,6 +270,27 @@ class TestSchemaLoadImageSubstitution:
         assert "${DATA_PARTITION}" in script
 
 
+class TestSchemaLoadDeadline:
+    def test_flux_timeout_exceeds_job_deadline(self):
+        item = _kustomization(PROFILES_DIR / Profile.CORE.value, "spi-osdu-schema-load")
+        timeout = item["spec"]["timeout"]
+        match = re.fullmatch(r"(\d+)m", timeout)
+        assert match, f"schema-load Kustomization timeout is not in minutes: {timeout}"
+
+        jobs = [
+            doc
+            for _, doc in _built_resources(STACKS / "schema-load")
+            if doc.get("kind") == "Job" and doc.get("metadata", {}).get("name") == "schema-load"
+        ]
+        assert len(jobs) == 1
+        deadline = jobs[0]["spec"]["activeDeadlineSeconds"]
+
+        assert int(match.group(1)) * 60 > deadline, (
+            "spi-osdu-schema-load timeout must exceed the Job deadline for image pull "
+            "and reconcile overhead"
+        )
+
+
 class TestSubstitutionLeavesScriptsIntact:
     """Flux envsubst runs over every resource a Kustomization builds, not just
     the file holding the placeholder, and replaces unknown expansions with an

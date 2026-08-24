@@ -34,10 +34,10 @@ data:
     export AZURE_SCHEMA_URL
 
     # Wait up to ~20 min for the schema service to return 200 on /info.
-    # spi-osdu-services runs with wait:false so Flux marks it Ready as soon
-    # as HelmReleases are applied, not when they are serving. On a fresh
-    # cluster the schema pod may still be pulling its image when this Job
-    # starts; 600 attempts * 2s gives enough headroom.
+    # spi-osdu-services waits for the HelmReleases to report Ready, which does
+    # not guarantee the schema endpoint is serving yet. On a fresh cluster the
+    # schema pod may still be pulling its image when this Job starts; 600
+    # attempts * 2s remains bounded by the Job's 60 min deadline.
     #
     # The probe uses Python's urllib rather than curl: the image's
     # bundled curl has a libcurl/libssh2 ABI mismatch

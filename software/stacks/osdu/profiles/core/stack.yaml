@@ -418,9 +418,9 @@ spec:
   force: true
   prune: true
   wait: true
-  # Matches the Job's activeDeadlineSeconds (1800s) plus headroom for
+  # Matches the Job's activeDeadlineSeconds (3600s) plus headroom for
   # image pull and reconcile overhead.
-  timeout: 35m
+  timeout: 65m
   healthChecks:
     - apiVersion: batch/v1
       kind: Job
