@@ -9,7 +9,7 @@ deciders: "Yuchen Wang"
 
 ## Context and Problem Statement
 
-The deploy lane (ADR-026, ADR-027) lets a service fork build an image and set it
+The deploy lane (ADR-040, ADR-041) lets a service fork build an image and set it
 on a running Deployment. That only works once the fork can actually reach the
 cluster, and reaching it requires a set of coupled facts that live on both
 sides: an Azure managed identity, federated credentials matching the exact OIDC

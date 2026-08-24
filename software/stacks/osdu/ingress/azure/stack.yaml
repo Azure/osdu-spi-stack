@@ -2,11 +2,12 @@
 #
 # Uses Azure's auto-assigned <label>.<region>.cloudapp.azure.com FQDN.
 # CLI patches the Istio ingress LB with service.beta.kubernetes.io/
-# azure-dns-label-name=<cluster-name> before this stack reconciles.
-# cert-manager issues a Let's Encrypt cert on the FQDN via HTTP-01 on
-# the existing HTTP:80 listener; gateway-tls-single-host adds the
-# HTTPS:443 listener referencing the cert Secret. All OSDU APIs and
-# middleware UIs (Kibana /kibana, Airflow /airflow) live under one host.
+# azure-dns-label-name=<cluster-name>-ingress before this stack reconciles.
+# gateway-tls-single-host renders the whole Gateway: HTTP:80 plus an
+# HTTPS:443 listener bound to the FQDN. cert-manager issues the Let's
+# Encrypt cert via HTTP-01 against that same HTTP:80 listener. All OSDU
+# APIs and middleware UIs (Kibana /kibana, Airflow /airflow) live under
+# one host.
 #
 # Required variables in spi-ingress-config ConfigMap (osdu-flux):
 #   ACME_EMAIL, INGRESS_FQDN
@@ -24,7 +25,6 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-cert-manager
-    - name: spi-gateway
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
@@ -59,7 +59,9 @@ spec:
   timeout: 10m
 
 ---
-# HTTPS:443 listener with Let's Encrypt cert for the auto-FQDN.
+# The Gateway: HTTP:80 for ACME HTTP-01 plus the HTTPS:443 listener
+# bound to the auto-FQDN. The ingress tree is the Gateway's sole Flux
+# owner, so no second Kustomization re-applies the object (ADR-029).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

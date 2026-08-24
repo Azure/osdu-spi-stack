@@ -22,6 +22,7 @@ param repoBranch string = 'main'
 
 @description('Profile path segment under software/stacks/osdu/profiles (e.g., "core").')
 @allowed([
+  'bare'
   'minimal'
   'core'
 ])
@@ -47,12 +48,14 @@ param gitopsNamespace string = 'osdu-flux'
 @description('Optional local Kubernetes Secret name for private Git repository auth.')
 param gitRepositoryLocalAuthRef string = ''
 
-// The minimal profile deploys no OSDU services, so it needs the ingress
-// tree that omits the OSDU HTTPRoute Kustomization; that one dependsOn
-// spi-osdu-services and would otherwise stall on DependencyNotReady.
-var ingressPath = profile == 'minimal'
-  ? './software/stacks/osdu/ingress/${ingressMode}-minimal'
-  : './software/stacks/osdu/ingress/${ingressMode}'
+// The bare profile has no ingress substrate and always selects its empty tree;
+// ingressMode is unused. Minimal omits the OSDU HTTPRoute Kustomization because
+// that dependsOn spi-osdu-services and would otherwise stall on DependencyNotReady.
+var ingressPath = profile == 'bare'
+  ? './software/stacks/osdu/ingress/bare'
+  : profile == 'minimal'
+    ? './software/stacks/osdu/ingress/${ingressMode}-minimal'
+    : './software/stacks/osdu/ingress/${ingressMode}'
 
 var gitRepositoryBase = {
   url: repoUrl

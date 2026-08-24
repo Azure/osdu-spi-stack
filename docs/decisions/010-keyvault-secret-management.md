@@ -34,7 +34,7 @@ These runtime writes happen after Flux reconciles the middleware layer, using th
 
 Rejected:
 - **Kubernetes Secrets for PaaS credentials.** Visible to anyone with cluster read access; defeats the point of Workload Identity.
-- **CSI mount for every secret.** CSI is available (AKS Automatic provides the driver) and is used for a few values today, but SDK reads under Workload Identity keep the secret path in code, which matches what OSDU's upstream Azure provider modules already do.
+- **CSI mount for every secret.** CSI is available (AKS Automatic provides the driver) and is used for a few values, but SDK reads under Workload Identity keep the secret path in code, which matches what OSDU's upstream Azure provider modules already do.
 - **Write every Key Vault secret post-deploy from Python.** Loses Bicep's deploy-time guarantees (correct keys, correct access policies) for values that are knowable at infra time.
 
 ## Consequences

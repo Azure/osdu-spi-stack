@@ -18,11 +18,15 @@ Guards against schema drift that would only surface at deploy time. Skipped
 when the Azure CLI is not installed (e.g., contributor laptops without az).
 """
 
+import os
+import re
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from spi.config import Profile
+from spi.shell import run_process
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INFRA_DIR = REPO_ROOT / "infra"
@@ -40,9 +44,8 @@ def _bicep_files():
     ids=lambda p: str(p.relative_to(REPO_ROOT)),
 )
 def test_bicep_compiles(bicep_file: Path):
-    assert AZ is not None
-    result = subprocess.run(
-        [AZ, "bicep", "build", "--file", str(bicep_file), "--stdout"],
+    result = run_process(
+        ["az", "bicep", "build", "--file", str(bicep_file), "--stdout"],
         capture_output=True,
         text=True,
     )
@@ -60,8 +63,8 @@ def test_bicepparam_files_compile():
     param_files = sorted((INFRA_DIR / "params").glob("*.bicepparam"))
     assert param_files, "expected at least one .bicepparam in infra/params/"
     for pf in param_files:
-        result = subprocess.run(
-            [AZ, "bicep", "build-params", "--file", str(pf), "--stdout"],
+        result = run_process(
+            ["az", "bicep", "build-params", "--file", str(pf), "--stdout"],
             capture_output=True,
             text=True,
         )
@@ -70,3 +73,41 @@ def test_bicepparam_files_compile():
             f"stdout:\n{result.stdout}\n"
             f"stderr:\n{result.stderr}"
         )
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("az") is None,
+    reason="Windows Azure CLI batch shim test",
+)
+def test_bicep_compiles_from_path_with_cmd_metacharacters(tmp_path, monkeypatch):
+    """The issue #49 repro: a source path a batch shim would mangle unescaped."""
+    monkeypatch.setenv("SPI_BICEP_PATH_PROBE", "EXPANDED")
+    source_dir = tmp_path / "a&b%SPI_BICEP_PATH_PROBE%"
+    source_dir.mkdir()
+    bicep_file = source_dir / "probe.bicep"
+    bicep_file.write_text(
+        "targetScope = 'resourceGroup'\noutput value string = 'literal'\n",
+        encoding="utf-8",
+    )
+
+    result = run_process(
+        ["az", "bicep", "build", "--file", str(bicep_file), "--stdout"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_flux_bicep_allows_every_profile():
+    source = (INFRA_DIR / "flux.bicep").read_text()
+    match = re.search(
+        r"@allowed\(\[(?P<values>.*?)\]\)\s*param profile string",
+        source,
+        re.DOTALL,
+    )
+    assert match is not None, "profile @allowed block not found in infra/flux.bicep"
+
+    allowed_block = match.group("values")
+    for profile in Profile:
+        assert f"'{profile.value}'" in allowed_block

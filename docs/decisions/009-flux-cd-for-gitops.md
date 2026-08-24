@@ -24,7 +24,7 @@ Shape:
 The CLI's `spi reconcile` is a thin wrapper over `flux reconcile` plus `--suspend` / `--resume` for freezing and unfreezing the `GitRepository`.
 
 Rejected:
-- **`flux install` plus a manual `GitRepository` YAML.** Works, but the AKS extension handles Flux component upgrades as an Azure-managed concern and gives us one less thing to patch.
+- **`flux install` plus a manual `GitRepository` YAML.** Works, but the AKS extension handles Flux component upgrades as an Azure-managed concern, which is one less thing to patch.
 - **One monolithic Kustomization.** Separating `stack` from `ingress` lets ingress-mode switches (ADR-012) avoid re-reconciling the entire service graph.
 - **Continuous auto-reconciliation on every commit.** Safe for production, a liability for a dev/test stack. Users can `spi reconcile --suspend` to pin an environment after a deploy.
 

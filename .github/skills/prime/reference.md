@@ -1,8 +1,7 @@
-# OSDU SPI Stack -- Agent Context
+# OSDU SPI Stack -- Deep Reference
 
-Azure-native OSDU deployment using AKS Automatic by default, with an optional
-Base SKU + Node Autoprovisioning mode, plus Azure PaaS and Flux CD GitOps.
-Repository: `Azure/osdu-spi-stack`
+Detailed agent context for `Azure/osdu-spi-stack`. Loaded on demand by the
+`prime` skill; the always-loaded summary lives in `AGENTS.md`.
 
 ## Project Layout
 
@@ -10,7 +9,7 @@ Repository: `Azure/osdu-spi-stack`
 src/spi/                  Python CLI (Typer + Rich + Pydantic)
   cli.py                  Commands: check, up, down, status, info, reconcile, update
   config.py               Config model (Azure-only, Profile enum)
-  checks.py               Tool prerequisites (az, bicep, kubectl, kubelogin, flux, helm)
+  checks.py               Tool prerequisites (az, bicep, kubectl, kubelogin, flux)
   deploy.py               Orchestrates: infra -> bootstrap -> GitOps (deploy_azure)
   azure_infra.py          RG + AKS imperative, PaaS via Bicep (provision_azure_infra)
   bicep.py                az deployment group create wrapper
@@ -53,7 +52,8 @@ software/
 
 docs/
   architecture.md          System architecture document
-  decisions/               37 ADRs
+  decisions/               ADRs (see docs/decisions/README.md for the index)
+  design/                  Subsystem design docs
   diagrams/                Excalidraw architecture diagram
 ```
 
@@ -75,11 +75,18 @@ uv run spi reconcile --suspend               # Freeze GitOps
 uv run spi reconcile --resume                # Unfreeze GitOps
 ```
 
-## Writing Conventions
+Azure resource names are derived from the `--env` flag for isolation.
 
-- No em dashes; use commas, periods, or semicolons.
-- Every az/kubectl command displayed transparently via Rich panels.
-- Azure resource names derived from --env flag for isolation.
+## Documentation Style (docs/)
+
+`docs/STYLE.md` fixes the prose for ADRs (`docs/decisions/`), design docs
+(`docs/design/`), and `docs/architecture.md`. When reviewing or writing
+changes under `docs/`, hold them to that guide: impersonal active voice,
+claims backed by a named artifact or exact number, the banned/rationed word
+list, and its per-genre rules. ADRs are closed records (no dateable status,
+no external-project narrative); design docs are living documents
+(status-marked present tense is correct). Review suggestions for these files
+must themselves comply with the guide; do not propose wording the guide bans.
 
 ## Key Design Decisions
 
@@ -94,8 +101,8 @@ uv run spi reconcile --resume                # Unfreeze GitOps
 - In-cluster only for ES, Redis, PG (Airflow); everything else is Azure PaaS (ADR-003)
 - Azure PaaS provisioning declared in Bicep (`infra/`); RG + AKS + soft-delete
   recovery + post-deploy Key Vault writes remain imperative (ADR-008)
-- Local auth disabled on Gremlin and Service Bus; Cosmos SQL keeps its key path
-  until Partition supports the Cosmos MSI client (ADR-035)
+- Local auth disabled on Cosmos and Service Bus; every data-plane call uses
+  Workload Identity and no key material is deployed (ADR-027)
 - Application Insights is optional/default-off, persisted per environment, and
   wired to all services in both modes (ADR-023, ADR-030)
 - Record-ingestion data plane enabled: system-cosmos secrets, per-partition record
@@ -151,7 +158,7 @@ Services default to public images built by the SPI service forks:
 
 ## Deployment Workflow
 
-1. `spi check` -- verify az, bicep, kubectl, kubelogin, flux, helm installed
+1. `spi check` -- verify az, bicep, kubectl, kubelogin, flux installed
 2. `spi up --env dev1` -- provisions Azure infra (~45-50 min, mostly AKS Automatic), bootstraps K8s, activates GitOps
    - RG + AKS via `az` CLI
    - Identity + KV + ACR + CosmosDB + Service Bus + Storage + RBAC via

@@ -1,4 +1,4 @@
-# ADR-028: AKS Base SKU with Node Autoprovisioning
+# ADR-042: AKS Base SKU with Node Autoprovisioning
 
 **Status**: Superseded by [ADR-033](033-selectable-aks-deployment-modes.md)
 

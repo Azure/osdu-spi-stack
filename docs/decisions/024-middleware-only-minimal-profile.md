@@ -9,7 +9,7 @@ deciders: "SPI Stack maintainers"
 
 ## Context and Problem Statement
 
-The `Profile` enum offered `core` and `full`, but only `software/stacks/osdu/profiles/core/` existed on disk. Passing `--profile full` was accepted by the CLI, provisioned the full Azure estate, then pointed the Flux `stack` Kustomization at a nonexistent path — a ~45-minute deploy that ends in a reconcile error rather than an up-front validation failure.
+The `Profile` enum offered `core` and `full`, but only `software/stacks/osdu/profiles/core/` existed on disk. Passing `--profile full` was accepted by the CLI, provisioned the full Azure estate, then pointed the Flux `stack` Kustomization at a nonexistent path: a ~45-minute deploy that ends in a reconcile error rather than an up-front validation failure.
 
 Separately, there was no way to stand up just the middleware substrate. Working on an HTTPRoute, a Helm chart, or the trust-manager CA distribution meant waiting on ten OSDU services that contribute nothing to that work.
 
@@ -23,14 +23,16 @@ Separately, there was no way to stand up just the middleware substrate. Working 
 ## Considered Options
 
 - **Add `minimal`, drop `full`.** Ship the profile that has manifests; remove the one that does not.
-- **Build out `full`.** Give `full` a real tree of additional services. There are no such services in this repo today — every OSDU service already ships under `core`.
+- **Build out `full`.** Give `full` a real tree of additional services. This repo has no such services; every OSDU service already ships under `core`.
 - **Leave `full` and document it as unimplemented.** Keeps advertising a broken flag.
 
 ## Decision Outcome
 
 Chosen option: "Add `minimal`, drop `full`", because it removes a flag that cannot work and adds one that serves a real workflow. `Profile` is now `minimal | core`.
 
-`software/stacks/osdu/profiles/minimal/stack.yaml` reproduces layers 0a through 4b verbatim and stops. It ends at the same boundary `spi-osdu-services` starts from, so the middleware substrate is complete — including the trust-manager Bundles that mirror the Redis and Elasticsearch CAs into `osdu` (ADR-011) — without a single OSDU service.
+**Amendment (2026-07-28):** `Profile` later gained a third, smaller `bare` value for infrastructure plus activated GitOps against empty stack and ingress trees. [ADR-012](012-ingress-profiles.md) records its ingress pairing.
+
+`software/stacks/osdu/profiles/minimal/stack.yaml` reproduces layers 0a through 4b verbatim and stops. It ends at the same boundary `spi-osdu-services` starts from, so the middleware substrate is complete (including the trust-manager Bundles that mirror the Redis and Elasticsearch CAs into `osdu`, ADR-011) without a single OSDU service.
 
 ### Ingress pairing
 
@@ -39,17 +41,38 @@ All three ingress trees declared one `spi-osdu-routes` Kustomization with `depen
 Two changes resolve this:
 
 1. **Routes split by scope.** `software/stacks/osdu/routes/<tree>/` now has `middleware/` (Kibana, Airflow, and their ReferenceGrants) and `osdu/` (the OSDU APIs) subdirectories. The ingress stacks reconcile them as separate `spi-middleware-routes` and `spi-osdu-routes` Kustomizations, so middleware routing no longer depends on OSDU services being present.
-2. **`<mode>-minimal` ingress trees.** `infra/flux.bicep` derives the ingress path from the profile: `minimal` selects `ingress/<mode>-minimal/`, which is the mode's tree minus the `spi-osdu-routes` block. `ip-minimal` is empty by construction — the `ip` mode carries no middleware routes at all.
+2. **`<mode>-minimal` ingress trees.** `infra/flux.bicep` derives the ingress path from the profile: `minimal` selects `ingress/<mode>-minimal/`, which is the mode's tree minus the `spi-osdu-routes` block. `ip-minimal` is empty by construction, since `ip` mode carries no middleware routes at all.
 
 This keeps flat, readable trees per combination rather than conditional overlays, consistent with ADR-012's rejection of a profile matrix. `profile` and `ingressMode` both gained `@allowed` constraints in `infra/flux.bicep`, so an unbacked value now fails at template validation instead of at reconcile time.
 
 `tests/test_profiles.py` asserts, for every `Profile` × `IngressMode` pairing, that the trees exist, that every referenced path exists, and that no `dependsOn` names a Kustomization the pairing does not declare.
+
+### Profile removal and middleware data
+
+Changing `minimal` or `core` to `bare` removes the middleware HelmReleases and
+their active workloads. Redis is explicitly a cache (ADR-003), so its
+StatefulSets use `persistentVolumeClaimRetentionPolicy` with
+`whenDeleted: Delete` and `whenScaled: Delete`: rolling upgrades preserve data,
+while deliberate profile removal or replica-count reduction deletes unused
+PVCs and their `Delete`-policy Azure disks instead of leaving billable
+unattached volumes. Redis replicas rebuild from the remaining master when
+scaled up again.
+
+Operator CRDs are different. Helm deliberately retains CRDs on uninstall to
+avoid cluster-wide data loss. The operator custom resources and workloads are
+pruned, but the CRD definitions may remain after returning to `bare`. `bare`
+therefore promises no active middleware or OSDU workloads; it does not perform
+destructive cluster-scoped CRD cleanup.
 
 ### Consequences
 
 - Good, because every accepted `--profile` value resolves to a tree that reconciles to Ready.
 - Good, because middleware work gets a deploy with no OSDU services, and the layers it exercises are identical to `core`.
 - Good, because the dangling-dependency class of bug is now caught by a unit test rather than by a timed-out cloud deploy.
+- Good, because returning to `bare` removes Redis cache volumes and their Azure
+  disks instead of leaking storage cost.
 - Bad, because each ingress mode carries a near-duplicate `-minimal` stack file; edits to shared blocks such as the cert issuers touch two files per mode.
 - Bad, because `ip` + `minimal` deploys no ingress at all, so middleware UIs need `kubectl port-forward` on that combination.
+- Neutral, because Helm-installed operator CRDs can remain after profile
+  removal; they have no running workload or Azure storage cost.
 - Neutral, because `full` was never deployable; removing it breaks no working configuration.

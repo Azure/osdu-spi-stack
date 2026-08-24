@@ -72,6 +72,9 @@ resource entitlementsGraph 'Microsoft.DocumentDB/databaseAccounts/gremlinDatabas
   }
 }
 
+// Gremlin data-plane role for the OSDU managed identity: the Entra-token path
+// Entitlements uses now that local auth is disabled. Cosmos-native RBAC (not
+// `az role assignment`), ~5-15 minute propagation.
 resource osduIdentityGremlinDataContributor 'Microsoft.DocumentDB/databaseAccounts/gremlinRoleAssignments@2024-12-01-preview' = {
   parent: gremlinAccount
   name: guid(gremlinAccount.id, principalId, gremlinDataContributorRoleId)

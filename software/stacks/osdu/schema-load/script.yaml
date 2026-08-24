@@ -18,6 +18,9 @@ kind: ConfigMap
 metadata:
   name: schema-load-scripts
   namespace: osdu
+  annotations:
+    # Without this, Flux postBuild substitution blanks out every ${VAR} below.
+    kustomize.toolkit.fluxcd.io/substitute: disabled
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack
     app.kubernetes.io/component: schema-load
@@ -30,18 +33,34 @@ data:
     SCHEMA_INFO_URL="http://schema.osdu.svc.cluster.local/api/schema-service/v1/info"
     export AZURE_SCHEMA_URL
 
-    # Wait up to ~20 min for the schema service to return 200 on /info.
-    # spi-osdu-services runs with wait:false so Flux marks it Ready as soon
-    # as HelmReleases are applied, not when they are serving. On a fresh
-    # cluster the schema pod may still be pulling its image when this Job
-    # starts; 600 attempts * 2s gives enough headroom.
+    # Wait up to WAIT_DEADLINE_SECONDS for the schema service to return 200
+    # on /info. spi-osdu-services waits for the HelmReleases to report
+    # Ready, which does not guarantee the schema endpoint is serving yet.
+    # On a fresh cluster the schema pod may still be pulling its image
+    # when this Job starts.
+    #
+    # The deadline is enforced from elapsed wall-clock time rather than a
+    # fixed attempt count: the urlopen timeout below adds up to 5s per
+    # attempt on top of the 2s sleep, so counting attempts alone
+    # under-estimates how long the loop can run. This timer only starts once
+    # bootstrap.sh is already running, so it does not cover the node
+    # provisioning, scheduling, and image pull time the Job's
+    # activeDeadlineSeconds also counts against; that pod-startup phase is
+    # budgeted separately in job.yaml. WAIT_DEADLINE_SECONDS leaves headroom
+    # below the Job's 150 min activeDeadlineSeconds for token acquisition and
+    # the schema load itself.
     #
     # The probe uses Python's urllib rather than curl: the image's
     # bundled curl has a libcurl/libssh2 ABI mismatch
     # (undefined symbol: libssh2_session_callback_set2) and exits
     # immediately with a symbol lookup error.
     echo "Waiting for schema service at ${SCHEMA_INFO_URL}..."
-    attempts=0
+    # 2700 (45 min) covers the ~35 min a cold cluster can take to serve the
+    # schema endpoint once the Pod is running, leaving 4500s of the Job's
+    # 9000s deadline for token acquisition and the throttled schema load
+    # (after the 1800s pod-startup allowance in job.yaml).
+    WAIT_DEADLINE_SECONDS=2700
+    start_ts=$(date +%s)
     until python - <<PY 2>/dev/null
     import sys, urllib.request
     try:
@@ -51,14 +70,14 @@ data:
     sys.exit(0 if code == 200 else 1)
     PY
     do
-      attempts=$((attempts + 1))
-      if [ "${attempts}" -ge 600 ]; then
-        echo "ERROR: schema service did not return 200 after ${attempts} attempts"
+      elapsed=$(( $(date +%s) - start_ts ))
+      if [ "${elapsed}" -ge "${WAIT_DEADLINE_SECONDS}" ]; then
+        echo "ERROR: schema service did not return 200 after ${elapsed}s"
         exit 1
       fi
       sleep 2
     done
-    echo "Schema service ready (after ${attempts} attempts)."
+    echo "Schema service ready (after $(( $(date +%s) - start_ts ))s)."
 
     echo "Acquiring bearer token via Workload Identity..."
     BEARER_TOKEN=$(python "${AZURE_DEPLOYMENTS_SUBDIR}/Token.py")

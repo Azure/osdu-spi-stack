@@ -1,4 +1,4 @@
-# ADR-026: ADME-Aligned, Secret-Less Integration Tests on the Deploy Lane
+# ADR-040: ADME-Aligned, Secret-Less Integration Tests on the Deploy Lane
 
 **Status**: Accepted
 

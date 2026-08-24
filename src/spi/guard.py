@@ -19,14 +19,13 @@ before status/info/reconcile modify it. Set ``SPI_SKIP_GUARD=1`` to bypass.
 """
 
 import os
-import subprocess
 from typing import Any, Dict, Optional
 
 import typer
 
 from .config import BASE_NAME
 from .console import console
-from .shell import kubectl_json, resolve_command
+from .shell import kubectl_json, run_process
 
 SPI_GITREPOSITORY = "osdu-spi-stack-system"
 # flux.bicep declares the Flux config in flux-system, but a stack may place its
@@ -68,8 +67,8 @@ def resolve_flux_namespace(default: str = DEFAULT_FLUX_NAMESPACE) -> str:
 
 def _get_current_context() -> str:
     """Return the current kubectl context name, or empty string on failure."""
-    result = subprocess.run(
-        resolve_command(["kubectl", "config", "current-context"]),
+    result = run_process(
+        ["kubectl", "config", "current-context"],
         capture_output=True,
         text=True,
     )
@@ -97,27 +96,25 @@ def _has_spi_fingerprint() -> bool:
     if not cluster_name:
         return False
     # Resource group matches cluster name for spi-stack deployments
-    result = subprocess.run(
-        resolve_command(
-            [
-                "az",
-                "k8s-configuration",
-                "flux",
-                "show",
-                "--resource-group",
-                cluster_name,
-                "--cluster-name",
-                cluster_name,
-                "--cluster-type",
-                "managedClusters",
-                "--name",
-                "osdu-spi-stack-system",
-                "--query",
-                "provisioningState",
-                "--output",
-                "tsv",
-            ]
-        ),
+    result = run_process(
+        [
+            "az",
+            "k8s-configuration",
+            "flux",
+            "show",
+            "--resource-group",
+            cluster_name,
+            "--cluster-name",
+            cluster_name,
+            "--cluster-type",
+            "managedClusters",
+            "--name",
+            "osdu-spi-stack-system",
+            "--query",
+            "provisioningState",
+            "--output",
+            "tsv",
+        ],
         capture_output=True,
         text=True,
     )

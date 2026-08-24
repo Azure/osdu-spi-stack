@@ -14,14 +14,16 @@
 
 """SPI CLI - Deploy OSDU SPI Stack on Azure AKS."""
 
+import json
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import typer
 from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
+from .bootstrap import create_istio_revision_configmap
 from .checks import PREREQ_TOOLS, check_prerequisites
 from .config import BASE_NAME, AksMode, Config, IngressMode, Profile
 from .console import console, display_result, display_yaml
@@ -41,10 +43,12 @@ from .images import (
     IMAGE_LOCK_NAMESPACE,
     ImageResolutionError,
     ImageSource,
+    image_lock_missing_schema_load,
     render_image_lock_configmap,
     resolve_image_lock,
+    schema_load_lock_patch,
 )
-from .ingress import ensure_istio_revision_published, resolve_acme_email, resolve_ingress_mode
+from .ingress import resolve_acme_email, resolve_ingress_mode
 from .shell import kubectl_apply_yaml, kubectl_json, run_command
 
 app = typer.Typer(
@@ -105,9 +109,10 @@ def _show_config(config: Config, *, show_application_insights: bool = True):
             "Application Insights",
             "enabled" if config.application_insights else "disabled (dummy configuration)",
         )
-    table.add_row("Ingress Mode", config.ingress_mode.value)
-    if config.ingress_mode == IngressMode.DNS and config.dns_zone:
-        table.add_row("DNS Zone", f"{config.dns_zone} (rg: {config.dns_zone_rg})")
+    if config.profile is not Profile.BARE:
+        table.add_row("Ingress Mode", config.ingress_mode.value)
+        if config.ingress_mode == IngressMode.DNS and config.dns_zone:
+            table.add_row("DNS Zone", f"{config.dns_zone} (rg: {config.dns_zone_rg})")
 
     aad_override = os.environ.get("AAD_CLIENT_ID", "").strip()
     if aad_override:
@@ -130,13 +135,134 @@ def _show_next_steps(config: Config):
     table.add_column("Command", style="yellow")
 
     table.add_row("Watch progress", "kubectl get kustomizations -n osdu-flux --watch")
-    table.add_row("Check operators", "kubectl get pods -n foundation")
-    table.add_row("Check middleware", "kubectl get pods -n platform")
-    table.add_row("Check services", "kubectl get pods -n osdu")
+    if config.profile is not Profile.BARE:
+        table.add_row("Check operators", "kubectl get pods -n foundation")
+        table.add_row("Check middleware", "kubectl get pods -n platform")
+        table.add_row("Check services", "kubectl get pods -n osdu")
     table.add_row("View status", "uv run spi status")
     table.add_row("Cleanup", f"uv run spi down{config.env_flag}")
 
     console.print(table)
+
+
+def _trigger_kustomization(name: str, requested_at: str) -> None:
+    run_command(
+        [
+            "kubectl",
+            "annotate",
+            "--overwrite",
+            f"kustomization/{name}",
+            "-n",
+            "osdu-flux",
+            f"reconcile.fluxcd.io/requestedAt={requested_at}",
+        ],
+        description=f"Trigger Kustomization reconciliation ({name})",
+        check=False,
+    )
+
+
+def _kustomization_exists(name: str) -> bool:
+    """Report whether a Kustomization is declared on this cluster.
+
+    `--ignore-not-found` keeps genuine absence (a profile that never declares
+    the resource) an empty result, while authorization errors, API timeouts,
+    and context failures still abort instead of being read as "not present".
+    """
+    result = run_command(
+        [
+            "kubectl",
+            "get",
+            "kustomization",
+            name,
+            "-n",
+            "osdu-flux",
+            "--ignore-not-found",
+            "-o",
+            "name",
+        ],
+        description=f"Check Kustomization exists ({name})",
+        display=False,
+    )
+    return bool(result.stdout.strip())
+
+
+def _reconcile_kustomization(name: str) -> None:
+    run_command(
+        [
+            "flux",
+            "reconcile",
+            "kustomization",
+            name,
+            "-n",
+            "osdu-flux",
+            "--timeout",
+            "40m",
+        ],
+        description=f"Trigger and wait for Kustomization reconciliation ({name})",
+    )
+
+
+def _backfill_schema_load_lock(image_branch: str) -> None:
+    """Add the schema-load entries to a lock generated before it joined.
+
+    The schema-load Job substitutes SCHEMA_LOAD_IMAGE_REPOSITORY and
+    SCHEMA_LOAD_IMAGE_TAG with no static fallback (ADR-013), so a cluster whose
+    osdu-image-lock predates that change has to have the lock updated before
+    Flux applies the manifest. The loader is resolved from the schema tag the
+    lock already pins, leaving every other service pin untouched.
+    """
+    result = run_command(
+        [
+            "kubectl",
+            "get",
+            "configmap",
+            IMAGE_LOCK_CONFIGMAP,
+            "-n",
+            IMAGE_LOCK_NAMESPACE,
+            "--ignore-not-found",
+            "-o",
+            "json",
+        ],
+        description=f"Read {IMAGE_LOCK_CONFIGMAP} ConfigMap",
+        display=False,
+    )
+    raw = result.stdout.strip()
+    if not raw:
+        # minimal/bare profiles never create the lock; nothing to backfill.
+        return
+
+    try:
+        lock_data = json.loads(raw).get("data") or {}
+    except json.JSONDecodeError:
+        console.print(f"[warning]{IMAGE_LOCK_CONFIGMAP} is not readable as JSON.[/warning]")
+        return
+
+    if not image_lock_missing_schema_load(lock_data):
+        return
+
+    console.print("\n[bold]Backfilling schema-load into the image lock...[/bold]")
+    try:
+        patch = schema_load_lock_patch(lock_data, branch=image_branch)
+    except ImageResolutionError as exc:
+        console.print(f"[warning]Unable to backfill the schema-load image: {exc}[/warning]")
+        console.print("[dim]Run 'spi reconcile --refresh-images' to resolve a fresh lock.[/dim]")
+        return
+
+    run_command(
+        [
+            "kubectl",
+            "patch",
+            "configmap",
+            IMAGE_LOCK_CONFIGMAP,
+            "-n",
+            IMAGE_LOCK_NAMESPACE,
+            "--type=merge",
+            "-p",
+            json.dumps({"data": patch}),
+        ],
+        description=f"Backfill schema-load entries in {IMAGE_LOCK_CONFIGMAP}",
+    )
+    display_result(f"{IMAGE_LOCK_CONFIGMAP} ConfigMap updated with schema-load")
 
 
 def _build_config(
@@ -523,6 +649,18 @@ def _resolve_aks_mode(
     return resolved
 
 
+def _resolve_up_context(
+    env: str,
+) -> Tuple[str, Dict[str, Any], Tuple[str, str]]:
+    """Resolve read-only Azure identity state before suffix persistence."""
+    from .azure_infra import _get_azure_account, _resolve_deployer_principal
+
+    account = _get_azure_account()
+    deployer_principal = _resolve_deployer_principal(account)
+    name_suffix = _resolve_name_suffix(env, for_up=True)
+    return name_suffix, account, deployer_principal
+
+
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
@@ -575,7 +713,8 @@ def up(
     profile: Optional[Profile] = typer.Option(
         None,
         help="Deployment profile: core (default; middleware + OSDU services) or "
-        "minimal (middleware only, no OSDU services).",
+        "minimal (middleware only, no OSDU services), or bare "
+        "(infra + activated GitOps only; no middleware).",
     ),
     env: str = typer.Option(..., "--env", help="Environment name (required, e.g. dev1, test)"),
     repo_url: str = typer.Option(
@@ -679,6 +818,21 @@ def up(
     if profile is None:
         profile = Profile.CORE
 
+    if profile is Profile.BARE:
+        if ingress_mode is not None:
+            raise typer.BadParameter(
+                "profile 'bare' deploys no ingress substrate; this option is not supported",
+                param_hint="--ingress-mode",
+            )
+        if dns_zone:
+            raise typer.BadParameter(
+                "profile 'bare' deploys no ingress substrate; this option is not supported",
+                param_hint="--dns-zone",
+            )
+        resolved_ingress = IngressMode.AZURE
+    else:
+        resolved_ingress = resolve_ingress_mode(ingress_mode)
+
     title = "[bold]SPI Stack[/bold] - Azure-native OSDU Software Stack"
     if dry_run:
         title += "\n[warning]DRY RUN: previewing Bicep changes only[/warning]"
@@ -688,10 +842,11 @@ def up(
     console.print(Panel(title, border_style="cyan"))
     check_prerequisites(PREREQ_TOOLS)
 
-    # Resolve the persistent suffix from the RG tag (or mint a new one) so
-    # derived resource names are stable across `spi up` re-runs and don't
-    # collide with deployments in other subscriptions.
-    name_suffix = _resolve_name_suffix(env, for_up=True)
+    # Resolve the deployer before suffix persistence so an identity failure
+    # cannot mutate an existing untagged resource group. The same call mints or
+    # reads the persistent name suffix, keeping derived resource names stable
+    # across `spi up` re-runs.
+    name_suffix, azure_account, deployer_principal = _resolve_up_context(env)
     try:
         resolved_aks_mode = _resolve_aks_mode(
             env,
@@ -731,7 +886,7 @@ def up(
         branch=branch,
         location=location,
         data_partitions=data_partitions,
-        ingress_mode=resolve_ingress_mode(ingress_mode),
+        ingress_mode=resolved_ingress,
         dns_zone=dns_zone,
         ingress_prefix=ingress_prefix,
         acme_email=resolve_acme_email(acme_email),
@@ -754,6 +909,8 @@ def up(
             config,
             dry_run=dry_run,
             refresh_images=refresh_images,
+            azure_account=azure_account,
+            deployer_principal=deployer_principal,
         )
         if dry_run:
             console.print(
@@ -959,16 +1116,17 @@ def reconcile(
         )
         return
 
-    # An environment created before the revision was published would let Flux
-    # apply an empty istio.io/rev and drop sidecar injection. This must run for
-    # BOTH paths: plain `spi reconcile` also pulls the new commit and annotates
-    # every Kustomization including spi-namespaces, so it can render the empty
-    # label just as readily as --resume can.
-    try:
-        ensure_istio_revision_published()
-    except RuntimeError as exc:
-        console.print(f"[error]{exc}[/error]")
-        raise typer.Exit(code=1)
+    # spi-namespaces substitutes ISTIO_REVISION from spi-cluster-config, and
+    # that Kustomization gates every layer above it. Refresh the ConfigMap
+    # before any commit is applied so a cluster bootstrapped by an older CLI,
+    # or one whose managed Istio revision was upgraded since the last deploy,
+    # reconciles against the live revision instead of stalling on a missing
+    # or stale substitution source.
+    console.print("\n[bold]Refreshing cluster config for Flux substitution...[/bold]")
+    create_istio_revision_configmap()
+
+    if not refresh_images:
+        _backfill_schema_load_lock(image_branch or DEFAULT_IMAGE_BRANCH)
 
     if resume:
         ns = resolve_flux_namespace()
@@ -1063,20 +1221,33 @@ def reconcile(
         description="Trigger GitRepository reconciliation",
     )
 
+    core_kustomizations = [
+        "spi-osdu-services",
+        "spi-osdu-schema-load",
+        "spi-osdu-reference",
+    ]
+
     for name in _flux_resource_names("kustomization", ns):
-        run_command(
-            [
-                "kubectl",
-                "annotate",
-                "--overwrite",
-                f"kustomization/{name}",
-                "-n",
-                ns,
-                f"reconcile.fluxcd.io/requestedAt={ts}",
-            ],
-            description=f"Trigger Kustomization reconciliation ({name})",
-            check=False,
+        if name in core_kustomizations:
+            continue
+        _trigger_kustomization(name, ts)
+
+    if refresh_images:
+        # A resolved image tag has to reach schema-service before schema-load
+        # is force-recreated against it, and schema-load has to finish before
+        # reference re-seeds. Wait for each stage in order, but only for
+        # profiles that actually declare these Kustomizations.
+        console.print(
+            "\n[bold]Waiting for image refresh to propagate in dependency order...[/bold]"
         )
+        for name in core_kustomizations:
+            if not _kustomization_exists(name):
+                console.print(f"  [dim]Skipping {name} (not present in this profile).[/dim]")
+                continue
+            _reconcile_kustomization(name)
+    else:
+        for name in core_kustomizations:
+            _trigger_kustomization(name, ts)
 
     console.print("[success]Reconciliation triggered.[/success]")
 
@@ -1166,7 +1337,14 @@ def update(
                 "set GITHUB_TOKEN or `gh auth login` to raise rate limits)[/info]"
             )
 
-    rc = _update.run_upgrade(installer, wheel_url, display=not silent)
+    try:
+        rc = _update.run_upgrade(installer, wheel_url, display=not silent)
+    except _update.UpdateError as exc:
+        if silent:
+            typer.echo(str(exc), err=True)
+        else:
+            console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
     if rc != 0:
         if silent:
             typer.echo(f"spi upgrade failed (exit {rc})", err=True)

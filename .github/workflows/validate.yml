@@ -64,6 +64,27 @@ jobs:
           path: coverage.xml
           if-no-files-found: ignore
 
+  windows-shims:
+    name: windows-shims
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      # Fail loudly if the proof would not actually exercise the batch path:
+      # assert on the resolution Python itself performs, not just that some
+      # az.cmd exists somewhere. A skipped proof must never look like a
+      # passing one.
+      - name: Require Python to resolve az to a batch shim
+        run: >
+          uv run python -c "import shutil,sys; p=shutil.which('az') or '';
+          print('az resolves to', p);
+          sys.exit(0 if p.lower().endswith(('.cmd','.bat')) else 1)"
+      - name: Batch shim and Bicep regressions
+        run: uv run pytest -q tests/test_shell.py tests/test_shell_windows.py tests/test_bicep_compile.py
+
   manifests:
     name: manifests
     runs-on: ubuntu-latest

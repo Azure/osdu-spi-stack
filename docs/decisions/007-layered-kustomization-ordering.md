@@ -2,11 +2,22 @@
 
 **Status**: Accepted
 
+**Amendment (2026-08-24):** [ADR-029](029-single-flux-inventory-owner.md)
+supersedes the Gateway placement in this decision. The original ordering below
+is preserved as the historical record.
+
+**Amendment (2026-08-24):** the schema-load layer timeout is 155 minutes, not the
+35 minutes recorded below. It now tracks the Job's `activeDeadlineSeconds`
+(9000s: 1800s pod-startup allowance for node provisioning/scheduling/image
+pull, since the deadline starts before the Pod runs, plus 7200s covering the
+cold-cluster wait for the schema endpoint and the throttled schema load) plus
+headroom for reconcile overhead.
+
 ## Context
 
 A Kubernetes workload graph has hard ordering constraints: CRDs before CRs, operators before instances, cert-manager before certs, middleware before consumers. Applying everything at once surfaces as CrashLoopBackOff and CRD-not-found errors that resolve eventually but obscure real failures.
 
-Flux Kustomizations with explicit `dependsOn` let us encode those constraints once, in Git, where the graph is reviewable.
+Flux Kustomizations with explicit `dependsOn` encode those constraints once, in Git, where the graph is reviewable.
 
 ## Decision
 

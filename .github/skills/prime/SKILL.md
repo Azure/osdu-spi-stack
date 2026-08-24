@@ -24,28 +24,16 @@ picture of what this project is and how it works.
 | File | What to extract |
 |------|-----------------|
 | `README.md` | Purpose, install path, CLI commands, what gets deployed |
-| `.github/copilot-instructions.md` | Project layout, conventions, key design decisions |
+| `.github/skills/prime/reference.md` | Project layout, CLI reference, key design decisions |
 | `pyproject.toml` | Python version, dependencies, CLI entry point |
 
 ## Phase 2: Structure Map
 
-Run `git ls-files` and summarize the directory tree as a compact table. Also run
-`git log --oneline -10` to capture recent activity -- include the last few commit
-subjects so the user knows what's been changing.
-
-The directories to highlight:
-
-| Directory | Contains |
-|-----------|----------|
-| `src/spi/` | Python CLI (Typer + Rich + Pydantic) |
-| `infra/` | Bicep templates (main.bicep + per-concern modules) |
-| `software/components/` | In-cluster middleware Flux manifests |
-| `software/stacks/osdu/` | OSDU service stack: profiles, services, ingress, schema-load |
-| `software/charts/` | Local Helm charts (osdu-spi-service, osdu-spi-init) |
-| `docs/decisions/` | ADRs |
-| `docs/design/` | Subsystem design docs |
-
-Count files per directory -- do not list individual files.
+Run `git ls-files` and summarize the directory tree as a compact table, using the
+Project Layout section of `reference.md` as the guide to what each top-level
+directory contains. Count files per directory -- do not list individual files.
+Also run `git log --oneline -10` to capture recent activity -- include the last
+few commit subjects so the user knows what's been changing.
 
 ## Phase 3: Architectural Decisions
 

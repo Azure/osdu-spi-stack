@@ -9,10 +9,14 @@
 // partition, common and per-partition Storage, and the scoped RBAC
 // role assignments that bind the identity to the above.
 //
-// Key Vault secret VALUES are also declared here: static metadata plus
-// ``listKeys()`` on local-auth-enabled partition Cosmos accounts is resolved at deploy time, so the CLI
-// no longer has to run ``az cosmosdb keys list`` + ``az keyvault secret set``
-// post-deploy.
+// Key Vault secret VALUES are also declared here: endpoints and other static
+// metadata resolved at deploy time. Local auth is disabled on the Cosmos and
+// Service Bus accounts, so their per-partition key/connection secrets are
+// written as the literal ``DISABLED`` placeholder; graph-db-primary-key is
+// no longer written at all. Services MUST reach these accounts through
+// Workload Identity, which is not yet true of every bundled image; images
+// that still read keys directly fail until Workload-Identity-capable
+// builds land.
 //
 // Not in scope of this template:
 //   - AKS Automatic cluster + managed Istio -- declared separately in
@@ -90,9 +94,9 @@ param dnsZoneName string = ''
 param dnsZoneResourceGroup string = ''
 
 @description('Object ID of the deployer. Grants Key Vault Secrets Officer so the post-deploy bootstrap step can write runtime secrets.')
-param deployerPrincipalId string = ''
+param deployerPrincipalId string
 
-@description('Principal type of deployerPrincipalId.')
+@description('Principal type of deployerPrincipalId. Human deployers must pass User.')
 @allowed([
   'User'
   'ServicePrincipal'
@@ -102,7 +106,7 @@ param deployerPrincipalType string = 'ServicePrincipal'
 @description('Object ID of the AKS kubelet (node) identity. Empty string skips the kubelet AcrPull grant. Set by the CLI from the AKS deployment output so nodes can pull custom images from the ACR.')
 param kubeletIdentityObjectId string = ''
 
-@description('Deploy workspace-based Application Insights and Log Analytics resources.')
+@description('Opt-in: deploy workspace-based Application Insights + Log Analytics. Off by default; adds cost and deploy time developers usually do not need.')
 param enableApplicationInsights bool = false
 
 @description('Application Insights component name. Required when enableApplicationInsights is true.')
@@ -270,9 +274,9 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = if (enableAppl
 // Key Vault secret values (declarative; replaces post-deploy CLI writes)
 // ──────────────────────────────────────────────────────────
 //
-// ``existing`` references let us call ``listKeys()`` on Cosmos accounts
-// provisioned inside sub-modules and write the result directly as a KV
-// secret. Splitting the declarations by "pattern" (static vs per-partition
+// ``existing`` references resolve endpoints and other static metadata on
+// resources provisioned inside sub-modules and write them directly as KV
+// secrets. Splitting the declarations by "pattern" (static vs per-partition
 // cosmos/storage/sb) keeps Bicep's array-loop semantics simple and makes
 // the deployment history self-describing without a ``flatten()`` dance.
 //
@@ -280,8 +284,10 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = if (enableAppl
 // only on the child resource and never surface in the deployment record.
 
 // Partition Cosmos primary-key secrets are written INSIDE each
-// partitionModule. The Gremlin account has local auth disabled, so no
-// graph-db-primary-key secret is written.
+// partitionModule. Local auth is disabled on the Gremlin and Service Bus
+// accounts, so their key/connection secrets carry the literal ``DISABLED``
+// and no graph-db-primary-key secret is written; those accounts are reached
+// through Workload Identity.
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName

@@ -257,7 +257,8 @@ def _invoke_reconcile(**kwargs):
         mock.patch.object(cli, "_flux_resource_names", return_value=[]),
         mock.patch.object(cli, "run_command"),
         mock.patch.object(cli, "kubectl_json", return_value={"items": []}),
-        mock.patch.object(cli, "ensure_istio_revision_published") as published,
+        mock.patch.object(cli, "_backfill_schema_load_lock"),
+        mock.patch.object(cli, "create_istio_revision_configmap") as published,
     ):
         result = CliRunner().invoke(cli.app, args)
     return result, published

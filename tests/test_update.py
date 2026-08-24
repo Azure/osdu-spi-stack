@@ -139,11 +139,25 @@ def test_fetch_release_notes_returns_none_on_http_error():
 def test_run_upgrade_uv_uses_force_install():
     completed = MagicMock(returncode=0)
     wheel_url = "https://github.com/x/y/releases/download/v1.0.0/spi-1.0.0-py3-none-any.whl"
-    with patch("spi.update.run_command", return_value=completed) as rc:
+    with (
+        patch("spi.update.platform.system", return_value="Linux"),
+        patch("spi.update.run_command", return_value=completed) as rc,
+    ):
         rv = upd.run_upgrade("uv", wheel_url, display=False)
     assert rv == 0
     cmd = rc.call_args.args[0]
     assert cmd == ["uv", "tool", "install", "--force", wheel_url]
+
+
+def test_run_upgrade_uv_blocks_in_process_windows_replacement():
+    wheel_url = "https://github.com/x/y/releases/download/v1.0.0/spi-1.0.0-py3-none-any.whl"
+    with (
+        patch("spi.update.platform.system", return_value="Windows"),
+        patch("spi.update.run_command") as rc,
+        pytest.raises(upd.UpdateError, match="disabled on Windows"),
+    ):
+        upd.run_upgrade("uv", wheel_url, display=False)
+    rc.assert_not_called()
 
 
 def test_run_upgrade_pipx_uses_force_install():

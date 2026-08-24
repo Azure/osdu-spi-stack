@@ -54,6 +54,10 @@ def generate_name_suffix() -> str:
 
 
 class Profile(str, Enum):
+    # Infra plus activated GitOps only. Flux reconciles empty stack and ingress
+    # trees. Namespaces, secrets, ConfigMap, and ServiceAccount come from the CLI
+    # bootstrap; no operators, cert/trust-manager, Gateway, middleware, or services.
+    BARE = "bare"
     # Middleware only: operators, cert/trust-manager, Gateway, Elasticsearch,
     # Redis, PostgreSQL, Airflow. Stops before layer 5 (no OSDU services).
     MINIMAL = "minimal"
@@ -212,6 +216,21 @@ class Config(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _validate_bare_profile(self) -> "Config":
+        if self.profile is Profile.BARE:
+            if self.ingress_mode is not IngressMode.AZURE:
+                raise ValueError(
+                    "profile 'bare' deploys no ingress substrate; "
+                    f"ingress_mode '{self.ingress_mode.value}' is not supported"
+                )
+            if self.dns_zone:
+                raise ValueError(
+                    "profile 'bare' deploys no ingress substrate; "
+                    "dns_zone is not supported with profile 'bare'"
+                )
+        return self
+
     @property
     def resolved_ingress_prefix(self) -> str:
         """DNS-mode hostname prefix. Falls back to env name, then 'spi'."""
@@ -221,9 +240,7 @@ class Config(BaseModel):
     def dns_label(self) -> str:
         """Azure-mode DNS label for the Istio ingress PIP.
 
-        Uses cluster_name with an '-ingress' suffix so it doesn't collide
-        with the AKS-default 'aks-istio-ingressgateway-external' PIP,
-        which is provisioned unconditionally by AKS Automatic and may
-        briefly receive the same label through annotation races.
+        The '-ingress' suffix identifies the endpoint and reduces the chance
+        of colliding with another globally unique Azure DNS label.
         """
         return f"{self.cluster_name}-ingress"

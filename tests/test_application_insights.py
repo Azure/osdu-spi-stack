@@ -348,12 +348,7 @@ def test_read_deployed_application_insights_mode_surfaces_probe_errors():
 
 def test_bicep_params_disable_application_insights_by_default():
     cfg = Config.from_env("dev1")
-    with mock.patch.object(
-        azure_infra,
-        "_resolve_deployer_principal",
-        return_value=("oid", "User"),
-    ):
-        params = azure_infra._build_bicep_params(cfg, "https://oidc")
+    params = azure_infra._build_bicep_params(cfg, "https://oidc", "oid", "User")
 
     assert params["enableApplicationInsights"] is False
     assert params["appInsightsName"] == ""
@@ -362,12 +357,7 @@ def test_bicep_params_disable_application_insights_by_default():
 
 def test_bicep_params_enable_application_insights():
     cfg = Config.from_env("dev1", application_insights=True)
-    with mock.patch.object(
-        azure_infra,
-        "_resolve_deployer_principal",
-        return_value=("oid", "User"),
-    ):
-        params = azure_infra._build_bicep_params(cfg, "https://oidc")
+    params = azure_infra._build_bicep_params(cfg, "https://oidc", "oid", "User")
 
     assert params["enableApplicationInsights"] is True
     assert params["appInsightsName"] == "osdu-dev1-insights"

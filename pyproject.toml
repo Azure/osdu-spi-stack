@@ -16,10 +16,10 @@ authors = [
 requires-python = ">=3.10"
 dependencies = [
     "rich>=15.0.0",
-    "typer>=0.27.0",
+    "typer>=0.27.1",
     "pydantic>=2.13.4",
     "pyyaml>=6.0",
-    "packaging>=26.2",
+    "packaging>=26.3",
 ]
 
 [project.scripts]
@@ -54,12 +54,12 @@ exclude = [
 
 [dependency-groups]
 dev = [
-    "pre-commit>=4.6.0",
+    "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "pyyaml>=6.0.3",
-    "ruff>=0.16.0",
-    "ty>=0.0.61",
+    "ruff>=0.16.4",
+    "ty>=0.0.73",
 ]
 
 [tool.ruff]

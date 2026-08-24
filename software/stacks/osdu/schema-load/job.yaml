@@ -32,16 +32,19 @@ metadata:
     app.kubernetes.io/component: schema-load
 spec:
   backoffLimit: 2
-  # 60 min ceiling. The loader POSTs ~1,386 schemas; on a cold cluster the
-  # backing Cosmos autoscales up from its 400 RU/s floor and throttles (429)
-  # the initial burst, so the SDK retries with backoff and a single pass can
-  # exceed 30 min even when the schema service is immediately ready. Note
-  # activeDeadlineSeconds is a terminal Job deadline that overrides
-  # backoffLimit (no retry once exceeded), so it must cover the throttled
-  # worst case; 60 min does. Operators trigger a manual re-run with
-  # kubectl delete job schema-load -n osdu (already-loaded schemas return
-  # 409 and are skipped, so a re-run converges quickly).
-  activeDeadlineSeconds: 3600
+  # 150 min ceiling covers every delay this Job can hit on a cold cluster.
+  # activeDeadlineSeconds starts counting when the Job becomes active, i.e.
+  # before the Pod is even scheduled, so it also includes node provisioning,
+  # scheduling, and image pull -- not just the time bootstrap.sh spends
+  # running. The issue's observed cold-start node provisioning took ~28 min;
+  # 1800s (30 min) is budgeted for that pod-startup phase. The remaining
+  # 7200s covers the script's own WAIT_DEADLINE_SECONDS=2700 (the schema
+  # endpoint can stay unavailable for up to 45 min after the Pod starts
+  # running; the observed worst case in #83 was ~33 min, so this leaves
+  # headroom) plus 3600s+ for the throttled POST of ~1,386 schemas, which can
+  # itself exceed 30 min. The Flux Kustomization timeout must remain longer
+  # than this deadline.
+  activeDeadlineSeconds: 9000
   # No ttlSecondsAfterFinished: this is a one-shot loader. Flux
   # reconciles this Kustomization every 10 min; a TTL would let the
   # controller delete the completed Job and the next reconcile would
@@ -70,10 +73,12 @@ spec:
             defaultMode: 0755
       containers:
         - name: loader
-          # Community master tags are garbage-collected: only the few most
-          # recent SHAs stay pullable, so a long-lived pin eventually 404s.
-          # Keep this on the same commit as the schema-service image.
-          image: community.opengroup.org:5555/osdu/platform/system/schema-service/schema-service-schema-load-master:146f2f613cb56ad5b6089d25ac0577c04db6377a
+          # Resolved live from the osdu-image-lock ConfigMap, on the same SHA
+          # selected for schema-service (ADR-013). No static default: a pinned
+          # SHA goes stale as upstream prunes it. A lock that predates
+          # schema-load's inclusion is backfilled by `spi reconcile` before
+          # Flux applies this Job.
+          image: ${SCHEMA_LOAD_IMAGE_REPOSITORY}:${SCHEMA_LOAD_IMAGE_TAG}
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:

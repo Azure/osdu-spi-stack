@@ -1,4 +1,4 @@
-# ADR-027: Deploy-Lane CI-Mode and Digest-Pin Invariants
+# ADR-041: Deploy-Lane CI-Mode and Digest-Pin Invariants
 
 **Status**: Accepted
 

@@ -22,7 +22,7 @@ exceeds the 24-char Storage account limit.
 import pytest
 from pydantic import ValidationError
 
-from spi.config import Config, Profile
+from spi.config import Config, IngressMode, Profile
 from spi.images import ImageSource
 
 
@@ -157,6 +157,20 @@ class TestFromEnv:
     def test_from_env_invalid_partition(self):
         with pytest.raises(ValidationError):
             Config.from_env(env="dev1", data_partitions=["BAD"])
+
+
+class TestBareProfile:
+    def test_default_ingress_is_valid(self):
+        config = Config(env="dev1", profile=Profile.BARE)
+        assert config.profile is Profile.BARE
+
+    def test_dns_zone_is_rejected(self):
+        with pytest.raises(ValidationError, match="bare"):
+            Config(env="dev1", profile=Profile.BARE, dns_zone="example.com")
+
+    def test_non_azure_ingress_mode_is_rejected(self):
+        with pytest.raises(ValidationError, match="ingress_mode 'dns' is not supported"):
+            Config(env="dev1", profile=Profile.BARE, ingress_mode=IngressMode.DNS)
 
 
 def test_deployer_principal_type_env_override(monkeypatch):

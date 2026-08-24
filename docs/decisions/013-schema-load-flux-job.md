@@ -17,7 +17,7 @@ Shape:
 - New Kustomization `spi-osdu-schema-load` at `software/stacks/osdu/schema-load/`, wired into the core profile as Layer 5b (after `spi-osdu-init`, before `spi-osdu-reference`) per ADR-007.
 - Single `Job` with `workload-identity-sa`, the workload-identity pod label, and a mounted ConfigMap that provides `Token.py` and `bootstrap.sh` at the paths the loader image's entrypoint expects.
 - Kustomization `healthChecks` target the Job's `Complete` condition so `spi status` surfaces the Job alongside every other Flux resource.
-- The loader image tag is pinned to the same SHA as `schema.yaml`. `scripts/resolve-image-tags.py --update` advances both tags together.
+- The loader image tag is resolved through `osdu-image-lock` from the same SHA selected for schema-service.
 - `bootstrap.sh` post-processes the loader's exit code: "already exists" failures are not fatal, so re-runs are idempotent.
 
 Rejected:
@@ -28,7 +28,16 @@ Rejected:
 ## Consequences
 
 - Fresh deploy reaches a usable schema-service with no CLI post-step.
-- Schema loader upgrades move with the service image via the existing tag-resolver.
+- Schema loader upgrades move with the service image via the live image lock.
 - Manual re-run is `kubectl delete job schema-load -n osdu` followed by `flux reconcile kustomization spi-osdu-schema-load --with-source`. Flux re-applies the Job.
 - The loader tag depends on OSDU community registry retention. Mirroring the image to the SPI ACR (already provisioned) is an available follow-up if retention becomes a problem.
 - Only the schema-service is seeded. Reference data, legal tags, entitlements root groups, and partition initialization are out of scope and remain future work.
+
+### Amendment (2026-08-21)
+
+The loader image is now resolved through the live image lock instead of a Git
+pin. `force: true` on its Flux Kustomization replaces the Job when the resolved
+tag changes, because Kubernetes does not permit Job Pod template updates. The
+Job carries no static image default; a lock created before schema-load joined
+it is backfilled by `spi reconcile` from the schema tag the lock already pins,
+so no known-stale SHA survives in the manifest.

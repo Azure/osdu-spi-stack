@@ -163,7 +163,7 @@ def test_create_aks_dry_run_selects_mode_template(mode, template_name):
             return_value={},
         ) as deploy,
     ):
-        assert azure_infra.create_aks(cfg, dry_run=True) == {}
+        assert azure_infra.create_aks(cfg, "oid", "User", dry_run=True) == {}
 
     assert deploy.call_args.kwargs["template_path"].endswith(template_name)
     assert deploy.call_args.kwargs["parameters"]["availabilityZones"] == ["1", "2", "3"]

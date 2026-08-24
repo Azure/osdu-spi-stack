@@ -31,8 +31,8 @@ param isPrimaryPartition bool = false
 @description('Key Vault name that receives the Cosmos primary key. Empty string skips the secret write.')
 param keyVaultName string = ''
 
-@description('Principal ID (object ID) of the OSDU managed identity that accesses Cosmos SQL data. Empty string skips the SQL data-plane role assignment.')
-param principalId string = ''
+@description('Principal ID (object ID) of the OSDU managed identity that accesses Cosmos SQL data.')
+param principalId string
 
 // ──────────────────────────────────────────────────────────
 // Data definitions (ported from azure_infra.py)
@@ -128,6 +128,7 @@ resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2023-11-15' = {
   kind: 'GlobalDocumentDB'
   properties: {
     databaseAccountOfferType: 'Standard'
+    disableLocalAuth: true
     consistencyPolicy: {
       defaultConsistencyLevel: 'Session'
     }
@@ -153,31 +154,6 @@ resource osduDb 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2023-11-15' 
         maxThroughput: 4000
       }
     }
-  }
-}
-
-// SQL data-plane role assignment for the OSDU managed identity. This grants the
-// "Cosmos DB Built-in Data Contributor" role (id ...0002) so that services with
-// AZURE_MSI_ISENABLED reach Cosmos with their Workload Identity; without it, their
-// data-plane calls fail with 403 "does not have required RBAC permissions". It is
-// the SQL equivalent of the Gremlin role assignment in cosmos-gremlin.bicep.
-//
-// Local (key) auth is intentionally left ENABLED on this SQL account, unlike the
-// Gremlin account. The partition service enables Workload Identity for Key Vault
-// only (AZURE_PAAS_WORKLOADIDENTITY_ISENABLED, not AZURE_MSI_ISENABLED) and still
-// connects to Cosmos with the primary key it reads from Key Vault, so the
-// "<partition>-cosmos-primary-key" secret written below is required. Disabling
-// local auth here (the ADR-033 end state) is a follow-up gated on the partition
-// service supporting the Cosmos data-plane MSI path.
-var sqlDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
-
-resource osduIdentitySqlDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2023-11-15' = if (!empty(principalId)) {
-  parent: cosmosAccount
-  name: guid(cosmosAccount.id, principalId, sqlDataContributorRoleId)
-  properties: {
-    roleDefinitionId: '${cosmosAccount.id}/sqlRoleDefinitions/${sqlDataContributorRoleId}'
-    principalId: principalId
-    scope: cosmosAccount.id
   }
 }
 
@@ -228,6 +204,25 @@ resource osduSystemDbContainerResources 'Microsoft.DocumentDB/databaseAccounts/s
   }
 }]
 
+// SQL data-plane role for the OSDU managed identity. Local auth is disabled on
+// this account (see disableLocalAuth above), so every data-plane call
+// authenticates with an Entra token; without this role, legal/storage/schema/
+// workflow fail with 403 "does not have required RBAC permissions". Cosmos
+// data-plane roles are NOT Azure RBAC: they are sqlRoleAssignments on the
+// account, invisible to `az role assignment`, and take ~5-15 minutes to
+// propagate.
+var sqlDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
+
+resource osduIdentitySqlDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2023-11-15' = {
+  parent: cosmosAccount
+  name: guid(cosmosAccount.id, principalId, sqlDataContributorRoleId)
+  properties: {
+    roleDefinitionId: '${cosmosAccount.id}/sqlRoleDefinitions/${sqlDataContributorRoleId}'
+    principalId: principalId
+    scope: cosmosAccount.id
+  }
+}
+
 // ──────────────────────────────────────────────────────────
 // Service Bus
 // ──────────────────────────────────────────────────────────
@@ -239,6 +234,8 @@ resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview
     name: 'Standard'
     tier: 'Standard'
   }
+  // Local (SAS) auth is disabled and TLS >= 1.2 required. Runtime access uses
+  // Workload Identity via the Data Sender/Receiver roles in rbac.bicep.
   properties: {
     disableLocalAuth: true
     minimumTlsVersion: '1.2'
@@ -292,22 +289,21 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01'
 
 // The OSDU storage-azure provider writes record blobs to a container named
 // after the data partition id (e.g. "opendes"). core-lib-azure's BlobStore
-// does NOT auto-create it, so record ingestion fails with a 404
-// ContainerNotFound unless the container is pre-created alongside the fixed
-// per-service containers above.
+// does not auto-create it, so record ingestion 404s unless it exists.
 resource storageContainerResources 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = [for containerName in union(partitionStorageContainerNames, [partition]): {
   parent: blobService
   name: containerName
 }]
 
 // ──────────────────────────────────────────────────────────
-// Key Vault secret (same-module listKeys() for natural dependency)
+// Key Vault secrets (same-module for natural dependency)
 // ──────────────────────────────────────────────────────────
 //
-// Written inside this module so ``listKeys()`` has an implicit dependency
-// on the ``cosmosAccount`` resource above. An ``existing`` reference at
-// the parent scope does NOT carry a dependency on the creating module,
-// so attempting ``listKeys()`` there fails with ResourceNotFound.
+// Written inside this module so references to ``cosmosAccount`` and
+// ``storageAccount`` properties carry an implicit dependency on the
+// resources above. An ``existing`` reference at the parent scope does NOT
+// carry a dependency on the creating module, so it would fail with
+// ResourceNotFound.
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (!empty(keyVaultName)) {
   name: keyVaultName
@@ -317,7 +313,7 @@ resource cosmosPrimaryKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' =
   name: '${partition}-cosmos-primary-key'
   parent: keyVault
   properties: {
-    value: cosmosAccount.listKeys().primaryMasterKey
+    value: 'DISABLED'
   }
 }
 
@@ -331,11 +327,14 @@ resource storageAccountBlobEndpointSecret 'Microsoft.KeyVault/vaults/secrets@202
   }
 }
 
-// cosmos-connection, sb-connection, and storage-account-key hold the literal "DISABLED".
-// The partition record references these secret names; Workload Identity
-// supplies the real credentials at runtime for every code path that supports
-// it, and writing "DISABLED" keeps the schema satisfied without exposing
-// real credentials.
+// cosmos-connection, sb-connection, storage-account-key, and the cosmos
+// primary-key secrets above all hold the literal "DISABLED". Local auth is
+// disabled on the Cosmos and Service Bus accounts, so no real key or
+// connection string exists to hand out; the partition record references these
+// secret names, and writing "DISABLED" keeps the record schema satisfied.
+// Services must authenticate through Workload Identity instead; community
+// images that still read these secrets fail until Workload-Identity-capable
+// images land.
 resource cosmosConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName)) {
   name: '${partition}-cosmos-connection'
   parent: keyVault
@@ -360,14 +359,13 @@ resource storageAccountKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' 
   }
 }
 
-// System-partition Cosmos secrets. OSDU "system" services (schema, workflow,
-// ...) resolve the shared catalog from KV secrets prefixed ``system-`` rather
-// than ``{partition}-``. The osdu-system-db SQL database lives in the primary
+// System-partition Cosmos secrets. OSDU "system" services (schema, workflow)
+// resolve the shared catalog from KV secrets prefixed ``system-`` rather than
+// ``{partition}-``. The osdu-system-db SQL database lives in the primary
 // partition's Cosmos account (see osduSystemDb above), so these point at the
 // same account. Without them, system services fail at startup with
-// "Failed to retrieve system-cosmos-endpoint. Not found." ->
-// "system-cosmos-endpoint cannot be null" -> "Error creating Cosmos Client".
-// Only the primary partition owns the system DB, so guard on isPrimaryPartition.
+// "Failed to retrieve system-cosmos-endpoint. Not found.". Only the primary
+// partition owns the system DB, so guard on isPrimaryPartition.
 resource systemCosmosEndpointSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName) && isPrimaryPartition) {
   name: 'system-cosmos-endpoint'
   parent: keyVault
@@ -380,7 +378,7 @@ resource systemCosmosPrimaryKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07
   name: 'system-cosmos-primary-key'
   parent: keyVault
   properties: {
-    value: cosmosAccount.listKeys().primaryMasterKey
+    value: 'DISABLED'
   }
 }
 

@@ -13,14 +13,14 @@ For more information [see](https://adr.github.io/).
    - Status starts as `proposed`.
 3. For each considered option, write one line on why it was rejected. The decision is what was chosen; alternatives get just enough space to show the trade-off.
 4. Open a PR. The status moves to `accepted` once the decision is agreed.
-5. Decisions can be changed later. A new ADR supersedes an old one; do not edit accepted ADRs in place.
+5. Decisions can be changed later. Reversing or materially changing an accepted decision needs a new ADR that supersedes the old one; do not silently rewrite a closed decision in place. A small additive adjustment that extends a decision without contradicting it (a later profile, flag, or value) may instead be recorded as a short dated amendment note in the existing ADR, since a whole new ADR for a one-line change is disproportionate.
 
 ## ADR Style
 
-ADRs record decisions, not engineering logs. Keep them short and forward-facing so a reader can grok the decision in a single pass.
+ADRs record decisions, not engineering logs. Keep them short and forward-facing so a reader can grok the decision in a single pass. The prose style (voice, word list, review checklist) is fixed in [docs/STYLE.md](../STYLE.md); the structural rules below complement it.
 
 - **No `## Validation` sections.** Phase-by-phase acceptance logs belong in the PR description, not in the ADR.
-- **No post-acceptance `## Amendment` sections.** If a decision needs revising, write a new ADR that supersedes it. Inline amendments re-open a record that should be closed.
+- **Amend only for small additive notes; supersede for real changes.** A decision that is reversed or materially changed gets a new ADR that supersedes it, not a rewrite of the closed record. A minor additive extension that does not contradict the decision (for example a later profile that reuses the same pattern) may be captured as a brief dated amendment note, a line or two, in place rather than a full new ADR.
 - **No incident narrative in Context.** State the structural problem the decision addresses. Specific clusters, timeout values, and triggering incidents age poorly inside the ADR.
 - **One-line option rejections.** Write "Rejected: <one clause>" rather than paragraphs re-litigating prior attempts.
 - **Forward-looking, not retrospective.** "Supersedes X because..." is fine; "The previous version of this ADR proposed..." is a sign the ADR should be superseded rather than edited.
@@ -47,7 +47,7 @@ Create an ADR for any decision that could plausibly have gone a different way an
 | [002](002-aks-automatic.md) | AKS Automatic as Compute Substrate | Accepted |
 | [003](003-in-cluster-middleware-scope.md) | In-Cluster Middleware Scope | Accepted |
 | [004](004-local-helm-chart-safeguards.md) | Local Helm Chart for Safeguards Compliance | Accepted |
-| [005](005-workload-identity.md) | Workload Identity for Azure PaaS Access | Accepted; data-plane boundary revised by [035](035-entra-first-data-plane.md) |
+| [005](005-workload-identity.md) | Workload Identity for Azure PaaS Access | Accepted; data-plane boundary revised by [027](027-entra-only-data-plane.md) |
 | [006](006-three-namespace-model.md) | Three-Namespace Model | Accepted |
 | [007](007-layered-kustomization-ordering.md) | Layered Flux Kustomization Ordering | Accepted |
 | [008](008-bicep-for-azure-provisioning.md) | Bicep for Azure Provisioning (AVM for AKS) | Accepted |
@@ -63,21 +63,24 @@ Create an ADR for any decision that could plausibly have gone a different way an
 | [018](018-karpenter-nodepool-authoring.md) | Karpenter NodePool Authoring as Workload Manifests | Accepted |
 | [019](019-kubernetes-136-minimum.md) | Kubernetes 1.36 Minimum for AKS Automatic | Accepted |
 | [020](020-osdu-flux-gitops-namespace.md) | SPI-Owned GitOps Objects in a Dedicated osdu-flux Namespace | Accepted |
-| [021](021-data-plane-rbac-dual-path.md) | Dual-Path Data-Plane Access: Cosmos/Service Bus RBAC Alongside Keys | Superseded by [035](035-entra-first-data-plane.md) |
+| [021](021-data-plane-rbac-dual-path.md) | Dual-Path Data-Plane Access: Cosmos/Service Bus RBAC Alongside Keys | Superseded by [027](027-entra-only-data-plane.md) |
 | [022](022-spi-pool-node-label.md) | spi-pool as the Workload Node-Placement Label | Accepted |
 | [023](023-optional-application-insights.md) | Opt-In Application Insights Provisioning | Accepted; CLI surface completed by [030](030-application-insights-telemetry.md) |
 | [024](024-middleware-only-minimal-profile.md) | Middleware-Only `minimal` Profile, Replacing the Unbacked `full` | Accepted |
 | [025](025-tls-certificates-in-platform.md) | TLS Certificates in platform with Gateway ReferenceGrants | Accepted |
-| [026](026-adme-aligned-integration-tests.md) | ADME-Aligned, Secret-Less Integration Tests on the Deploy Lane | Accepted |
-| [027](027-deploy-lane-invariants.md) | Deploy-Lane CI-Mode and Digest-Pin Invariants | Accepted |
-| [028](028-aks-base-node-autoprovisioning.md) | AKS Base SKU with Node Autoprovisioning | Superseded by [033](033-selectable-aks-deployment-modes.md) |
-| [029](029-disable-local-auth-data-services.md) | Disable Local Auth on Azure Data Services | Accepted; scope narrowed by [035](035-entra-first-data-plane.md) |
+| [026](026-airflow-3.md) | Airflow 3, Single-Engine | Accepted |
+| [027](027-entra-only-data-plane.md) | Entra-Only Data Plane: Disable Local Auth on Cosmos and Service Bus | Accepted |
+| [028](028-windows-batch-shim-launcher.md) | Windows Batch Shim Launcher via an Escaped cmd.exe Command Line | Accepted |
+| [029](029-single-flux-inventory-owner.md) | One Flux Inventory Owner per Kubernetes Object | Accepted |
 | [030](030-application-insights-telemetry.md) | Application Insights for Service Telemetry | Accepted |
 | [031](031-record-ingestion-data-plane.md) | Record-Ingestion Data-Plane Enablement | Accepted |
 | [032](032-spi-ghcr-service-images.md) | SPI-Built GHCR Images as the Service Baseline | Accepted |
 | [033](033-selectable-aks-deployment-modes.md) | Selectable AKS Deployment Modes | Accepted |
 | [034](034-runtime-resolved-istio-revision.md) | Runtime-Resolved Managed Istio Revision | Accepted |
-| [035](035-entra-first-data-plane.md) | Entra-First Data-Plane Authentication Boundary | Accepted |
 | [036](036-per-identity-authorization.md) | Per-Identity Authorization with Explicit Membership Seeding | Accepted |
 | [037](037-cluster-side-onboarding.md) | Cluster-Side Onboarding for Service-Fork CI/CD | Accepted |
 | [038](038-subscription-resolved-availability-zones.md) | Resolve System Pool Availability Zones per Subscription | Accepted |
+| [039](039-bind-managed-istio-ingress.md) | Bind to the AKS Managed Istio Ingress | Proposed |
+| [040](040-adme-aligned-integration-tests.md) | ADME-Aligned, Secret-Less Integration Tests on the Deploy Lane | Accepted |
+| [041](041-deploy-lane-invariants.md) | Deploy-Lane CI-Mode and Digest-Pin Invariants | Accepted |
+| [042](042-aks-base-node-autoprovisioning.md) | AKS Base SKU with Node Autoprovisioning | Superseded by [033](033-selectable-aks-deployment-modes.md) |

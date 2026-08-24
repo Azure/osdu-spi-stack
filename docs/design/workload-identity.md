@@ -1,6 +1,6 @@
 # Workload Identity
 
-**What this explains.** How one Managed Identity becomes a usable runtime credential inside an OSDU service pod, how the JWT projection in ADR-016 turns the resulting AAD bearer into a `x-app-id` header, and where the carve-out for indexer-queue lives.
+**What this explains.** How one Managed Identity becomes a usable runtime credential inside an OSDU service pod, how the JWT projection in ADR-016 turns the resulting AAD bearer into a `x-app-id` header, and why the indexer-queue Service Bus carve-out is now closed.
 
 **Why it matters.** "Workload Identity" sounds like one thing but is actually a federation chain across Entra ID, the AKS OIDC issuer, the AKS webhook, the Istio sidecar, and the service's Spring filter. Failures in any link surface as the same symptom: a 401 or 403 with an empty `app-id=`. This doc names each link so you can trace which one is broken.
 
@@ -64,11 +64,9 @@ The symptom of a missing audience is identical to "Workload Identity broken": em
 
 ## Service Bus and indexer-queue
 
-Service Bus local authentication is disabled in SPI Stack. Services must use the shared UAMI via Workload Identity and its `Azure Service Bus Data Sender` + `Azure Service Bus Data Receiver` role assignments.
+Per [ADR-005](../decisions/005-workload-identity.md) "Consequences," indexer-queue is the one service that cannot use Workload Identity for Service Bus today. The `indexer-queue-master` image (current `core-lib-azure` 2.0.6) builds its Service Bus subscription client via `SubscriptionClientFactoryImpl`, which constructs a `ConnectionStringBuilder` regardless of the `AZURE_PAAS_WORKLOADIDENTITY_ISENABLED` flag. Without a real connection string the subscription client throws `IllegalConnectionStringFormatException` on every retry and records-changed events never reach the indexer.
 
-`core-lib-azure` selects the token-based Service Bus path only when `azure.msi.isEnabled=true`; service manifests therefore set both `AZURE_MSI_ISENABLED=true` and `AZURE_PAAS_WORKLOADIDENTITY_ISENABLED=true`.
-
-`indexer-queue` is the remaining compatibility risk. Current upstream `indexer-queue` still pins `core-lib-azure` 2.0.6; that version can use MSI but does not have the newer Workload Identity-aware subscription client path. SPI Stack keeps `{partition}-sb-connection` as the literal `"DISABLED"` placeholder, so `indexer-queue` must move to a Workload Identity-aware core-lib version before local-auth-disabled Service Bus can work end to end.
+[ADR-027](../decisions/027-entra-only-data-plane.md) disables local (SAS) auth on every Service Bus namespace, so `{partition}-sb-connection` now holds the literal `"DISABLED"` like the other data-plane secrets; no SAS string exists to hand out. Until indexer-queue runs a Workload-Identity-capable image (delivered through the custom-image supply chain, tracked separately), it cannot subscribe to `recordstopic` and records-changed events do not reach the indexer. Restoring that path is tracked with the custom-image work, not by re-enabling local auth.
 
 ## Worked example: trace a "401 with empty app-id" failure
 
@@ -76,12 +74,13 @@ The symptom: `kubectl logs deploy/partition -n osdu | grep TxnLogger` shows `app
 
 Step by step:
 
-1. **Confirm the bearer is reaching the sidecar.** `kubectl logs <pod> -c istio-proxy -n osdu | grep jwt_authn` should show a `jwt_authn` admit. If it shows a reject, the bearer is invalid; check audience and issuer.
-2. **Confirm `x-payload` is being projected.** The `RequestAuthentication` writes the decoded JWT to `x-payload`. If `x-payload` is missing from the request the service sees, the Lua filter is not firing; check that the `EnvoyFilter` is present (`kubectl get envoyfilter -n osdu`).
-3. **Confirm the Lua mapping.** The Lua reads `envoy.filters.http.jwt_authn` dynamic metadata. If the audience does not match one of the branches in the Lua, `x-app-id` is left empty even though `x-payload` was projected.
-4. **Confirm the audience list.** `kubectl get requestauthentication -n osdu -o yaml | grep -A5 audiences`. If `AAD_CLIENT_ID` is overridden and the AAD appid is missing here, that is the bug. Fix `deploy.py`'s `_create_istio_auth()` (which calls `istio_auth_resources()`), re-run the CLI step (or `kubectl apply` the generated RA manually), and retry.
+1. **Confirm sidecar injection is enabled for the live Istio revision.** Compare `kubectl get deploy -n aks-istio-system` (find `istiod-asm-*`) with `kubectl get ns osdu --show-labels` (`istio.io/rev=...`). The `spi-namespaces` Kustomization substitutes this value from `osdu-flux/spi-cluster-config` (`kubectl get cm spi-cluster-config -n osdu-flux -o yaml`); if the key is missing or stale, sidecars are not injected and ADR-016 never runs. `spi reconcile` re-detects the live revision, rewrites the ConfigMap, and reconciles the namespace label. The label is only read at pod admission, so correcting it leaves running pods without `istio-proxy`. After fixing it, recreate the workloads (`kubectl rollout restart deploy -n osdu`, and delete the bootstrap Jobs so they run again) and confirm the new pods carry an `istio-proxy` container (`kubectl get pod -n osdu -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].name}{"\n"}{end}'`).
+2. **Confirm the bearer is reaching the sidecar.** `kubectl logs <pod> -c istio-proxy -n osdu | grep jwt_authn` should show a `jwt_authn` admit. If it shows a reject, the bearer is invalid; check audience and issuer.
+3. **Confirm `x-payload` is being projected.** The `RequestAuthentication` writes the decoded JWT to `x-payload`. If `x-payload` is missing from the request the service sees, the Lua filter is not firing; check that the `EnvoyFilter` is present (`kubectl get envoyfilter -n osdu`).
+4. **Confirm the Lua mapping.** The Lua reads `envoy.filters.http.jwt_authn` dynamic metadata. If the audience does not match one of the branches in the Lua, `x-app-id` is left empty even though `x-payload` was projected.
+5. **Confirm the audience list.** `kubectl get requestauthentication -n osdu -o yaml | grep -A5 audiences`. If `AAD_CLIENT_ID` is overridden and the AAD appid is missing here, that is the bug. Fix `deploy.py`'s `_create_istio_auth()` (which calls `istio_auth_resources()`), re-run the CLI step (or `kubectl apply` the generated RA manually), and retry.
 
-Three checks, each with a definitive answer. The full chain is small once you can name each link.
+Five checks, each with a definitive answer. The full chain is small once you can name each link.
 
 ## Worked example: how to add a new RBAC scope
 

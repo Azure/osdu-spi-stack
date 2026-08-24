@@ -3,7 +3,9 @@
 #
 # Layer 0a: Namespaces
 # Layer 0b: Karpenter NodePools (platform + osdu)
-# Layer 1: Operators (ECK, CNPG) + cert-manager + trust-manager + Gateway
+# Layer 1: Operators (ECK, CNPG) + cert-manager + trust-manager +
+#          shared Helm sources
+#          (the Gateway is owned by the ingress tree, ADR-029)
 # Layer 2: Middleware (Elasticsearch, Redis, PostgreSQL) -- on platform nodes
 # Layer 3: Airflow (depends on PostgreSQL) -- on platform nodes
 # Layer 4a: OSDU configuration (ConfigMap created by CLI)
@@ -28,13 +30,14 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/namespaces
-  prune: false
-  wait: true
-  timeout: 5m
   postBuild:
     substituteFrom:
       - kind: ConfigMap
-        name: spi-ingress-config
+        name: spi-cluster-config
+        optional: false
+  prune: false
+  wait: true
+  timeout: 5m
 
 ---
 # Layer 0b: Karpenter NodePools
@@ -142,7 +145,8 @@ spec:
   timeout: 10m
 
 ---
-# Layer 1d: Gateway
+# Temporary Gateway ownership handoff (ADR-029). This Kustomization must
+# reconcile once with an empty inventory and pruning disabled before removal.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -157,7 +161,32 @@ spec:
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
-  path: ./software/components/gateway
+  path: ./software/components/inventory-handoff
+  prune: false
+  deletionPolicy: Orphan
+  wait: true
+  timeout: 5m
+
+---
+# Layer 1e: Shared Helm sources (the bitnami HelmRepository used by both
+# Redis and, in the dns ingress modes, ExternalDNS). It has its own owner
+# so neither consumer's inventory can prune a source the other needs
+# (ADR-029).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-helm-sources
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/helm-sources
   prune: true
   wait: true
   timeout: 5m
@@ -198,11 +227,14 @@ spec:
   dependsOn:
     - name: spi-cert-manager
     - name: spi-nodepools
+    - name: spi-helm-sources
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/redis
-  prune: true
+  # Temporary source ownership handoff (ADR-029). Re-enable pruning after
+  # this reconciles once without the bitnami HelmRepository in its inventory.
+  prune: false
   wait: true
   timeout: 10m
 
@@ -377,13 +409,18 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/stacks/osdu/schema-load
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: osdu-image-lock
+  # A changed image tag updates the Job Pod template, an immutable field.
+  # Force replacement lets the loader run against the resolved schema version.
+  force: true
   prune: true
   wait: true
-  # Must exceed the Job's activeDeadlineSeconds (3600s) plus headroom for image
-  # pull and reconcile overhead, otherwise a legitimate slow load is reported
-  # Ready=False while the Job is still running happily, blocking the dependent
-  # reference-services Kustomization below.
-  timeout: 65m
+  # Matches the Job's activeDeadlineSeconds (9000s, including the 1800s
+  # pod-startup allowance) plus headroom for reconcile overhead.
+  timeout: 155m
   healthChecks:
     - apiVersion: batch/v1
       kind: Job

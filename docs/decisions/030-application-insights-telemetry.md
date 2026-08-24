@@ -6,7 +6,7 @@
 
 OSDU's Azure provider services are built on `core-lib-azure`, which registers an Application Insights request-telemetry filter at startup. With no connection string the filter dereferences a null configuration and the service NPEs before it serves traffic.
 
-ADR-002 (now ADR-026) gives cluster-level Managed Prometheus and Container Insights, which cover node and container metrics and logs. They do not carry the per-request, per-service application traces and dependency calls that `core-lib-azure` is wired to emit, and they do not satisfy the agent's startup expectation of a connection string.
+ADR-002 gives cluster-level Managed Prometheus and Container Insights, which cover node and container metrics and logs. They do not carry the per-request, per-service application traces and dependency calls that `core-lib-azure` is wired to emit, and they do not satisfy the agent's startup expectation of a connection string.
 
 An interim fix wrote a dummy/disabled connection string to stop the NPE. That
 unblocks startup without creating paid telemetry resources; operators can opt

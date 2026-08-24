@@ -25,12 +25,14 @@ import json
 import os
 import subprocess
 import time
+from typing import Any, Dict, Optional, Tuple
 
 import typer
 
 from .azure_infra import provision_azure_infra
 from .bicep import run_bicep_deployment
 from .bootstrap import (
+    create_istio_revision_configmap,
     create_storage_classes,
     ensure_namespaces,
     install_gateway_api_crds,
@@ -43,6 +45,7 @@ from .images import (
     resolve_image_lock,
 )
 from .ingress import (
+    configure_ingress_service,
     create_ingress_config,
     discover_dns_zone,
     get_ingress_ip,
@@ -50,7 +53,7 @@ from .ingress import (
 )
 from .paths import INFRA_ROOT
 from .secrets import ensure_secrets, get_or_create_seed
-from .shell import kubectl_apply_yaml, resolve_command, run_command
+from .shell import kubectl_apply_yaml, run_command, run_process
 from .templates import (
     istio_auth_resources,
     osdu_config_configmap,
@@ -262,8 +265,8 @@ def _wait_for_namespace(namespace: str, timeout_seconds: int = 300) -> None:
     last_error = ""
     with console.status(f"[bold]Waiting for namespace {namespace}...[/bold]"):
         while time.time() < deadline:
-            result = subprocess.run(
-                resolve_command(["kubectl", "get", "namespace", namespace]),
+            result = run_process(
+                ["kubectl", "get", "namespace", namespace],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -361,23 +364,21 @@ def _write_keyvault_bootstrap_secrets(
     first = True
     for name, value in secrets_to_write:
         while True:
-            result = subprocess.run(
-                resolve_command(
-                    [
-                        "az",
-                        "keyvault",
-                        "secret",
-                        "set",
-                        "--vault-name",
-                        keyvault_name,
-                        "--name",
-                        name,
-                        "--value",
-                        value,
-                        "--output",
-                        "none",
-                    ]
-                ),
+            result = run_process(
+                [
+                    "az",
+                    "keyvault",
+                    "secret",
+                    "set",
+                    "--vault-name",
+                    keyvault_name,
+                    "--name",
+                    name,
+                    "--value",
+                    value,
+                    "--output",
+                    "none",
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -411,18 +412,16 @@ def _pin_gitops_source() -> None:
     """
     console.print("\n[bold]Pinning environment to deploy commit...[/bold]")
 
-    wait_result = subprocess.run(
-        resolve_command(
-            [
-                "kubectl",
-                "wait",
-                "--for=condition=Ready",
-                f"gitrepository/{GITREPO_NAME}",
-                "-n",
-                "osdu-flux",
-                "--timeout=120s",
-            ]
-        ),
+    wait_result = run_process(
+        [
+            "kubectl",
+            "wait",
+            "--for=condition=Ready",
+            f"gitrepository/{GITREPO_NAME}",
+            "-n",
+            "osdu-flux",
+            "--timeout=120s",
+        ],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -460,6 +459,8 @@ def deploy_azure(
     config: Config,
     dry_run: bool = False,
     refresh_images: bool = True,
+    azure_account: Optional[Dict[str, Any]] = None,
+    deployer_principal: Optional[Tuple[str, str]] = None,
 ) -> None:
     """Provision Azure infra, bootstrap Kubernetes, deploy via GitOps.
 
@@ -468,9 +469,9 @@ def deploy_azure(
     caller can inspect what would change without actually provisioning.
     """
     image_lock_yaml = ""
-    # The minimal profile deploys no OSDU services, so nothing consumes the
-    # lock ConfigMap; skip the community-registry roundtrip entirely.
-    if refresh_images and not dry_run and config.profile is not Profile.MINIMAL:
+    # Only core deploys OSDU services that consume the image lock. Minimal and
+    # bare skip the community-registry roundtrip entirely.
+    if refresh_images and not dry_run and config.profile is Profile.CORE:
         # Resolve before provisioning so registry/API failures stop quickly and
         # never leave a partially configured cluster with a mixed image set.
         image_lock_yaml = _resolve_image_lock(config)
@@ -484,13 +485,19 @@ def deploy_azure(
         config.dns_zone_rg = rg
 
     # Phase 1-3: Azure infrastructure
-    infra_outputs = provision_azure_infra(config, dry_run=dry_run)
+    infra_outputs = provision_azure_infra(
+        config,
+        dry_run=dry_run,
+        account=azure_account,
+        deployer_principal=deployer_principal,
+    )
 
     if dry_run:
         return
 
     # Phase 4: Kubernetes bootstrap
-    ensure_namespaces(infra_outputs.get("istio_revision", ""))
+    istio_revision = ensure_namespaces(infra_outputs.get("istio_revision", ""))
+    create_istio_revision_configmap(istio_revision)
     create_storage_classes()
     install_gateway_api_crds()
 
@@ -506,22 +513,29 @@ def deploy_azure(
     _create_istio_auth(config, infra_outputs)
     _create_spi_init_values(config)
 
-    # Phase 4b: Ingress mode resolution (requires live cluster + Istio LB)
-    resolve_post_deploy_inputs(config)
-    create_ingress_config(
-        config=config,
-        external_dns_client_id=infra_outputs.get("external_dns_client_id", ""),
-        tenant_id=infra_outputs.get("tenant_id", ""),
-        gateway_ip=get_ingress_ip(),
-        istio_revision=infra_outputs.get("istio_revision", ""),
-    )
+    # Phase 4b: Ingress mode resolution (requires live cluster + Istio LB).
+    # Bare deploys no Gateway, so there is nothing to configure.
+    if config.profile is not Profile.BARE:
+        configure_ingress_service(config)
+        resolve_post_deploy_inputs(config)
+        create_ingress_config(
+            config=config,
+            external_dns_client_id=infra_outputs.get("external_dns_client_id", ""),
+            tenant_id=infra_outputs.get("tenant_id", ""),
+            gateway_ip=get_ingress_ip(),
+        )
 
     # Phase 5: GitOps activation (Kustomization via Bicep)
     _deploy_flux_config(config, activate_gitops=True)
-    display_result(
-        f"GitOps activated for profile: {config.profile.value}, "
-        f"ingress: {config.ingress_mode.value}"
-    )
+    if config.profile is Profile.BARE:
+        display_result(
+            "GitOps activated for profile: bare (empty reconciliation; no middleware or ingress)"
+        )
+    else:
+        display_result(
+            f"GitOps activated for profile: {config.profile.value}, "
+            f"ingress: {config.ingress_mode.value}"
+        )
 
     # Phase 6: Non-blocking runtime writes.
     # Cross-namespace CA copies and the Redis Istio DestinationRule moved

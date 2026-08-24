@@ -25,10 +25,11 @@ The CLI is doing the minimum work needed to hand off to Flux. Every `az` and `ku
 The sequence inside `deploy.deploy_azure()` is:
 
 1. **Config resolution.** `Config.from_env()` takes `--env`, `--aks-mode`,
-   `--profile`, `--partition`, and `--ingress-mode`. Automatic is the default;
-   the selected AKS mode is persisted and validated against existing clusters.
-   Unless disabled, the CLI also resolves the Azure caller for Entitlements
-   creator seeding.
+   `--profile`, `--partition`, and `--ingress-mode`, and applies defaults
+   (region, derived cluster name, profile-driven layer wiring). Automatic is
+   the default AKS mode; the selected mode is persisted and validated against
+   existing clusters. Unless disabled, the CLI also resolves the Azure caller
+   for Entitlements creator seeding.
 2. **Prerequisite check.** `check_prerequisites()` runs each tool in the registry (`az`, `bicep`, `kubectl`, `kubelogin`, `flux`, `helm`) and fails fast if anything is missing.
 3. **Resource group.** `az group create --name spi-stack-<env> --location <region>`. The one thing Bicep cannot do itself.
 4. **Key Vault soft-delete recovery.** If a prior `spi down` left a soft-deleted Key Vault with the same name, `az keyvault recover` brings it back so the upcoming Bicep deploy does not collide.
@@ -38,12 +39,9 @@ The sequence inside `deploy.deploy_azure()` is:
 6. **`az aks get-credentials`** merges the kubeconfig.
 7. **`az aks mesh enable-istio-cni`.** The resource provider rejects the Istio CNI knob at create time, so the CLI patches it imperatively. See [ADR-008](../decisions/008-bicep-for-azure-provisioning.md).
 8. **`infra/main.bicep` deploy.** Identity, RBAC, Key Vault (with Bicep-resolved secrets), ACR, Cosmos DB Gremlin, per-partition (Cosmos SQL + Service Bus + Storage), common Storage, optional `external-dns-*` for `dns` ingress. (The VNet is provisioned by `aks.bicep`, not here.)
-9. **K8s bootstrap.** `kubectl apply` for namespaces, StorageClasses, generated
-   secrets, Workload Identity ServiceAccounts, OSDU/ingress/init ConfigMaps,
-   Istio JWT projection, and the immutable service image lock. GHCR is the
-   default image source; community GitLab remains selectable.
+9. **K8s bootstrap.** `kubectl apply` for namespaces, StorageClasses, the middleware secret seed (`spi-secrets`) plus the `platform`/`osdu` credential Secrets, `workload-identity-sa` (in `platform` and `osdu`), the `osdu-config` ConfigMap, the `spi-ingress-config` ConfigMap, the `spi-init-values` ConfigMap, and the Istio JWT projection resources from [ADR-016](../decisions/016-istio-jwt-projection.md). The `core` profile also creates the immutable `osdu-image-lock` ConfigMap; GHCR is the default image source and the OSDU community registry remains selectable ([ADR-032](../decisions/032-service-image-supply-chain.md)). `minimal` and `bare` skip image resolution and this ConfigMap.
 10. **`infra/flux.bicep` deploy.** Activates the AKS Flux extension and creates the `fluxConfigurations` resource with two top-level Kustomizations: `stack` (pointing at `./software/stacks/osdu/profiles/<profile>`) and `ingress` (pointing at `./software/stacks/osdu/ingress/<mode>`).
-11. **Runtime Key Vault secrets.** The CLI writes the in-cluster middleware secrets to Key Vault (per-partition Elasticsearch credentials, Redis hostname/password) directly from the generated seed passwords — no wait for middleware Ready, since the values are known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md).
+11. **Runtime Key Vault secrets.** The CLI writes the in-cluster middleware secrets to Key Vault (per-partition Elasticsearch credentials, Redis hostname/password) directly from the generated seed passwords, with no wait for middleware Ready, since the values are known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md).
 12. **Suspend pin.** `_pin_gitops_source()` waits up to 120s for `gitrepository/osdu-spi-stack-system` to reach `Ready=True`, then `kubectl patch spec.suspend: true`. See [ADR-014](../decisions/014-suspend-gitops-after-deploy.md).
 13. **Next-steps panel.** The CLI prints `spi status --watch`, `spi info`, and the matching `spi down` command with flags pre-filled.
 
@@ -60,7 +58,8 @@ L0a  spi-namespaces
        |
        +--> L0b  spi-nodepools                            (ADR-018)
        +--> L1   spi-cert-manager, spi-trust-manager,
-       |          spi-eck-operator, spi-cnpg-operator
+       |          spi-eck-operator, spi-cnpg-operator,
+       |          spi-helm-sources
        |          |
        |          +--> L2   spi-elasticsearch, spi-redis, spi-postgresql
        |                     |

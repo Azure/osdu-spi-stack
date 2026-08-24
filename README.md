@@ -76,13 +76,21 @@ Copy the wheel URL for any version from that release's page under
 
 ### Upgrade
 
-After the first install, `spi` upgrades itself — no URL needed, same on every
-platform:
+After the first install, `spi` checks GitHub Releases and upgrades itself with
+no URL needed:
 
 ```bash
 spi update           # check for a newer version and install it
 spi update --check   # check only; do not install
 spi update --force   # reinstall even if already on the latest version
+```
+
+On native Windows installs managed by `uv`, `spi update` intentionally exits
+before replacing the active tool environment. Run the manual recovery command it
+prints from a new terminal instead:
+
+```bash
+uv tool install --force <wheel-url>
 ```
 
 > **Note:** `uv tool install git+https://github.com/...@vX.Y.Z` also works,
@@ -223,8 +231,11 @@ Three namespaces, deployed in dependency order via a 7-layer Kustomization stack
 |---------|---------|
 | `core` (default) | Everything above. |
 | `minimal` | `foundation` and `platform` only — operators, cert-manager, trust-manager, Gateway, Elasticsearch, Redis, PostgreSQL, Airflow. No OSDU services. |
+| `bare` | Nothing; infra plus activated GitOps only. Flux reconciles empty stack and ingress trees. The CLI bootstrap seeds namespaces, secrets, the `osdu-config` ConfigMap, and the Workload Identity ServiceAccount. |
 
 Use `minimal` when you are working on the middleware itself and the OSDU services would only add deploy time. The middleware layers are identical between profiles, so what you validate on `minimal` holds on `core`.
+
+Use `bare` for Bicep, Workload Identity, or RBAC iteration, or for bring-your-own workloads. Re-run `spi up` with `minimal` or `core` to add workloads later.
 
 ### Azure PaaS Resources
 
@@ -247,7 +258,7 @@ Everything is discovered by the CLI:
 uv run spi check
 ```
 
-**Required tools**: az, bicep, kubectl, kubelogin, flux, helm
+**Required tools**: az, bicep, kubectl, kubelogin, flux
 
 **System requirements**: Azure subscription with permissions to create resource groups and AKS clusters.
 
@@ -266,7 +277,7 @@ Commands:
   reconcile  Force Flux to re-sync from Git               [--suspend] [--resume] [--refresh-images]
 ```
 
-Use `--dry-run` on `spi up` to preview the Bicep changes (`az deployment group what-if`) before any Azure resources are created beyond the resource group. `--aks-mode` defaults to `automatic`; `base` selects the Base SKU with Node Autoprovisioning and is preserved per environment. `--profile` defaults to `core`; `minimal` deploys middleware only. `--ingress-mode` defaults to `azure`; the other supported modes are `dns` (per-service hostnames on an owned Azure DNS zone) and `ip` (bare IP, debug only). Service images default to each public SPI service package's `main-snapshot`, which is immediately pinned to an immutable digest. Use `--image-org` to select the publishing GitHub organization (defaults to `Azure`), `--image-tag` for a coordinated release tag, `--image-ref` for advanced multi-repository feature validation, or `--image-source community` for the OSDU GitLab fallback. `--refresh-images` re-resolves the configured selector and reconciles the service Kustomizations.
+Use `--dry-run` on `spi up` to preview the Bicep changes (`az deployment group what-if`) before any Azure resources are created beyond the resource group. `--aks-mode` defaults to `automatic`; `base` selects the Base SKU with Node Autoprovisioning and is preserved per environment. `--profile` defaults to `core`; `minimal` deploys middleware only, and `bare` activates GitOps against empty stack and ingress trees. `--ingress-mode` defaults to `azure`; the other supported modes are `dns` (per-service hostnames on an owned Azure DNS zone) and `ip` (bare IP, debug only). `--ingress-mode` and `--dns-zone` are rejected with `bare`. Service images default to each public SPI service package's `main-snapshot`, which is immediately pinned to an immutable digest. Use `--image-org` to select the publishing GitHub organization (defaults to `Azure`), `--image-tag` for a coordinated release tag, `--image-ref` for advanced multi-repository feature validation, or `--image-source community` for the OSDU GitLab fallback. `--refresh-images` re-resolves the configured selector and reconciles the service Kustomizations.
 
 
 ## Documentation
