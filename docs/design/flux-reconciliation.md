@@ -42,9 +42,9 @@ L1  spi-cert-manager          dependsOn: spi-namespaces
     spi-trust-manager         dependsOn: spi-cert-manager
     spi-eck-operator          dependsOn: spi-namespaces
     spi-cnpg-operator         dependsOn: spi-namespaces
-    spi-gateway               dependsOn: spi-namespaces
+    spi-helm-sources          dependsOn: spi-namespaces           (ADR-029)
 L2  spi-elasticsearch         dependsOn: spi-eck-operator, spi-nodepools
-    spi-redis                 dependsOn: spi-cert-manager, spi-nodepools
+    spi-redis                 dependsOn: spi-cert-manager, spi-nodepools, spi-helm-sources
     spi-postgresql            dependsOn: spi-cnpg-operator, spi-nodepools
 L3  spi-airflow               dependsOn: spi-postgresql
 L4a spi-osdu-config           dependsOn: spi-namespaces
@@ -55,7 +55,7 @@ L5b spi-osdu-schema-load      dependsOn: spi-osdu-init            (ADR-013)
 L6  spi-osdu-reference        dependsOn: spi-osdu-services, spi-osdu-schema-load
 ```
 
-The `ingress` Kustomization (`software/stacks/osdu/ingress/<mode>/stack.yaml`) attaches additional Kustomizations at L1 (cert issuers, ExternalDNS for `dns`, TLS overlays) and L6 (HTTPRoutes). See [ADR-007](../decisions/007-layered-kustomization-ordering.md) and [gateway-ingress](gateway-ingress.md).
+The `ingress` Kustomization (`software/stacks/osdu/ingress/<mode>/stack.yaml`) attaches additional Kustomizations at L1 (the mode's Gateway owner, cert issuers, and ExternalDNS for `dns`) and L6 (HTTPRoutes). The active Gateway owner lives in the ingress tree because its listeners are mode-specific and exactly one Kustomization may render and prune the object. See [ADR-029](../decisions/029-single-flux-inventory-owner.md) and [gateway-ingress](gateway-ingress.md).
 
 ## How `dependsOn` actually gates
 
@@ -151,7 +151,7 @@ $ kubectl describe kustomization spi-bootstrap -n osdu-flux
    redis-disable-mtls not found
 ```
 
-The Istio CRD has not registered yet, or the namespace is wrong. `kubectl get crd | grep istio` confirms. Fix the upstream (`spi-gateway` Kustomization or the AKS Istio extension), reconcile, and the chain unblocks layer by layer.
+The Istio CRD has not registered yet, or the namespace is wrong. `kubectl get crd | grep istio` confirms. Fix the upstream Gateway owner (`spi-gateway-tls`, declared by the selected ingress tree) or the AKS Istio extension, reconcile, and the chain unblocks layer by layer.
 
 The same pattern works for HelmRelease failures (`flux get helmreleases -n osdu-flux`), schema-load Job failures (`kubectl logs job/schema-load -n osdu`), and image substitution failures (`kubectl get cm osdu-image-lock -n osdu-flux -o yaml` shows the resolved values).
 

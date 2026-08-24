@@ -2,6 +2,10 @@
 
 **Status**: Accepted
 
+**Amendment (2026-08-24):** [ADR-029](029-single-flux-inventory-owner.md)
+supersedes the Gateway placement in this decision. The original ordering below
+is preserved as the historical record.
+
 ## Context
 
 A Kubernetes workload graph has hard ordering constraints: CRDs before CRs, operators before instances, cert-manager before certs, middleware before consumers. Applying everything at once surfaces as CrashLoopBackOff and CRD-not-found errors that resolve eventually but obscure real failures.

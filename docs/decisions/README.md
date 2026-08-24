@@ -71,3 +71,4 @@ Create an ADR for any decision that could plausibly have gone a different way an
 | [026](026-airflow-3.md) | Airflow 3, Single-Engine | Accepted |
 | [027](027-entra-only-data-plane.md) | Entra-Only Data Plane: Disable Local Auth on Cosmos and Service Bus | Accepted |
 | [028](028-windows-batch-shim-launcher.md) | Windows Batch Shim Launcher via an Escaped cmd.exe Command Line | Accepted |
+| [029](029-single-flux-inventory-owner.md) | One Flux Inventory Owner per Kubernetes Object | Accepted |
