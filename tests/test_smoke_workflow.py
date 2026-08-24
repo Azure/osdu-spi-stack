@@ -104,6 +104,7 @@ def test_verify_gate_outlives_the_schema_load_and_reference_timeouts():
     wait_step = _steps(verify)["Wait for Flux Kustomizations to be Ready"]
     match = re.search(r"--timeout\s+(\d+)", wait_step["run"])
     assert match, "wait_for_flux_ready.sh must be called with an explicit --timeout"
+    # wait_for_flux_ready.sh's --timeout is in seconds (scripts/wait_for_flux_ready.sh).
     wait_timeout_minutes = int(match.group(1)) / 60
 
     assert wait_timeout_minutes > combined_minutes, (
