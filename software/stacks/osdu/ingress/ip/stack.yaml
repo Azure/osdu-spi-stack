@@ -1,9 +1,33 @@
 # SPI Stack - Ingress profile: IP (bare IP, no TLS, debug only)
 #
-# Attaches a single Flux Kustomization that wires HTTPRoutes (no
-# hostnames) to the existing HTTP:80 listener on spi-gateway. No
-# cert-manager issuers, no ExternalDNS, no Kibana, no TLS overlay.
+# Renders the base Gateway (HTTP:80 only) and wires HTTPRoutes with no
+# hostnames to it. Every ingress tree owns its own Gateway so exactly one
+# Flux Kustomization ever applies the object (ADR-012); this mode is the
+# one that stops at the base component. No cert-manager issuers, no
+# ExternalDNS, no Kibana, no TLS overlay.
 ---
+# The Gateway: HTTP:80 only. Sole Flux owner of the object.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-gateway
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/gateway
+  prune: true
+  wait: true
+  timeout: 5m
+
+---
+# HTTPRoutes for the OSDU APIs, no hostnames, bound to HTTP:80.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -15,6 +39,7 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-osdu-services
+    - name: spi-gateway
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system

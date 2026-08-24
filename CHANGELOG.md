@@ -38,6 +38,14 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   are not supported.
 
 ### Fixed
+- The `spi-gateway` Gateway is rendered by exactly one Flux Kustomization.
+  The profile-level `spi-gateway` and the ingress-level `spi-gateway-tls`
+  both built `software/components/gateway`, so each reconcile reverted the
+  other and the HTTPS listener plus `spec.infrastructure.annotations` never
+  survived. The ingress tree is now the Gateway's sole owner: its single
+  `spi-gateway` Kustomization renders the base component (`ip`) or the
+  mode's TLS overlay (`azure`, `dns`), and the route Kustomizations depend
+  on it (ADR-012, issue #81).
 - `spi update` now refuses the unsafe in-process `uv tool install --force`
   replacement path on Windows and prints the equivalent command to run from a
   new terminal, preventing orphaned `spi.exe` launchers with missing package

@@ -42,7 +42,6 @@ L1  spi-cert-manager          dependsOn: spi-namespaces
     spi-trust-manager         dependsOn: spi-cert-manager
     spi-eck-operator          dependsOn: spi-namespaces
     spi-cnpg-operator         dependsOn: spi-namespaces
-    spi-gateway               dependsOn: spi-namespaces
 L2  spi-elasticsearch         dependsOn: spi-eck-operator, spi-nodepools
     spi-redis                 dependsOn: spi-cert-manager, spi-nodepools
     spi-postgresql            dependsOn: spi-cnpg-operator, spi-nodepools
@@ -55,7 +54,7 @@ L5b spi-osdu-schema-load      dependsOn: spi-osdu-init            (ADR-013)
 L6  spi-osdu-reference        dependsOn: spi-osdu-services, spi-osdu-schema-load
 ```
 
-The `ingress` Kustomization (`software/stacks/osdu/ingress/<mode>/stack.yaml`) attaches additional Kustomizations at L1 (cert issuers, ExternalDNS for `dns`, TLS overlays) and L6 (HTTPRoutes). See [ADR-007](../decisions/007-layered-kustomization-ordering.md) and [gateway-ingress](gateway-ingress.md).
+The `ingress` Kustomization (`software/stacks/osdu/ingress/<mode>/stack.yaml`) attaches additional Kustomizations at L1 (`spi-gateway`, cert issuers, ExternalDNS for `dns`) and L6 (HTTPRoutes). `spi-gateway` lives in the ingress tree rather than the profile because the Gateway's listeners are mode-specific and exactly one Kustomization may own the object. See [ADR-007](../decisions/007-layered-kustomization-ordering.md) and [gateway-ingress](gateway-ingress.md).
 
 ## How `dependsOn` actually gates
 

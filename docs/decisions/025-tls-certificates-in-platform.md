@@ -32,7 +32,7 @@ Chosen option: "Issue Certificates into `platform`, bridge with ReferenceGrants"
 ### Consequences
 
 - Good, because issuance works under the managed-namespace policy; validated live (issuance completed in ~30 s in `platform` after stalling indefinitely in `aks-istio-ingress`).
-- Good, because cert-manager can now publish `Ready` conditions, so the `spi-gateway-tls` Kustomization genuinely gates on issuance instead of passing a status-less Certificate.
+- Good, because cert-manager can now publish `Ready` conditions, so the Kustomization that renders the TLS overlay genuinely gates on issuance instead of passing a status-less Certificate. (2026-08: that Kustomization was `spi-gateway-tls`; it was folded into the ingress tree's single `spi-gateway` owner, ADR-012.)
 - Good, because the smoke workflow gained an HTTPS-handshake probe, closing the CI blind spot that let this ship.
 - Bad, because the TLS trust topology spans two namespaces; readers must follow a ReferenceGrant to see why the listener resolves.
 - Neutral, because Flux prunes the stalled Certificates from `aks-istio-ingress` on reconcile (it is exempt and owns them).

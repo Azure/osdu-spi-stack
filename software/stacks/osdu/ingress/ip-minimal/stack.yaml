@@ -1,0 +1,23 @@
+# SPI Stack - Ingress profile: IP, minimal variant
+#
+# The base Gateway and nothing else; see kustomization.yaml.
+---
+# The Gateway: HTTP:80 only. Sole Flux owner of the object.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-gateway
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/gateway
+  prune: true
+  wait: true
+  timeout: 5m

@@ -347,3 +347,84 @@ class TestBareProfileScope:
 
     def test_ingress_tree_is_empty(self):
         assert list(_flux_kustomizations(INGRESS_DIR / "bare")) == []
+
+
+class TestSingleRenderer:
+    """One object, one Flux owner.
+
+    Two Kustomizations rendering the same object each write their own desired
+    state on every reconcile, so the object flip-flops and neither side ever
+    settles. This is what happened when a profile-level spi-gateway and an
+    ingress-level spi-gateway-tls both built software/components/gateway: the
+    base wrote HTTP:80 only, the TLS overlay wrote HTTP:80 plus HTTPS:443, and
+    the live Gateway's generation climbed on an idle cluster.
+
+    Owners that render byte-identical copies from separate files are left
+    alone: they cannot disagree, and the shared bitnami HelmRepository under
+    components/redis and components/external-dns is deliberately duplicated.
+    """
+
+    @staticmethod
+    def _renderings(tree: Path) -> dict:
+        """Map object identity to the {Kustomization: (file, rendered doc)} set."""
+        found: dict = {}
+        for item in _flux_kustomizations(tree):
+            directory = REPO_ROOT / item["spec"]["path"].removeprefix("./")
+            for path, doc in _built_resources(directory):
+                meta = doc.get("metadata") or {}
+                key = (doc.get("kind"), meta.get("namespace") or "", meta.get("name"))
+                rendering = (
+                    path.relative_to(REPO_ROOT).as_posix(),
+                    yaml.safe_dump(doc, sort_keys=True),
+                )
+                found.setdefault(key, {})[item["metadata"]["name"]] = rendering
+        return found
+
+    @pytest.mark.parametrize("pair", PAIRS, ids=PAIR_IDS)
+    def test_no_object_is_rendered_twice(self, pair):
+        profile, mode = pair
+        found: dict = {}
+        for tree in (PROFILES_DIR / profile.value, _ingress_tree(profile, mode)):
+            for key, owners in self._renderings(tree).items():
+                found.setdefault(key, {}).update(owners)
+
+        contested = {}
+        for key, owners in found.items():
+            if len(owners) < 2:
+                continue
+            files = {rendering[0] for rendering in owners.values()}
+            bodies = {rendering[1] for rendering in owners.values()}
+            if len(files) == len(owners) and len(bodies) == 1:
+                continue
+            contested[key] = sorted(owners)
+
+        assert not contested, (
+            f"--profile {profile.value} --ingress-mode {mode.value} has objects claimed "
+            f"by more than one Kustomization: {contested}. Each owner re-applies its own "
+            "desired state every reconcile and the object never settles."
+        )
+
+    @pytest.mark.parametrize("pair", PAIRS, ids=PAIR_IDS)
+    def test_gateway_owner_is_the_ingress_tree(self, pair):
+        profile, mode = pair
+        assert "spi-gateway" not in _declared_names(PROFILES_DIR / profile.value), (
+            "the Gateway's listeners are ingress-mode specific, so only the ingress "
+            "tree may declare spi-gateway"
+        )
+
+        ingress_tree = _ingress_tree(profile, mode)
+        if profile is Profile.BARE:
+            assert "spi-gateway" not in _declared_names(ingress_tree)
+            return
+
+        gateway = _kustomization(ingress_tree, "spi-gateway")
+        directory = REPO_ROOT / gateway["spec"]["path"].removeprefix("./")
+        rendered = {
+            str((doc.get("metadata") or {}).get("name"))
+            for _, doc in _built_resources(directory)
+            if doc.get("kind") == "Gateway"
+        }
+        assert rendered == {"spi-gateway"}, (
+            f"{ingress_tree.name}/stack.yaml points spi-gateway at {gateway['spec']['path']}, "
+            f"which renders {sorted(rendered)}"
+        )

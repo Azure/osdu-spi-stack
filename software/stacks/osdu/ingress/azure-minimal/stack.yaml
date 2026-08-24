@@ -20,7 +20,6 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-cert-manager
-    - name: spi-gateway
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
@@ -55,11 +54,13 @@ spec:
   timeout: 10m
 
 ---
-# HTTPS:443 listener with Let's Encrypt cert for the auto-FQDN.
+# The Gateway: HTTP:80 for ACME HTTP-01 plus the HTTPS:443 listener
+# bound to the auto-FQDN. The ingress tree is the Gateway's sole Flux
+# owner, so no second Kustomization re-applies the object (ADR-012).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: spi-gateway-tls
+  name: spi-gateway
   namespace: osdu-flux
   labels:
     spi-stack.layer: "1"
@@ -93,7 +94,7 @@ spec:
   dependsOn:
     - name: spi-airflow
     - name: spi-kibana
-    - name: spi-gateway-tls
+    - name: spi-gateway
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system

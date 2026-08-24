@@ -51,8 +51,7 @@ L0a  spi-namespaces
        |
        +--> L0b  spi-nodepools                            (ADR-018)
        +--> L1   spi-cert-manager, spi-trust-manager,
-       |          spi-eck-operator, spi-cnpg-operator,
-       |          spi-gateway
+       |          spi-eck-operator, spi-cnpg-operator
        |          |
        |          +--> L2   spi-elasticsearch, spi-redis, spi-postgresql
        |                     |

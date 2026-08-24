@@ -21,7 +21,7 @@ Each mode is a self-contained Flux Kustomization tree under `software/stacks/osd
 Some pieces are in every mode and live under `software/components/`:
 
 - **Managed Istio** from AKS Automatic (ADR-002). Provides the Gateway API implementation and the ingress LoadBalancer service.
-- **`Gateway` resource** in the `aks-istio-ingress` namespace. The Gateway listens on HTTP:80; the HTTPS listener is added by the mode-specific Kustomization (since it needs a cert that depends on the hostname).
+- **`Gateway` resource** in the `aks-istio-ingress` namespace. The base manifest under `software/components/gateway/` listens on HTTP:80; each mode's TLS overlay layers its HTTPS listeners on top. The selected ingress profile is its sole Flux owner: one `spi-gateway` Kustomization per mode renders the whole object, so no second Kustomization ever re-applies a competing desired state. The stack profile declares no Gateway.
 - **cert-manager** for any mode that issues TLS (`azure`, `dns`).
 - **`spi-ingress-config` ConfigMap** in `osdu-flux`, written by the CLI during K8s bootstrap. Carries `GATEWAY_HOSTNAME`, `GATEWAY_LABEL`, `DNS_ZONE`, and similar values consumed by Flux `postBuild.substituteFrom`.
 
@@ -30,14 +30,14 @@ Some pieces are in every mode and live under `software/components/`:
 Two artifacts make this mode work end-to-end:
 
 1. **`azure-dns-label-name` annotation on the Istio ingress LB.** The Gateway's `infrastructure.annotations` carries `service.beta.kubernetes.io/azure-dns-label-name: <label>`. The AKS cloud controller propagates this onto the LB Service, which gives the LB a `<label>.<region>.cloudapp.azure.com` FQDN.
-2. **Single-host cert-manager `Certificate`.** A `Certificate` for `<label>.<region>.cloudapp.azure.com` issued by a `ClusterIssuer` that uses HTTP-01 against the Gateway. cert-manager handles the ACME dance; once the cert is issued, the Gateway's HTTPS listener is patched to use it.
+2. **Single-host cert-manager `Certificate`.** A `Certificate` for `<label>.<region>.cloudapp.azure.com` issued by a `ClusterIssuer` that uses HTTP-01 against the Gateway. The HTTPS listener referencing the cert Secret is applied at the same time as the HTTP:80 listener that solves the challenge, so the listener simply stays unprogrammed until cert-manager finishes the ACME dance.
 
 Routing in this mode: every OSDU API is reached at `https://<label>.<region>.cloudapp.azure.com/api/<service>/v1/...`. Kibana is served at `https://<label>.<region>.cloudapp.azure.com/kibana` via a subpath overlay. Airflow is not externally routed in this mode (use `kubectl port-forward` if you need its UI).
 
 What `software/stacks/osdu/ingress/azure/` lands:
 
 - A `Kustomization` for cert-manager issuers (Let's Encrypt staging + prod).
-- A `Kustomization` for the single-host `Certificate` and the HTTPS listener patch.
+- `spi-gateway`, rendering `software/overlays/gateway-tls-single-host`: the base Gateway, the HTTPS listener, the `infrastructure.annotations` DNS label, and the single-host `Certificate` plus its ReferenceGrant.
 - HTTPRoutes for every OSDU service path, plus the Kibana subpath route.
 
 This mode requires zero Azure outside the resource group: no DNS zone, no public IP outside the AKS LB, no extra UAMI.
@@ -63,7 +63,7 @@ What `software/stacks/osdu/ingress/dns/` lands:
 
 - cert-manager issuers (same as `azure`).
 - ExternalDNS HelmRelease with the UAMI ServiceAccount.
-- Three `Certificate` resources and three HTTPS listeners on the Gateway.
+- `spi-gateway`, rendering `software/overlays/gateway-tls-multi-host`: the base Gateway, three HTTPS listeners, and three `Certificate` resources.
 - HTTPRoutes scoped per subdomain.
 
 ## Mode: `ip`
@@ -72,7 +72,8 @@ Intentionally minimal. The Istio ingress LB has a public IP; no hostname, no cer
 
 What `software/stacks/osdu/ingress/ip/` lands:
 
-- HTTPRoutes bound to the HTTP:80 listener with no `hostnames` field.
+- `spi-gateway`, rendering `software/components/gateway` unmodified: HTTP:80 and nothing else.
+- HTTPRoutes bound to that listener with no `hostnames` field.
 - No cert issuer.
 - No Kibana, no Airflow UI routing (the workloads still exist; you reach them via port-forward).
 
@@ -128,7 +129,8 @@ Same drill, plus one: **ExternalDNS wrote the A record.** `kubectl logs deploy/e
 - `software/stacks/osdu/ingress/<mode>-minimal/` -- the same trees minus `spi-osdu-routes`, used by the `minimal` stack profile (ADR-024)
 - `software/stacks/osdu/routes/<tree>/middleware/` -- Kibana + Airflow HTTPRoutes and ReferenceGrants
 - `software/stacks/osdu/routes/<tree>/osdu/` -- OSDU API HTTPRoutes
-- `software/components/gateway/` -- the shared Gateway resource
+- `software/components/gateway/` -- the base Gateway resource, rendered by whichever ingress tree is selected
+- `software/overlays/gateway-tls-single-host/`, `software/overlays/gateway-tls-multi-host/` -- the base Gateway plus each mode's HTTPS listeners and Certificates
 - `infra/modules/external-dns-identity.bicep`, `infra/modules/external-dns-role.bicep` -- the conditional UAMI + role
 - `src/spi/ingress.py` -- CLI logic for `--ingress-mode`
 - `infra/flux.bicep` -- carries `ingressMode` as a Bicep parameter
