@@ -38,6 +38,10 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   are not supported.
 
 ### Fixed
+- Azure ingress now binds to the AKS managed Istio LoadBalancer Service and
+  applies the Azure DNS label directly during `spi up`. This reuses the
+  existing public IP so the deterministic FQDN resolves and ACME HTTP-01 can
+  issue the certificate (ADR-039, issue #82).
 - The `spi-gateway` Gateway is rendered by exactly one Flux Kustomization.
   The profile-level `spi-gateway` and the ingress-level `spi-gateway-tls`
   both built `software/components/gateway`, so each reconcile reverted the

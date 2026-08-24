@@ -44,6 +44,7 @@ from .images import (
     resolve_image_lock,
 )
 from .ingress import (
+    configure_ingress_service,
     create_ingress_config,
     discover_dns_zone,
     get_ingress_ip,
@@ -366,6 +367,7 @@ def deploy_azure(
     # Phase 4b: Ingress mode resolution (requires live cluster + Istio LB).
     # Bare deploys no Gateway, so there is nothing to configure.
     if config.profile is not Profile.BARE:
+        configure_ingress_service(config)
         resolve_post_deploy_inputs(config)
         create_ingress_config(
             config=config,
