@@ -40,6 +40,13 @@ KUSTOMIZATION_KIND = "Kustomization"
 FLUX_API_PREFIX = "kustomize.toolkit.fluxcd.io/"
 NAMESPACES_MANIFEST = REPO_ROOT / "software" / "components" / "namespaces" / "namespaces.yaml"
 
+SUBSTITUTE_ANNOTATION = "kustomize.toolkit.fluxcd.io/substitute"
+PAYLOAD_FIELDS = ("data", "stringData")
+PAYLOAD_KINDS = ("ConfigMap", "Secret")
+# Flux envsubst covers POSIX parameter expansion, not just ${VAR}: ${VAR:=x},
+# ${VAR:-x}, ${#VAR} and ${VAR/a/b} are all rewritten.
+DOLLAR_RUN = re.compile(r"(?<!\$)(\$+)\{[^}]*\}")
+
 
 def _flux_kustomizations(tree: Path):
     """Yield every Flux Kustomization doc declared under a stack directory."""
@@ -66,6 +73,87 @@ def _dependency_names(tree: Path) -> set:
 
 def _referenced_paths(tree: Path) -> set:
     return {k["spec"]["path"] for k in _flux_kustomizations(tree)}
+
+
+def _substituted_paths() -> set:
+    """Yield every path whose Kustomization runs Flux postBuild substitution.
+
+    Either postBuild form substitutes: substituteFrom reads ConfigMaps and
+    Secrets, substitute takes an inline map.
+    """
+    trees = [
+        t for t in itertools.chain(PROFILES_DIR.iterdir(), INGRESS_DIR.iterdir()) if t.is_dir()
+    ]
+    return {
+        item["spec"]["path"]
+        for tree in trees
+        for item in _flux_kustomizations(tree)
+        if item["spec"].get("postBuild")
+    }
+
+
+def _opts_out_of_substitution(doc) -> bool:
+    meta = doc.get("metadata") or {}
+    annotations = meta.get("annotations") or {}
+    labels = meta.get("labels") or {}
+    return "disabled" in (
+        annotations.get(SUBSTITUTE_ANNOTATION),
+        labels.get(SUBSTITUTE_ANNOTATION),
+    )
+
+
+def _built_resources(directory: Path, seen: set | None = None):
+    """Yield (path, doc) for every manifest a kustomization builds.
+
+    Follows resource directories outside the kustomization's own path, as the
+    gateway TLS overlays do via ../../components/gateway. Flux substitutes
+    whatever kustomize renders, so anything short of the full graph leaves a
+    resource that gets rewritten but never inspected.
+    """
+    seen = set() if seen is None else seen
+    directory = directory.resolve()
+    if directory in seen:
+        return
+    seen.add(directory)
+
+    kustomization = directory / "kustomization.yaml"
+    if not kustomization.is_file():
+        return
+
+    spec = yaml.safe_load(kustomization.read_text(encoding="utf-8")) or {}
+    for entry in spec.get("resources", []):
+        target = (directory / entry).resolve()
+        if target.is_dir():
+            yield from _built_resources(target, seen)
+        elif target.is_file():
+            for doc in yaml.safe_load_all(target.read_text(encoding="utf-8")):
+                if doc:
+                    yield target, doc
+
+
+def _rewritten_expansions(text: str) -> list:
+    """Return the expansions Flux would rewrite in a payload.
+
+    Flux collapses each $$ into one literal dollar, so an even-length dollar
+    run escapes the expansion outright while an odd-length run leaves a single
+    dollar still driving a substitution: $${VAR} survives, $$${VAR} does not.
+    """
+    return [match.group(0) for match in DOLLAR_RUN.finditer(text) if len(match.group(1)) % 2]
+
+
+def _payload_strings(doc):
+    """Yield the ConfigMap/Secret payload values, where embedded scripts live.
+
+    Manifest fields are excluded on purpose: substitution there is the point,
+    as with the schema-load Job's image and the overlays' patched hostnames.
+    A payload is application content Flux has no business rewriting.
+    """
+    if doc.get("kind") not in PAYLOAD_KINDS:
+        return
+    for field in PAYLOAD_FIELDS:
+        for value in (doc.get(field) or {}).values():
+            if isinstance(value, str):
+                yield value
 
 
 def _kustomization(tree: Path, name: str):
@@ -172,6 +260,68 @@ class TestSchemaLoadImageSubstitution:
         image = job["spec"]["template"]["spec"]["containers"][0]["image"]
 
         assert image == "${SCHEMA_LOAD_IMAGE_REPOSITORY}:${SCHEMA_LOAD_IMAGE_TAG}"
+
+    def test_schema_load_script_keeps_its_shell_references(self):
+        doc = yaml.safe_load((STACKS / "schema-load" / "script.yaml").read_text(encoding="utf-8"))
+        script = doc["data"]["bootstrap.sh"]
+
+        assert _opts_out_of_substitution(doc)
+        assert "${SCHEMA_INFO_URL}" in script
+        assert "${DATA_PARTITION}" in script
+
+
+class TestSubstitutionLeavesScriptsIntact:
+    """Flux envsubst runs over every resource a Kustomization builds, not just
+    the file holding the placeholder, and replaces unknown expansions with an
+    empty string. A payload under a substituted path is shredded unless it
+    opts out.
+    """
+
+    def test_embedded_scripts_opt_out_of_substitution(self):
+        offenders = []
+        for rel in sorted(_substituted_paths()):
+            directory = REPO_ROOT / rel.removeprefix("./")
+            for path, doc in _built_resources(directory):
+                if _opts_out_of_substitution(doc):
+                    continue
+                tokens = sorted(
+                    {t for body in _payload_strings(doc) for t in _rewritten_expansions(body)}
+                )
+                if tokens:
+                    name = (doc.get("metadata") or {}).get("name")
+                    rel_path = path.relative_to(REPO_ROOT).as_posix()
+                    offenders.append(f"{rel_path} ({doc.get('kind')}/{name}): {tokens}")
+
+        assert not offenders, (
+            f"embedded scripts under a postBuild-substituted path: {offenders}. "
+            f"Flux would blank out each reference; annotate the resource with "
+            f"{SUBSTITUTE_ANNOTATION}: disabled."
+        )
+
+    def test_walk_follows_resources_outside_the_kustomization_path(self):
+        overlay = REPO_ROOT / "software" / "overlays" / "gateway-tls-single-host"
+        visited = {path.relative_to(REPO_ROOT).as_posix() for path, _ in _built_resources(overlay)}
+
+        assert "software/components/gateway/gateway.yaml" in visited, (
+            f"the walk stopped inside {overlay.name}, so resources Flux substitutes "
+            f"would go uninspected: {sorted(visited)}"
+        )
+
+    @pytest.mark.parametrize(
+        "expansion",
+        ["${VAR}", "${VAR:=default}", "${VAR:-default}", "${#VAR}", "${VAR/a/b}"],
+    )
+    def test_every_expansion_flux_rewrites_is_matched(self, expansion):
+        assert _rewritten_expansions(expansion) == [expansion]
+
+    @pytest.mark.parametrize("dollars", [1, 3, 5])
+    def test_odd_dollar_runs_still_substitute(self, dollars):
+        expansion = "$" * dollars + "{VAR}"
+        assert _rewritten_expansions(expansion) == [expansion]
+
+    @pytest.mark.parametrize("dollars", [2, 4, 6])
+    def test_even_dollar_runs_are_escaped(self, dollars):
+        assert _rewritten_expansions("$" * dollars + "{VAR}") == []
 
 
 class TestMinimalProfileScope:
