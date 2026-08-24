@@ -12,6 +12,7 @@ properties that issue #41 depends on:
   deliberately does not deploy.
 """
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,53 @@ def test_every_smoke_job_and_the_sweeper_use_the_same_environment():
         "azure-smoke"
     }
     assert sweeper["environment"] == "azure-smoke"
+
+
+def test_verify_gate_outlives_the_schema_load_and_reference_timeouts():
+    """The core profile's spi-osdu-schema-load Kustomization can legitimately
+    run for its full timeout on a cold cluster, and spi-osdu-reference only
+    starts once schema-load is Ready. Both the wait_for_flux_ready poll and
+    the verify job's own timeout-minutes must outlast that combined window,
+    or a healthy `--profile core` smoke run gets killed and torn down while
+    still reconciling.
+    """
+    core_stack = list(
+        yaml.safe_load_all(
+            (
+                REPO_ROOT / "software" / "stacks" / "osdu" / "profiles" / "core" / "stack.yaml"
+            ).read_text(encoding="utf-8")
+        )
+    )
+
+    def _timeout_minutes(name: str) -> int:
+        for doc in core_stack:
+            if (
+                doc
+                and doc.get("kind") == "Kustomization"
+                and doc.get("metadata", {}).get("name") == name
+            ):
+                match = re.fullmatch(r"(\d+)m", doc["spec"]["timeout"])
+                assert match, f"{name} timeout is not in minutes"
+                return int(match.group(1))
+        raise AssertionError(f"Kustomization {name} not found in core stack.yaml")
+
+    combined_minutes = _timeout_minutes("spi-osdu-schema-load") + _timeout_minutes(
+        "spi-osdu-reference"
+    )
+
+    verify = _workflow()["jobs"]["verify"]
+    wait_step = _steps(verify)["Wait for Flux Kustomizations to be Ready"]
+    match = re.search(r"--timeout\s+(\d+)", wait_step["run"])
+    assert match, "wait_for_flux_ready.sh must be called with an explicit --timeout"
+    wait_timeout_minutes = int(match.group(1)) / 60
+
+    assert wait_timeout_minutes > combined_minutes, (
+        "wait_for_flux_ready.sh --timeout must outlast spi-osdu-schema-load plus "
+        "spi-osdu-reference so a cold core deployment is not killed mid-reconcile"
+    )
+    assert int(verify["timeout-minutes"]) > wait_timeout_minutes, (
+        "verify job timeout-minutes must exceed the wait_for_flux_ready.sh --timeout"
+    )
 
 
 def test_smoke_environment_is_reviewer_free_and_protected_branch_only():

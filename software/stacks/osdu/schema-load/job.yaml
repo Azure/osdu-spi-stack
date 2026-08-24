@@ -24,10 +24,11 @@ metadata:
 spec:
   backoffLimit: 2
   # 120 min ceiling covers both delays this Job can hit on a cold cluster:
-  # the schema endpoint can stay unavailable for ~35 min (bounded by the
-  # script's WAIT_DEADLINE_SECONDS=2700) and the throttled POST of ~1,386
-  # schemas can itself exceed 30 min, leaving 75 min for the load. The Flux
-  # Kustomization timeout must remain longer than this deadline.
+  # the schema endpoint can stay unavailable for up to 45 min (bounded by
+  # the script's WAIT_DEADLINE_SECONDS=2700; the observed worst case in
+  # #83 was ~33 min, so this leaves headroom) and the throttled POST of
+  # ~1,386 schemas can itself exceed 30 min, leaving 75 min for the load.
+  # The Flux Kustomization timeout must remain longer than this deadline.
   activeDeadlineSeconds: 7200
   # No ttlSecondsAfterFinished: this is a one-shot loader. Flux
   # reconciles this Kustomization every 10 min; a TTL would let the
