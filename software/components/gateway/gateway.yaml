@@ -9,6 +9,9 @@ metadata:
     app.kubernetes.io/managed-by: osdu-spi-stack
 spec:
   gatewayClassName: istio
+  addresses:
+    - type: Hostname
+      value: aks-istio-ingressgateway-external.aks-istio-ingress.svc.cluster.local
   listeners:
     - name: http
       protocol: HTTP

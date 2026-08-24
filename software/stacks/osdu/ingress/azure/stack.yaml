@@ -2,7 +2,7 @@
 #
 # Uses Azure's auto-assigned <label>.<region>.cloudapp.azure.com FQDN.
 # CLI patches the Istio ingress LB with service.beta.kubernetes.io/
-# azure-dns-label-name=<cluster-name> before this stack reconciles.
+# azure-dns-label-name=<cluster-name>-ingress before this stack reconciles.
 # gateway-tls-single-host renders the whole Gateway: HTTP:80 plus an
 # HTTPS:443 listener bound to the FQDN. cert-manager issues the Let's
 # Encrypt cert via HTTP-01 against that same HTTP:80 listener. All OSDU
