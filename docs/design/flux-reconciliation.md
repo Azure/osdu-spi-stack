@@ -63,7 +63,7 @@ A Kustomization with `wait: true` (every Kustomization in the SPI stack uses thi
 
 Two gotchas worth knowing:
 
-1. **`wait: true` is per-layer slow.** A slow operator delays everything behind it. Per-layer `timeout` is tuned in `stack.yaml` (15 min for Elasticsearch and Airflow, 30 min for the OSDU service layers, 65 min for schema-load, which tracks the Job's `activeDeadlineSeconds` plus headroom). Bumping a timeout is a real change; bump it deliberately, not reflexively.
+1. **`wait: true` is per-layer slow.** A slow operator delays everything behind it. Per-layer `timeout` is tuned in `stack.yaml` (15 min for Elasticsearch and Airflow, 30 min for the OSDU service layers, 125 min for schema-load, which tracks the Job's `activeDeadlineSeconds` plus headroom). Bumping a timeout is a real change; bump it deliberately, not reflexively.
 2. **Cross-Kustomization dependencies are not transitive.** L5 dependsOn L4b but not L1; if L1 breaks, L5 reports its own gate as unmet (L4b never went Ready), not "L1 broken." Trace the chain upward to find the root.
 
 When debugging a stuck layer:

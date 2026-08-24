@@ -296,6 +296,28 @@ class TestSchemaLoadDeadline:
             "and reconcile overhead"
         )
 
+    def test_job_deadline_leaves_load_headroom_beyond_the_service_wait(self):
+        jobs = [
+            doc
+            for _, doc in _built_resources(STACKS / "schema-load")
+            if doc.get("kind") == "Job" and doc.get("metadata", {}).get("name") == "schema-load"
+        ]
+        assert len(jobs) == 1
+        deadline = jobs[0]["spec"]["activeDeadlineSeconds"]
+
+        doc = yaml.safe_load((STACKS / "schema-load" / "script.yaml").read_text(encoding="utf-8"))
+        match = re.search(r"^\s*WAIT_DEADLINE_SECONDS=(\d+)$", doc["data"]["bootstrap.sh"], re.M)
+        assert match, "bootstrap.sh must set a literal WAIT_DEADLINE_SECONDS"
+        wait_deadline = int(match.group(1))
+
+        # The service wait must fit inside the Job deadline with at least an
+        # hour left for token acquisition and the throttled schema load, which
+        # on a cold cluster can itself exceed 30 min.
+        assert deadline - wait_deadline >= 3600, (
+            "WAIT_DEADLINE_SECONDS must leave at least 3600s of the Job deadline "
+            "for the schema load itself"
+        )
+
 
 class TestSubstitutionLeavesScriptsIntact:
     """Flux envsubst runs over every resource a Kustomization builds, not just

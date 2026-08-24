@@ -23,10 +23,12 @@ metadata:
     app.kubernetes.io/component: schema-load
 spec:
   backoffLimit: 2
-  # 60 min ceiling covers cold-cluster node provisioning and Cosmos DB
-  # throttling while the loader POSTs ~1,386 schemas. The Flux Kustomization
-  # timeout must remain longer than this deadline.
-  activeDeadlineSeconds: 3600
+  # 120 min ceiling covers both delays this Job can hit on a cold cluster:
+  # the schema endpoint can stay unavailable for ~35 min (bounded by the
+  # script's WAIT_DEADLINE_SECONDS=2700) and the throttled POST of ~1,386
+  # schemas can itself exceed 30 min, leaving 75 min for the load. The Flux
+  # Kustomization timeout must remain longer than this deadline.
+  activeDeadlineSeconds: 7200
   # No ttlSecondsAfterFinished: this is a one-shot loader. Flux
   # reconciles this Kustomization every 10 min; a TTL would let the
   # controller delete the completed Job and the next reconcile would

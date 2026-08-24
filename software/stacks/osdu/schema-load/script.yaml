@@ -43,7 +43,7 @@ data:
     # fixed attempt count: the urlopen timeout below adds up to 5s per
     # attempt on top of the 2s sleep, so counting attempts alone
     # under-estimates how long the loop can run. WAIT_DEADLINE_SECONDS
-    # leaves headroom below the Job's 60 min activeDeadlineSeconds for
+    # leaves headroom below the Job's 120 min activeDeadlineSeconds for
     # token acquisition and the schema load itself.
     #
     # The probe uses Python's urllib rather than curl: the image's
@@ -51,8 +51,9 @@ data:
     # (undefined symbol: libssh2_session_callback_set2) and exits
     # immediately with a symbol lookup error.
     echo "Waiting for schema service at ${SCHEMA_INFO_URL}..."
-    # 2700 = 3600 (Job's activeDeadlineSeconds) - 900s headroom for token
-    # acquisition and the schema load.
+    # 2700 (45 min) covers the ~35 min a cold cluster can take to serve the
+    # schema endpoint and leaves 4500s of the Job's 7200s deadline for token
+    # acquisition and the throttled schema load.
     WAIT_DEADLINE_SECONDS=2700
     start_ts=$(date +%s)
     until python - <<PY 2>/dev/null
