@@ -490,6 +490,7 @@ class TestSingleRenderer:
     @pytest.mark.parametrize("profile", [Profile.CORE, Profile.MINIMAL], ids=lambda p: p.value)
     def test_redis_source_handoff_disables_pruning(self, profile):
         redis = _kustomization(PROFILES_DIR / profile.value, "spi-redis")
+        # Unlike retired inventories, Redis remains active and must be prunable later.
         assert redis["spec"]["prune"] is False
 
     @pytest.mark.parametrize("mode", ["dns", "dns-minimal"])
