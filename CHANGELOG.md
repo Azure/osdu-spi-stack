@@ -42,10 +42,10 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   The profile-level `spi-gateway` and the ingress-level `spi-gateway-tls`
   both built `software/components/gateway`, so each reconcile reverted the
   other and the HTTPS listener plus `spec.infrastructure.annotations` never
-  survived. The ingress tree is now the Gateway's sole owner: its single
-  `spi-gateway` Kustomization renders the base component (`ip`) or the
-  mode's TLS overlay (`azure`, `dns`), and the route Kustomizations depend
-  on it (ADR-012, issue #81).
+  survived. The ingress tree is now the Gateway's sole renderer:
+  `spi-gateway-tls` renders the TLS overlays and `spi-gateway-ip` renders the
+  base component. Legacy inventories are retained as non-pruning orphan
+  handoffs for one rollout (ADR-029, issue #81).
 - `spi update` now refuses the unsafe in-process `uv tool install --force`
   replacement path on Windows and prints the equivalent command to run from a
   new terminal, preventing orphaned `spi.exe` launchers with missing package

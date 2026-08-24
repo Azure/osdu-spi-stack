@@ -61,11 +61,11 @@ spec:
 ---
 # The Gateway: HTTP:80 for ACME HTTP-01 plus the HTTPS:443 listener
 # bound to the auto-FQDN. The ingress tree is the Gateway's sole Flux
-# owner, so no second Kustomization re-applies the object (ADR-012).
+# owner, so no second Kustomization re-applies the object (ADR-029).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: spi-gateway
+  name: spi-gateway-tls
   namespace: osdu-flux
   labels:
     spi-stack.layer: "1"
@@ -101,7 +101,7 @@ spec:
   dependsOn:
     - name: spi-airflow
     - name: spi-kibana
-    - name: spi-gateway
+    - name: spi-gateway-tls
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
@@ -127,7 +127,7 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-osdu-services
-    - name: spi-gateway
+    - name: spi-gateway-tls
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system

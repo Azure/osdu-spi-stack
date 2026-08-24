@@ -2,6 +2,10 @@
 
 **Status**: Accepted
 
+**Amendment (2026-08-24):** [ADR-029](029-single-flux-inventory-owner.md)
+supersedes the Gateway placement in this decision. The original ordering below
+is preserved as the historical record.
+
 ## Context
 
 A Kubernetes workload graph has hard ordering constraints: CRDs before CRs, operators before instances, cert-manager before certs, middleware before consumers. Applying everything at once surfaces as CrashLoopBackOff and CRD-not-found errors that resolve eventually but obscure real failures.
@@ -16,7 +20,7 @@ The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines a set
 |---|---|---|
 | 0a | `spi-namespaces` | none |
 | 0b | `spi-nodepools` | 0a |
-| 1 | `spi-cert-manager`, `spi-trust-manager`, `spi-eck-operator`, `spi-cnpg-operator` | 0a (trust-manager also on cert-manager) |
+| 1 | `spi-cert-manager`, `spi-trust-manager`, `spi-eck-operator`, `spi-cnpg-operator`, `spi-gateway` | 0a (trust-manager also on cert-manager) |
 | 2 | `spi-elasticsearch`, `spi-redis`, `spi-postgresql` | matching L1 operator + 0b |
 | 3 | `spi-airflow` | `spi-postgresql` |
 | 4a | `spi-osdu-config` | 0a |
@@ -26,7 +30,7 @@ The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines a set
 | 5b | `spi-osdu-schema-load` (one-shot Job, ADR-013) | `spi-osdu-init` |
 | 6 | `spi-osdu-reference` (reference services) | 5, 5b |
 
-The ingress profile (`software/stacks/osdu/ingress/<mode>/stack.yaml`, ADR-012) attaches additional Kustomizations at Layer 1 (`spi-gateway`, cert issuers, ExternalDNS) and Layer 6 (`spi-middleware-routes`, `spi-osdu-routes`). `spi-gateway` sits in the ingress profile rather than here so that a single Kustomization owns the Gateway object, listeners included. The two profiles reconcile independently under one `fluxConfigurations` resource (ADR-009).
+The ingress profile (`software/stacks/osdu/ingress/<mode>/stack.yaml`, ADR-012) attaches additional Kustomizations at Layer 1 (cert issuers, ExternalDNS, TLS overlays) and Layer 6 (`spi-middleware-routes`, `spi-osdu-routes`). The two profiles reconcile independently under one `fluxConfigurations` resource (ADR-009).
 
 The `minimal` profile (ADR-024) declares layers 0a through 4b verbatim and stops, pairing with the `<mode>-minimal` ingress trees so no `dependsOn` is left unsatisfiable.
 

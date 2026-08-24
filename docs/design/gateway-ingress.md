@@ -21,7 +21,7 @@ Each mode is a self-contained Flux Kustomization tree under `software/stacks/osd
 Some pieces are in every mode and live under `software/components/`:
 
 - **Managed Istio** from AKS Automatic (ADR-002). Provides the Gateway API implementation and the ingress LoadBalancer service.
-- **`Gateway` resource** in the `aks-istio-ingress` namespace. The base manifest under `software/components/gateway/` listens on HTTP:80; each mode's TLS overlay layers its HTTPS listeners on top. The selected ingress profile is its sole Flux owner: one `spi-gateway` Kustomization per mode renders the whole object, so no second Kustomization ever re-applies a competing desired state. The stack profile declares no Gateway.
+- **`Gateway` resource** in the `aks-istio-ingress` namespace. The base manifest under `software/components/gateway/` listens on HTTP:80; the `azure` and `dns` TLS overlays layer their HTTPS listeners on top. The selected ingress profile is its sole Flux renderer: `spi-gateway-tls` renders a complete TLS Gateway, while `spi-gateway-ip` renders the base for `ip`. The legacy stack-profile `spi-gateway` renders nothing and is retained temporarily as a non-pruning ownership handoff (ADR-029).
 - **cert-manager** for any mode that issues TLS (`azure`, `dns`).
 - **`spi-ingress-config` ConfigMap** in `osdu-flux`, written by the CLI during K8s bootstrap. Carries `GATEWAY_HOSTNAME`, `GATEWAY_LABEL`, `DNS_ZONE`, and similar values consumed by Flux `postBuild.substituteFrom`.
 
@@ -37,7 +37,7 @@ Routing in this mode: every OSDU API is reached at `https://<label>.<region>.clo
 What `software/stacks/osdu/ingress/azure/` lands:
 
 - A `Kustomization` for cert-manager issuers (Let's Encrypt staging + prod).
-- `spi-gateway`, rendering `software/overlays/gateway-tls-single-host`: the base Gateway, the HTTPS listener, the `infrastructure.annotations` DNS label, and the single-host `Certificate` plus its ReferenceGrant.
+- `spi-gateway-tls`, rendering `software/overlays/gateway-tls-single-host`: the base Gateway, the HTTPS listener, the `infrastructure.annotations` DNS label, and the single-host `Certificate` plus its ReferenceGrant.
 - HTTPRoutes for every OSDU service path, plus the Kibana subpath route.
 
 This mode requires zero Azure outside the resource group: no DNS zone, no public IP outside the AKS LB, no extra UAMI.
@@ -63,7 +63,7 @@ What `software/stacks/osdu/ingress/dns/` lands:
 
 - cert-manager issuers (same as `azure`).
 - ExternalDNS HelmRelease with the UAMI ServiceAccount.
-- `spi-gateway`, rendering `software/overlays/gateway-tls-multi-host`: the base Gateway, three HTTPS listeners, and three `Certificate` resources.
+- `spi-gateway-tls`, rendering `software/overlays/gateway-tls-multi-host`: the base Gateway, three HTTPS listeners, and three `Certificate` resources.
 - HTTPRoutes scoped per subdomain.
 
 ## Mode: `ip`
@@ -72,7 +72,7 @@ Intentionally minimal. The Istio ingress LB has a public IP; no hostname, no cer
 
 What `software/stacks/osdu/ingress/ip/` lands:
 
-- `spi-gateway`, rendering `software/components/gateway` unmodified: HTTP:80 and nothing else.
+- `spi-gateway-ip`, rendering `software/components/gateway` unmodified: HTTP:80 and nothing else.
 - HTTPRoutes bound to that listener with no `hostnames` field.
 - No cert issuer.
 - No Kibana, no Airflow UI routing (the workloads still exist; you reach them via port-forward).

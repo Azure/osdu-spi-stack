@@ -38,8 +38,8 @@ spec:
         name: spi-ingress-config
 
 ---
-# ExternalDNS, reading HTTPRoute hostnames and syncing A records to
-# the Azure DNS zone via Workload Identity.
+# Temporary ExternalDNS inventory handoff (ADR-029). This Kustomization
+# must reconcile once with an empty inventory and pruning disabled.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -51,6 +51,29 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/inventory-handoff
+  prune: false
+  deletionPolicy: Orphan
+  wait: true
+  timeout: 5m
+
+---
+# ExternalDNS, reading HTTPRoute hostnames and syncing A records to
+# the Azure DNS zone via Workload Identity.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-external-dns-release
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-redis
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
@@ -88,11 +111,11 @@ spec:
 # The Gateway: HTTP:80 for ACME HTTP-01 plus three HTTPS:443 listeners,
 # one per hostname, each with its own cert. The ingress tree is the
 # Gateway's sole Flux owner, so no second Kustomization re-applies the
-# object (ADR-012).
+# object (ADR-029).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: spi-gateway
+  name: spi-gateway-tls
   namespace: osdu-flux
   labels:
     spi-stack.layer: "1"
@@ -128,8 +151,8 @@ spec:
   dependsOn:
     - name: spi-airflow
     - name: spi-kibana
-    - name: spi-gateway
-    - name: spi-external-dns
+    - name: spi-gateway-tls
+    - name: spi-external-dns-release
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
@@ -155,8 +178,8 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-osdu-services
-    - name: spi-gateway
-    - name: spi-external-dns
+    - name: spi-gateway-tls
+    - name: spi-external-dns-release
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system

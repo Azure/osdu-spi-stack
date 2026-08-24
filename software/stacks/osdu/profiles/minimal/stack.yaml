@@ -6,7 +6,7 @@
 # Layer 0a: Namespaces
 # Layer 0b: Karpenter NodePools (platform + osdu)
 # Layer 1: Operators (ECK, CNPG) + cert-manager + trust-manager
-#          (the Gateway is owned by the ingress tree, ADR-012)
+#          (the Gateway is owned by the ingress tree, ADR-029)
 # Layer 2: Middleware (Elasticsearch, Redis, PostgreSQL) -- on platform nodes
 # Layer 3: Airflow (depends on PostgreSQL) -- on platform nodes
 # Layer 4a: OSDU configuration (ConfigMap created by CLI)
@@ -146,6 +146,29 @@ spec:
   prune: true
   wait: true
   timeout: 10m
+
+---
+# Temporary Gateway ownership handoff (ADR-029). This Kustomization must
+# reconcile once with an empty inventory and pruning disabled before removal.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-gateway
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/inventory-handoff
+  prune: false
+  deletionPolicy: Orphan
+  wait: true
+  timeout: 5m
 
 ---
 # Layer 2a: Elasticsearch

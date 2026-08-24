@@ -2,7 +2,7 @@
 #
 # Renders the base Gateway (HTTP:80 only) and wires HTTPRoutes with no
 # hostnames to it. Every ingress tree owns its own Gateway so exactly one
-# Flux Kustomization ever applies the object (ADR-012); this mode is the
+# Flux Kustomization ever applies the object (ADR-029); this mode is the
 # one that stops at the base component. No cert-manager issuers, no
 # ExternalDNS, no Kibana, no TLS overlay.
 ---
@@ -10,7 +10,7 @@
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: spi-gateway
+  name: spi-gateway-ip
   namespace: osdu-flux
   labels:
     spi-stack.layer: "1"
@@ -39,7 +39,7 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-osdu-services
-    - name: spi-gateway
+    - name: spi-gateway-ip
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
