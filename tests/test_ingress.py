@@ -66,8 +66,8 @@ class TestGetIngressIp:
 
     def test_returns_empty_when_no_load_balancer_address_is_ready(self):
         responses = [
-            None,
-            {"items": [_service("internal", ip="10.0.0.5", service_type="ClusterIP")]},
+            {"items": [_service(ISTIO_INGRESS_SERVICE)]},
+            {"items": [_service("legacy-ingress")]},
         ]
 
         with patch("spi.ingress.kubectl_json", side_effect=responses):

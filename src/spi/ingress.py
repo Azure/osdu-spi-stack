@@ -130,7 +130,10 @@ def configure_ingress_service(config: Config) -> None:
 
 
 def get_ingress_ip() -> str:
-    """Return an Istio ingress LB address, preferring the managed AKS Service."""
+    """Return an Istio ingress LB address, preferring the managed AKS Service.
+
+    Returns an empty string when no LoadBalancer address is ready.
+    """
     for namespace in _ISTIO_INGRESS_NAMESPACES:
         data = kubectl_json(["get", "svc", "-n", namespace])
         if not data:
@@ -145,13 +148,10 @@ def get_ingress_ip() -> str:
         for service in services:
             if service.get("spec", {}).get("type") != "LoadBalancer":
                 continue
-            addresses = []
             for ingress in service.get("status", {}).get("loadBalancer", {}).get("ingress", []):
                 address = ingress.get("ip") or ingress.get("hostname")
                 if address:
-                    addresses.append(address)
-            if addresses:
-                return min(addresses)
+                    return address
     return ""
 
 
