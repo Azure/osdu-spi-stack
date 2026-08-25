@@ -40,6 +40,10 @@ class ImageResolutionError(RuntimeError):
     """Raised when one or more OSDU image tags cannot be resolved."""
 
 
+class ImageNotFoundError(ImageResolutionError):
+    """Raised when a requested registry repository or tag does not exist."""
+
+
 @dataclass(frozen=True)
 class ImageRegistryEntry:
     """GitLab registry lookup metadata for one OSDU image."""
@@ -260,6 +264,50 @@ def resolve_image_tag(
     )
 
 
+def resolve_image_commit(
+    service_name: str,
+    entry: ImageRegistryEntry,
+    branch: str,
+    sha: str,
+) -> ResolvedImage:
+    """Resolve a service image only if a tag matches the given commit.
+
+    Pipeline tags are commit SHAs of varying length (full or CI short SHA),
+    so a tag matches when it equals the commit or is a prefix of it.
+    """
+
+    image_name = f"{entry.image}-{branch}"
+    repo = _registry_repository(entry.project_id, image_name)
+    if not repo:
+        raise ImageNotFoundError(f"{service_name}: registry repository {image_name!r} not found")
+
+    tags = _registry_tags(entry.project_id, repo["id"])
+    matches = [
+        tag["name"]
+        for tag in tags
+        if tag.get("name") and len(tag["name"]) >= 7 and sha.startswith(tag["name"])
+    ]
+    if not matches:
+        raise ImageNotFoundError(f"{service_name}: no tag for commit {sha[:12]} in {image_name!r}")
+
+    tag = max(matches, key=len)
+    try:
+        detail = _tag_detail(entry.project_id, repo["id"], tag)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise ImageNotFoundError(
+                f"{service_name}: tag {tag!r} not found in {image_name!r}"
+            ) from exc
+        raise
+    return ResolvedImage(
+        name=service_name,
+        repository=repo["location"],
+        tag=detail["name"],
+        created_at=detail.get("created_at", ""),
+        digest=detail.get("digest", ""),
+    )
+
+
 def resolve_images(
     branch: str = DEFAULT_IMAGE_BRANCH,
     names: Iterable[str] | None = None,
@@ -379,6 +427,7 @@ def render_image_lock_configmap(
     resolved: dict[str, ResolvedImage],
     branch: str = DEFAULT_IMAGE_BRANCH,
     resolved_at: datetime | None = None,
+    extra_annotations: Mapping[str, str] | None = None,
 ) -> str:
     """Render the Flux substitution ConfigMap for service image pins."""
 
@@ -408,8 +457,11 @@ def render_image_lock_configmap(
         "  annotations:",
         f"    spi-stack.osdu.dev/image-branch: {_yaml_string(branch)}",
         f"    spi-stack.osdu.dev/resolved-at: {_yaml_string(timestamp)}",
-        "data:",
     ]
+    annotations = dict(extra_annotations or {})
+    for key in sorted(annotations):
+        lines.append(f"    {key}: {_yaml_string(annotations[key])}")
+    lines.append("data:")
     for key in sorted(data):
         lines.append(f"  {key}: {_yaml_string(data[key])}")
     return "\n".join(lines) + "\n"

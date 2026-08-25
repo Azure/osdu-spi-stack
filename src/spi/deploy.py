@@ -40,7 +40,7 @@ from .console import console, display_result, display_yaml
 from .images import (
     DEFAULT_IMAGE_BRANCH,
     ImageResolutionError,
-    render_image_lock_configmap,
+    ResolvedImage,
     resolve_image_lock,
 )
 from .ingress import (
@@ -50,6 +50,7 @@ from .ingress import (
     resolve_post_deploy_inputs,
 )
 from .paths import INFRA_ROOT
+from .pins import PinError, live_pins, render_lock_with_pins
 from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, run_command, run_process
 from .templates import (
@@ -145,8 +146,8 @@ def _create_spi_init_values(config: Config) -> None:
     )
 
 
-def _resolve_image_lock(image_branch: str) -> str:
-    """Resolve current OSDU service images and render the Flux image lock."""
+def _resolve_image_lock(image_branch: str) -> dict[str, ResolvedImage]:
+    """Resolve the current OSDU service images for the Flux image lock."""
 
     console.print("\n[bold]Resolving OSDU service images...[/bold]")
     try:
@@ -160,7 +161,7 @@ def _resolve_image_lock(image_branch: str) -> str:
             f"  [success]{name}[/success] -> {image.repository.split('/')[-1]}:{image.tag[:12]}"
         )
 
-    return render_image_lock_configmap(resolved, branch=image_branch)
+    return resolved
 
 
 def _create_image_lock(image_lock_yaml: str) -> None:
@@ -324,13 +325,13 @@ def deploy_azure(
     Kubernetes bootstrap phase, and GitOps activation are skipped so the
     caller can inspect what would change without actually provisioning.
     """
-    image_lock_yaml = ""
+    resolved_images: dict[str, ResolvedImage] = {}
     # Only core deploys OSDU services that consume the image lock. Minimal and
     # bare skip the community-registry roundtrip entirely.
     if refresh_images and not dry_run and config.profile is Profile.CORE:
         # Resolve before provisioning so registry/API failures stop quickly and
         # never leave a partially configured cluster with a mixed image set.
-        image_lock_yaml = _resolve_image_lock(image_branch)
+        resolved_images = _resolve_image_lock(image_branch)
 
     # For dns mode we need to resolve the DNS zone BEFORE running main.bicep
     # so the conditional external-dns-identity + DNS Zone Contributor role
@@ -357,8 +358,23 @@ def deploy_azure(
     ensure_secrets()
     create_storage_classes()
     install_gateway_api_crds()
-    if image_lock_yaml:
-        _create_image_lock(image_lock_yaml)
+    if resolved_images:
+        try:
+            pins = live_pins()
+        except PinError as exc:
+            console.print(f"[error]{exc}[/error]")
+            console.print(
+                "[error]Cannot verify service pin state; aborting before the "
+                "image lock overwrite could revert an active pin.[/error]"
+            )
+            raise typer.Exit(code=1)
+        _create_image_lock(render_lock_with_pins(resolved_images, image_branch, pins))
+        if pins:
+            console.print(
+                "[warning]Active service pins preserved: "
+                + ", ".join(f"{name} (MR !{pin.mr})" for name, pin in sorted(pins.items()))
+                + "; release with 'spi service reset <service>'.[/warning]"
+            )
     _create_osdu_config(config, infra_outputs)
     _create_istio_auth(config, infra_outputs)
     _create_spi_init_values(config)

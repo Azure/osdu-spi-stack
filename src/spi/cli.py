@@ -34,11 +34,17 @@ from .images import (
     IMAGE_LOCK_NAMESPACE,
     ImageResolutionError,
     image_lock_missing_schema_load,
-    render_image_lock_configmap,
     resolve_image_lock,
     schema_load_lock_patch,
 )
 from .ingress import resolve_acme_email, resolve_ingress_mode
+from .pins import (
+    PinError,
+    live_pins,
+    pin_service,
+    render_lock_with_pins,
+    reset_service,
+)
 from .shell import kubectl_apply_yaml, run_command
 
 app = typer.Typer(
@@ -46,6 +52,11 @@ app = typer.Typer(
     help="SPI Stack - deploy, monitor, and manage OSDU on Azure AKS Automatic.",
     add_completion=False,
 )
+
+service_app = typer.Typer(
+    help="Pin individual services to merge-request pipeline images for validation."
+)
+app.add_typer(service_app, name="service")
 
 
 def _version_callback(value: bool) -> None:
@@ -668,10 +679,24 @@ def reconcile(
                 f"  [success]{name}[/success] -> {image.repository.split('/')[-1]}:{image.tag[:12]}"
             )
 
-        image_lock_yaml = render_image_lock_configmap(resolved, branch=image_branch)
+        try:
+            pins = live_pins()
+        except PinError as exc:
+            console.print(f"[error]{exc}[/error]")
+            console.print(
+                "[error]Refusing to refresh the image lock while pin state is "
+                "unreadable; a refresh could silently revert an active pin.[/error]"
+            )
+            raise typer.Exit(code=1)
+        image_lock_yaml = render_lock_with_pins(resolved, image_branch, pins)
         display_yaml(image_lock_yaml, "ConfigMap: osdu-image-lock")
         kubectl_apply_yaml(image_lock_yaml, "apply osdu-image-lock ConfigMap")
         display_result("osdu-image-lock ConfigMap updated")
+        for name, pin in sorted(pins.items()):
+            console.print(
+                f"  [warning]{name} stays pinned to MR !{pin.mr} ({pin.tag[:12]}); "
+                f"release with 'spi service reset {name}'[/warning]"
+            )
 
     # Default: force reconcile
     if get_suspend_status():
@@ -731,6 +756,85 @@ def reconcile(
             _trigger_kustomization(name, ts)
 
     console.print("[success]Reconciliation triggered.[/success]")
+
+
+@service_app.command("pin")
+def service_pin(
+    service: str = typer.Argument(help="Service name, e.g. schema (see 'spi service list')."),
+    mr: str = typer.Option(
+        ...,
+        "--mr",
+        help="Merge request IID in the service's OSDU GitLab repository.",
+    ),
+):
+    """Pin a service to the image built by its merge-request pipeline."""
+    ctx = verify_spi_cluster()
+    console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+
+    try:
+        results = pin_service(service, mr)
+    except (PinError, ImageResolutionError) as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+
+    for name, pin in results:
+        console.print(
+            f"  [success]{name}[/success] pinned to MR !{pin.mr} ({pin.branch} @ {pin.tag[:12]})"
+        )
+    console.print(f"[dim]Release with: spi service reset {service}[/dim]")
+
+
+@service_app.command("reset")
+def service_reset(
+    service: str = typer.Argument(help="Pinned service name to release."),
+):
+    """Release a service pin and restore its recorded canonical image."""
+    ctx = verify_spi_cluster()
+    console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+
+    try:
+        result = reset_service(service)
+    except (PinError, ImageResolutionError) as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+
+    for name in result.restored:
+        console.print(f"  [success]{name}[/success] restored to canonical image")
+    for name in result.refresh_required:
+        console.print(
+            f"  [warning]{name} pin removed, but no canonical image was recorded[/warning]"
+        )
+    if result.refresh_required:
+        console.print(
+            "[warning]Run 'spi reconcile --refresh-images' now to resolve and apply "
+            "canonical images.[/warning]"
+        )
+
+
+@service_app.command("list")
+def service_list():
+    """Show services currently pinned to merge-request images."""
+    ctx = verify_spi_cluster()
+    console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+
+    try:
+        pins = live_pins()
+    except PinError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+    if not pins:
+        console.print("No services are pinned.")
+        return
+
+    table = Table(title="Pinned services")
+    table.add_column("Service")
+    table.add_column("MR")
+    table.add_column("Branch")
+    table.add_column("Tag")
+    table.add_column("Pinned at")
+    for name, pin in sorted(pins.items()):
+        table.add_row(name, f"!{pin.mr}", pin.branch, pin.tag[:12], pin.applied_at)
+    console.print(table)
 
 
 @app.command()

@@ -243,9 +243,10 @@ Commands:
   down       Delete all Azure resources                   --env NAME
   info       Show endpoints and optional credentials      [--show-secrets]
   reconcile  Force Flux to re-sync from Git               [--suspend] [--resume] [--refresh-images]
+  service    Pin services to MR pipeline images           pin <name> --mr <iid> | reset <name> | list
 ```
 
-Use `--dry-run` on `spi up` to preview the Bicep changes (`az deployment group what-if`) before any Azure resources are created beyond the resource group. `--profile` defaults to `core`; `minimal` deploys middleware only, and `bare` activates GitOps against empty stack and ingress trees. `--ingress-mode` defaults to `azure`; the other supported modes are `dns` (per-service hostnames on an owned Azure DNS zone) and `ip` (bare IP, debug only). `--ingress-mode` and `--dns-zone` are rejected with `bare`. `--refresh-images` re-resolves the OSDU community image tags and reconciles the service Kustomizations.
+Use `--dry-run` on `spi up` to preview the Bicep changes (`az deployment group what-if`) before any Azure resources are created beyond the resource group. `--profile` defaults to `core`; `minimal` deploys middleware only, and `bare` activates GitOps against empty stack and ingress trees. `--ingress-mode` defaults to `azure`; the other supported modes are `dns` (per-service hostnames on an owned Azure DNS zone) and `ip` (bare IP, debug only). `--ingress-mode` and `--dns-zone` are rejected with `bare`. `--refresh-images` re-resolves the OSDU community image tags and reconciles the service Kustomizations; active `spi service` pins are overlaid into the refreshed lock rather than reverted (see `docs/design/flux-reconciliation.md`).
 
 
 ## Documentation

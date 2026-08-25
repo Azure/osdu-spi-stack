@@ -183,6 +183,37 @@ class TestReconcileRefreshesClusterConfig:
         apply_yaml.assert_not_called()
         run_command.assert_not_called()
 
+    def test_refresh_images_aborts_when_pin_state_unreadable(self):
+        """An unreadable pin state must abort the refresh before the lock is
+        overwritten: treating it as "no pins" could revert an active pin."""
+        from spi.pins import PinError
+
+        runner = CliRunner()
+        resolved = {
+            "schema": ResolvedImage(
+                name="schema",
+                repository="community.opengroup.org:5555/osdu/schema-service-master",
+                tag="1" * 40,
+                created_at="2026-05-22T00:00:00+00:00",
+                digest="sha256:schema",
+            )
+        }
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.resolve_image_lock", return_value=resolved),
+            patch("spi.cli.live_pins", side_effect=PinError("could not read lock")),
+            patch("spi.cli.kubectl_apply_yaml") as apply_yaml,
+            patch("spi.cli.run_command") as run_command,
+        ):
+            result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
+
+        assert result.exit_code == 1
+        assert "Refusing to refresh" in result.output
+        apply_yaml.assert_not_called()
+        run_command.assert_not_called()
+
     def test_refresh_images_reconciles_schema_load_before_reference(self):
         runner = CliRunner()
         resolved = {
@@ -209,7 +240,8 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
-            patch("spi.cli.render_image_lock_configmap", return_value="kind: ConfigMap\n"),
+            patch("spi.cli.live_pins", return_value={}),
+            patch("spi.cli.render_lock_with_pins", return_value="kind: ConfigMap\n"),
             patch("spi.cli.kubectl_apply_yaml"),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
         ):
@@ -254,7 +286,8 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
-            patch("spi.cli.render_image_lock_configmap", return_value="kind: ConfigMap\n"),
+            patch("spi.cli.live_pins", return_value={}),
+            patch("spi.cli.render_lock_with_pins", return_value="kind: ConfigMap\n"),
             patch("spi.cli.kubectl_apply_yaml"),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
         ):

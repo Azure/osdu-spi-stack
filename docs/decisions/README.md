@@ -73,3 +73,4 @@ Create an ADR for any decision that could plausibly have gone a different way an
 | [028](028-windows-batch-shim-launcher.md) | Windows Batch Shim Launcher via an Escaped cmd.exe Command Line | Accepted |
 | [029](029-single-flux-inventory-owner.md) | One Flux Inventory Owner per Kubernetes Object | Accepted |
 | [039](039-bind-managed-istio-ingress.md) | Bind to the AKS Managed Istio Ingress | Proposed |
+| [040](040-service-mr-image-pins.md) | Per-Service MR Image Pins on the Live Image Lock | Proposed |
