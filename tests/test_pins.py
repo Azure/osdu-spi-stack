@@ -58,6 +58,21 @@ def _lock(data=None, pins_annotation=""):
     }
 
 
+def _canonical_data(*services):
+    data = {}
+    for service in services:
+        key = service.upper().replace("-", "_")
+        data.update(
+            {
+                f"{key}_IMAGE_REPOSITORY": f"repo/{service}-master",
+                f"{key}_IMAGE_TAG": "c" * 40,
+                f"{key}_IMAGE_CREATED_AT": "then",
+                f"{key}_IMAGE_DIGEST": "sha256:old",
+            }
+        )
+    return data
+
+
 class TestRefSlug:
     def test_matches_gitlab_ci_commit_ref_slug_rules(self):
         assert ref_slug("fix/Upgrade_Core-Lib") == "fix-upgrade-core-lib"
@@ -242,14 +257,24 @@ class TestPinService:
         assert saved["storage"].mr == "2"
         assert saved["storage"].canonical_repository == "repo/storage-master"
 
+    def test_first_pin_rejects_missing_canonical_lock_data(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(), {"storage"})
+
+        with pytest.raises(PinError, match="refresh-images"):
+            pin_service("storage", "42")
+
+        assert calls["patch"] is None
+        assert calls["reconciled"] is None
+
     def test_schema_pin_pairs_the_loader(self, monkeypatch):
-        calls = self._wire(monkeypatch, _lock(), {"schema", "schema-load"})
+        lock = _lock(data=_canonical_data("schema", "schema-load"))
+        calls = self._wire(monkeypatch, lock, {"schema", "schema-load"})
         results = pin_service("schema", "847")
         assert [name for name, _ in results] == ["schema", "schema-load"]
         assert calls["reconciled"] == ["schema", "schema-load"]
 
     def test_schema_pin_tolerates_missing_loader_image(self, monkeypatch):
-        calls = self._wire(monkeypatch, _lock(), {"schema"})
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("schema")), {"schema"})
         results = pin_service("schema", "847")
         assert [name for name, _ in results] == ["schema"]
         assert calls["reconciled"] == ["schema"]

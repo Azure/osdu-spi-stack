@@ -306,23 +306,31 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
 
     data: dict[str, str] = {}
     results: list[tuple[str, ServicePin]] = []
+    prepared: list[tuple[str, ResolvedImage, ServicePin]] = []
     for name, image, mr in resolved:
         key = image_lock_key(name)
         existing = pins.get(name)
+        canonical_repository = (
+            existing.canonical_repository
+            if existing
+            else lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
+        )
+        canonical_tag = (
+            existing.canonical_tag if existing else lock_data.get(f"{key}_IMAGE_TAG", "")
+        )
+        if not canonical_repository or not canonical_tag:
+            raise PinError(
+                f"{name}: image lock records no canonical repository or tag; "
+                "run 'spi reconcile --refresh-images' to backfill the lock before pinning."
+            )
         pin = ServicePin(
             mr=str(mr_iid),
             branch=mr.get("source_branch", ""),
             repository=image.repository,
             tag=image.tag,
             # First pin captures the canonical image; re-pinning keeps it.
-            canonical_repository=(
-                existing.canonical_repository
-                if existing
-                else lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
-            ),
-            canonical_tag=(
-                existing.canonical_tag if existing else lock_data.get(f"{key}_IMAGE_TAG", "")
-            ),
+            canonical_repository=canonical_repository,
+            canonical_tag=canonical_tag,
             canonical_created_at=(
                 existing.canonical_created_at
                 if existing
@@ -333,6 +341,9 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
             ),
             applied_at=applied_at,
         )
+        prepared.append((name, image, pin))
+
+    for name, image, pin in prepared:
         pins[name] = pin
         data.update(
             _lock_entry_patch(name, image.repository, image.tag, image.created_at, image.digest)
