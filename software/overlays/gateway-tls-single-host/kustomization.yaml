@@ -22,7 +22,7 @@ patches:
           hostname: "${INGRESS_FQDN}"
           tls:
             mode: Terminate
-            # Cross-namespace: cert issues into platform (ADR-022); the
+            # Cross-namespace: cert issues into platform; the
             # ReferenceGrant in certificate.yaml authorizes the read.
             certificateRefs:
               - name: osdu-tls

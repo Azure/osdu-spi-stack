@@ -272,7 +272,7 @@ jobs:
           set -euo pipefail
           # A pod-level probe cannot catch a dead TLS path: cert-manager
           # stalling on issuance leaves every pod Running while :443 refuses
-          # connections (the ADR-022 failure mode). Handshake the gateway's
+          # connections. Handshake the gateway's
           # HTTPS hostname for real; retry to absorb ACME issuance lag.
           host=$(kubectl get gateway spi-gateway -n aks-istio-ingress \
             -o jsonpath='{.spec.listeners[?(@.protocol=="HTTPS")].hostname}' | awk '{print $1}')

@@ -27,11 +27,11 @@ spec:
   # activeDeadlineSeconds starts counting when the Job becomes active, i.e.
   # before the Pod is even scheduled, so it also includes node provisioning,
   # scheduling, and image pull -- not just the time bootstrap.sh spends
-  # running. The issue's observed cold-start node provisioning took ~28 min;
+  # running. Observed cold-start node provisioning took ~28 min;
   # 1800s (30 min) is budgeted for that pod-startup phase. The remaining
   # 7200s covers the script's own WAIT_DEADLINE_SECONDS=2700 (the schema
   # endpoint can stay unavailable for up to 45 min after the Pod starts
-  # running; the observed worst case in #83 was ~33 min, so this leaves
+  # running; the observed worst case was ~33 min, so this leaves
   # headroom) plus 3600s+ for the throttled POST of ~1,386 schemas, which can
   # itself exceed 30 min. The Flux Kustomization timeout must remain longer
   # than this deadline.
@@ -65,7 +65,7 @@ spec:
       containers:
         - name: loader
           # Resolved live from the osdu-image-lock ConfigMap, on the same SHA
-          # selected for schema-service (ADR-013). No static default: a pinned
+          # selected for schema-service. No static default: a pinned
           # SHA goes stale as upstream prunes it. A lock that predates
           # schema-load's inclusion is backfilled by `spi reconcile` before
           # Flux applies this Job.
@@ -82,7 +82,7 @@ spec:
             # primary partition as PRIMARY_PARTITION (renamed to make
             # multi-partition deploys honest); alias it back to the env
             # name the loader expects. system-db is primary-only by
-            # design (ADR-013), so loading against the primary is correct.
+            # design, so loading against the primary is correct.
             - name: DATA_PARTITION
               valueFrom:
                 configMapKeyRef:

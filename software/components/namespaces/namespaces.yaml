@@ -4,7 +4,7 @@
 # ConfigMap, which the CLI writes during `spi up` and refreshes on every
 # `spi reconcile`. The substitution is deliberately not optional: without the
 # ConfigMap this Kustomization fails loudly rather than labelling osdu with a
-# guessed revision that would silently disable sidecar injection (ADR-016).
+# guessed revision that would silently disable sidecar injection.
 apiVersion: v1
 kind: Namespace
 metadata:
