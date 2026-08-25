@@ -256,8 +256,9 @@ _CONSUMER_ORDER = ("spi-osdu-services", "spi-osdu-schema-load", "spi-osdu-refere
 def reconcile_consumers(services: list[str]) -> None:
     """Reconcile the Kustomizations consuming changed pins, in dependency order.
 
-    Each stage blocks until Flux reports it ready, so a paired image change
-    (schema + loader) cannot run the loader against the previous service.
+    Each stage blocks until Flux reports it ready, and a failed stage aborts
+    the sequence, so a paired image change (schema + loader) cannot run the
+    loader against the previous service.
     """
 
     names = {
@@ -279,7 +280,6 @@ def reconcile_consumers(services: list[str]) -> None:
                 "40m",
             ],
             description=f"Wait for {name} reconciliation",
-            check=False,
         )
 
 

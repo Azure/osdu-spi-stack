@@ -506,6 +506,7 @@ class TestReconcileConsumers:
 
         def fake_run(command, **kwargs):
             assert command[:3] == ["flux", "reconcile", "kustomization"]
+            assert kwargs.get("check", True), "a failed stage must abort the sequence"
             reconciled.append(command[3])
 
         monkeypatch.setattr(pins, "run_command", fake_run)
@@ -515,6 +516,21 @@ class TestReconcileConsumers:
             "spi-osdu-schema-load",
             "spi-osdu-reference",
         ]
+
+    def test_failed_stage_stops_the_sequence(self, monkeypatch):
+        import typer
+
+        reconciled = []
+
+        def fake_run(command, **kwargs):
+            reconciled.append(command[3])
+            if command[3] == "spi-osdu-services":
+                raise typer.Exit(code=1)
+
+        monkeypatch.setattr(pins, "run_command", fake_run)
+        with pytest.raises(typer.Exit):
+            pins.reconcile_consumers(["storage", "schema-load"])
+        assert reconciled == ["spi-osdu-services"]
 
     def test_only_affected_kustomizations_reconcile(self, monkeypatch):
         reconciled = []
