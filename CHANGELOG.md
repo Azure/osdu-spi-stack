@@ -8,6 +8,14 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 ## [Unreleased]
 
 ### Added
+- `spi service pin <service> --mr <iid>` pins one service to the image its
+  OSDU merge-request pipeline built (source branch at the MR head commit),
+  patched into the live `osdu-image-lock` with provenance and the canonical
+  image recorded in a lock annotation. `spi service reset` restores the
+  canonical image; `spi service list` shows active pins. Pinning `schema`
+  pins the paired loader image when the MR built one, and
+  `spi reconcile --refresh-images` and `spi up` preserve active pins and
+  name them instead of silently reverting the experiment (ADR-040).
 - `spi up --profile bare` deploys infrastructure and activates GitOps
   only: Flux reconciles empty stack and ingress trees while the CLI
   bootstrap seeds namespaces, secrets, the `osdu-config` ConfigMap, and

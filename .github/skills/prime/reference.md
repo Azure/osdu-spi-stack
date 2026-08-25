@@ -73,6 +73,9 @@ uv run spi info --show-secrets               # Include credentials
 uv run spi reconcile                         # Force Flux reconcile
 uv run spi reconcile --suspend               # Freeze GitOps
 uv run spi reconcile --resume                # Unfreeze GitOps
+uv run spi service pin schema --mr 847       # Pin a service to an MR pipeline image
+uv run spi service reset schema              # Restore the canonical image
+uv run spi service list                      # Show active pins
 ```
 
 Azure resource names are derived from the `--env` flag for isolation.

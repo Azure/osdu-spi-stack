@@ -50,6 +50,7 @@ from .ingress import (
     resolve_post_deploy_inputs,
 )
 from .paths import INFRA_ROOT
+from .pins import live_pins, reapply_pins
 from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, run_command, run_process
 from .templates import (
@@ -358,7 +359,15 @@ def deploy_azure(
     create_storage_classes()
     install_gateway_api_crds()
     if image_lock_yaml:
+        pins = live_pins()
         _create_image_lock(image_lock_yaml)
+        if pins:
+            reapply_pins(pins)
+            console.print(
+                "[warning]Active service pins preserved: "
+                + ", ".join(f"{name} (MR !{pin.mr})" for name, pin in sorted(pins.items()))
+                + "; release with 'spi service reset <service>'.[/warning]"
+            )
     _create_osdu_config(config, infra_outputs)
     _create_istio_auth(config, infra_outputs)
     _create_spi_init_values(config)
