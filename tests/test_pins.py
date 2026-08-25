@@ -346,6 +346,18 @@ class TestResetService:
         assert reset_service("schema") == ["schema", "schema-load"]
         assert calls["pins"] == {}
 
+    def test_schema_load_reset_does_not_duplicate_target(self, monkeypatch):
+        lock = _lock(pins_annotation=encode_pins({"schema-load": _pin()}))
+        calls = {}
+        monkeypatch.setattr(pins, "read_lock", lambda: lock)
+        monkeypatch.setattr(
+            pins, "patch_lock", lambda data, p, description: calls.update(pins=dict(p))
+        )
+        monkeypatch.setattr(pins, "reconcile_consumers", lambda names: None)
+
+        assert reset_service("schema-load") == ["schema-load"]
+        assert calls["pins"] == {}
+
     def test_unpinned_service_errors(self, monkeypatch):
         monkeypatch.setattr(pins, "read_lock", lambda: _lock())
         with pytest.raises(PinError, match="not pinned"):

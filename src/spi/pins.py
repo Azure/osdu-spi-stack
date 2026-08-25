@@ -378,9 +378,10 @@ def reset_service(service: str) -> list[str]:
 
     lock = read_lock() or {}
     pins = decode_pins(lock)
-    targets = [name for name in (service, SCHEMA_LOAD_SERVICE_NAME) if name in pins]
-    if service != SCHEMA_SERVICE_NAME:
-        targets = [name for name in targets if name == service]
+    targets = [service]
+    if service == SCHEMA_SERVICE_NAME:
+        targets.append(SCHEMA_LOAD_SERVICE_NAME)
+    targets = [name for name in targets if name in pins]
     if not targets:
         raise PinError(f"{service} is not pinned.")
 
