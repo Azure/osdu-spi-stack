@@ -29,7 +29,7 @@ OSDU service images move on a different cadence than the repo. Per [ADR-017](../
 
 The service Kustomizations under `software/stacks/osdu/profiles/core/` carry `postBuild.substituteFrom` blocks that reference `osdu-image-lock`. When Flux reconciles those Kustomizations, the `${PARTITION_IMAGE_REPOSITORY}` and `${PARTITION_IMAGE_TAG}` expressions in the rendered YAML expand against the live ConfigMap. Updating the lock and reconciling the Kustomization triggers a rolling update.
 
-The CLI is the only writer of `osdu-image-lock`. `spi reconcile --refresh-images` re-resolves and re-applies the lock, then forces a reconcile on the service Kustomizations. `spi service pin <name> --mr <iid>` overwrites one service's lock entries with the image an OSDU merge-request pipeline built, recording provenance and the canonical image in a lock annotation ([ADR-040](../decisions/040-service-mr-image-pins.md)); `spi service reset` restores the canonical entries. Both refresh paths render the lock with active pins overlaid, so a refresh or a re-run `spi up` never reverts a pin. Nothing else moves service image tags.
+The CLI is the only writer of `osdu-image-lock`. `spi reconcile --refresh-images` re-resolves and re-applies the lock, then forces a reconcile on the service Kustomizations. `spi service pin <name> --mr <iid>` overwrites one service's lock entries with the image an OSDU merge-request pipeline built, recording provenance and the canonical image in a lock annotation ([ADR-017](../decisions/017-osdu-image-lock.md)); `spi service reset` restores the canonical entries. Both refresh paths render the lock with active pins overlaid, so a refresh or a re-run `spi up` never reverts a pin. Nothing else moves service image tags.
 
 ## The layer DAG (core profile)
 
@@ -42,7 +42,7 @@ L1  spi-cert-manager          dependsOn: spi-namespaces
     spi-trust-manager         dependsOn: spi-cert-manager
     spi-eck-operator          dependsOn: spi-namespaces
     spi-cnpg-operator         dependsOn: spi-namespaces
-    spi-helm-sources          dependsOn: spi-namespaces           (ADR-029)
+    spi-helm-sources          dependsOn: spi-namespaces           (ADR-025)
 L2  spi-elasticsearch         dependsOn: spi-eck-operator, spi-nodepools
     spi-redis                 dependsOn: spi-cert-manager, spi-nodepools, spi-helm-sources
     spi-postgresql            dependsOn: spi-cnpg-operator, spi-nodepools
@@ -55,7 +55,7 @@ L5b spi-osdu-schema-load      dependsOn: spi-osdu-init            (ADR-013)
 L6  spi-osdu-reference        dependsOn: spi-osdu-services, spi-osdu-schema-load
 ```
 
-The `ingress` Kustomization (`software/stacks/osdu/ingress/<mode>/stack.yaml`) attaches additional Kustomizations at L1 (the mode's Gateway owner, cert issuers, and ExternalDNS for `dns`) and L6 (HTTPRoutes). The active Gateway owner lives in the ingress tree because its listeners are mode-specific and exactly one Kustomization may render and prune the object. See [ADR-029](../decisions/029-single-flux-inventory-owner.md) and [gateway-ingress](gateway-ingress.md).
+The `ingress` Kustomization (`software/stacks/osdu/ingress/<mode>/stack.yaml`) attaches additional Kustomizations at L1 (the mode's Gateway owner, cert issuers, and ExternalDNS for `dns`) and L6 (HTTPRoutes). The active Gateway owner lives in the ingress tree because its listeners are mode-specific and exactly one Kustomization may render and prune the object. See [ADR-025](../decisions/025-single-flux-inventory-owner.md) and [gateway-ingress](gateway-ingress.md).
 
 ## How `dependsOn` actually gates
 

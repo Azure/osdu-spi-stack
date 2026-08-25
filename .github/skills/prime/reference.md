@@ -86,7 +86,8 @@ Azure resource names are derived from the `--env` flag for isolation.
 (`docs/design/`), and `docs/architecture.md`. When reviewing or writing
 changes under `docs/`, hold them to that guide: impersonal active voice,
 claims backed by a named artifact or exact number, the banned/rationed word
-list, and its per-genre rules. ADRs are closed records (no dateable status,
+list, and its per-genre rules. ADRs state the current ruling and are
+rewritten in place when a decision changes (no status, dates, or amendments;
 no external-project narrative); design docs are living documents
 (status-marked present tense is correct). Review suggestions for these files
 must themselves comply with the guide; do not propose wording the guide bans.
@@ -137,7 +138,7 @@ in an SPI Stack deployment.
 Services use Azure SPI images from the OSDU community registry:
 - Pattern: `community.opengroup.org:5555/osdu/platform/.../*-master:tag`
 - `spi up` resolves current master SHA tags and writes them to
-  `flux-system/osdu-image-lock`; service manifests use Flux post-build
+  `osdu-flux/osdu-image-lock`; service manifests use Flux post-build
   substitution from that ConfigMap.
 - Refresh a live cluster with `uv run spi reconcile --refresh-images`.
 - To refresh static checked-in image references, run

@@ -1,7 +1,5 @@
 # ADR-013: Schema Load via a Flux-Managed Job
 
-**Status**: Accepted
-
 ## Context
 
 After Flux reconciles the OSDU core services, the schema-service Pod is `Ready` but its Cosmos DB container is empty. Any downstream record call that references a `kind` fails with `schema not found`. Loading the ~1,386 shared schemas that the OSDU community publishes is a mechanical, one-shot operation that has to happen exactly once per environment on fresh deploy.
@@ -32,12 +30,3 @@ Rejected:
 - Manual re-run is `kubectl delete job schema-load -n osdu` followed by `flux reconcile kustomization spi-osdu-schema-load --with-source`. Flux re-applies the Job.
 - The loader tag depends on OSDU community registry retention. Mirroring the image to the SPI ACR (already provisioned) is an available follow-up if retention becomes a problem.
 - Only the schema-service is seeded. Reference data, legal tags, entitlements root groups, and partition initialization are out of scope and remain future work.
-
-### Amendment (2026-08-21)
-
-The loader image is now resolved through the live image lock instead of a Git
-pin. `force: true` on its Flux Kustomization replaces the Job when the resolved
-tag changes, because Kubernetes does not permit Job Pod template updates. The
-Job carries no static image default; a lock created before schema-load joined
-it is backfilled by `spi reconcile` from the schema tag the lock already pins,
-so no known-stale SHA survives in the manifest.

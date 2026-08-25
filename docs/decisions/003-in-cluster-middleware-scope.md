@@ -1,7 +1,5 @@
 # ADR-003: In-Cluster Middleware Scope
 
-**Status**: Accepted
-
 ## Context
 
 ADR-001 moved every data service with a managed Azure equivalent out of the cluster. Three middleware components have no clean managed drop-in for OSDU's upstream service code:

@@ -87,7 +87,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/) format:
 ```
 feat(cli): add --dry-run flag to up command
 fix(bicep): handle missing partition tag gracefully
-docs(adr): add ADR-019 for ingress profiles
+docs(adr): add ADR-012 for ingress profiles
 chore(deps): bump typer to 0.24
 refactor(providers): extract shared cluster validation
 ```

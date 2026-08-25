@@ -2,7 +2,7 @@
 #
 # A HelmRepository consumed by two components cannot ship with either of
 # them: two Flux Kustomizations would render the same object and either
-# inventory could prune it (ADR-029). Today that is the bitnami registry,
+# inventory could prune it (ADR-025). Today that is the bitnami registry,
 # used by Redis and by ExternalDNS.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

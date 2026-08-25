@@ -1,7 +1,5 @@
 # ADR-014: Suspend GitOps Reconciliation by Default After Deploy
 
-**Status**: Accepted
-
 ## Context
 
 SPI Stack is a dev/test deployment target. Engineers run `spi up` against short-lived AKS clusters to verify a specific commit, iterate on service configuration, or reproduce an issue. The deployment uses Flux CD GitOps (ADR-009), which by default polls the tracked Git branch on a fixed interval and auto-reconciles any new commits.
@@ -17,7 +15,7 @@ The CLI already exposes `spi reconcile --suspend` and `spi reconcile --resume` (
 
 ## Decision
 
-Suspend the Flux `GitRepository` source (`osdu-spi-stack-system` in `osdu-flux`; see [ADR-020](020-osdu-flux-gitops-namespace.md)) automatically as the final step of `spi up`. The deployed environment is pinned to the commit that was current when `spi up` ran. Future commits do not auto-reconcile. Users opt into updates explicitly:
+Suspend the Flux `GitRepository` source (`osdu-spi-stack-system` in `osdu-flux`; see [ADR-019](019-osdu-flux-gitops-namespace.md)) automatically as the final step of `spi up`. The deployed environment is pinned to the commit that was current when `spi up` ran. Future commits do not auto-reconcile. Users opt into updates explicitly:
 
 - `spi reconcile` performs a one-shot pull: fetches latest, reconciles once, stays suspended.
 - `spi reconcile --resume` re-enables continuous auto-reconciliation.

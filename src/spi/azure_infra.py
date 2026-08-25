@@ -30,7 +30,7 @@ Hybrid model:
     + topics/subs, Storage + containers/tables, RBAC role assignments) is
     declared in Bicep at ``infra/main.bicep`` and deployed with
     ``az deployment group create``. Local auth is disabled on the Cosmos
-    and Service Bus accounts (ADR-027), so no key material is resolved;
+    and Service Bus accounts (ADR-023), so no key material is resolved;
     key/connection secrets are ``DISABLED`` placeholders.
   - Runtime-only Key Vault secrets that depend on in-cluster seed
     passwords (tbl-storage-endpoint, redis-*, {partition}-elastic-*)

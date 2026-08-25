@@ -1,7 +1,5 @@
 # ADR-004: Local Helm Chart for Safeguards Compliance
 
-**Status**: Accepted
-
 ## Context
 
 ADR-002's choice of AKS Automatic means every pod must pass a non-bypassable `ValidatingAdmissionPolicy`: non-root, seccomp `RuntimeDefault`, all capabilities dropped, `allowPrivilegeEscalation: false`, resource requests and limits set, liveness and readiness probes declared.

@@ -1,7 +1,5 @@
 # ADR-009: Flux CD + AKS GitOps Extension for In-Cluster Reconciliation
 
-**Status**: Accepted
-
 ## Context
 
 Azure provisioning lands declaratively via Bicep (ADR-008); the cluster still has to be populated with operators, middleware, ingress, and OSDU services. The CLI could apply those as imperative `kubectl` calls, but then cluster state is not reconstructable from Git, upgrades require the CLI to be in a specific version, and every change is a CLI change.

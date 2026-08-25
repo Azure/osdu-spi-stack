@@ -4,7 +4,7 @@
 # spi-ingress-dns-label stamps service.beta.kubernetes.io/
 # azure-dns-label-name=<cluster-name>-ingress onto the add-on's ingress
 # Service; only the Flux controllers may write in aks-istio-ingress
-# (ADR-039). gateway-tls-single-host renders the whole Gateway: HTTP:80 plus an
+# (ADR-026). gateway-tls-single-host renders the whole Gateway: HTTP:80 plus an
 # HTTPS:443 listener bound to the FQDN. cert-manager issues the Let's
 # Encrypt cert via HTTP-01 against that same HTTP:80 listener. All OSDU
 # APIs and middleware UIs (Kibana /kibana, Airflow /airflow) live under
@@ -16,7 +16,7 @@
 ---
 # Azure DNS label on the add-on's external ingress Service. Applied by
 # Flux because only the flux-system controllers are exempt from the
-# admission policy that denies writes in aks-istio-ingress (ADR-039).
+# admission policy that denies writes in aks-istio-ingress (ADR-026).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -87,7 +87,7 @@ spec:
 ---
 # The Gateway: HTTP:80 for ACME HTTP-01 plus the HTTPS:443 listener
 # bound to the auto-FQDN. The ingress tree is the Gateway's sole Flux
-# owner, so no second Kustomization re-applies the object (ADR-029).
+# owner, so no second Kustomization re-applies the object (ADR-025).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

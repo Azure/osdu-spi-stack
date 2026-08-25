@@ -1,7 +1,5 @@
 # ADR-001: Azure PaaS for OSDU Data Services
 
-**Status**: Accepted
-
 ## Context
 
 OSDU services need persistent document, graph, and object storage; asynchronous messaging; centralized secret management; and an identity provider. A cloud-agnostic stack runs all of these in-cluster (PostgreSQL, Keycloak, RabbitMQ, MinIO, Kubernetes Secrets). Each adds operational surface: backup, upgrade, monitoring, capacity planning.

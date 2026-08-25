@@ -1,7 +1,5 @@
 # ADR-010: Key Vault + ConfigMap Secret Model
 
-**Status**: Accepted
-
 ## Context
 
 OSDU services need three classes of configuration at runtime:

@@ -2,7 +2,7 @@
 # listed here; the AKS Istio add-on owns the Service itself. The write
 # must flow through Flux because the aks-managed-protect-system-namespaces
 # admission policy denies aks-istio-ingress writes to every identity
-# except the exempted flux-system controllers (ADR-039).
+# except the exempted flux-system controllers (ADR-026).
 apiVersion: v1
 kind: Service
 metadata:

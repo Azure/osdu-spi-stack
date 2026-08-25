@@ -1,7 +1,5 @@
 # ADR-005: Workload Identity for Azure PaaS Access
 
-**Status**: Accepted
-
 ## Context
 
 OSDU services authenticate to Cosmos DB, Service Bus, Azure Storage, and Key Vault. The alternative is to store connection strings or service-principal credentials as Kubernetes Secrets; those leak easily, require rotation, and multiply the secret inventory.

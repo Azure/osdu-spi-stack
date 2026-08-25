@@ -1,7 +1,5 @@
 # ADR-016: Istio JWT Projection for Azure-Provider OSDU Services
 
-**Status**: Accepted
-
 ## Context
 
 Following ADR-015, the partition + entitlements bootstrap Jobs acquire a Workload Identity bearer token and POST to the in-cluster OSDU services. Both POSTs are rejected: partition returns 403 from `AzureIstioSecurityFilter`, entitlements returns 401 from `AuthorizationFilter`. In both rejections, the service-side request log records `app-id=` empty even though the bearer carries a valid `appid` claim that matches the OSDU UAMI client id.
@@ -22,9 +20,9 @@ Resources:
 - `EnvoyFilter` `spi-osdu-identity-filter` in the `osdu` namespace, applied to `SIDECAR_INBOUND`. Its Lua reads `envoy.filters.http.jwt_authn` dynamic metadata and writes `x-app-id` / `x-user-id`. The branch that special-cases `aud == https://management.azure.com/` replaces both headers with the OSDU UAMI client id, matching the audience presented by Workload Identity tokens.
 - `PeerAuthentication` `spi-osdu-mtls` mode `PERMISSIVE` in `osdu`, defensive against managed-mesh defaults that could otherwise break the init Jobs.
 
-A per-service default-deny `AuthorizationPolicy` is not adopted. As defense in depth it keeps a request with a missing or invalid bearer from reaching the service at all. The Azure-provider services already enforce identity in the Spring filter chain, so the second layer is duplicative for the bootstrap problem, and applying default-deny to services already serving traffic carries a wider blast radius than the rest of this change. It remains available as a later hardening pass.
+Sidecar injection is a prerequisite for these resources to execute at all, so the `osdu` namespace `istio.io/rev` label is not pinned in Git. It is sourced from the live cluster revision via the `osdu-flux/spi-cluster-config` ConfigMap and Flux substitution.
 
-**Amendment (2026-08-21):** Sidecar injection is a prerequisite for these resources to execute at all, so the `osdu` namespace `istio.io/rev` label is no longer pinned in Git. It is sourced from the live cluster revision via the `osdu-flux/spi-cluster-config` ConfigMap and Flux substitution.
+A per-service default-deny `AuthorizationPolicy` is not adopted. As defense in depth it keeps a request with a missing or invalid bearer from reaching the service at all. The Azure-provider services already enforce identity in the Spring filter chain, so the second layer is duplicative for the bootstrap problem, and applying default-deny to services already serving traffic carries a wider blast radius than the rest of this change. It remains available as a later hardening pass.
 
 ## Consequences
 

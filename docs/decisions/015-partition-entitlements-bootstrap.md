@@ -1,7 +1,5 @@
 # ADR-015: Partition + Entitlements Bootstrap via a Flux Helm Chart
 
-**Status**: Accepted
-
 ## Context
 
 OSDU's Azure provider needs two pieces of state in place before any record, schema, or entitlements operation can succeed against a fresh cluster:

@@ -1,7 +1,5 @@
 # ADR-006: Three-Namespace Model
 
-**Status**: Accepted
-
 ## Context
 
 Workloads need isolation boundaries for ownership, Istio sidecar injection, and resource policy. A common pattern is four namespaces (`foundation`, `istio-system`, `platform`, `osdu`), but AKS Automatic's managed Istio owns `aks-istio-system` and `aks-istio-ingress` itself.

@@ -2,7 +2,7 @@
 #
 # Renders the base Gateway (HTTP:80 only) and wires HTTPRoutes with no
 # hostnames to it. Every ingress tree owns its own Gateway so exactly one
-# Flux Kustomization ever applies the object (ADR-029); this mode is the
+# Flux Kustomization ever applies the object (ADR-025); this mode is the
 # one that stops at the base component. No cert-manager issuers, no
 # ExternalDNS, no Kibana, no TLS overlay.
 ---
@@ -12,7 +12,7 @@
 # the TLS modes already carry on live clusters, so switching
 # --ingress-mode only changes this object's spec.path. A mode-specific
 # name would make the top-level ingress Kustomization prune the old child
-# and its MirrorPrune deletion take the Gateway with it (ADR-029).
+# and its MirrorPrune deletion take the Gateway with it (ADR-025).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
