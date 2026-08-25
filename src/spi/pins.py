@@ -102,17 +102,21 @@ def fetch_merge_request(project_id: int, mr_iid: str) -> dict:
     return mr
 
 
-def resolve_mr_image(service: str, mr_iid: str) -> tuple[ResolvedImage, dict]:
+def resolve_mr_image(
+    service: str, mr_iid: str, mr: dict | None = None
+) -> tuple[ResolvedImage, dict]:
     """Resolve the image an MR's pipeline built for one service.
 
     OSDU containerizes protected refs only, so an MR's image usually comes
     from its ``trusted-<branch>`` copy (the ref maintainers create to run the
     privileged pipeline). Only an image tagged with the MR's head commit is
     accepted, so a stale trusted copy cannot silently substitute other code.
+    Related services can share a previously fetched MR snapshot.
     """
 
     entry = IMAGE_REGISTRY[service]
-    mr = fetch_merge_request(entry.project_id, mr_iid)
+    if mr is None:
+        mr = fetch_merge_request(entry.project_id, mr_iid)
     source_branch = mr.get("source_branch", "")
     sha = mr.get("sha", "")
     if not ref_slug(source_branch) or not sha:
@@ -283,9 +287,13 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
 
     resolved: list[tuple[str, ResolvedImage, dict]] = []
     released: dict[str, ServicePin] = {}
+    mr_snapshots: dict[int, dict] = {}
     for name in targets:
+        project_id = IMAGE_REGISTRY[name].project_id
+        if project_id not in mr_snapshots:
+            mr_snapshots[project_id] = fetch_merge_request(project_id, mr_iid)
         try:
-            image, mr = resolve_mr_image(name, mr_iid)
+            image, mr = resolve_mr_image(name, mr_iid, mr_snapshots[project_id])
         except MissingPipelineImageError as exc:
             if name != SCHEMA_LOAD_SERVICE_NAME:
                 raise

@@ -15,6 +15,7 @@
 """Per-service MR image pins: resolution, lock mutation, and refresh survival."""
 
 import json
+from typing import TypedDict
 
 import pytest
 
@@ -71,6 +72,12 @@ def _canonical_data(*services):
             }
         )
     return data
+
+
+class _PinServiceCalls(TypedDict):
+    patch: tuple[dict[str, str], dict[str, ServicePin]] | None
+    reconciled: list[str] | None
+    fetches: int
 
 
 class TestRefSlug:
@@ -195,17 +202,24 @@ class TestResolveMrImage:
 
 class TestPinService:
     def _wire(self, monkeypatch, lock, resolved_names):
-        calls = {"patch": None, "reconciled": None}
+        calls: _PinServiceCalls = {"patch": None, "reconciled": None, "fetches": 0}
+        mr = {"source_branch": "fix/x", "sha": "b" * 40}
         monkeypatch.setattr(pins, "read_lock", lambda: lock)
 
-        def fake_resolve(service, mr_iid):
+        def fake_fetch(project_id, mr_iid):
+            calls["fetches"] += 1
+            return mr
+
+        def fake_resolve(service, mr_iid, mr_snapshot=None):
+            assert mr_snapshot is mr
             if service not in resolved_names:
                 raise MissingPipelineImageError(f"{service}: no image")
             return (
                 ResolvedImage(service, f"repo/{service}-fix-x", "b" * 40, "now", "sha256:new"),
-                {"source_branch": "fix/x", "sha": "b" * 40},
+                mr_snapshot,
             )
 
+        monkeypatch.setattr(pins, "fetch_merge_request", fake_fetch)
         monkeypatch.setattr(pins, "resolve_mr_image", fake_resolve)
         monkeypatch.setattr(
             pins,
@@ -266,11 +280,12 @@ class TestPinService:
         assert calls["patch"] is None
         assert calls["reconciled"] is None
 
-    def test_schema_pin_pairs_the_loader(self, monkeypatch):
+    def test_schema_pin_pairs_the_loader_from_one_mr_snapshot(self, monkeypatch):
         lock = _lock(data=_canonical_data("schema", "schema-load"))
         calls = self._wire(monkeypatch, lock, {"schema", "schema-load"})
         results = pin_service("schema", "847")
         assert [name for name, _ in results] == ["schema", "schema-load"]
+        assert calls["fetches"] == 1
         assert calls["reconciled"] == ["schema", "schema-load"]
 
     def test_schema_pin_tolerates_missing_loader_image(self, monkeypatch):
@@ -283,12 +298,12 @@ class TestPinService:
         lock = _lock(pins_annotation=encode_pins({"schema-load": _pin(mr="1")}))
         calls = self._wire(monkeypatch, lock, {"schema", "schema-load"})
 
-        def fake_resolve(service, mr_iid):
+        def fake_resolve(service, mr_iid, mr_snapshot=None):
             if service == "schema-load":
                 raise PinError("MR 847: unexpected GitLab API response")
             return (
                 ResolvedImage(service, f"repo/{service}-fix-x", "b" * 40, "now", "sha256:new"),
-                {"source_branch": "fix/x", "sha": "b" * 40},
+                mr_snapshot,
             )
 
         monkeypatch.setattr(pins, "resolve_mr_image", fake_resolve)
