@@ -325,6 +325,33 @@ def test_resolve_image_commit_matches_short_sha_tags(monkeypatch):
         resolve_image_commit("schema", entry, "trusted-fix-x", "f" * 40)
 
 
+def test_resolve_image_commit_handles_tag_pruned_after_listing(monkeypatch):
+    sha = "1f325c1e71be" + "d" * 28
+
+    def fake_gitlab_get(url: str):
+        if "registry/repositories?" in url:
+            return [
+                {
+                    "id": 9,
+                    "name": "schema-service-fix-x",
+                    "location": "registry/schema-service-fix-x",
+                }
+            ]
+        if url.endswith("/tags?per_page=100&page=1"):
+            return [{"name": sha[:12]}]
+        raise AssertionError(f"unexpected URL: {url}")
+
+    def fake_tag_detail(project_id, repo_id, tag):
+        raise urllib.error.HTTPError("https://example.invalid", 404, "Not Found", Message(), None)
+
+    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+    monkeypatch.setattr(images, "_tag_detail", fake_tag_detail)
+
+    entry = ImageRegistryEntry(26, "schema-service", "services/schema.yaml")
+    with pytest.raises(ImageResolutionError, match="tag .* not found"):
+        resolve_image_commit("schema", entry, "fix-x", sha)
+
+
 def test_resolve_images_schema_load_only_omits_schema(monkeypatch):
     """Requesting only schema-load has to resolve schema as a dependency
     without returning it, and use the loader-specific error message on

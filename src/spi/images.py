@@ -288,7 +288,15 @@ def resolve_image_commit(
             f"{service_name}: no tag for commit {sha[:12]} in {image_name!r}"
         )
 
-    detail = _tag_detail(entry.project_id, repo["id"], max(matches, key=len))
+    tag = max(matches, key=len)
+    try:
+        detail = _tag_detail(entry.project_id, repo["id"], tag)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise ImageResolutionError(
+                f"{service_name}: tag {tag!r} not found in {image_name!r}"
+            ) from exc
+        raise
     return ResolvedImage(
         name=service_name,
         repository=repo["location"],
