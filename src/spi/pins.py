@@ -42,6 +42,7 @@ from .images import (
     ResolvedImage,
     gitlab_get,
     image_lock_key,
+    render_image_lock_configmap,
     resolve_image_commit,
 )
 from .shell import run_command, run_process
@@ -246,8 +247,18 @@ def patch_lock(data: dict[str, str], pins: dict[str, ServicePin], description: s
     )
 
 
+# Dependency order for pin consumers: a changed schema image has to reach the
+# service before the loader Job is recreated against it, and the loader has to
+# finish before reference re-seeds (same sequence as `spi reconcile`).
+_CONSUMER_ORDER = ("spi-osdu-services", "spi-osdu-schema-load", "spi-osdu-reference")
+
+
 def reconcile_consumers(services: list[str]) -> None:
-    """Ask Flux to re-substitute the Kustomizations consuming changed pins."""
+    """Reconcile the Kustomizations consuming changed pins, in dependency order.
+
+    Each stage blocks until Flux reports it ready, so a paired image change
+    (schema + loader) cannot run the loader against the previous service.
+    """
 
     names = {
         kustomization
@@ -255,19 +266,19 @@ def reconcile_consumers(services: list[str]) -> None:
         for prefix, kustomization in _FILE_KUSTOMIZATIONS.items()
         if IMAGE_REGISTRY[service].file.startswith(prefix)
     }
-    ts = datetime.now(timezone.utc).isoformat()
-    for name in sorted(names):
+    for name in (candidate for candidate in _CONSUMER_ORDER if candidate in names):
         run_command(
             [
-                "kubectl",
-                "annotate",
-                "--overwrite",
-                f"kustomization/{name}",
+                "flux",
+                "reconcile",
+                "kustomization",
+                name,
                 "-n",
                 IMAGE_LOCK_NAMESPACE,
-                f"reconcile.fluxcd.io/requestedAt={ts}",
+                "--timeout",
+                "40m",
             ],
-            description=f"Trigger {name} reconciliation",
+            description=f"Wait for {name} reconciliation",
             check=False,
         )
 
@@ -446,17 +457,22 @@ def live_pins() -> dict[str, ServicePin]:
     return decode_pins(lock)
 
 
-def reapply_pins(pins: dict[str, ServicePin]) -> None:
-    """Re-assert active pins after a full lock re-render.
+def render_lock_with_pins(
+    resolved: dict[str, ResolvedImage],
+    branch: str,
+    pins: dict[str, ServicePin],
+) -> str:
+    """Render the image lock with active pins overlaid, as one document.
 
-    The refresh paths replace every data key with freshly resolved images;
-    re-patching from the recorded pins afterwards keeps a refresh from
-    silently reverting an experiment.
+    The refresh paths build the pinned entries and annotation into the
+    rendered ConfigMap so the lock is replaced in a single apply: there is
+    no window where the live lock holds canonical images while an
+    experiment is active, and a failure between steps cannot revert a pin.
     """
 
-    if not pins:
-        return
-    data: dict[str, str] = {}
+    overlaid = dict(resolved)
     for name, pin in pins.items():
-        data.update(_lock_entry_patch(name, pin.repository, pin.tag, "", ""))
-    patch_lock(data, pins, f"Preserve pins: {', '.join(sorted(pins))}")
+        if name in overlaid:
+            overlaid[name] = ResolvedImage(name, pin.repository, pin.tag, "", "")
+    extra = {PINS_ANNOTATION: encode_pins(pins)} if pins else None
+    return render_image_lock_configmap(overlaid, branch=branch, extra_annotations=extra)

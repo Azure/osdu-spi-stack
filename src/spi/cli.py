@@ -34,7 +34,6 @@ from .images import (
     IMAGE_LOCK_NAMESPACE,
     ImageResolutionError,
     image_lock_missing_schema_load,
-    render_image_lock_configmap,
     resolve_image_lock,
     schema_load_lock_patch,
 )
@@ -43,7 +42,7 @@ from .pins import (
     PinError,
     live_pins,
     pin_service,
-    reapply_pins,
+    render_lock_with_pins,
     reset_service,
 )
 from .shell import kubectl_apply_yaml, run_command
@@ -689,17 +688,15 @@ def reconcile(
                 "unreadable; a refresh could silently revert an active pin.[/error]"
             )
             raise typer.Exit(code=1)
-        image_lock_yaml = render_image_lock_configmap(resolved, branch=image_branch)
+        image_lock_yaml = render_lock_with_pins(resolved, image_branch, pins)
         display_yaml(image_lock_yaml, "ConfigMap: osdu-image-lock")
         kubectl_apply_yaml(image_lock_yaml, "apply osdu-image-lock ConfigMap")
         display_result("osdu-image-lock ConfigMap updated")
-        if pins:
-            reapply_pins(pins)
-            for name, pin in sorted(pins.items()):
-                console.print(
-                    f"  [warning]{name} stays pinned to MR !{pin.mr} ({pin.tag[:12]}); "
-                    f"release with 'spi service reset {name}'[/warning]"
-                )
+        for name, pin in sorted(pins.items()):
+            console.print(
+                f"  [warning]{name} stays pinned to MR !{pin.mr} ({pin.tag[:12]}); "
+                f"release with 'spi service reset {name}'[/warning]"
+            )
 
     # Default: force reconcile
     if get_suspend_status():

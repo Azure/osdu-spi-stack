@@ -457,25 +457,33 @@ class TestServiceResetCli:
 
 
 class TestRefreshSurvival:
-    def test_reapply_pins_patches_pinned_entries(self, monkeypatch):
-        captured = {}
-        monkeypatch.setattr(
-            pins,
-            "patch_lock",
-            lambda data, p, description: captured.update(data=data, pins=p),
+    def test_render_overlays_pinned_entries_and_annotation(self):
+        resolved = {
+            "schema": ResolvedImage("schema", "repo/schema-master", "c" * 40, "then", "sha:old"),
+            "storage": ResolvedImage("storage", "repo/storage-master", "d" * 40, "then", "sha:st"),
+        }
+        resolved.update(
+            {
+                name: ResolvedImage(name, f"repo/{name}-master", "e" * 40, "", "")
+                for name in pins.IMAGE_REGISTRY
+                if name not in resolved
+            }
         )
         active = {"schema": _pin()}
-        pins.reapply_pins(active)
-        assert captured["data"]["SCHEMA_IMAGE_TAG"] == "a" * 40
-        assert captured["pins"] is active
+        rendered = pins.render_lock_with_pins(resolved, "master", active)
+        assert f"SCHEMA_IMAGE_TAG: {'a' * 40!r}".replace("'", '"') in rendered
+        assert "registry/schema-service-fix-upgrade-core-lib" in rendered
+        assert pins.PINS_ANNOTATION in rendered
+        # Unpinned services keep their freshly resolved entries.
+        assert f"STORAGE_IMAGE_TAG: {'d' * 40!r}".replace("'", '"') in rendered
 
-    def test_reapply_pins_noop_when_empty(self, monkeypatch):
-        monkeypatch.setattr(
-            pins,
-            "patch_lock",
-            lambda *a, **k: pytest.fail("patch_lock must not run without pins"),
-        )
-        pins.reapply_pins({})
+    def test_render_without_pins_omits_annotation(self):
+        resolved = {
+            name: ResolvedImage(name, f"repo/{name}-master", "e" * 40, "", "")
+            for name in pins.IMAGE_REGISTRY
+        }
+        rendered = pins.render_lock_with_pins(resolved, "master", {})
+        assert pins.PINS_ANNOTATION not in rendered
 
     def test_live_pins_empty_when_lock_absent(self, monkeypatch):
         monkeypatch.setattr(pins, "read_lock", lambda required=True: None)
@@ -491,16 +499,27 @@ class TestRefreshSurvival:
 
 
 class TestReconcileConsumers:
-    def test_maps_service_files_to_kustomizations(self, monkeypatch):
-        annotated = []
+    def test_reconciles_in_dependency_order_and_blocks(self, monkeypatch):
+        """services must settle before schema-load runs, and schema-load
+        before reference re-seeds, mirroring the refresh sequence."""
+        reconciled = []
 
         def fake_run(command, **kwargs):
-            annotated.append(command[3])
+            assert command[:3] == ["flux", "reconcile", "kustomization"]
+            reconciled.append(command[3])
 
         monkeypatch.setattr(pins, "run_command", fake_run)
-        pins.reconcile_consumers(["storage", "unit", "schema-load"])
-        assert annotated == [
-            "kustomization/spi-osdu-reference",
-            "kustomization/spi-osdu-schema-load",
-            "kustomization/spi-osdu-services",
+        pins.reconcile_consumers(["unit", "schema-load", "storage"])
+        assert reconciled == [
+            "spi-osdu-services",
+            "spi-osdu-schema-load",
+            "spi-osdu-reference",
         ]
+
+    def test_only_affected_kustomizations_reconcile(self, monkeypatch):
+        reconciled = []
+        monkeypatch.setattr(
+            pins, "run_command", lambda command, **kwargs: reconciled.append(command[3])
+        )
+        pins.reconcile_consumers(["storage"])
+        assert reconciled == ["spi-osdu-services"]

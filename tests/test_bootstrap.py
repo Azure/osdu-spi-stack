@@ -241,7 +241,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.live_pins", return_value={}),
-            patch("spi.cli.render_image_lock_configmap", return_value="kind: ConfigMap\n"),
+            patch("spi.cli.render_lock_with_pins", return_value="kind: ConfigMap\n"),
             patch("spi.cli.kubectl_apply_yaml"),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
         ):
@@ -287,7 +287,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.live_pins", return_value={}),
-            patch("spi.cli.render_image_lock_configmap", return_value="kind: ConfigMap\n"),
+            patch("spi.cli.render_lock_with_pins", return_value="kind: ConfigMap\n"),
             patch("spi.cli.kubectl_apply_yaml"),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
         ):

@@ -29,7 +29,7 @@ OSDU service images move on a different cadence than the repo. Per [ADR-017](../
 
 The service Kustomizations under `software/stacks/osdu/profiles/core/` carry `postBuild.substituteFrom` blocks that reference `osdu-image-lock`. When Flux reconciles those Kustomizations, the `${PARTITION_IMAGE_REPOSITORY}` and `${PARTITION_IMAGE_TAG}` expressions in the rendered YAML expand against the live ConfigMap. Updating the lock and reconciling the Kustomization triggers a rolling update.
 
-The CLI is the only writer of `osdu-image-lock`. `spi reconcile --refresh-images` re-resolves and re-applies the lock, then forces a reconcile on the service Kustomizations. Nothing else moves service image tags.
+The CLI is the only writer of `osdu-image-lock`. `spi reconcile --refresh-images` re-resolves and re-applies the lock, then forces a reconcile on the service Kustomizations. `spi service pin <name> --mr <iid>` overwrites one service's lock entries with the image an OSDU merge-request pipeline built, recording provenance and the canonical image in a lock annotation ([ADR-040](../decisions/040-service-mr-image-pins.md)); `spi service reset` restores the canonical entries. Both refresh paths render the lock with active pins overlaid, so a refresh or a re-run `spi up` never reverts a pin. Nothing else moves service image tags.
 
 ## The layer DAG (core profile)
 
@@ -126,7 +126,9 @@ The substitution is not marked `optional`. A missing ConfigMap fails `spi-namesp
 | `spi reconcile` | One-shot reconcile (annotates the source + stack Kustomization with `reconcile.fluxcd.io/requestedAt`) | yes (unchanged) |
 | `spi reconcile --suspend` | Set `spec.suspend: true` if not already | yes |
 | `spi reconcile --resume` | Set `spec.suspend: false` (Flux resumes 10-min polling) | no |
-| `spi reconcile --refresh-images` | Re-resolve `osdu-image-lock`, re-apply, then reconcile service Kustomizations | yes (unchanged) |
+| `spi reconcile --refresh-images` | Re-resolve `osdu-image-lock`, re-apply (active pins overlaid), then reconcile service Kustomizations | yes (unchanged) |
+| `spi service pin <name> --mr <iid>` | Overwrite one service's lock entries with an MR pipeline image, then reconcile its consumers in dependency order | yes (unchanged) |
+| `spi service reset <name>` | Restore the pinned service's canonical lock entries, then reconcile its consumers | yes (unchanged) |
 
 `spi status` and `spi info` both show a yellow `SUSPENDED` banner when the source is pinned.
 

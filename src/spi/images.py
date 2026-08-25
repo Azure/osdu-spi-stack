@@ -427,6 +427,7 @@ def render_image_lock_configmap(
     resolved: dict[str, ResolvedImage],
     branch: str = DEFAULT_IMAGE_BRANCH,
     resolved_at: datetime | None = None,
+    extra_annotations: Mapping[str, str] | None = None,
 ) -> str:
     """Render the Flux substitution ConfigMap for service image pins."""
 
@@ -456,8 +457,11 @@ def render_image_lock_configmap(
         "  annotations:",
         f"    spi-stack.osdu.dev/image-branch: {_yaml_string(branch)}",
         f"    spi-stack.osdu.dev/resolved-at: {_yaml_string(timestamp)}",
-        "data:",
     ]
+    annotations = dict(extra_annotations or {})
+    for key in sorted(annotations):
+        lines.append(f"    {key}: {_yaml_string(annotations[key])}")
+    lines.append("data:")
     for key in sorted(data):
         lines.append(f"  {key}: {_yaml_string(data[key])}")
     return "\n".join(lines) + "\n"
