@@ -27,8 +27,8 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 ### Changed
 - Local (key/SAS) authentication is now disabled on every Cosmos DB (Gremlin
   and per-partition SQL) and Service Bus account: `disableLocalAuth: true` is
-  set in Bicep rather than left to a tenant policy (ADR-023, supersedes
-  ADR-023, issue #44). Because `listKeys()` is rejected once local auth is off,
+  set in Bicep rather than left to a tenant policy (ADR-023, issue #44).
+  Because `listKeys()` is rejected once local auth is off,
   `graph-db-primary-key` is no longer written, the per-partition key/connection
   Key Vault secrets (`{p}-cosmos-primary-key`, `system-cosmos-primary-key`,
   `{p}-cosmos-connection`, `{p}-sb-connection`) now carry the literal

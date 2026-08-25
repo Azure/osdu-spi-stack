@@ -38,7 +38,7 @@ few commit subjects so the user knows what's been changing.
 ## Phase 3: Architectural Decisions
 
 Read `docs/decisions/README.md` to get the ADR index. This file contains a table of
-all architectural decisions with their titles and statuses. Present the full index
+all architectural decisions with their titles and rulings. Present the full index
 so the user (and you) know what decisions have been made and can reference them
 later. Do not read individual ADR files -- the index is sufficient for orientation.
 
@@ -78,7 +78,7 @@ Present a single concise markdown summary with these sections:
 - **Tech** -- Python version, Typer/Rich/Pydantic, uv, Bicep, Flux CD, Helm/Kustomize
 - **CLI** -- Key commands: `check`, `up`, `down`, `status`, `info`, `reconcile`, `update`
 - **Structure** -- Directory table from Phase 2
-- **Decisions** -- ADR index from Phase 3 (titles + status)
+- **Decisions** -- ADR index from Phase 3 (titles + rulings)
 - **Design docs** -- Filenames from Phase 4
 - **Tests** -- Framework (pytest) and file count
 - **Recent activity** -- Last few commit subjects

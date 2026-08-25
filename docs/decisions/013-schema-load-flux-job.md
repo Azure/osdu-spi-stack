@@ -29,4 +29,4 @@ Rejected:
 - Schema loader upgrades move with the service image via the live image lock.
 - Manual re-run is `kubectl delete job schema-load -n osdu` followed by `flux reconcile kustomization spi-osdu-schema-load --with-source`. Flux re-applies the Job.
 - The loader tag depends on OSDU community registry retention. Mirroring the image to the SPI ACR (already provisioned) is an available follow-up if retention becomes a problem.
-- Only the schema-service is seeded. Reference data, legal tags, entitlements root groups, and partition initialization are out of scope and remain future work.
+- Only the schema-service is seeded here; partition initialization and entitlements root-group provisioning run as a separate Flux-managed chart (ADR-015). Reference data and legal tags remain out of scope.

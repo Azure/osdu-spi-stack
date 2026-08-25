@@ -16,7 +16,7 @@ Shape:
 - **Two top-level Kustomizations** under that configuration:
   - `stack` reconciling `./software/stacks/osdu/profiles/<profile>` (the layered core profile, ADR-007).
   - `ingress` reconciling `./software/stacks/osdu/ingress/<mode>` (one of `azure`, `dns`, `ip`, ADR-012).
-- **Cluster-scoped** sync namespace `flux-system`, owned by the AKS extension.
+- **Sync namespace `osdu-flux`.** Created by the CLI at bootstrap and referenced by `fluxConfigurations.namespace` in `infra/flux.bicep`; the Flux controllers run in `flux-system`, owned by the AKS extension (ADR-019).
 - **Profile and ingress mode are Bicep parameters.** Switching either re-deploys `flux.bicep` and the extension drift-reconciles the new paths; no hand-edit of in-cluster resources.
 
 The CLI's `spi reconcile` is a thin wrapper over `flux reconcile` plus `--suspend` / `--resume` for freezing and unfreezing the `GitRepository`.

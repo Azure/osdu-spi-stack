@@ -43,7 +43,7 @@ Each row states the ruling so the index can answer "what was decided" on its own
 | [002](002-aks-automatic.md) | AKS Automatic as Compute Substrate | The cluster is AKS Automatic with a Kubernetes 1.36 floor; Karpenter, managed Istio, and Deployment Safeguards come from the platform. |
 | [003](003-in-cluster-middleware-scope.md) | In-Cluster Middleware Scope | Exactly three stateful systems run in-cluster: Elasticsearch (ECK), Redis (Bitnami chart), and PostgreSQL for Airflow (CNPG). |
 | [004](004-local-helm-chart-safeguards.md) | Local Helm Chart for Safeguards Compliance | One local chart (`osdu-spi-service`) bakes Safeguards compliance into its templates; HelmReleases supply only image, env, and resource overrides. |
-| [005](005-workload-identity.md) | Workload Identity for Azure PaaS Access | A single UAMI federated with `workload-identity-sa` carries all Azure PaaS access; no stored credentials. |
+| [005](005-workload-identity.md) | Workload Identity for Azure PaaS Access | A UAMI federated with `workload-identity-sa` carries OSDU service PaaS access; `dns` ingress mode adds a separate UAMI for ExternalDNS. No stored credentials. |
 | [006](006-three-namespace-model.md) | Three-Namespace Model | Workloads split across `foundation` (operators), `platform` (middleware), and `osdu` (services). |
 | [007](007-layered-kustomization-ordering.md) | Layered Flux Kustomization Ordering | The stack reconciles as ordered layers (0a through 6) wired by explicit `dependsOn`; same-layer Kustomizations run in parallel. |
 | [008](008-bicep-for-azure-provisioning.md) | Bicep for Azure Provisioning (AVM for AKS) | Azure resources are declared in Bicep, AVM for AKS and hand-written modules elsewhere; the CLI orchestrates only the seams Bicep cannot cover. |
