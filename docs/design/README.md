@@ -7,7 +7,7 @@ This section holds narrative design explainers for the SPI Stack platform. Unlik
 | Document type | Purpose | Lifecycle |
 |---|---|---|
 | [`architecture.md`](../architecture.md) | 30,000-ft overview of the whole system | Updated when the top-level model changes |
-| [`decisions/`](../decisions/) (ADRs) | Why a specific choice was made, with alternatives considered | Immutable after acceptance; superseded by new ADRs |
+| [`decisions/`](../decisions/) (ADRs) | Why a specific choice was made, with alternatives considered | States the ruling as it stands; rewritten in place when the decision changes |
 | [`design/`](./) (this section) | How a subsystem actually works, with diagrams | Living documents; updated as code evolves |
 
 Design docs reference ADRs for decision rationale. They do not re-justify decisions. If a doc finds itself arguing "we chose X instead of Y," that belongs in an ADR.

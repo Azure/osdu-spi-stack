@@ -4,7 +4,7 @@
 # no Kibana, no TLS overlay and no middleware routes, and the minimal
 # stack profile deploys no OSDU services -- so the HTTP:80 listener has
 # nothing routed to it. The Gateway is still rendered here because the
-# ingress tree is its sole Flux owner (ADR-029) and it is what gives the
+# ingress tree is its sole Flux owner and it is what gives the
 # cluster its Istio ingress LoadBalancer. Reach middleware UIs with
 # `kubectl port-forward` on this combination.
 apiVersion: kustomize.config.k8s.io/v1beta1

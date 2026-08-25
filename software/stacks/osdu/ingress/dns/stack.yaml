@@ -38,7 +38,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# Temporary ExternalDNS inventory handoff (ADR-029). This Kustomization
+# Temporary ExternalDNS inventory handoff. This Kustomization
 # must reconcile once with an empty inventory and pruning disabled.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -64,7 +64,7 @@ spec:
 # ExternalDNS, reading HTTPRoute hostnames and syncing A records to
 # the Azure DNS zone via Workload Identity. Its chart comes from the
 # shared bitnami HelmRepository, so it waits on that source's owner and
-# not on Redis, whose runtime health it does not need (ADR-029).
+# not on Redis, whose runtime health it does not need.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -113,7 +113,7 @@ spec:
 # The Gateway: HTTP:80 for ACME HTTP-01 plus three HTTPS:443 listeners,
 # one per hostname, each with its own cert. The ingress tree is the
 # Gateway's sole Flux owner, so no second Kustomization re-applies the
-# object (ADR-029).
+# object.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

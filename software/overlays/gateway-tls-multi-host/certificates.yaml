@@ -1,6 +1,6 @@
 # Certificates live in platform, not aks-istio-ingress: the AKS-managed
 # protect-system-namespaces policy denies cert-manager's status writes in
-# managed namespaces, silently stalling issuance (ADR-025). The
+# managed namespaces, silently stalling issuance. The
 # ReferenceGrant lets the Gateway's HTTPS listeners read the secrets
 # across the namespace boundary.
 apiVersion: cert-manager.io/v1

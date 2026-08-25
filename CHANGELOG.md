@@ -15,20 +15,20 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   canonical image; `spi service list` shows active pins. Pinning `schema`
   pins the paired loader image when the MR built one, and
   `spi reconcile --refresh-images` and `spi up` preserve active pins and
-  name them instead of silently reverting the experiment (ADR-040).
+  name them instead of silently reverting the experiment (ADR-017).
 - `spi up --profile bare` deploys infrastructure and activates GitOps
   only: Flux reconciles empty stack and ingress trees while the CLI
   bootstrap seeds namespaces, secrets, the `osdu-config` ConfigMap, and
   the Workload Identity ServiceAccount. `--ingress-mode` and `--dns-zone`
   are rejected with `bare`. Use it for Bicep, Workload Identity, or RBAC
   iteration, then re-run `spi up` with `minimal` or `core` to add
-  workloads (ADR-024, issue #42).
+  workloads (ADR-021, issue #42).
 
 ### Changed
 - Local (key/SAS) authentication is now disabled on every Cosmos DB (Gremlin
   and per-partition SQL) and Service Bus account: `disableLocalAuth: true` is
-  set in Bicep rather than left to a tenant policy (ADR-027, supersedes
-  ADR-021, issue #44). Because `listKeys()` is rejected once local auth is off,
+  set in Bicep rather than left to a tenant policy (ADR-023, issue #44).
+  Because `listKeys()` is rejected once local auth is off,
   `graph-db-primary-key` is no longer written, the per-partition key/connection
   Key Vault secrets (`{p}-cosmos-primary-key`, `system-cosmos-primary-key`,
   `{p}-cosmos-connection`, `{p}-sb-connection`) now carry the literal
@@ -36,7 +36,7 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   Services reach these accounts through Workload Identity data-plane roles.
   Community OSDU images that still read these keys/SAS require
   Workload-Identity-capable custom images, tracked separately.
-- Airflow 2.10.5 → 3.2.2 (chart 1.16.x → 1.22.x, single-engine, ADR-026).
+- Airflow 2.10.5 → 3.2.2 (chart 1.16.x → 1.22.x, single-engine).
   The webserver is replaced by `airflow-api-server` (UI + `/api/v2` + task
   execution API) and DAG parsing moves to a standalone dag-processor;
   routes and ReferenceGrants now target the new service. All Airflow
@@ -58,7 +58,7 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   the node-resource-group deny assignment blocks patching the public IP,
   so the exempt Flux controllers are the one permitted writer. This reuses
   the existing public IP so the deterministic FQDN resolves and ACME
-  HTTP-01 can issue the certificate (ADR-039, issue #82).
+  HTTP-01 can issue the certificate (ADR-026, issue #82).
 - The Azure-mode DNS label derives from the env name plus the
   per-deployment name suffix (`<env>-ingress-<suffix>`), matching every
   other globally unique resource name. The prior `<cluster>-ingress` label
@@ -73,12 +73,12 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   every non-bare ingress mode declares one `spi-gateway-tls` Kustomization,
   pointed at its TLS overlay or, for `ip`, at the base component. Legacy
   inventories are retained as non-pruning orphan handoffs for one rollout
-  (ADR-029, issue #81).
+  (ADR-025, issue #81).
 - The shared `bitnami` HelmRepository is no longer declared twice. It moved to
   `software/components/helm-sources`, owned by the new `spi-helm-sources`
   Kustomization, which Redis and ExternalDNS both depend on. ExternalDNS
   therefore waits on the source it needs instead of on Redis's runtime health
-  (ADR-029).
+  (ADR-025).
 - `spi update` now refuses the unsafe in-process `uv tool install --force`
   replacement path on Windows and prints the equivalent command to run from a
   new terminal, preventing orphaned `spi.exe` launchers with missing package
@@ -90,7 +90,7 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   and their `Delete`-policy Azure disks. Scaling replicas down also removes
   their unused claims; rolling upgrades retain active claims.
 - Native Windows can run `spi` when CLIs such as Azure CLI are installed as
-  `.cmd`/`.bat` batch shims (issue #49, ADR-028). Every process the CLI
+  `.cmd`/`.bat` batch shims (issue #49, ADR-024). Every process the CLI
   launches goes through `spi.shell.run_process`: the program resolves
   through `PATHEXT`, and a batch shim is launched via an explicit `cmd.exe`
   command line with every argument escaped, so values containing CMD
@@ -108,13 +108,13 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 - `OSDU_AIRFLOW_URL` on the workflow service pointed at a nonexistent
   `airflow-web` service; it now targets `airflow-api-server`. (The
   workflow service's Airflow 3 API client is still pending upstream in
-  the community `master` images — see ADR-026.)
+  the community `master` images.)
 - HTTPS ingress never terminated on AKS Automatic: the gateway TLS overlays
   declared their cert-manager Certificates in `aks-istio-ingress`, where the
   AKS-managed protect-system-namespaces policy denies cert-manager's status
   writes; issuance stalled silently with every Kustomization Ready and :443
   refusing connections. Certificates now issue into `platform` and reach the
-  Gateway's listeners via ReferenceGrants (ADR-025). The smoke workflow
+  Gateway's listeners via ReferenceGrants (ADR-022). The smoke workflow
   gained an HTTPS-handshake probe so a dead TLS path fails CI.
 
 ## [0.2.1] - 2026-07-24
@@ -135,7 +135,7 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 - `--profile minimal`: deploys the middleware substrate only (operators,
   cert-manager, trust-manager, Gateway, Elasticsearch, Redis, PostgreSQL,
   Airflow, CA bundles) and stops below layer 5, so no OSDU services are
-  installed. Layers 0a-4b are identical to `core` (ADR-024).
+  installed. Layers 0a-4b are identical to `core` (ADR-021).
 - `<mode>-minimal` ingress trees for each `--ingress-mode`, selected
   automatically by the `minimal` profile.
 - `tests/test_profiles.py`: asserts every `Profile` x `IngressMode` pairing
@@ -159,7 +159,7 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 - `--profile full`. The value was accepted by the CLI but had no manifests
   behind it: it pointed Flux at a nonexistent
   `software/stacks/osdu/profiles/full` path, so a deploy provisioned the full
-  Azure estate and then failed to reconcile (ADR-024).
+  Azure estate and then failed to reconcile (ADR-021).
 
 ## [0.1.0] - 2026-07-24
 
@@ -170,14 +170,14 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   legacy (pre-suffix) deployments keep unsuffixed names. (`ee45a65`)
 - Cosmos SQL and Gremlin data-plane role assignments for the OSDU managed
   identity; `serviceBusDisableLocalAuth` parameter (default `true`) with
-  `minimumTlsVersion: '1.2'` on Service Bus namespaces (ADR-021).
+  `minimumTlsVersion: '1.2'` on Service Bus namespaces (ADR-023).
 - `system-cosmos-*` Key Vault secrets for system services and a
   per-partition blob record container.
 - Kubelet-identity AcrPull grant (`kubeletIdentityObjectId`) and
   `deployerPrincipalType` parameter for human-vs-service-principal
   deployers.
 - Opt-in Application Insights + Log Analytics provisioning behind
-  `enableApplicationInsights` (ADR-023).
+  `enableApplicationInsights` (ADR-020).
 - `availabilityZones` parameter on the system pool (default all three
   zones) for regions with zonal capacity constraints.
 - Retry with backoff on OSDU image-tag resolution against the community
@@ -191,13 +191,13 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
 
 ### Changed
 - AKS Automatic clusters now require Kubernetes >= 1.36; managed Istio
-  pinned to `asm-1-30` (ADR-019).
+  pinned to `asm-1-30` (ADR-002).
 - SPI-owned GitOps objects (GitRepository, Kustomizations, seed
   ConfigMaps/Secrets, image lock) moved from `flux-system` to the dedicated
   `osdu-flux` namespace; Flux extension multi-tenancy enforcement disabled
-  (ADR-020).
+  (ADR-019).
 - Workload node-placement label renamed `agentpool` -> `spi-pool`
-  (ADR-022).
+  (ADR-018).
 - Default deployment region changed from `eastus2` to `westus3`.
 - Chart pins raised: cert-manager `v1.18.*`, trust-manager `v0.22.*`,
   CloudNativePG `0.29.*` (PostgreSQL image pinned to major 17).

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Guards the Entra-only data-plane posture (ADR-027).
+"""Guards the Entra-only data-plane posture (ADR-023).
 
 Local (key/SAS) authentication must stay disabled on every Cosmos DB and
 Service Bus account, and no Cosmos key material may be resolved into Key Vault.

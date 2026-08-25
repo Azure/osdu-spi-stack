@@ -1,7 +1,5 @@
 # ADR-011: Cross-Namespace CA Distribution via trust-manager
 
-**Status**: Accepted
-
 ## Context
 
 OSDU services in `osdu` speak TLS to two in-cluster middleware systems in `platform`:

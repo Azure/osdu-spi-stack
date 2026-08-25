@@ -9,7 +9,7 @@ template in [design/README.md](design/README.md).
 
 House exemplars: [ADR-012](decisions/012-ingress-profiles.md),
 [ADR-017](decisions/017-osdu-image-lock.md),
-[ADR-025](decisions/025-tls-certificates-in-platform.md),
+[ADR-022](decisions/022-tls-certificates-in-platform.md),
 [design/ci-smoke.md](design/ci-smoke.md).
 
 ## Voice
@@ -78,9 +78,11 @@ it is not yet backed. Nothing rests on best practice or belief.
 
 ## ADRs
 
-An ADR is a closed record, read months or years after acceptance by someone
-deciding whether a constraint still holds. Write for that reader, not for the
-PR reviewer.
+An ADR states the decision as it stands, read months or years later by
+someone deciding whether a constraint still holds. Write for that reader, not
+for the PR reviewer. When a decision changes, the record is rewritten in
+place through a PR; git history is the chronology, so the file carries no
+status, dates, or amendment trail.
 
 - **No moment-in-time status.** "Currently in review", "not yet merged
   upstream", "as of this sprint" decay into archaeology. When a time-bound
@@ -95,17 +97,9 @@ PR reviewer.
   worth leading with. "What becomes easier, what becomes harder, what we now
   have to maintain, what we are accepting."
 
-Two format shapes are in the corpus and both are acceptable:
-
-- **Classic** (ADR 001-018): `**Status**` line, `## Context`, `## Decision`
-  with inline `Rejected:` bullets, `## Consequences`.
-- **Frontmatter MADR** (ADR 019 onward, the templates): YAML frontmatter,
-  `## Context and Problem Statement`, `## Decision Drivers`,
-  `## Considered Options`, `## Decision Outcome`, `### Consequences`.
-
-New ADRs use the frontmatter template. Existing ADRs are not converted:
-restructuring a closed record churns history without changing what the reader
-learns.
+One format shape, for the whole corpus: `# ADR-NNN: Title`, `## Context`,
+`## Decision` with inline `Rejected:` bullets, `## Consequences`. No
+frontmatter, no status line, no dates.
 
 ## Design docs
 
@@ -134,7 +128,7 @@ Reject a page that:
 6. Narrates its own virtues ("stated honestly", "this document makes clear").
 7. Lists a benefit whose paired cost appears nowhere.
 8. Uses banned words or em dashes.
-9. (ADRs) Contains a dateable status or rejects only strawman alternatives.
+9. (ADRs) Contains a status, date, or amendment note, or rejects only strawman alternatives.
 10. (Design docs) Re-justifies a decision an ADR already owns.
 
 A mechanical first pass:

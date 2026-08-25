@@ -1,7 +1,5 @@
 # ADR-010: Key Vault + ConfigMap Secret Model
 
-**Status**: Accepted
-
 ## Context
 
 OSDU services need three classes of configuration at runtime:
@@ -24,13 +22,13 @@ Three stores, each with a single job:
 
 Non-sensitive endpoint configuration (partition name, tenant ID, cluster ingress hostname, Redis and Elasticsearch FQDNs) lives in the `osdu-config` ConfigMap in the `osdu` namespace and is mounted into services via `envFrom`.
 
-Key Vault secret values are declared **in Bicep** (`infra/main.bicep`) where the source is Azure: endpoints, `listKeys()` on Cosmos accounts, identity IDs, tenant and subscription. The CLI writes only the handful of **runtime** secrets whose values originate in-cluster and are not available at infra-deploy time:
+Key Vault secret values are declared **in Bicep** (`infra/main.bicep`) where the source is Azure: endpoints, resource identifiers, tenant and subscription. Local auth is disabled on Cosmos and Service Bus (ADR-023), so per-partition key and connection secrets carry the literal `DISABLED` and no `listKeys()` call runs at any scope. The CLI writes only the handful of **runtime** secrets whose values originate in-cluster and are not available at infra-deploy time:
 
 - Per-partition Elasticsearch endpoint, username, password (ECK-issued credentials).
 - Redis hostname and password (Bitnami-chart-issued).
 - `tbl-storage-endpoint` (derived from the common Storage account).
 
-These runtime writes happen after Flux reconciles the middleware layer, using the CLI's Azure session.
+These runtime writes happen once infra is up and the CLI's local seed is generated, using the CLI's Azure session; every value is already known, so the write does not wait for Flux to reconcile the middleware layer.
 
 Rejected:
 - **Kubernetes Secrets for PaaS credentials.** Visible to anyone with cluster read access; defeats the point of Workload Identity.
@@ -42,4 +40,4 @@ Rejected:
 - Azure PaaS credentials never land in Kubernetes. A compromised cluster leaks in-cluster secrets but not Azure data.
 - Key Vault access is audited; every secret read is a log entry.
 - The in-cluster secret surface is small (three middleware passwords) and is regenerated deterministically per environment.
-- The CLI's post-handoff responsibilities are narrow and bounded: wait for middleware Ready, write a small set of runtime secrets, exit. No long polling tail.
+- The CLI's post-handoff responsibilities are narrow and bounded: write a small set of runtime secrets, exit. No wait for middleware readiness, no long polling tail.

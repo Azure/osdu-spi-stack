@@ -105,7 +105,7 @@ def compute_ingress_fqdn(dns_label: str, location: str) -> str:
     by Flux (software/components/azure-dns-label): admission policy denies
     the write to every non-Flux identity, and the AKS-provisioned PIPs live
     in the locked-down node resource group, so no imperative path exists
-    (ADR-039).
+    (ADR-026).
     """
     return f"{dns_label}.{location}.cloudapp.azure.com"
 

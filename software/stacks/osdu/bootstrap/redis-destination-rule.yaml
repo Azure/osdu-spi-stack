@@ -4,9 +4,6 @@
 # directly to Redis end-to-end. Without this DestinationRule, Istio's
 # automatic mTLS would wrap the connection in a second TLS layer and the
 # client cannot unwrap the TLS-in-TLS stream.
-#
-# Previously applied imperatively by the CLI; moved into the GitOps stack
-# as Pass 1 of ADR-011 so the cluster is reconstructable from git alone.
 apiVersion: networking.istio.io/v1
 kind: DestinationRule
 metadata:

@@ -60,9 +60,9 @@ Sanity-check the CLI itself with `uv run spi --help` and `uv run spi check`.
 
 - **Azure only.** When reading cloned OSDU service repos, only `*-azure/` providers
   (and shared `*-core/`) matter; skip `*-aws/`, `*-gc/`, `*-ibm/`, `*-core-plus/`.
-- **No stored credentials.** Workload Identity is the strategic path for Azure PaaS
-  access; a key/SAS compatibility path remains for community images, with keys
-  kept in Key Vault (ADR-021). Never commit secrets or hardcode credentials.
+- **No stored credentials.** Workload Identity is the only data-plane path; local
+  (key/SAS) authentication is disabled on Cosmos and Service Bus (ADR-023).
+  Never commit secrets or hardcode credentials.
 - Architecture decisions are recorded as ADRs in `docs/decisions/`; check there
   before changing the deployment model.
 

@@ -24,7 +24,7 @@ Some pieces are in every mode and live under `software/components/`:
   implementation and the AKS managed Istio add-on Service
   `aks-istio-ingress/aks-istio-ingressgateway-external`. The stack does not
   render this add-on-owned Service.
-- **`Gateway` resource** in the `aks-istio-ingress` namespace. The base manifest under `software/components/gateway/` listens on HTTP:80; the `azure` and `dns` TLS overlays layer their HTTPS listeners on top. The selected ingress profile is its sole Flux renderer, through one `spi-gateway-tls` Kustomization that every non-bare mode declares under that same name: the TLS modes point it at their overlay, `ip` points it at the base component. One name means switching `--ingress-mode` only rewrites `spec.path` instead of pruning one owner and creating another. The legacy stack-profile `spi-gateway` renders nothing and is retained temporarily as a non-pruning ownership handoff (ADR-029).
+- **`Gateway` resource** in the `aks-istio-ingress` namespace. The base manifest under `software/components/gateway/` listens on HTTP:80; the `azure` and `dns` TLS overlays layer their HTTPS listeners on top. The selected ingress profile is its sole Flux renderer, through one `spi-gateway-tls` Kustomization that every non-bare mode declares under that same name: the TLS modes point it at their overlay, `ip` points it at the base component. One name means switching `--ingress-mode` only rewrites `spec.path` instead of pruning one owner and creating another. The legacy stack-profile `spi-gateway` renders nothing and is retained temporarily as a non-pruning ownership handoff (ADR-025).
 - **cert-manager** for any mode that issues TLS (`azure`, `dns`).
 - **`spi-ingress-config` ConfigMap** in `osdu-flux`, written by the CLI during K8s bootstrap. Carries `GATEWAY_HOSTNAME`, `GATEWAY_LABEL`, `DNS_ZONE`, and similar values consumed by Flux `postBuild.substituteFrom`.
 
@@ -39,7 +39,7 @@ Two artifacts make this mode work end-to-end:
    come from Flux: the `aks-managed-protect-system-namespaces` admission
    policy denies every other identity in `aks-istio-ingress`, and the
    node-resource-group deny assignment blocks patching the public IP itself
-   (ADR-039). The Azure cloud controller then gives the existing public IP a
+   (ADR-026). The Azure cloud controller then gives the existing public IP a
    `<label>.<region>.cloudapp.azure.com` FQDN.
 2. **Single-host cert-manager `Certificate`.** A `Certificate` for `<label>.<region>.cloudapp.azure.com` issued by a `ClusterIssuer` that uses HTTP-01 against the Gateway. The HTTPS listener referencing the cert Secret is applied at the same time as the HTTP:80 listener that solves the challenge, so the listener simply stays unprogrammed until cert-manager finishes the ACME dance.
 
@@ -88,7 +88,7 @@ Intentionally minimal. The Istio ingress LB has a public IP; no hostname, no cer
 
 What `software/stacks/osdu/ingress/ip/` lands:
 
-- `spi-gateway-tls`, rendering `software/components/gateway` unmodified: HTTP:80 and nothing else. The name is shared with the TLS modes so a mode switch keeps one Flux inventory (ADR-029).
+- `spi-gateway-tls`, rendering `software/components/gateway` unmodified: HTTP:80 and nothing else. The name is shared with the TLS modes so a mode switch keeps one Flux inventory (ADR-025).
 - HTTPRoutes bound to that listener with no `hostnames` field.
 - No cert issuer.
 - No Kibana, no Airflow UI routing (the workloads still exist; you reach them via port-forward).
@@ -126,7 +126,7 @@ Five things to check in order:
 1. **DNS resolves.** `dig <label>.<region>.cloudapp.azure.com`. If empty, the
    AKS LB Service does not have the DNS label annotation; check
    `kubectl get svc aks-istio-ingressgateway-external -n aks-istio-ingress -o yaml`.
-2. **TLS handshake completes.** `curl -vI https://<label>...`. If TLS errors, cert-manager has not issued. `kubectl describe certificate -n platform` shows the ACME state (certs issue into `platform` and reach the Gateway via ReferenceGrant, ADR-025).
+2. **TLS handshake completes.** `curl -vI https://<label>...`. If TLS errors, cert-manager has not issued. `kubectl describe certificate -n platform` shows the ACME state (certs issue into `platform` and reach the Gateway via ReferenceGrant, ADR-022).
 3. **The HTTPRoute exists and is accepted.** `kubectl get httproute -n osdu`. The `Accepted` condition should be `True`. If the Gateway rejected it (hostname mismatch), the message tells you which field is wrong.
 4. **The backend Service has endpoints.** `kubectl get endpoints -n osdu`. If the service has no ready pods, the 404 is actually a 503 wearing 404 clothing.
 5. **The path matches what the service expects.** OSDU APIs live under `/api/<service>/v1/...`. The HTTPRoute is path-prefix-based, not regex, so a typo in the path is a 404.
@@ -143,14 +143,14 @@ Same drill, plus one: **ExternalDNS wrote the A record.** `kubectl logs deploy/e
 - [ADR-005](../decisions/005-workload-identity.md) -- Workload Identity (second UAMI for ExternalDNS)
 - [ADR-006](../decisions/006-three-namespace-model.md) -- Three-namespace model (Gateway in `aks-istio-ingress`)
 - [ADR-012](../decisions/012-ingress-profiles.md) -- Three Ingress Profiles
-- [ADR-039](../decisions/039-bind-managed-istio-ingress.md) -- Bind to the AKS Managed Istio Ingress
+- [ADR-026](../decisions/026-bind-managed-istio-ingress.md) -- Bind to the AKS Managed Istio Ingress
 
 ## Source files
 
 - `software/stacks/osdu/ingress/azure/` -- the default mode
 - `software/stacks/osdu/ingress/dns/` -- the multi-host mode
 - `software/stacks/osdu/ingress/ip/` -- the debug mode
-- `software/stacks/osdu/ingress/<mode>-minimal/` -- the same trees minus `spi-osdu-routes`, used by the `minimal` stack profile (ADR-024)
+- `software/stacks/osdu/ingress/<mode>-minimal/` -- the same trees minus `spi-osdu-routes`, used by the `minimal` stack profile (ADR-021)
 - `software/stacks/osdu/routes/<tree>/middleware/` -- Kibana + Airflow HTTPRoutes and ReferenceGrants
 - `software/stacks/osdu/routes/<tree>/osdu/` -- OSDU API HTTPRoutes
 - `software/components/gateway/` -- the base Gateway resource, rendered by whichever ingress tree is selected
