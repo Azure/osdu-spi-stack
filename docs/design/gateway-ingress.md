@@ -32,16 +32,23 @@ Some pieces are in every mode and live under `software/components/`:
 
 Two artifacts make this mode work end-to-end:
 
-1. **`azure-dns-label-name` annotation on the Istio ingress LB.** During every
-   Azure-mode deployment, the CLI annotates the add-on's
-   `aks-istio-ingressgateway-external` Service. The Azure cloud controller then
-   gives its existing public IP a `<label>.<region>.cloudapp.azure.com` FQDN.
+1. **`azure-dns-label-name` annotation on the Istio ingress LB.** The
+   `spi-ingress-dns-label` Kustomization server-side applies the annotation
+   onto the add-on's `aks-istio-ingressgateway-external` Service from a
+   partial manifest (`software/components/azure-dns-label/`). The write must
+   come from Flux: the `aks-managed-protect-system-namespaces` admission
+   policy denies every other identity in `aks-istio-ingress`, and the
+   node-resource-group deny assignment blocks patching the public IP itself
+   (ADR-039). The Azure cloud controller then gives the existing public IP a
+   `<label>.<region>.cloudapp.azure.com` FQDN.
 2. **Single-host cert-manager `Certificate`.** A `Certificate` for `<label>.<region>.cloudapp.azure.com` issued by a `ClusterIssuer` that uses HTTP-01 against the Gateway. The HTTPS listener referencing the cert Secret is applied at the same time as the HTTP:80 listener that solves the challenge, so the listener simply stays unprogrammed until cert-manager finishes the ACME dance.
 
 Routing in this mode: every OSDU API is reached at `https://<label>.<region>.cloudapp.azure.com/api/<service>/v1/...`. Kibana is served at `https://<label>.<region>.cloudapp.azure.com/kibana` via a subpath overlay. Airflow is not externally routed in this mode (use `kubectl port-forward` if you need its UI).
 
 What `software/stacks/osdu/ingress/azure/` lands:
 
+- `spi-ingress-dns-label`, stamping the DNS label onto the add-on Service
+  (non-pruning; the add-on keeps ownership of the Service).
 - A `Kustomization` for cert-manager issuers (Let's Encrypt staging + prod).
 - `spi-gateway-tls`, rendering
   `software/overlays/gateway-tls-single-host`: the base Gateway bound to the

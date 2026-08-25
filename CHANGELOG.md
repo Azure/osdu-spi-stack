@@ -43,9 +43,20 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   therefore records the available address in `GATEWAY_IP`, and `spi info`
   reuses the same deterministic lookup (issue #85).
 - Azure ingress now binds to the AKS managed Istio LoadBalancer Service and
-  applies the Azure DNS label directly during `spi up`. This reuses the
-  existing public IP so the deterministic FQDN resolves and ACME HTTP-01 can
-  issue the certificate (ADR-039, issue #82).
+  stamps the Azure DNS label onto it through Flux (`spi-ingress-dns-label`,
+  a server-side-applied partial manifest owning only the annotation). The
+  CLI's imperative `kubectl annotate` is removed: the
+  `aks-managed-protect-system-namespaces` admission policy denies it, and
+  the node-resource-group deny assignment blocks patching the public IP,
+  so the exempt Flux controllers are the one permitted writer. This reuses
+  the existing public IP so the deterministic FQDN resolves and ACME
+  HTTP-01 can issue the certificate (ADR-039, issue #82).
+- The Azure-mode DNS label derives from the env name plus the
+  per-deployment name suffix (`<env>-ingress-<suffix>`), matching every
+  other globally unique resource name. The prior `<cluster>-ingress` label
+  is a region-global name that can sit reserved by an unreachable resource
+  (`DnsRecordIsReserved`), leaving the FQDN permanently unassignable.
+  Legacy unsuffixed deployments keep their existing label.
 - The `spi-gateway` Gateway is rendered by exactly one Flux Kustomization.
   The profile-level `spi-gateway` and the ingress-level `spi-gateway-tls`
   both built `software/components/gateway`, so each reconcile reverted the
