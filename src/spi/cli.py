@@ -680,7 +680,15 @@ def reconcile(
                 f"  [success]{name}[/success] -> {image.repository.split('/')[-1]}:{image.tag[:12]}"
             )
 
-        pins = live_pins()
+        try:
+            pins = live_pins()
+        except PinError as exc:
+            console.print(f"[error]{exc}[/error]")
+            console.print(
+                "[error]Refusing to refresh the image lock while pin state is "
+                "unreadable; a refresh could silently revert an active pin.[/error]"
+            )
+            raise typer.Exit(code=1)
         image_lock_yaml = render_image_lock_configmap(resolved, branch=image_branch)
         display_yaml(image_lock_yaml, "ConfigMap: osdu-image-lock")
         kubectl_apply_yaml(image_lock_yaml, "apply osdu-image-lock ConfigMap")
@@ -803,7 +811,11 @@ def service_list():
     ctx = verify_spi_cluster()
     console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
-    pins = live_pins()
+    try:
+        pins = live_pins()
+    except PinError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
     if not pins:
         console.print("No services are pinned.")
         return

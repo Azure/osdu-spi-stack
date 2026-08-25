@@ -50,7 +50,7 @@ from .ingress import (
     resolve_post_deploy_inputs,
 )
 from .paths import INFRA_ROOT
-from .pins import live_pins, reapply_pins
+from .pins import PinError, live_pins, reapply_pins
 from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, run_command, run_process
 from .templates import (
@@ -359,7 +359,15 @@ def deploy_azure(
     create_storage_classes()
     install_gateway_api_crds()
     if image_lock_yaml:
-        pins = live_pins()
+        try:
+            pins = live_pins()
+        except PinError as exc:
+            console.print(f"[error]{exc}[/error]")
+            console.print(
+                "[error]Cannot verify service pin state; aborting before the "
+                "image lock overwrite could revert an active pin.[/error]"
+            )
+            raise typer.Exit(code=1)
         _create_image_lock(image_lock_yaml)
         if pins:
             reapply_pins(pins)

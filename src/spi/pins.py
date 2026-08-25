@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
@@ -40,10 +41,9 @@ from .images import (
     ResolvedImage,
     gitlab_get,
     image_lock_key,
-    resolve_image,
-    resolve_image_tag,
+    resolve_image_commit,
 )
-from .shell import kubectl_json, run_command
+from .shell import run_command, run_process
 
 PINS_ANNOTATION = "spi-stack.osdu.dev/pins"
 
@@ -84,7 +84,14 @@ def ref_slug(branch: str) -> str:
 def fetch_merge_request(project_id: int, mr_iid: str) -> dict:
     """Return the MR metadata needed to resolve its pipeline image."""
 
-    mr = gitlab_get(f"{GITLAB_HOST}/api/v4/projects/{project_id}/merge_requests/{mr_iid}")
+    try:
+        mr = gitlab_get(f"{GITLAB_HOST}/api/v4/projects/{project_id}/merge_requests/{mr_iid}")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise PinError(f"MR !{mr_iid} not found in GitLab project {project_id}.") from exc
+        raise PinError(f"MR !{mr_iid}: GitLab API returned HTTP {exc.code}.") from exc
+    except ImageResolutionError as exc:
+        raise PinError(str(exc)) from exc
     if not isinstance(mr, dict) or "source_branch" not in mr:
         raise PinError(f"MR {mr_iid}: unexpected GitLab API response")
     return mr
@@ -95,65 +102,93 @@ def resolve_mr_image(service: str, mr_iid: str) -> tuple[ResolvedImage, dict]:
 
     OSDU containerizes protected refs only, so an MR's image usually comes
     from its ``trusted-<branch>`` copy (the ref maintainers create to run the
-    privileged pipeline). Resolution prefers the exact MR head commit on the
-    source branch, then on the trusted copy, then the newest immutable tag on
-    the trusted copy for when that ref was pushed ahead of the MR view.
+    privileged pipeline). Only an image tagged with the MR's head commit is
+    accepted, so a stale trusted copy cannot silently substitute other code.
     """
 
     entry = IMAGE_REGISTRY[service]
     mr = fetch_merge_request(entry.project_id, mr_iid)
-    slug = ref_slug(mr["source_branch"])
+    source_branch = mr.get("source_branch", "")
     sha = mr.get("sha", "")
-    if not slug or not sha:
+    if not ref_slug(source_branch) or not sha:
         raise PinError(f"MR {mr_iid}: missing source branch or head commit in API response")
 
     errors: list[str] = []
-    for branch in (slug, f"trusted-{slug}"):
+    # GitLab slugs the full ref name, so the trusted copy's slug truncates
+    # after the prefix rather than prefixing an already truncated slug.
+    for branch in (ref_slug(source_branch), ref_slug(f"trusted-{source_branch}")):
         try:
-            return resolve_image_tag(service, entry, branch, sha), mr
+            return resolve_image_commit(service, entry, branch, sha), mr
         except ImageResolutionError as exc:
             errors.append(str(exc))
-    try:
-        return resolve_image(service, entry, f"trusted-{slug}"), mr
-    except ImageResolutionError as exc:
-        errors.append(str(exc))
 
     raise PinError(
         f"MR !{mr_iid}: no pipeline image for head commit {sha[:12]} "
-        f"({'; '.join(errors)}). The branch or its trusted-{slug} copy must run "
-        "the containerize pipeline before it can be pinned."
+        f"({'; '.join(errors)}). The branch or its trusted- copy must run the "
+        "containerize pipeline at this commit; ask a maintainer to refresh a "
+        "stale trusted- copy before pinning."
     )
 
 
-def read_lock() -> dict:
-    """Return the live osdu-image-lock ConfigMap object."""
+def read_lock(required: bool = True) -> dict | None:
+    """Return the live osdu-image-lock ConfigMap, or None when absent.
 
-    lock = kubectl_json(["get", "configmap", IMAGE_LOCK_CONFIGMAP, "-n", IMAGE_LOCK_NAMESPACE])
-    if not lock:
-        raise PinError(
-            f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
-            "is this a core-profile cluster?"
-        )
-    return lock
+    A missing ConfigMap is only tolerated with ``required=False`` (a cluster
+    not yet deployed). Any other read failure raises, so callers can never
+    mistake an unreachable cluster for an unpinned one.
+    """
+
+    result = run_process(
+        [
+            "kubectl",
+            "get",
+            "configmap",
+            IMAGE_LOCK_CONFIGMAP,
+            "-n",
+            IMAGE_LOCK_NAMESPACE,
+            "--ignore-not-found",
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or "kubectl failed"
+        raise PinError(f"Could not read ConfigMap {IMAGE_LOCK_CONFIGMAP}: {detail}")
+    if not result.stdout.strip():
+        if required:
+            raise PinError(
+                f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
+                "is this a core-profile cluster?"
+            )
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise PinError(f"Could not parse ConfigMap {IMAGE_LOCK_CONFIGMAP}: {exc}") from exc
 
 
 def decode_pins(lock: dict) -> dict[str, ServicePin]:
-    """Return the active pins recorded on a lock object."""
+    """Return the active pins recorded on a lock object.
+
+    A corrupt annotation raises rather than reading as "no pins": treating
+    it as empty would let the next refresh silently revert active pins.
+    """
 
     raw = (lock.get("metadata", {}).get("annotations") or {}).get(PINS_ANNOTATION, "")
     if not raw:
         return {}
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    pins: dict[str, ServicePin] = {}
-    for name, fields in parsed.items():
-        try:
-            pins[name] = ServicePin(**fields)
-        except TypeError:
-            continue
-    return pins
+        return {name: ServicePin(**fields) for name, fields in parsed.items()}
+    except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+        raise PinError(
+            f"Corrupt {PINS_ANNOTATION} annotation on {IMAGE_LOCK_CONFIGMAP}: {exc}. "
+            "Repair or remove the annotation before changing images."
+        ) from exc
 
 
 def encode_pins(pins: dict[str, ServicePin]) -> str:
@@ -236,21 +271,32 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     if service == SCHEMA_SERVICE_NAME:
         targets.append(SCHEMA_LOAD_SERVICE_NAME)
 
-    lock = read_lock()
+    lock = read_lock() or {}
     lock_data = lock.get("data", {}) or {}
     pins = decode_pins(lock)
     applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     resolved: list[tuple[str, ResolvedImage, dict]] = []
+    released: dict[str, ServicePin] = {}
     for name in targets:
         try:
             image, mr = resolve_mr_image(name, mr_iid)
-        except PinError:
-            if name == SCHEMA_LOAD_SERVICE_NAME:
-                # The MR may not rebuild the loader image; the service pin
-                # alone is still a valid experiment.
-                continue
-            raise
+        except PinError as exc:
+            if name != SCHEMA_LOAD_SERVICE_NAME:
+                raise
+            # The MR may not rebuild the loader image; the service pin alone
+            # is still a valid experiment. A loader still pinned by an earlier
+            # MR must not survive as a mismatched pair, so release it here.
+            stale = pins.pop(SCHEMA_LOAD_SERVICE_NAME, None)
+            if stale:
+                if not stale.canonical_repository or not stale.canonical_tag:
+                    raise PinError(
+                        f"{SCHEMA_LOAD_SERVICE_NAME} is pinned to MR !{stale.mr} with no "
+                        "canonical image recorded; run 'spi service reset schema' "
+                        "before re-pinning."
+                    ) from exc
+                released[name] = stale
+            continue
         resolved.append((name, image, mr))
 
     data: dict[str, str] = {}
@@ -288,8 +334,22 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
         )
         results.append((name, pin))
 
-    patch_lock(data, pins, f"Pin {', '.join(n for n, _ in results)} to MR !{mr_iid} image")
-    reconcile_consumers([name for name, _ in results])
+    for name, stale in released.items():
+        data.update(
+            _lock_entry_patch(
+                name,
+                stale.canonical_repository,
+                stale.canonical_tag,
+                stale.canonical_created_at,
+                stale.canonical_digest,
+            )
+        )
+
+    description = f"Pin {', '.join(n for n, _ in results)} to MR !{mr_iid} image"
+    if released:
+        description += f"; release stale {', '.join(sorted(released))}"
+    patch_lock(data, pins, description)
+    reconcile_consumers([name for name, _ in results] + sorted(released))
     return results
 
 
@@ -300,7 +360,7 @@ def reset_service(service: str) -> list[str]:
         known = ", ".join(sorted(IMAGE_REGISTRY))
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
 
-    lock = read_lock()
+    lock = read_lock() or {}
     pins = decode_pins(lock)
     targets = [name for name in (service, SCHEMA_LOAD_SERVICE_NAME) if name in pins]
     if service != SCHEMA_SERVICE_NAME:
@@ -332,12 +392,16 @@ def reset_service(service: str) -> list[str]:
 
 
 def live_pins() -> dict[str, ServicePin]:
-    """Return active pins from the live cluster, or {} when unreachable."""
+    """Return active pins from the live cluster, or {} when no lock exists yet.
 
-    try:
-        return decode_pins(read_lock())
-    except Exception:
+    Read and decode failures raise PinError: the refresh paths must not
+    mistake an unreadable pin state for "no pins" and revert an experiment.
+    """
+
+    lock = read_lock(required=False)
+    if lock is None:
         return {}
+    return decode_pins(lock)
 
 
 def reapply_pins(pins: dict[str, ServicePin]) -> None:

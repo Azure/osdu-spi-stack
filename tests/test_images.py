@@ -26,6 +26,7 @@ from spi.images import (
     image_lock_names,
     render_image_lock_configmap,
     resolve_image,
+    resolve_image_commit,
     resolve_image_tag,
     resolve_images,
 )
@@ -289,6 +290,39 @@ def test_resolve_image_tag_propagates_non_404_http_error(monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         resolve_image_tag("schema-load", entry, "master", "a" * 40)
     assert exc_info.value.code == 500
+
+
+def test_resolve_image_commit_matches_short_sha_tags(monkeypatch):
+    """OSDU pipelines tag with CI short SHAs, so a tag matches the MR head
+    commit when it is a prefix of the full SHA; unrelated tags never do."""
+    sha = "1f325c1e71be" + "d" * 28
+
+    def fake_gitlab_get(url: str):
+        if "registry/repositories?" in url:
+            return [
+                {
+                    "id": 9,
+                    "name": "schema-service-trusted-fix-x",
+                    "location": "registry/schema-service-trusted-fix-x",
+                }
+            ]
+        if url.endswith("/tags?per_page=100&page=1"):
+            return [{"name": "e" * 12}, {"name": "1f325c1e71be"}]
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+    monkeypatch.setattr(
+        images,
+        "_tag_detail",
+        lambda project_id, repo_id, tag: {"name": tag, "created_at": "now", "digest": "sha256:x"},
+    )
+
+    entry = ImageRegistryEntry(26, "schema-service", "services/schema.yaml")
+    image = resolve_image_commit("schema", entry, "trusted-fix-x", sha)
+    assert image.tag == "1f325c1e71be"
+
+    with pytest.raises(ImageResolutionError, match="no tag for commit"):
+        resolve_image_commit("schema", entry, "trusted-fix-x", "f" * 40)
 
 
 def test_resolve_images_schema_load_only_omits_schema(monkeypatch):

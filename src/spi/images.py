@@ -260,6 +260,44 @@ def resolve_image_tag(
     )
 
 
+def resolve_image_commit(
+    service_name: str,
+    entry: ImageRegistryEntry,
+    branch: str,
+    sha: str,
+) -> ResolvedImage:
+    """Resolve a service image only if a tag matches the given commit.
+
+    Pipeline tags are commit SHAs of varying length (full or CI short SHA),
+    so a tag matches when it equals the commit or is a prefix of it.
+    """
+
+    image_name = f"{entry.image}-{branch}"
+    repo = _registry_repository(entry.project_id, image_name)
+    if not repo:
+        raise ImageResolutionError(f"{service_name}: registry repository {image_name!r} not found")
+
+    tags = _registry_tags(entry.project_id, repo["id"])
+    matches = [
+        tag["name"]
+        for tag in tags
+        if tag.get("name") and len(tag["name"]) >= 7 and sha.startswith(tag["name"])
+    ]
+    if not matches:
+        raise ImageResolutionError(
+            f"{service_name}: no tag for commit {sha[:12]} in {image_name!r}"
+        )
+
+    detail = _tag_detail(entry.project_id, repo["id"], max(matches, key=len))
+    return ResolvedImage(
+        name=service_name,
+        repository=repo["location"],
+        tag=detail["name"],
+        created_at=detail.get("created_at", ""),
+        digest=detail.get("digest", ""),
+    )
+
+
 def resolve_images(
     branch: str = DEFAULT_IMAGE_BRANCH,
     names: Iterable[str] | None = None,

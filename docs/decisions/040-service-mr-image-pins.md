@@ -34,11 +34,12 @@ unknown provenance from outside the OSDU pipeline.
 Chosen option: "Pin via the image lock", because the lock is already the
 single substitution source for service images and is CLI-owned, so a pin
 needs no Flux suspension and no competing object ownership (ADR-017,
-ADR-029). `spi service pin <service> --mr <iid>` resolves the MR's head
-commit from the community registry, preferring the source branch and falling
-back to its `trusted-` copy (the protected ref OSDU maintainers create to
-run the containerize pipeline), and patches the lock;
-the first pin captures the canonical image in the annotation so
+ADR-029). `spi service pin <service> --mr <iid>` resolves the image tagged
+with the MR's head commit from the community registry, checking the source
+branch and then its `trusted-` copy (the protected ref OSDU maintainers
+create to run the containerize pipeline); an image from a stale `trusted-`
+copy that no longer matches the MR head is rejected rather than pinned.
+The first pin captures the canonical image in the annotation so
 `spi service reset` restores it exactly. The lock re-render paths re-assert
 active pins and name them, so a refresh cannot silently revert one. Pinning
 `schema` pins the paired loader image when the MR pipeline built one.
@@ -53,5 +54,6 @@ needs one service moved and thirteen held.
 
 - Good, because MR validation uses only pipeline-built, provenance-clean images.
 - Good, because pins are declared on the cluster and listable (`spi service list`).
-- Bad, because a pinned lock entry carries no created-at or digest metadata
-  until the pin is released and the entry re-resolved.
+- Bad, because re-asserting pins after a lock refresh clears the pinned
+  entries' created-at and digest metadata until the pin is released and the
+  entry re-resolved.
