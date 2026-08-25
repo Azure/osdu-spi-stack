@@ -40,6 +40,10 @@ class ImageResolutionError(RuntimeError):
     """Raised when one or more OSDU image tags cannot be resolved."""
 
 
+class ImageNotFoundError(ImageResolutionError):
+    """Raised when a requested registry repository or tag does not exist."""
+
+
 @dataclass(frozen=True)
 class ImageRegistryEntry:
     """GitLab registry lookup metadata for one OSDU image."""
@@ -275,7 +279,9 @@ def resolve_image_commit(
     image_name = f"{entry.image}-{branch}"
     repo = _registry_repository(entry.project_id, image_name)
     if not repo:
-        raise ImageResolutionError(f"{service_name}: registry repository {image_name!r} not found")
+        raise ImageNotFoundError(
+            f"{service_name}: registry repository {image_name!r} not found"
+        )
 
     tags = _registry_tags(entry.project_id, repo["id"])
     matches = [
@@ -284,7 +290,7 @@ def resolve_image_commit(
         if tag.get("name") and len(tag["name"]) >= 7 and sha.startswith(tag["name"])
     ]
     if not matches:
-        raise ImageResolutionError(
+        raise ImageNotFoundError(
             f"{service_name}: no tag for commit {sha[:12]} in {image_name!r}"
         )
 
@@ -293,7 +299,7 @@ def resolve_image_commit(
         detail = _tag_detail(entry.project_id, repo["id"], tag)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            raise ImageResolutionError(
+            raise ImageNotFoundError(
                 f"{service_name}: tag {tag!r} not found in {image_name!r}"
             ) from exc
         raise

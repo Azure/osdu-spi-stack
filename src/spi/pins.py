@@ -37,6 +37,7 @@ from .images import (
     IMAGE_REGISTRY,
     SCHEMA_LOAD_SERVICE_NAME,
     SCHEMA_SERVICE_NAME,
+    ImageNotFoundError,
     ImageResolutionError,
     ResolvedImage,
     gitlab_get,
@@ -57,6 +58,10 @@ _FILE_KUSTOMIZATIONS = {
 
 class PinError(RuntimeError):
     """Raised when a pin cannot be resolved, applied, or reset."""
+
+
+class MissingPipelineImageError(PinError):
+    """Raised when neither MR branch has an image for the MR head commit."""
 
 
 @dataclass(frozen=True)
@@ -119,10 +124,10 @@ def resolve_mr_image(service: str, mr_iid: str) -> tuple[ResolvedImage, dict]:
     for branch in (ref_slug(source_branch), ref_slug(f"trusted-{source_branch}")):
         try:
             return resolve_image_commit(service, entry, branch, sha), mr
-        except ImageResolutionError as exc:
+        except ImageNotFoundError as exc:
             errors.append(str(exc))
 
-    raise PinError(
+    raise MissingPipelineImageError(
         f"MR !{mr_iid}: no pipeline image for head commit {sha[:12]} "
         f"({'; '.join(errors)}). The branch or its trusted- copy must run the "
         "containerize pipeline at this commit; ask a maintainer to refresh a "
@@ -281,7 +286,7 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     for name in targets:
         try:
             image, mr = resolve_mr_image(name, mr_iid)
-        except PinError as exc:
+        except MissingPipelineImageError as exc:
             if name != SCHEMA_LOAD_SERVICE_NAME:
                 raise
             # The MR may not rebuild the loader image; the service pin alone

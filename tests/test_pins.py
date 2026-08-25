@@ -19,8 +19,9 @@ import json
 import pytest
 
 from spi import pins
-from spi.images import ImageResolutionError, ResolvedImage
+from spi.images import ImageNotFoundError, ImageResolutionError, ResolvedImage
 from spi.pins import (
+    MissingPipelineImageError,
     PinError,
     ServicePin,
     decode_pins,
@@ -109,7 +110,7 @@ class TestResolveMrImage:
         def fake_resolve(service, entry, branch, sha):
             attempts.append(branch)
             if branch != "trusted-fix-x":
-                raise ImageResolutionError(f"{service}: repository not found")
+                raise ImageNotFoundError(f"{service}: repository not found")
             return ResolvedImage(service, "repo/schema-service-trusted-fix-x", sha, "", "")
 
         monkeypatch.setattr(pins, "resolve_image_commit", fake_resolve)
@@ -126,7 +127,7 @@ class TestResolveMrImage:
 
         def fake_resolve(service, entry, branch, sha):
             attempts.append(branch)
-            raise ImageResolutionError("nope")
+            raise ImageNotFoundError("nope")
 
         monkeypatch.setattr(pins, "resolve_image_commit", fake_resolve)
         with pytest.raises(PinError):
@@ -142,11 +143,28 @@ class TestResolveMrImage:
         )
 
         def raise_missing(service, entry, branch, sha):
-            raise ImageResolutionError(f"{service}: no tag for commit")
+            raise ImageNotFoundError(f"{service}: no tag for commit")
 
         monkeypatch.setattr(pins, "resolve_image_commit", raise_missing)
         with pytest.raises(PinError, match="containerize pipeline"):
             pins.resolve_mr_image("schema", "847")
+
+    def test_registry_lookup_failure_is_not_reported_as_missing(self, monkeypatch):
+        monkeypatch.setattr(
+            pins,
+            "fetch_merge_request",
+            lambda pid, iid: {"source_branch": "fix/x", "sha": "b" * 40},
+        )
+        attempts = []
+
+        def raise_lookup_failure(service, entry, branch, sha):
+            attempts.append(branch)
+            raise ImageResolutionError("GitLab API unreachable")
+
+        monkeypatch.setattr(pins, "resolve_image_commit", raise_lookup_failure)
+        with pytest.raises(ImageResolutionError, match="unreachable"):
+            pins.resolve_mr_image("schema", "847")
+        assert attempts == ["fix-x"]
 
     def test_nonexistent_mr_becomes_pin_error(self, monkeypatch):
         import urllib.error
@@ -167,7 +185,7 @@ class TestPinService:
 
         def fake_resolve(service, mr_iid):
             if service not in resolved_names:
-                raise PinError(f"{service}: no image")
+                raise MissingPipelineImageError(f"{service}: no image")
             return (
                 ResolvedImage(service, f"repo/{service}-fix-x", "b" * 40, "now", "sha256:new"),
                 {"source_branch": "fix/x", "sha": "b" * 40},
@@ -235,6 +253,23 @@ class TestPinService:
         results = pin_service("schema", "847")
         assert [name for name, _ in results] == ["schema"]
         assert calls["reconciled"] == ["schema"]
+
+    def test_schema_pin_propagates_loader_lookup_failure(self, monkeypatch):
+        lock = _lock(pins_annotation=encode_pins({"schema-load": _pin(mr="1")}))
+        calls = self._wire(monkeypatch, lock, {"schema", "schema-load"})
+
+        def fake_resolve(service, mr_iid):
+            if service == "schema-load":
+                raise PinError("MR 847: unexpected GitLab API response")
+            return (
+                ResolvedImage(service, f"repo/{service}-fix-x", "b" * 40, "now", "sha256:new"),
+                {"source_branch": "fix/x", "sha": "b" * 40},
+            )
+
+        monkeypatch.setattr(pins, "resolve_mr_image", fake_resolve)
+        with pytest.raises(PinError, match="unexpected GitLab API response"):
+            pin_service("schema", "847")
+        assert calls["patch"] is None
 
     def test_schema_repin_releases_stale_loader_pin(self, monkeypatch):
         stale = _pin(mr="1", canonical_repository="repo/loader-master", canonical_tag="c" * 40)
