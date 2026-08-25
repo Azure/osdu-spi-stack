@@ -789,20 +789,29 @@ def service_pin(
 
 @service_app.command("reset")
 def service_reset(
-    service: str = typer.Argument(help="Pinned service name to restore."),
+    service: str = typer.Argument(help="Pinned service name to release."),
 ):
-    """Restore a pinned service to its canonical image-lock image."""
+    """Release a service pin and restore its recorded canonical image."""
     ctx = verify_spi_cluster()
     console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
     try:
-        restored = reset_service(service)
+        result = reset_service(service)
     except (PinError, ImageResolutionError) as exc:
         console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
 
-    for name in restored:
+    for name in result.restored:
         console.print(f"  [success]{name}[/success] restored to canonical image")
+    for name in result.refresh_required:
+        console.print(
+            f"  [warning]{name} pin removed, but no canonical image was recorded[/warning]"
+        )
+    if result.refresh_required:
+        console.print(
+            "[warning]Run 'spi reconcile --refresh-images' now to resolve and apply "
+            "canonical images.[/warning]"
+        )
 
 
 @service_app.command("list")

@@ -18,12 +18,14 @@ import json
 from typing import TypedDict
 
 import pytest
+from typer.testing import CliRunner
 
-from spi import pins
+from spi import cli, pins
 from spi.images import ImageNotFoundError, ImageResolutionError, ResolvedImage
 from spi.pins import (
     MissingPipelineImageError,
     PinError,
+    ResetResult,
     ServicePin,
     decode_pins,
     encode_pins,
@@ -324,11 +326,11 @@ class TestPinService:
         assert "schema-load" not in saved
         assert calls["reconciled"] == ["schema", "schema-load"]
 
-    def test_schema_repin_aborts_when_stale_loader_lacks_canonical(self, monkeypatch):
+    def test_schema_repin_directs_invalid_loader_through_reset_and_refresh(self, monkeypatch):
         stale = _pin(mr="1", canonical_repository="", canonical_tag="")
         lock = _lock(pins_annotation=encode_pins({"schema": _pin(mr="1"), "schema-load": stale}))
         self._wire(monkeypatch, lock, {"schema"})
-        with pytest.raises(PinError, match="no\\s+canonical image recorded"):
+        with pytest.raises(PinError, match="service reset schema.*reconcile --refresh-images"):
             pin_service("schema", "2")
 
 
@@ -344,7 +346,8 @@ class TestResetService:
         )
         monkeypatch.setattr(pins, "reconcile_consumers", lambda names: None)
 
-        assert reset_service("storage") == ["storage"]
+        result = reset_service("storage")
+        assert result == ResetResult(restored=("storage",), refresh_required=())
         assert calls["data"]["STORAGE_IMAGE_TAG"] == "c" * 40
         assert calls["data"]["STORAGE_IMAGE_REPOSITORY"] == "registry/schema-service-master"
         assert calls["pins"] == {}
@@ -358,8 +361,64 @@ class TestResetService:
         )
         monkeypatch.setattr(pins, "reconcile_consumers", lambda names: None)
 
-        assert reset_service("schema") == ["schema", "schema-load"]
+        result = reset_service("schema")
+        assert result == ResetResult(
+            restored=("schema", "schema-load"),
+            refresh_required=(),
+        )
         assert calls["pins"] == {}
+
+    def test_schema_reset_drops_invalid_loader_pin_for_refresh(self, monkeypatch):
+        loader = _pin(canonical_repository="", canonical_tag="")
+        lock = _lock(pins_annotation=encode_pins({"schema": _pin(), "schema-load": loader}))
+        calls = {}
+        monkeypatch.setattr(pins, "read_lock", lambda: lock)
+        monkeypatch.setattr(
+            pins,
+            "patch_lock",
+            lambda data, p, description: calls.update(
+                data=data,
+                pins=dict(p),
+                description=description,
+            ),
+        )
+        monkeypatch.setattr(
+            pins,
+            "reconcile_consumers",
+            lambda names: calls.update(reconciled=names),
+        )
+
+        result = reset_service("schema")
+
+        assert result == ResetResult(
+            restored=("schema",),
+            refresh_required=("schema-load",),
+        )
+        assert calls["pins"] == {}
+        assert calls["data"]["SCHEMA_IMAGE_TAG"] == "c" * 40
+        assert "SCHEMA_LOAD_IMAGE_TAG" not in calls["data"]
+        assert calls["reconciled"] == ["schema"]
+
+    def test_reset_drops_invalid_pin_without_reconciling_stale_image(self, monkeypatch):
+        invalid = _pin(canonical_repository="", canonical_tag="")
+        lock = _lock(pins_annotation=encode_pins({"storage": invalid}))
+        calls = {}
+        monkeypatch.setattr(pins, "read_lock", lambda: lock)
+        monkeypatch.setattr(
+            pins,
+            "patch_lock",
+            lambda data, p, description: calls.update(data=data, pins=dict(p)),
+        )
+        monkeypatch.setattr(
+            pins,
+            "reconcile_consumers",
+            lambda names: pytest.fail("stale image must not be reconciled"),
+        )
+
+        result = reset_service("storage")
+
+        assert result == ResetResult(restored=(), refresh_required=("storage",))
+        assert calls == {"data": {}, "pins": {}}
 
     def test_schema_load_reset_does_not_duplicate_target(self, monkeypatch):
         lock = _lock(pins_annotation=encode_pins({"schema-load": _pin()}))
@@ -370,13 +429,31 @@ class TestResetService:
         )
         monkeypatch.setattr(pins, "reconcile_consumers", lambda names: None)
 
-        assert reset_service("schema-load") == ["schema-load"]
+        result = reset_service("schema-load")
+        assert result == ResetResult(restored=("schema-load",), refresh_required=())
         assert calls["pins"] == {}
 
     def test_unpinned_service_errors(self, monkeypatch):
         monkeypatch.setattr(pins, "read_lock", lambda: _lock())
         with pytest.raises(PinError, match="not pinned"):
             reset_service("storage")
+
+
+class TestServiceResetCli:
+    def test_invalid_pin_recovery_requires_refresh(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(
+            cli,
+            "reset_service",
+            lambda service: ResetResult(restored=("schema",), refresh_required=("schema-load",)),
+        )
+
+        result = CliRunner().invoke(cli.app, ["service", "reset", "schema"])
+
+        assert result.exit_code == 0
+        assert "schema restored to canonical image" in result.output
+        assert "schema-load pin removed" in result.output
+        assert "spi reconcile --refresh-images" in result.output
 
 
 class TestRefreshSurvival:

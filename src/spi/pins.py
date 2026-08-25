@@ -79,6 +79,14 @@ class ServicePin:
     applied_at: str
 
 
+@dataclass(frozen=True)
+class ResetResult:
+    """Services restored immediately and those needing a canonical image refresh."""
+
+    restored: tuple[str, ...]
+    refresh_required: tuple[str, ...]
+
+
 def ref_slug(branch: str) -> str:
     """Return the branch's CI_COMMIT_REF_SLUG as GitLab CI computes it."""
 
@@ -305,8 +313,8 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
                 if not stale.canonical_repository or not stale.canonical_tag:
                     raise PinError(
                         f"{SCHEMA_LOAD_SERVICE_NAME} is pinned to MR !{stale.mr} with no "
-                        "canonical image recorded; run 'spi service reset schema' "
-                        "before re-pinning."
+                        "canonical image recorded; run 'spi service reset schema' to remove "
+                        "the invalid pin, then 'spi reconcile --refresh-images' before re-pinning."
                     ) from exc
                 released[name] = stale
             continue
@@ -377,8 +385,8 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     return results
 
 
-def reset_service(service: str) -> list[str]:
-    """Restore a pinned service (and schema's paired loader) to its canonical image."""
+def reset_service(service: str) -> ResetResult:
+    """Release a service pin, restoring its canonical image when one was recorded."""
 
     if service not in IMAGE_REGISTRY:
         known = ", ".join(sorted(IMAGE_REGISTRY))
@@ -394,13 +402,13 @@ def reset_service(service: str) -> list[str]:
         raise PinError(f"{service} is not pinned.")
 
     data: dict[str, str] = {}
+    restored: list[str] = []
+    refresh_required: list[str] = []
     for name in targets:
         pin = pins.pop(name)
         if not pin.canonical_repository or not pin.canonical_tag:
-            raise PinError(
-                f"{name}: pin records no canonical image to restore; "
-                "run 'spi reconcile --refresh-images' after reset to re-resolve."
-            )
+            refresh_required.append(name)
+            continue
         data.update(
             _lock_entry_patch(
                 name,
@@ -410,10 +418,19 @@ def reset_service(service: str) -> list[str]:
                 pin.canonical_digest,
             )
         )
+        restored.append(name)
 
-    patch_lock(data, pins, f"Reset {', '.join(targets)} to canonical image")
-    reconcile_consumers(targets)
-    return targets
+    description_parts = []
+    if restored:
+        description_parts.append(f"Reset {', '.join(restored)} to canonical image")
+    if refresh_required:
+        description_parts.append(
+            f"Remove invalid pins for {', '.join(refresh_required)} pending image refresh"
+        )
+    patch_lock(data, pins, "; ".join(description_parts))
+    if restored:
+        reconcile_consumers(restored)
+    return ResetResult(tuple(restored), tuple(refresh_required))
 
 
 def live_pins() -> dict[str, ServicePin]:
