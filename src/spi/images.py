@@ -279,9 +279,7 @@ def resolve_image_commit(
     image_name = f"{entry.image}-{branch}"
     repo = _registry_repository(entry.project_id, image_name)
     if not repo:
-        raise ImageNotFoundError(
-            f"{service_name}: registry repository {image_name!r} not found"
-        )
+        raise ImageNotFoundError(f"{service_name}: registry repository {image_name!r} not found")
 
     tags = _registry_tags(entry.project_id, repo["id"])
     matches = [
@@ -290,9 +288,7 @@ def resolve_image_commit(
         if tag.get("name") and len(tag["name"]) >= 7 and sha.startswith(tag["name"])
     ]
     if not matches:
-        raise ImageNotFoundError(
-            f"{service_name}: no tag for commit {sha[:12]} in {image_name!r}"
-        )
+        raise ImageNotFoundError(f"{service_name}: no tag for commit {sha[:12]} in {image_name!r}")
 
     tag = max(matches, key=len)
     try:
