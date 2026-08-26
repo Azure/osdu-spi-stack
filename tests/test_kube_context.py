@@ -25,6 +25,8 @@ from unittest.mock import patch
 
 from spi.shell import prune_kube_context
 
+DEV1_FQDN = "spi-stack-dev1-a1b2c3d4.hcp.eastus.azmk8s.io"
+
 KUBECONFIG = {
     "contexts": [
         {
@@ -33,7 +35,11 @@ KUBECONFIG = {
         },
         {"name": "shared-a", "context": {"cluster": "shared", "user": "shared-user"}},
         {"name": "shared-b", "context": {"cluster": "shared", "user": "shared-user"}},
-    ]
+    ],
+    "clusters": [
+        {"name": "spi-stack-dev1", "cluster": {"server": f"https://{DEV1_FQDN}:443"}},
+        {"name": "shared", "cluster": {"server": "https://shared.example:6443"}},
+    ],
 }
 
 
@@ -115,6 +121,68 @@ class TestPruneKubeContext:
 
         assert all(call.kwargs["check"] is False for call in run_command.call_args_list)
 
+    def test_a_failed_context_delete_keeps_its_cluster_and_user(self):
+        """Deleting the backing entries under a context that survived would
+        leave the kubeconfig with a dangling reference."""
+        failure = subprocess.CompletedProcess(["kubectl"], 1, "", "permission denied")
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", return_value=KUBECONFIG),
+            patch("spi.shell.run_command", return_value=failure) as run_command,
+            patch("spi.shell.display_result") as display_result,
+        ):
+            prune_kube_context("spi-stack-dev1")
+
+        assert [call.args[0] for call in run_command.call_args_list] == [
+            ["kubectl", "config", "delete-context", "spi-stack-dev1"],
+        ]
+        display_result.assert_not_called()
+
+
+class TestPruneChecksClusterIdentity:
+    """`spi up --env dev1` in two subscriptions builds two `spi-stack-dev1`
+    clusters, so both write the same context name. Tearing one down must not
+    take the other one's credentials with it."""
+
+    def test_prunes_when_the_context_serves_the_deleted_cluster(self):
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", return_value=KUBECONFIG),
+            patch("spi.shell.run_command", return_value=_ok()) as run_command,
+            patch("spi.shell.display_result"),
+        ):
+            prune_kube_context("spi-stack-dev1", server_fqdn=DEV1_FQDN)
+
+        assert [call.args[0][2] for call in run_command.call_args_list] == [
+            "delete-context",
+            "delete-cluster",
+            "delete-user",
+        ]
+
+    def test_leaves_a_same_named_context_for_another_subscription(self):
+        other = "spi-stack-dev1-99887766.hcp.westus.azmk8s.io"
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", return_value=KUBECONFIG),
+            patch("spi.shell.run_command") as run_command,
+            patch("spi.shell.display_result") as display_result,
+        ):
+            prune_kube_context("spi-stack-dev1", server_fqdn=other)
+
+        run_command.assert_not_called()
+        display_result.assert_not_called()
+
+    def test_an_unknown_api_server_falls_back_to_the_context_name(self):
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", return_value=KUBECONFIG),
+            patch("spi.shell.run_command", return_value=_ok()) as run_command,
+            patch("spi.shell.display_result"),
+        ):
+            prune_kube_context("spi-stack-dev1", server_fqdn="")
+
+        assert run_command.call_count == 3
+
 
 class TestCleanupPrunesTheContext:
     """The pruning has to be wired into teardown, not just available."""
@@ -123,15 +191,60 @@ class TestCleanupPrunesTheContext:
         from spi.config import Config
         from spi.deploy import cleanup_azure
 
-        gone = subprocess.CompletedProcess(["az"], 0, "false", "")
+        # `az aks show --query fqdn`, then `az group delete`, then the
+        # `az group exists` poll that ends the wait.
+        responses = [
+            subprocess.CompletedProcess(["az"], 0, f"{DEV1_FQDN}\n", ""),
+            subprocess.CompletedProcess(["az"], 0, "", ""),
+            subprocess.CompletedProcess(["az"], 0, "false", ""),
+        ]
         with (
-            patch("spi.deploy.run_command", return_value=gone),
+            patch("spi.deploy.run_command", side_effect=responses),
             patch("spi.deploy.prune_kube_context") as prune,
             patch("spi.deploy.display_result"),
         ):
             cleanup_azure(Config.from_env("dev1"))
 
-        prune.assert_called_once_with("spi-stack-dev1")
+        prune.assert_called_once_with("spi-stack-dev1", server_fqdn=DEV1_FQDN)
+
+    def test_the_api_server_is_read_before_the_group_is_deleted(self):
+        """`az aks show` against a deleted resource group returns nothing."""
+        from spi.config import Config
+        from spi.deploy import cleanup_azure
+
+        responses = [
+            subprocess.CompletedProcess(["az"], 0, f"{DEV1_FQDN}\n", ""),
+            subprocess.CompletedProcess(["az"], 0, "", ""),
+            subprocess.CompletedProcess(["az"], 0, "false", ""),
+        ]
+        with (
+            patch("spi.deploy.run_command", side_effect=responses) as run_command,
+            patch("spi.deploy.prune_kube_context"),
+            patch("spi.deploy.display_result"),
+        ):
+            cleanup_azure(Config.from_env("dev1"))
+
+        verbs = [call.args[0][:3] for call in run_command.call_args_list]
+        assert verbs[0] == ["az", "aks", "show"]
+        assert verbs[1] == ["az", "group", "delete"]
+
+    def test_an_unreadable_api_server_still_prunes_by_name(self):
+        from spi.config import Config
+        from spi.deploy import cleanup_azure
+
+        responses = [
+            subprocess.CompletedProcess(["az"], 1, "", "ResourceNotFound"),
+            subprocess.CompletedProcess(["az"], 0, "", ""),
+            subprocess.CompletedProcess(["az"], 0, "false", ""),
+        ]
+        with (
+            patch("spi.deploy.run_command", side_effect=responses),
+            patch("spi.deploy.prune_kube_context") as prune,
+            patch("spi.deploy.display_result"),
+        ):
+            cleanup_azure(Config.from_env("dev1"))
+
+        prune.assert_called_once_with("spi-stack-dev1", server_fqdn="")
 
     def test_a_rejected_delete_leaves_the_context_alone(self):
         import typer
@@ -139,9 +252,12 @@ class TestCleanupPrunesTheContext:
         from spi.config import Config
         from spi.deploy import cleanup_azure
 
-        rejected = subprocess.CompletedProcess(["az"], 1, "", "AuthorizationFailed")
+        responses = [
+            subprocess.CompletedProcess(["az"], 0, f"{DEV1_FQDN}\n", ""),
+            subprocess.CompletedProcess(["az"], 1, "", "AuthorizationFailed"),
+        ]
         with (
-            patch("spi.deploy.run_command", return_value=rejected),
+            patch("spi.deploy.run_command", side_effect=responses),
             patch("spi.deploy.prune_kube_context") as prune,
         ):
             try:

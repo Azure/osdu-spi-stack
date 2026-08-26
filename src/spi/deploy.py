@@ -434,6 +434,37 @@ def deploy_azure(
     _pin_gitops_source()
 
 
+def _cluster_api_server(config: Config) -> str:
+    """The API server FQDN of the cluster about to be deleted, or "".
+
+    Read while the resource group still exists so the kubeconfig prune can
+    tell this cluster apart from a same-named one in another subscription.
+    Empty for a private cluster (which reports `privateFqdn` instead) or a
+    resource group that is already gone; the prune then matches on name.
+    """
+    result = run_command(
+        [
+            "az",
+            "aks",
+            "show",
+            "--resource-group",
+            config.resource_group,
+            "--name",
+            config.cluster_name,
+            "--query",
+            "fqdn",
+            "--output",
+            "tsv",
+        ],
+        description=f"Look up API server for {config.cluster_name}",
+        display=False,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
 def cleanup_azure(config: Config) -> None:
     """Delete Azure resource group and all resources.
 
@@ -442,6 +473,7 @@ def cleanup_azure(config: Config) -> None:
     delete request.
     """
     console.print("\n[bold]Cleaning up Azure resources...[/bold]")
+    api_server = _cluster_api_server(config)
     result = run_command(
         ["az", "group", "delete", "--name", config.resource_group, "--yes", "--no-wait"],
         description=f"Delete resource group: {config.resource_group}",
@@ -451,7 +483,7 @@ def cleanup_azure(config: Config) -> None:
         console.print(f"[error]Azure cleanup request failed for {config.resource_group}.[/error]")
         raise typer.Exit(code=1)
 
-    prune_kube_context(config.cluster_name)
+    prune_kube_context(config.cluster_name, server_fqdn=api_server)
 
     console.print("  [info]Waiting briefly for Azure to acknowledge the deletion...[/info]")
     deadline = time.time() + 60

@@ -275,8 +275,23 @@ def kubectl_json(args: List[str]) -> Optional[Dict[str, Any]]:
         return None
 
 
-def prune_kube_context(context: str) -> None:
+def _kubeconfig_serves(view: Dict[str, Any], cluster: str, server_fqdn: str) -> bool:
+    """Whether the named kubeconfig cluster answers on ``server_fqdn``."""
+    for item in view.get("clusters") or []:
+        if item.get("name") == cluster:
+            return server_fqdn in (item.get("cluster") or {}).get("server", "")
+    return False
+
+
+def prune_kube_context(context: str, server_fqdn: str = "") -> None:
     """Remove the kubeconfig entries left behind by a deleted cluster.
+
+    ``server_fqdn`` is the API server the torn-down cluster answered on.
+    Cluster names repeat across subscriptions by design (``spi up --env dev1``
+    in two subscriptions builds two ``spi-stack-dev1`` clusters), so matching
+    on the name alone would strip credentials for whichever one
+    ``az aks get-credentials`` wrote last. An empty value falls back to the
+    name, which is the single-subscription case.
 
     The cluster and user entries are deleted only when no surviving context
     still references them, so entries shared with another context stay.
@@ -298,13 +313,27 @@ def prune_kube_context(context: str) -> None:
     entry = target.get("context") or {}
     cluster = entry.get("cluster", "")
     user = entry.get("user", "")
-    others = [c.get("context") or {} for c in contexts if c.get("name") != context]
 
-    run_command(
+    if server_fqdn and not _kubeconfig_serves(view, cluster, server_fqdn):
+        console.print(
+            f"  [warning]kubeconfig context {context} points at a different cluster; "
+            f"leaving it in place[/warning]"
+        )
+        return
+
+    removed = run_command(
         ["kubectl", "config", "delete-context", context],
         description=f"Remove kubeconfig context: {context}",
         check=False,
     )
+    if removed.returncode != 0:
+        console.print(
+            f"  [warning]Could not remove kubeconfig context {context}; "
+            f"its cluster and user entries are left in place[/warning]"
+        )
+        return
+
+    others = [c.get("context") or {} for c in contexts if c.get("name") != context]
     if cluster and not any(other.get("cluster") == cluster for other in others):
         run_command(
             ["kubectl", "config", "delete-cluster", cluster],
