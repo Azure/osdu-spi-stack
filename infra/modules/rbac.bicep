@@ -6,38 +6,38 @@
 // guid() names so a re-deploy updates the assignment rather than
 // creating duplicates.
 
-@description('Principal ID (object ID) of the managed identity.')
+@description('Principal ID of the OSDU workload identity receiving data-plane access.')
 param principalId string
 
-@description('Principal ID (object ID) of the deployer. Empty string skips deployer-side role assignments. Optional because local-dev users typically have Owner on the RG and do not need an explicit grant.')
+@description('Principal ID granted permission to write runtime secrets; an empty string omits the grant.')
 param deployerPrincipalId string = ''
 
-@description('Principal type of deployerPrincipalId. Human deployers must pass User or the assignment fails principal validation.')
+@description('Entra principal type for deployerPrincipalId; human deployers must use User.')
 @allowed([
   'User'
   'ServicePrincipal'
 ])
 param deployerPrincipalType string = 'ServicePrincipal'
 
-@description('Object ID of the AKS kubelet (node) identity. Empty string skips the kubelet AcrPull assignment.')
+@description('Principal ID of the AKS kubelet identity; an empty string omits its AcrPull grant.')
 param kubeletIdentityObjectId string = ''
 
-@description('Key Vault name (existing, created by keyvault.bicep).')
+@description('Existing Key Vault whose secrets the workload identity reads.')
 param keyVaultName string
 
-@description('ACR name (existing, created by acr.bicep).')
+@description('Existing container registry from which workloads pull images.')
 param acrName string
 
-@description('Common storage account name (existing).')
+@description('Existing shared storage account receiving blob and table role assignments.')
 param commonStorageName string
 
-@description('Per-partition storage account names (existing).')
+@description('Existing per-partition storage accounts receiving blob role assignments.')
 param partitionStorageNames array
 
-@description('Per-partition Service Bus namespace names (existing).')
+@description('Existing Service Bus namespaces receiving sender and receiver role assignments.')
 param serviceBusNames array
 
-// Well-known Azure built-in role definition IDs
+// Azure built-in role definition IDs.
 var roleIds = {
   keyVaultSecretsUser: '4633458b-17de-408a-b874-0445c86b69e6'
   keyVaultSecretsOfficer: 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
@@ -48,11 +48,8 @@ var roleIds = {
   acrPull: '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 }
 
-// ──────────────────────────────────────────────────────────
-// Existing resource references (these are created by sibling modules
-// during the same deployment; a top-level dependsOn in main.bicep
-// ensures this module runs after them).
-// ──────────────────────────────────────────────────────────
+// main.bicep orders this module after the sibling modules that create these
+// resources.
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
@@ -73,10 +70,6 @@ resource partitionStorageAccounts 'Microsoft.Storage/storageAccounts@2023-01-01'
 resource serviceBusNamespaces 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' existing = [for sbName in serviceBusNames: {
   name: sbName
 }]
-
-// ──────────────────────────────────────────────────────────
-// Shared resource assignments
-// ──────────────────────────────────────────────────────────
 
 resource keyVaultSecretsUserAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: keyVault
@@ -111,10 +104,8 @@ resource acrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   }
 }
 
-// The AKS kubelet (node) identity is what actually PULLS container images
-// for pods; the workload identity above covers app-level ACR access only.
-// Without this, pods referencing images in the SPI ACR (e.g. custom OSDU
-// images swapped in via the osdu-image-lock ConfigMap) ImagePullBackOff.
+// Pods pull images through the kubelet identity, not the workload identity.
+// Without this role, images from the SPI registry fail with ImagePullBackOff.
 resource kubeletAcrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(kubeletIdentityObjectId)) {
   scope: acr
   name: guid(acr.id, kubeletIdentityObjectId, roleIds.acrPull)
@@ -144,10 +135,6 @@ resource commonStorageTableAssignment 'Microsoft.Authorization/roleAssignments@2
     principalType: 'ServicePrincipal'
   }
 }
-
-// ──────────────────────────────────────────────────────────
-// Per-partition assignments
-// ──────────────────────────────────────────────────────────
 
 resource partitionStorageBlobAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (storageName, i) in partitionStorageNames: {
   scope: partitionStorageAccounts[i]

@@ -1,123 +1,91 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// Azure infrastructure entrypoint for the OSDU SPI Stack.
+// Azure PaaS entrypoint for the OSDU SPI Stack. AKS deploys first so its OIDC
+// issuer can bind workload identities; Flux deploys after the CLI bootstraps
+// the cluster.
 //
-// Provisions all Azure PaaS resources required by OSDU services:
-// Managed Identity + federated credentials, Key Vault, ACR, CosmosDB
-// (Gremlin for entitlements + SQL per partition), Service Bus per
-// partition, common and per-partition Storage, and the scoped RBAC
-// role assignments that bind the identity to the above.
+// Cosmos DB, Service Bus, and Storage disable local authentication.
+// Compatibility secrets contain ``DISABLED`` and services must use Workload
+// Identity. Runtime secrets derived from in-cluster passwords remain CLI-owned.
 //
-// Key Vault secret VALUES are also declared here: endpoints and other static
-// metadata resolved at deploy time. Local auth is disabled on the Cosmos and
-// Service Bus accounts, so their per-partition key/connection secrets are
-// written as the literal ``DISABLED`` placeholder; graph-db-primary-key is
-// no longer written at all. Services MUST reach these accounts through
-// Workload Identity -- a requirement, not yet true of every bundled image;
-// images that still read keys directly fail until Workload-Identity-capable
-// builds land.
-//
-// Not in scope of this template:
-//   - AKS Automatic cluster + managed Istio -- declared separately in
-//     infra/aks.bicep (deployed first; this template consumes its
-//     oidcIssuerUrl output for federated-credential wiring).
-//   - Resource Group creation (pre-created by `az group create`)
-//   - Soft-deleted Key Vault recovery (CLI pre-check)
-//   - Flux extension + GitOps config -- infra/flux.bicep, deployed after
-//     the K8s bootstrap phase.
-//   - Runtime-only secrets that depend on in-cluster seed passwords
-//     (tbl-storage-endpoint, redis-*, {partition}-elastic-*) -- written
-//     by the CLI in the post-handoff bootstrap.
-//   - Istio CNI chaining + kubectl bootstrap (Python provider).
-//
-// Naming contract: the CLI pre-derives every Azure resource name in
-// src/spi/config.py and src/spi/azure_infra.py and passes them as
-// parameters. This template does not re-derive names.
+// The CLI supplies environment-specific top-level resource names; fixed child
+// names remain part of the OSDU service contract.
 
 targetScope = 'resourceGroup'
 
-// ──────────────────────────────────────────────────────────
-// Parameters
-// ──────────────────────────────────────────────────────────
-
-// envName is passed by the CLI for readability of deployment history.
-@description('Environment suffix, e.g. "dev1". Empty string for base environment.')
+@description('Environment suffix recorded in deployment inputs; use an empty string for the base environment.')
 #disable-next-line no-unused-params
 param envName string = ''
 
-@description('Azure region for all resources.')
+@description('Azure region where the PaaS resources are deployed.')
 param location string = 'westus3'
 
-@description('User-assigned managed identity name.')
+@description('Resource name for the OSDU workload identity.')
 param identityName string
 
-@description('Key Vault name.')
+@description('Globally unique name of the Key Vault that stores OSDU configuration secrets.')
 param keyVaultName string
 
-@description('Azure Container Registry name.')
+@description('Globally unique name of the registry used for custom OSDU images.')
 param acrName string
 
-@description('Data partition names.')
+@description('Ordered data partition identifiers; per-partition resource-name arrays must use the same order.')
 param dataPartitions array = [
   'opendes'
 ]
 
-@description('Primary data partition (first of dataPartitions, hosts the system DB).')
+@description('Partition that owns osdu-system-db; must be one of dataPartitions.')
 param primaryPartition string
 
-@description('CosmosDB Gremlin account name (for Entitlements graph).')
+@description('Globally unique name of the shared Cosmos DB Gremlin account used by Entitlements.')
 param gremlinAccountName string
 
-@description('Common storage account name (shared across partitions).')
+@description('Globally unique name of the storage account shared across partitions.')
 param commonStorageName string
 
-@description('Per-partition Cosmos SQL account names. Must align by index with dataPartitions.')
+@description('Ordered Cosmos DB SQL account names, with one entry per dataPartitions item.')
 param cosmosSqlNames array
 
-@description('Per-partition Service Bus namespace names. Must align by index with dataPartitions.')
+@description('Ordered Service Bus namespace names, with one entry per dataPartitions item.')
 param serviceBusNames array
 
-@description('Per-partition storage account names. Must align by index with dataPartitions.')
+@description('Ordered storage account names, with one entry per dataPartitions item.')
 param partitionStorageNames array
 
-@description('OIDC issuer URL from the AKS cluster. Empty string skips federated credential creation.')
+@description('OIDC issuer URL of the AKS cluster; use an empty string only to omit federated credentials.')
 param oidcIssuerUrl string = ''
 
-@description('External DNS UAMI name. Only used when dnsZoneName is non-empty.')
+@description('Resource name for the ExternalDNS identity; required when dnsZoneName is set.')
 param externalDnsIdentityName string = ''
 
-@description('Azure DNS zone name (e.g. example.com). Empty means DNS mode is disabled; ExternalDNS UAMI + role assignment are skipped.')
+@description('Azure DNS zone managed by ExternalDNS; an empty string omits its identity and role assignment.')
 param dnsZoneName string = ''
 
-@description('Resource group that contains the Azure DNS zone. Required when dnsZoneName is set.')
+@description('Resource group containing the Azure DNS zone; required when dnsZoneName is set.')
 param dnsZoneResourceGroup string = ''
 
-@description('Object ID of the deployer. Grants Key Vault Secrets Officer so the post-deploy bootstrap step can write runtime secrets.')
+@description('Object ID granted Key Vault Secrets Officer for writing runtime secrets during bootstrap.')
 param deployerPrincipalId string
 
-@description('Principal type of deployerPrincipalId. Human deployers must pass User.')
+@description('Entra principal type for deployerPrincipalId; human deployers must use User.')
 @allowed([
   'User'
   'ServicePrincipal'
 ])
 param deployerPrincipalType string = 'ServicePrincipal'
 
-@description('Object ID of the AKS kubelet (node) identity. Empty string skips the kubelet AcrPull grant. Set by the CLI from the AKS deployment output so nodes can pull custom images from the ACR.')
+@description('Object ID of the AKS kubelet identity; an empty string omits its AcrPull grant.')
 param kubeletIdentityObjectId string = ''
 
-@description('Opt-in: deploy workspace-based Application Insights + Log Analytics. Off by default; adds cost and deploy time developers usually do not need.')
+@description('Whether to deploy workspace-based Application Insights and Log Analytics.')
 param enableApplicationInsights bool = false
 
-@description('Application Insights component name. Required when enableApplicationInsights is true.')
+@description('Resource name for Application Insights; required when enableApplicationInsights is true.')
 param appInsightsName string = ''
 
-@description('Log Analytics workspace name backing the App Insights component. Required when enableApplicationInsights is true.')
+@description('Resource name for the backing Log Analytics workspace; required when enableApplicationInsights is true.')
 param logAnalyticsName string = ''
-
-// ──────────────────────────────────────────────────────────
-// Modules (shared resources, parallel)
-// ──────────────────────────────────────────────────────────
 
 module keyvaultModule 'modules/keyvault.bicep' = {
   name: 'spi-keyvault'
@@ -161,10 +129,6 @@ module storageCommonModule 'modules/storage-common.bicep' = {
   }
 }
 
-// ──────────────────────────────────────────────────────────
-// Modules (per-partition, parallel across partitions)
-// ──────────────────────────────────────────────────────────
-
 module partitionModules 'modules/partition.bicep' = [for (p, i) in dataPartitions: {
   name: 'spi-partition-${p}'
   params: {
@@ -181,10 +145,6 @@ module partitionModules 'modules/partition.bicep' = [for (p, i) in dataPartition
     keyvaultModule
   ]
 }]
-
-// ──────────────────────────────────────────────────────────
-// RBAC (runs after all resources above)
-// ──────────────────────────────────────────────────────────
 
 module rbacModule 'modules/rbac.bicep' = {
   name: 'spi-rbac'
@@ -207,13 +167,8 @@ module rbacModule 'modules/rbac.bicep' = {
   ]
 }
 
-// ──────────────────────────────────────────────────────────
-// ExternalDNS identity + DNS Zone Contributor role (dns mode only)
-// ──────────────────────────────────────────────────────────
-//
-// Conditional on a non-empty dnsZoneName. The CLI passes this only in
-// ingress-mode=dns. DNS Zone Contributor binds to the zone's resource
-// group (possibly different from the spi-stack RG).
+// DNS Zone Contributor must be assigned from the zone's resource group, which
+// may differ from the stack resource group.
 
 module externalDnsIdentityModule 'modules/external-dns-identity.bicep' = if (!empty(dnsZoneName)) {
   name: 'spi-external-dns-identity'
@@ -229,39 +184,19 @@ module externalDnsRoleModule 'modules/external-dns-role.bicep' = if (!empty(dnsZ
   scope: resourceGroup(dnsZoneResourceGroup)
   params: {
     dnsZoneName: dnsZoneName
-    // Safe: the same !empty(dnsZoneName) guard ensures the identity module deployed.
+    // The module and this reference use the same deployment condition.
     #disable-next-line BCP318
     principalId: externalDnsIdentityModule.outputs.principalId
   }
 }
 
-// ──────────────────────────────────────────────────────────
-// Key Vault secret values (declarative; replaces post-deploy CLI writes)
-// ──────────────────────────────────────────────────────────
-//
-// ``existing`` references resolve endpoints and other static metadata on
-// resources provisioned inside sub-modules and write them directly as KV
-// secrets. Splitting the declarations by "pattern" (static vs per-partition
-// cosmos/storage/sb) keeps Bicep's array-loop semantics simple and makes
-// the deployment history self-describing without a ``flatten()`` dance.
-//
-// All secret values stay out of the deployment outputs -- they are set
-// only on the child resource and never surface in the deployment record.
-
-// Local auth is disabled on the Cosmos and Service Bus accounts, so their
-// per-partition key/connection secrets carry the literal ``DISABLED``
-// (written inside partitionModules; graph-db-primary-key is no longer
-// written at all). No ``listKeys()`` runs at any scope; services MUST
-// reach these accounts through Workload Identity.
+// Static secrets are declared individually because BCP178 prevents a
+// for-expression from iterating over values derived from module outputs.
+// Secret values are intentionally not exposed as deployment outputs.
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
 }
-
-// Static/metadata secrets are declared individually because Bicep's for-
-// expression cannot iterate over an array that references module outputs
-// (BCP178: iterable must be resolvable at deployment start). Per-partition
-// loops below iterate over ``dataPartitions`` (a parameter) which is fine.
 
 resource secretTenantId 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   name: 'tenant-id'
@@ -354,8 +289,6 @@ resource partitionCosmosEndpointSecrets 'Microsoft.KeyVault/vaults/secrets@2023-
   ]
 }]
 
-// {partition}-cosmos-primary-key is written inside each partitionModule.
-
 resource partitionServiceBusSecrets 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = [for (p, i) in dataPartitions: {
   name: '${p}-sb-namespace'
   parent: keyVault
@@ -367,16 +300,9 @@ resource partitionServiceBusSecrets 'Microsoft.KeyVault/vaults/secrets@2023-07-0
   ]
 }]
 
-// ──────────────────────────────────────────────────────────
-// Observability: Log Analytics workspace + Application Insights (opt-in)
-// ──────────────────────────────────────────────────────────
-//
-// OSDU service images bundle the App Insights Java agent, and
-// core-lib-azure >= 2.5.6 ships LogCustomDimensionFilter, which reads the
-// AI request-telemetry context on every request with no null guard — if
-// App Insights is not initialized the service returns HTTP 500 on every
-// request. Off by default (cost + deploy time); the CLI writes
-// disabled/dummy agent configuration into osdu-config when disabled.
+// The bundled Java agent requires initialized request telemetry and otherwise
+// causes HTTP 500 responses. The CLI disables the agent when telemetry is off.
+// See ADR-020.
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (enableApplicationInsights) {
   name: logAnalyticsName
@@ -399,53 +325,83 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = if (enableAppl
   }
 }
 
-// ──────────────────────────────────────────────────────────
-// Outputs
-// ──────────────────────────────────────────────────────────
-//
-// Outputs are in camelCase and flat; the CLI reshapes them into the
-// legacy snake_case infra_outputs dict consumed by _create_osdu_config
-// and workload-identity ServiceAccount creation. Secret values are
-// NEVER emitted as outputs; they stay inside the KV secret resources.
-
+// The CLI maps these flat outputs into runtime configuration. Per-partition
+// arrays remain aligned with partitionNames; Key Vault values are not outputs.
+@description('Tenant ID used by the deployed workload identities.')
 output tenantId string = tenant().tenantId
+
+@description('Subscription ID containing the deployed PaaS resources.')
 output subscriptionId string = subscription().subscriptionId
+
+@description('Resource group containing the deployed PaaS resources.')
 output resourceGroupName string = resourceGroup().name
 
+@description('Client ID used by pods to request tokens for the OSDU workload identity.')
 output identityClientId string = identityModule.outputs.clientId
+
+@description('Principal ID used for OSDU workload identity role assignments.')
 output identityPrincipalId string = identityModule.outputs.principalId
+
+@description('Azure resource ID of the OSDU workload identity.')
 output identityResourceId string = identityModule.outputs.resourceId
 
+@description('Vault URI used by OSDU services to retrieve configuration secrets.')
 output keyvaultUri string = keyvaultModule.outputs.uri
+
+@description('Azure resource ID of the Key Vault.')
 output keyvaultId string = keyvaultModule.outputs.resourceId
 
+@description('Azure resource ID of the container registry.')
 output acrId string = acrModule.outputs.resourceId
+
+@description('Registry hostname used to pull custom OSDU images.')
 output acrLoginServer string = acrModule.outputs.loginServer
 
+@description('Cosmos DB Gremlin endpoint used by Entitlements.')
 output graphEndpoint string = gremlinModule.outputs.documentEndpoint
+
+@description('Azure resource ID of the Cosmos DB Gremlin account.')
 output graphAccountId string = gremlinModule.outputs.resourceId
 
+@description('Name of the storage account shared across data partitions.')
 output commonStorageName string = commonStorageName
+
+@description('Azure resource ID of the storage account shared across data partitions.')
 output commonStorageId string = storageCommonModule.outputs.resourceId
 
-// Per-partition arrays, indexed by dataPartitions order. The CLI zips
-// these with dataPartitions to build the per-partition keys in
-// infra_outputs (e.g., "{partition}_cosmos_endpoint").
+@description('Ordered data partition identifiers used to index all per-partition output arrays.')
 output partitionNames array = dataPartitions
+
+@description('Cosmos DB SQL endpoints ordered to match partitionNames.')
 output partitionCosmosEndpoints array = [for i in range(0, length(dataPartitions)): partitionModules[i].outputs.cosmosEndpoint]
+
+@description('Cosmos DB SQL account resource IDs ordered to match partitionNames.')
 output partitionCosmosAccountIds array = [for i in range(0, length(dataPartitions)): partitionModules[i].outputs.cosmosAccountId]
+
+@description('Service Bus namespace resource IDs ordered to match partitionNames.')
 output partitionServiceBusIds array = [for i in range(0, length(dataPartitions)): partitionModules[i].outputs.serviceBusId]
+
+@description('Service Bus namespace names ordered to match partitionNames.')
 output partitionServiceBusNames array = serviceBusNames
+
+@description('Storage account resource IDs ordered to match partitionNames.')
 output partitionStorageIds array = [for i in range(0, length(dataPartitions)): partitionModules[i].outputs.storageId]
+
+@description('Storage account names ordered to match partitionNames.')
 output partitionStorageNamesOut array = partitionStorageNames
 
-// ExternalDNS identity (empty string when ingress mode != dns). The CLI
-// plumbs this into the spi-ingress-config ConfigMap so the HelmRelease
-// can wire workload-identity annotations on the service account.
+// The output condition matches the resource deployment condition.
+@description('Application Insights connection string, or an empty string when telemetry is disabled.')
 #disable-next-line BCP318
 output appInsightsConnectionString string = enableApplicationInsights ? appInsights.properties.ConnectionString : ''
+
+@description('Application Insights component name, or an empty string when telemetry is disabled.')
 output appInsightsName string = enableApplicationInsights ? appInsightsName : ''
 
+@description('Client ID for the ExternalDNS workload identity, or an empty string when DNS mode is disabled.')
 output externalDnsClientId string = !empty(dnsZoneName) ? externalDnsIdentityModule.outputs.clientId : ''
+
+// The output condition matches the module deployment condition.
+@description('Principal ID for the ExternalDNS workload identity, or an empty string when DNS mode is disabled.')
 #disable-next-line BCP318
 output externalDnsPrincipalId string = !empty(dnsZoneName) ? externalDnsIdentityModule.outputs.principalId : ''
