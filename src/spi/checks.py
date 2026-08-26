@@ -169,7 +169,7 @@ def check_prerequisites(tools: List[str]) -> None:
 
     if missing:
         console.print(f"\n[error]Missing required tools: {', '.join(missing)}[/error]")
-        console.print("[dim]Run 'uv run spi check' for full details.[/dim]")
+        console.print("[dim]Run 'spi check' for full details.[/dim]")
         raise typer.Exit(code=1)
 
 

@@ -43,7 +43,8 @@ See [Installation](docs/install.md) for pinned versions, upgrades, and troublesh
 ### 2. Check prerequisites
 
 Deployment requires `az`, Bicep, `kubectl`, `kubelogin`, Flux, and an Azure subscription
-with permission to create resource groups and AKS clusters.
+where your identity can create resource groups, deploy the listed Azure services, and
+create role assignments.
 
 ```bash
 spi check
