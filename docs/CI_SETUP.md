@@ -176,9 +176,12 @@ Release, and the `assets` job builds the wheel, uploads it, and publishes.
 One-time setup:
 
 ```bash
-# 1. Install the GitHub App used by Azure/osdu-spi on this repo.
-#    Permissions: Contents write, Pull requests write, Issues write
-#    (the autorelease:* labels go through the issues API).
+# 1. Add this repo to the osdu-spi-automation GitHub App installation.
+#    Azure-org app installs are config-as-code: PR the repo name into
+#    apps/azure/osdu-spi-automation.yaml in microsoft/github-operations
+#    (OSPO reviews and merges; the merge performs the install).
+#    Release automation uses: Contents write, Pull requests write,
+#    Issues write (the autorelease:* labels go through the issues API).
 
 # 2. App credentials as repo secrets
 gh secret set RELEASE_APP_ID --repo Azure/osdu-spi-stack
