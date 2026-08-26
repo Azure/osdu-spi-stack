@@ -233,6 +233,28 @@ class TestCleanupPrunesTheContext:
         assert "fqdn || privateFqdn" in run_command.call_args_list[0].args[0]
         assert verbs[1] == ["az", "group", "delete"]
 
+    def test_an_unconfirmed_deletion_leaves_the_context_in_place(self):
+        """`az group delete --no-wait` returns on acceptance. An accepted
+        delete can still fail, and the cluster would survive with it."""
+        from spi.config import Config
+        from spi.deploy import cleanup_azure
+
+        responses = [
+            subprocess.CompletedProcess(["az"], 0, f"{DEV1_FQDN}\n", ""),
+            subprocess.CompletedProcess(["az"], 0, "", ""),
+            subprocess.CompletedProcess(["az"], 0, "true", ""),
+        ]
+        with (
+            patch("spi.deploy.run_command", side_effect=responses),
+            patch("spi.deploy.prune_kube_context") as prune,
+            patch("spi.deploy.display_result"),
+            patch("spi.deploy.time.sleep"),
+            patch("spi.deploy.time.time", side_effect=[0, 0, 100]),
+        ):
+            cleanup_azure(Config.from_env("dev1"))
+
+        prune.assert_not_called()
+
     def test_an_unreadable_api_server_reaches_the_prune_as_empty(self):
         from spi.config import Config
         from spi.deploy import cleanup_azure

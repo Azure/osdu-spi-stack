@@ -471,8 +471,9 @@ def cleanup_azure(config: Config) -> None:
     """Delete Azure resource group and all resources.
 
     The kubeconfig entries `spi up` merged in point at a cluster that is
-    about to stop answering, so they are pruned once Azure accepts the
-    delete request.
+    about to stop answering, so they are pruned on the way out. The prune
+    waits for Azure to report the resource group gone; `--no-wait` returns on
+    acceptance, and an accepted delete can still fail afterwards.
     """
     console.print("\n[bold]Cleaning up Azure resources...[/bold]")
     api_server = _cluster_api_server(config)
@@ -485,8 +486,6 @@ def cleanup_azure(config: Config) -> None:
         console.print(f"[error]Azure cleanup request failed for {config.resource_group}.[/error]")
         raise typer.Exit(code=1)
 
-    prune_kube_context(config.cluster_name, server_fqdn=api_server)
-
     console.print("  [info]Waiting briefly for Azure to acknowledge the deletion...[/info]")
     deadline = time.time() + 60
     while time.time() < deadline:
@@ -497,6 +496,7 @@ def cleanup_azure(config: Config) -> None:
             check=False,
         )
         if exists.returncode == 0 and exists.stdout.strip().lower() == "false":
+            prune_kube_context(config.cluster_name, server_fqdn=api_server)
             display_result(f"Resource group {config.resource_group} deleted")
             return
         time.sleep(10)
@@ -504,4 +504,9 @@ def cleanup_azure(config: Config) -> None:
     display_result("Cleanup accepted by Azure; deletion is continuing in the background")
     console.print(
         f"  [warning]Verify later with: az group exists --name {config.resource_group}[/warning]"
+    )
+    console.print(
+        f"  [warning]kubeconfig context {config.cluster_name} is left in place until the "
+        f"deletion is confirmed; remove it with: kubectl config delete-context "
+        f"{config.cluster_name}[/warning]"
     )
