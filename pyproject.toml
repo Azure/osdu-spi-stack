@@ -1,10 +1,7 @@
 [project]
 name = "spi"
-# Source-tree version uses a PEP 440 local sentinel ("+source") so locally
-# built wheels and editable installs are clearly tagged as non-release builds.
-# Release CI overwrites this line before `uv build`, stamping the real
-# X.Y.Z computed from the release label. The PackageNotFoundError fallback
-# in src/spi/__init__.py also uses this sentinel.
+# Sentinel for source builds; release CI overwrites it with the real X.Y.Z
+# before `uv build`. The fallback in src/spi/__init__.py must match it.
 version = "0.0.0+source"
 description = "OSDU SPI Stack CLI (osdu-spi-stack) - Deploy OSDU on Azure with SPI services"
 readme = "README.md"
@@ -52,13 +49,31 @@ exclude = [
     "logs",
 ]
 
+# Prefer the Microsoft package feed proxy (an anonymous PyPI mirror) so
+# corporate networks that block pythonhosted.org can resolve. The proxy lags
+# new releases, so PyPI stays as the best-match fallback; both serve the same
+# public namespace. uv ignores pip.ini, so the index is declared here.
+# `uv sync` downloads from the sources recorded in uv.lock; after an index
+# change, run `uv lock --refresh` on an unrestricted network to re-source it.
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+[[tool.uv.index]]
+name = "microsoft-pypi-proxy"
+url = "https://packagefeedproxy.microsoft.io/pypi/simple/"
+
+# ruff resolves from the proxy only: best-match would otherwise chase PyPI's
+# newest release, which the proxy has not ingested, and break corporate sync.
+[tool.uv.sources]
+ruff = { index = "microsoft-pypi-proxy" }
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "pyyaml>=6.0.3",
-    "ruff>=0.16.4",
+    "ruff>=0.16.3",
     "ty>=0.0.73",
 ]
 
