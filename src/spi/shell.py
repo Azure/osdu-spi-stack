@@ -325,8 +325,9 @@ def prune_kube_context(context: str, server_fqdn: str) -> None:
     context costs a stale context, while guessing costs a live cluster its
     credentials.
 
-    The cluster and user entries are deleted only when no surviving context
-    still references them, so entries shared with another context stay.
+    The cluster and user entries are deleted only when no context that
+    survives the delete still references them, so entries shared with another
+    context stay.
     Best effort: the cluster is already gone by the time this runs, and
     ``spi down`` does not require kubectl, so nothing here fails a teardown.
     """
@@ -376,21 +377,37 @@ def prune_kube_context(context: str, server_fqdn: str) -> None:
         )
         return
 
-    if view.get("current-context") == context:
+    # What survives the delete is the only sound basis for the reference and
+    # selection checks below. A multi-file KUBECONFIG merges first-wins, and
+    # delete-context edits only the file holding the winner, so a shadowed
+    # context of the same name can surface here and bring live references
+    # with it.
+    after = kubectl_json(["config", "view"], display=True, description="Re-read kubeconfig entries")
+    if after is None:
+        console.print(
+            f"  [warning]Removed kubeconfig context {context}, but could not re-read the "
+            f"kubeconfig; its cluster and user entries are left in place[/warning]"
+        )
+        return
+
+    survivors = after.get("contexts") or []
+    if after.get("current-context") == context and not any(
+        c.get("name") == context for c in survivors
+    ):
         run_command(
             ["kubectl", "config", "unset", "current-context"],
             description="Clear the deleted context from current-context",
             check=False,
         )
 
-    others = [c.get("context") or {} for c in contexts if c.get("name") != context]
-    if cluster and not any(other.get("cluster") == cluster for other in others):
+    live = [c.get("context") or {} for c in survivors]
+    if cluster and not any(other.get("cluster") == cluster for other in live):
         run_command(
             ["kubectl", "config", "delete-cluster", cluster],
             description=f"Remove kubeconfig cluster: {cluster}",
             check=False,
         )
-    if user and not any(other.get("user") == user for other in others):
+    if user and not any(other.get("user") == user for other in live):
         run_command(
             ["kubectl", "config", "delete-user", user],
             description=f"Remove kubeconfig user: {user}",

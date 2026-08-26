@@ -47,11 +47,21 @@ def _ok() -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(["kubectl"], 0, "", "")
 
 
+def _without(view: dict, context: str) -> dict:
+    """The merged view kubectl reports once `context` has been deleted."""
+    return {**view, "contexts": [c for c in view["contexts"] if c["name"] != context]}
+
+
+def _views(pre: dict, context: str = "spi-stack-dev1", post: dict | None = None) -> list:
+    """The pair of `kubectl config view` reads one prune performs."""
+    return [pre, post if post is not None else _without(pre, context)]
+
+
 class TestPruneKubeContext:
     def test_removes_the_context_cluster_and_user(self):
         with (
             patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("spi.shell.kubectl_json", return_value=KUBECONFIG),
+            patch("spi.shell.kubectl_json", side_effect=_views(KUBECONFIG)),
             patch("spi.shell.run_command", return_value=_ok()) as run_command,
             patch("spi.shell.display_result"),
         ):
@@ -66,7 +76,7 @@ class TestPruneKubeContext:
     def test_keeps_a_cluster_and_user_another_context_still_uses(self):
         with (
             patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("spi.shell.kubectl_json", return_value=KUBECONFIG),
+            patch("spi.shell.kubectl_json", side_effect=_views(KUBECONFIG, "shared-a")),
             patch("spi.shell.run_command", return_value=_ok()) as run_command,
             patch("spi.shell.display_result"),
         ):
@@ -102,7 +112,7 @@ class TestPruneKubeContext:
         """Teardown runs no kubectl command the operator cannot see."""
         with (
             patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("spi.shell.kubectl_json", return_value=KUBECONFIG) as kubectl_json,
+            patch("spi.shell.kubectl_json", side_effect=_views(KUBECONFIG)) as kubectl_json,
             patch("spi.shell.run_command", return_value=_ok()),
             patch("spi.shell.display_result"),
         ):
@@ -151,6 +161,66 @@ class TestPruneKubeContext:
         display_result.assert_not_called()
 
 
+class TestPruneReadsTheKubeconfigAgain:
+    """A multi-file KUBECONFIG merges first-wins, and `delete-context` edits
+    only the file holding the winner. A shadowed context of the same name can
+    surface after the delete, carrying live references with it, so the
+    pre-delete view is not a sound basis for what to remove next."""
+
+    SHADOWED = {
+        **KUBECONFIG,
+        "contexts": [
+            {
+                "name": "spi-stack-dev1",
+                "context": {"cluster": "spi-stack-dev1", "user": "clusterUser_spi-stack-dev1"},
+            },
+        ],
+    }
+
+    def test_a_surfaced_context_keeps_the_cluster_and_user_it_references(self):
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch(
+                "spi.shell.kubectl_json",
+                side_effect=_views(self.SHADOWED, post=self.SHADOWED),
+            ),
+            patch("spi.shell.run_command", return_value=_ok()) as run_command,
+            patch("spi.shell.display_result"),
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        assert [call.args[0] for call in run_command.call_args_list] == [
+            ["kubectl", "config", "delete-context", "spi-stack-dev1"],
+        ]
+
+    def test_a_surfaced_context_keeps_the_selection(self):
+        active = {**self.SHADOWED, "current-context": "spi-stack-dev1"}
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", side_effect=_views(active, post=active)),
+            patch("spi.shell.run_command", return_value=_ok()) as run_command,
+            patch("spi.shell.display_result"),
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        verbs = [call.args[0][2] for call in run_command.call_args_list]
+        assert "unset" not in verbs
+
+    def test_an_unreadable_second_view_keeps_the_dependent_entries(self):
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", side_effect=[KUBECONFIG, None]),
+            patch("spi.shell.run_command", return_value=_ok()) as run_command,
+            patch("spi.shell.display_result") as display_result,
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        assert [call.args[0] for call in run_command.call_args_list] == [
+            ["kubectl", "config", "delete-context", "spi-stack-dev1"],
+        ]
+        display_result.assert_not_called()
+
+
 class TestPruneClearsTheActiveContext:
     """`kubectl config delete-context` removes the entry but leaves
     `current-context` naming it, so kubectl then fails with
@@ -161,7 +231,7 @@ class TestPruneClearsTheActiveContext:
     def test_the_deleted_context_is_cleared_when_it_was_active(self):
         with (
             patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("spi.shell.kubectl_json", return_value=self.ACTIVE),
+            patch("spi.shell.kubectl_json", side_effect=_views(self.ACTIVE)),
             patch("spi.shell.run_command", return_value=_ok()) as run_command,
             patch("spi.shell.display_result"),
         ):
@@ -175,7 +245,7 @@ class TestPruneClearsTheActiveContext:
         active_elsewhere = {**KUBECONFIG, "current-context": "shared-a"}
         with (
             patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("spi.shell.kubectl_json", return_value=active_elsewhere),
+            patch("spi.shell.kubectl_json", side_effect=_views(active_elsewhere)),
             patch("spi.shell.run_command", return_value=_ok()) as run_command,
             patch("spi.shell.display_result"),
         ):
@@ -205,7 +275,7 @@ class TestPruneChecksClusterIdentity:
     def test_prunes_when_the_context_serves_the_deleted_cluster(self):
         with (
             patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("spi.shell.kubectl_json", return_value=KUBECONFIG),
+            patch("spi.shell.kubectl_json", side_effect=_views(KUBECONFIG)),
             patch("spi.shell.run_command", return_value=_ok()) as run_command,
             patch("spi.shell.display_result"),
         ):

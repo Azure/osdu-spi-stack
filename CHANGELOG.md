@@ -54,9 +54,11 @@ corresponding [GitHub Release](https://github.com/Azure/osdu-spi-stack/releases)
   before the group goes away. Cluster names repeat across subscriptions, so
   both `spi up --env dev1` deployments write a `spi-stack-dev1` context, and
   matching on the name alone would strip the surviving cluster's credentials.
-  The cluster and user entries go only when no other context references them,
-  `current-context` is cleared when it named the removed context, and an
-  identity that cannot be established leaves the kubeconfig untouched.
+  The kubeconfig is re-read after the context is removed, so the cluster and
+  user entries go only when no context that survives the delete references
+  them, `current-context` is cleared only if it named the removed context and
+  nothing took its place, and an identity that cannot be established leaves
+  the kubeconfig untouched.
 - Ingress address discovery now scans LoadBalancer Services in the supported
   Istio namespaces instead of requiring one hardcoded Service name. `spi up`
   therefore records the available address in `GATEWAY_IP`, and `spi info`
