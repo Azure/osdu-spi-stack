@@ -126,6 +126,8 @@ spi down --env <env>
 
 This deletes the resource group, which removes the AKS cluster, every PaaS resource it provisioned, and the role assignments scoped at the resource group. The Key Vault enters soft-delete; the next `spi up --env <env>` recovers it in Phase 1 step 4.
 
+Once Azure reports the resource group gone, `spi down` prunes the kubeconfig entries the Phase 1 `az aks get-credentials` merged in. `az group delete --no-wait` returns on acceptance rather than completion, and an accepted delete can still fail, so acceptance alone is not enough to strip a cluster's credentials. Deletion that outruns the 60-second acknowledgement window leaves the context in place and says so. Cluster names repeat across subscriptions: `spi up --env dev1` run in two subscriptions builds two `spi-stack-dev1` clusters, and both write the same context name. `spi down` therefore reads the cluster's API server FQDN before deleting the resource group, and prunes the context only when the kubeconfig entry points at that server; tearing one down leaves the other's credentials alone. A lookup that comes back empty, from a cluster already deleted or one that never finished creating, leaves the kubeconfig untouched and says which check failed. The kubeconfig is then read a second time, because `delete-context` edits only the file holding the winning entry and a multi-file `KUBECONFIG` can surface a shadowed context of the same name. That post-delete view decides the rest: the cluster and user entries go only when no context that survived references them, so a kubeconfig shared with another cluster stays intact, and `current-context`, which `delete-context` leaves naming the entry it removed, is cleared only when nothing took that name's place. `spi down` requires only `az`, so a machine without kubectl skips the prune instead of failing the teardown. The two kubeconfig reads are silent; the command panels report what teardown changes, and every entry it removes gets one.
+
 ## Worked example: `spi up --env dev1`, what you should see
 
 ```bash
@@ -169,6 +171,7 @@ returns the gateway hostname / IP and (with `--show-secrets`) the Workload Ident
 - `src/spi/azure_infra.py` -- Azure infra provisioning (`provision_azure_infra`: RG, AKS, `main.bicep`, KV recovery)
 - `src/spi/bicep.py` -- `az deployment group create` wrapper
 - `src/spi/bootstrap.py` -- K8s bootstrap (namespaces, StorageClasses, Gateway API CRDs)
+- `src/spi/shell.py` -- command execution; `prune_kube_context()` clears the Phase 4 kubeconfig entries
 - `src/spi/secrets.py` -- middleware secret seed + `platform`/`osdu` credential Secrets
 - `src/spi/images.py` -- resolves and renders `osdu-image-lock`
 - `infra/aks.bicep`, `infra/main.bicep`, `infra/flux.bicep` -- the three Bicep entrypoints

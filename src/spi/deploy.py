@@ -52,7 +52,7 @@ from .ingress import (
 from .paths import INFRA_ROOT
 from .pins import PinError, live_pins, render_lock_with_pins
 from .secrets import ensure_secrets, get_or_create_seed
-from .shell import kubectl_apply_yaml, run_command, run_process
+from .shell import kubectl_apply_yaml, prune_kube_context, run_command, run_process
 from .templates import (
     istio_auth_resources,
     osdu_config_configmap,
@@ -434,9 +434,50 @@ def deploy_azure(
     _pin_gitops_source()
 
 
+def _cluster_api_server(config: Config) -> str:
+    """The API server FQDN of the cluster about to be deleted, or "".
+
+    Read while the resource group still exists, because it is what proves a
+    kubeconfig context belongs to this cluster rather than a same-named one
+    in another subscription. Comes back empty when the cluster is already
+    gone or was never created, and the prune then leaves the kubeconfig
+    alone. `privateFqdn` comes first because a private cluster populates both
+    fields, and `az aks get-credentials` without `--public-fqdn` is what wrote
+    the kubeconfig entry this is compared against.
+    """
+    result = run_command(
+        [
+            "az",
+            "aks",
+            "show",
+            "--resource-group",
+            config.resource_group,
+            "--name",
+            config.cluster_name,
+            "--query",
+            "privateFqdn || fqdn",
+            "--output",
+            "tsv",
+        ],
+        description=f"Look up API server for {config.cluster_name}",
+        display=False,
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
 def cleanup_azure(config: Config) -> None:
-    """Delete Azure resource group and all resources."""
+    """Delete Azure resource group and all resources.
+
+    The kubeconfig entries `spi up` merged in point at a cluster that is
+    about to stop answering, so they are pruned on the way out. The prune
+    waits for Azure to report the resource group gone; `--no-wait` returns on
+    acceptance, and an accepted delete can still fail afterwards.
+    """
     console.print("\n[bold]Cleaning up Azure resources...[/bold]")
+    api_server = _cluster_api_server(config)
     result = run_command(
         ["az", "group", "delete", "--name", config.resource_group, "--yes", "--no-wait"],
         description=f"Delete resource group: {config.resource_group}",
@@ -456,6 +497,7 @@ def cleanup_azure(config: Config) -> None:
             check=False,
         )
         if exists.returncode == 0 and exists.stdout.strip().lower() == "false":
+            prune_kube_context(config.cluster_name, server_fqdn=api_server)
             display_result(f"Resource group {config.resource_group} deleted")
             return
         time.sleep(10)
@@ -463,4 +505,8 @@ def cleanup_azure(config: Config) -> None:
     display_result("Cleanup accepted by Azure; deletion is continuing in the background")
     console.print(
         f"  [warning]Verify later with: az group exists --name {config.resource_group}[/warning]"
+    )
+    console.print(
+        f"  [warning]kubeconfig context {config.cluster_name} is left in place until the "
+        f"deletion is confirmed[/warning]"
     )

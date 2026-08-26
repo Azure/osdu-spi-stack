@@ -17,7 +17,9 @@
 ``run_command`` is the transparent front door used whenever an az/kubectl/
 flux/helm command should be visible to the operator. ``kubectl_apply_yaml``
 retries on transient kube-API errors. ``kubectl_json`` is the silent query
-helper used by status/info/guard where panel output would be noise.
+helper used where panel output would be noise: the panels show what the CLI
+changes, not what it reads. ``prune_kube_context`` clears the kubeconfig
+entries a deleted cluster leaves behind.
 
 Every process the CLI launches goes through ``run_process``. On native Windows, CLIs such as
 Azure CLI install as ``.cmd`` batch shims; ``CreateProcess`` cannot run a
@@ -43,12 +45,13 @@ import shutil
 import subprocess
 import time
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlsplit
 
 import typer
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from .console import console
+from .console import console, display_result
 
 TRANSIENT_KUBECTL_ERRORS = (
     "connection refused",
@@ -271,3 +274,173 @@ def kubectl_json(args: List[str]) -> Optional[Dict[str, Any]]:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
         return None
+
+
+def _kubeconfig_serves(view: Dict[str, Any], cluster: str, server_fqdn: str) -> bool:
+    """Whether the named kubeconfig cluster answers on ``server_fqdn``.
+
+    Compares the parsed hostname rather than testing for a substring: an
+    expected ``api.azmk8s.io`` also occurs inside
+    ``api.azmk8s.io.example.invalid``, so a substring test would clear a
+    context pointing at an entirely different host.
+
+    A server the URL parser rejects, such as an unmatched IPv6 bracket, is
+    an unproven identity like any other and leaves the kubeconfig alone.
+    The value comes from the operator's kubeconfig, and raising here would
+    abort a teardown whose resource group is already deleted.
+    """
+    for item in view.get("clusters") or []:
+        if item.get("name") == cluster:
+            server = (item.get("cluster") or {}).get("server", "")
+            try:
+                host = urlsplit(server).hostname or ""
+            except ValueError:
+                return False
+            return host.lower() == server_fqdn.lower()
+    return False
+
+
+# `kubectl config unset` writes to the file holding the winning value, so a
+# multi-file KUBECONFIG that names the deleted context more than once needs
+# one pass per file. Bounded because a value that will not clear must not spin.
+_MAX_SELECTION_CLEARS = 8
+
+
+def _clear_stale_selection(view: Dict[str, Any], context: str) -> Optional[Dict[str, Any]]:
+    """Clear `current-context` while it still selects the deleted context.
+
+    Returns the kubeconfig view left behind, or None when the operator has
+    been told the selection could not be cleared and the caller should stop.
+    A context that surfaces under the deleted name makes the selection valid
+    again and ends the loop.
+    """
+    for _ in range(_MAX_SELECTION_CLEARS):
+        if view.get("current-context") != context:
+            return view
+        if any(c.get("name") == context for c in view.get("contexts") or []):
+            return view
+
+        cleared = run_command(
+            ["kubectl", "config", "unset", "current-context"],
+            description="Clear the deleted context from current-context",
+            check=False,
+        )
+        if cleared.returncode != 0:
+            console.print(
+                f"  [warning]Removed kubeconfig context {context}, but could not clear it "
+                f"from current-context; kubectl will report it as not found[/warning]"
+            )
+            return None
+
+        view = kubectl_json(["config", "view"]) or {}
+        if not view:
+            console.print(
+                f"  [warning]Removed kubeconfig context {context}, but could not re-read "
+                f"the kubeconfig; its cluster and user entries are left in place[/warning]"
+            )
+            return None
+
+    console.print(
+        f"  [warning]Removed kubeconfig context {context}, but current-context still "
+        f"names it after {_MAX_SELECTION_CLEARS} attempts[/warning]"
+    )
+    return None
+
+
+def prune_kube_context(context: str, server_fqdn: str) -> None:
+    """Remove the kubeconfig entries left behind by a deleted cluster.
+
+    ``server_fqdn`` is the API server the torn-down cluster answered on, and
+    is what establishes that the context belongs to that cluster. Cluster
+    names repeat across subscriptions by design (``spi up --env dev1`` in two
+    subscriptions builds two ``spi-stack-dev1`` clusters), so matching on the
+    name alone would strip credentials for whichever one
+    ``az aks get-credentials`` wrote last. An empty value means the identity
+    could not be established; the entries stay, because leaving a stale
+    context costs a stale context, while guessing costs a live cluster its
+    credentials.
+
+    The cluster and user entries are deleted only when no context that
+    survives the delete still references them, so entries shared with another
+    context stay.
+    Best effort: the cluster is already gone by the time this runs, and
+    ``spi down`` does not require kubectl, so nothing here fails a teardown.
+    """
+    if not shutil.which("kubectl"):
+        return
+
+    view = kubectl_json(["config", "view"])
+    if view is None:
+        return
+
+    contexts = view.get("contexts") or []
+    target = next((c for c in contexts if c.get("name") == context), None)
+    if target is None:
+        return
+
+    entry = target.get("context") or {}
+    cluster = entry.get("cluster", "")
+    user = entry.get("user", "")
+
+    if not server_fqdn:
+        console.print(
+            f"  [warning]Could not confirm which cluster kubeconfig context {context} "
+            f"points at; leaving it in place[/warning]"
+        )
+        console.print(
+            "  [dim]A context of this name can belong to a same-named cluster in another "
+            "subscription; check which server it points at before removing it.[/dim]"
+        )
+        return
+
+    if not _kubeconfig_serves(view, cluster, server_fqdn):
+        console.print(
+            f"  [warning]kubeconfig context {context} does not resolve to the API server of "
+            f"the deleted cluster; leaving it in place[/warning]"
+        )
+        return
+
+    removed = run_command(
+        ["kubectl", "config", "delete-context", context],
+        description=f"Remove kubeconfig context: {context}",
+        check=False,
+    )
+    if removed.returncode != 0:
+        console.print(
+            f"  [warning]Could not remove kubeconfig context {context}; "
+            f"its cluster and user entries are left in place[/warning]"
+        )
+        return
+
+    # What survives the delete is the only sound basis for the reference and
+    # selection checks below. A multi-file KUBECONFIG merges first-wins, and
+    # delete-context edits only the file holding the winner, so a shadowed
+    # context of the same name can surface here and bring live references
+    # with it.
+    after = kubectl_json(["config", "view"])
+    if after is None:
+        console.print(
+            f"  [warning]Removed kubeconfig context {context}, but could not re-read the "
+            f"kubeconfig; its cluster and user entries are left in place[/warning]"
+        )
+        return
+
+    after = _clear_stale_selection(after, context)
+    if after is None:
+        return
+
+    live = [c.get("context") or {} for c in (after.get("contexts") or [])]
+    if cluster and not any(other.get("cluster") == cluster for other in live):
+        run_command(
+            ["kubectl", "config", "delete-cluster", cluster],
+            description=f"Remove kubeconfig cluster: {cluster}",
+            check=False,
+        )
+    if user and not any(other.get("user") == user for other in live):
+        run_command(
+            ["kubectl", "config", "delete-user", user],
+            description=f"Remove kubeconfig user: {user}",
+            check=False,
+        )
+
+    display_result(f"Removed kubeconfig context {context}")
