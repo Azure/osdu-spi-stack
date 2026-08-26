@@ -283,15 +283,18 @@ def _kubeconfig_serves(view: Dict[str, Any], cluster: str, server_fqdn: str) -> 
     return False
 
 
-def prune_kube_context(context: str, server_fqdn: str = "") -> None:
+def prune_kube_context(context: str, server_fqdn: str) -> None:
     """Remove the kubeconfig entries left behind by a deleted cluster.
 
-    ``server_fqdn`` is the API server the torn-down cluster answered on.
-    Cluster names repeat across subscriptions by design (``spi up --env dev1``
-    in two subscriptions builds two ``spi-stack-dev1`` clusters), so matching
-    on the name alone would strip credentials for whichever one
-    ``az aks get-credentials`` wrote last. An empty value falls back to the
-    name, which is the single-subscription case.
+    ``server_fqdn`` is the API server the torn-down cluster answered on, and
+    is what establishes that the context belongs to that cluster. Cluster
+    names repeat across subscriptions by design (``spi up --env dev1`` in two
+    subscriptions builds two ``spi-stack-dev1`` clusters), so matching on the
+    name alone would strip credentials for whichever one
+    ``az aks get-credentials`` wrote last. An empty value means the identity
+    could not be established; the entries stay, because leaving a stale
+    context costs a stale context, while guessing costs a live cluster its
+    credentials.
 
     The cluster and user entries are deleted only when no surviving context
     still references them, so entries shared with another context stay.
@@ -314,7 +317,17 @@ def prune_kube_context(context: str, server_fqdn: str = "") -> None:
     cluster = entry.get("cluster", "")
     user = entry.get("user", "")
 
-    if server_fqdn and not _kubeconfig_serves(view, cluster, server_fqdn):
+    if not server_fqdn:
+        console.print(
+            f"  [warning]Could not confirm which cluster kubeconfig context {context} "
+            f"points at; leaving it in place[/warning]"
+        )
+        console.print(
+            f"  [dim]Remove it by hand with: kubectl config delete-context {context}[/dim]"
+        )
+        return
+
+    if not _kubeconfig_serves(view, cluster, server_fqdn):
         console.print(
             f"  [warning]kubeconfig context {context} points at a different cluster; "
             f"leaving it in place[/warning]"

@@ -55,7 +55,7 @@ class TestPruneKubeContext:
             patch("spi.shell.run_command", return_value=_ok()) as run_command,
             patch("spi.shell.display_result"),
         ):
-            prune_kube_context("spi-stack-dev1")
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
 
         assert [call.args[0] for call in run_command.call_args_list] == [
             ["kubectl", "config", "delete-context", "spi-stack-dev1"],
@@ -70,7 +70,7 @@ class TestPruneKubeContext:
             patch("spi.shell.run_command", return_value=_ok()) as run_command,
             patch("spi.shell.display_result"),
         ):
-            prune_kube_context("shared-a")
+            prune_kube_context("shared-a", "shared.example")
 
         assert [call.args[0] for call in run_command.call_args_list] == [
             ["kubectl", "config", "delete-context", "shared-a"],
@@ -83,7 +83,7 @@ class TestPruneKubeContext:
             patch("spi.shell.run_command") as run_command,
             patch("spi.shell.display_result") as display_result,
         ):
-            prune_kube_context("spi-stack-never-deployed")
+            prune_kube_context("spi-stack-never-deployed", DEV1_FQDN)
 
         run_command.assert_not_called()
         display_result.assert_not_called()
@@ -94,7 +94,7 @@ class TestPruneKubeContext:
             patch("spi.shell.kubectl_json", return_value=None),
             patch("spi.shell.run_command") as run_command,
         ):
-            prune_kube_context("spi-stack-dev1")
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
 
         run_command.assert_not_called()
 
@@ -104,7 +104,7 @@ class TestPruneKubeContext:
             patch("spi.shell.kubectl_json") as kubectl_json,
             patch("spi.shell.run_command") as run_command,
         ):
-            prune_kube_context("spi-stack-dev1")
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
 
         kubectl_json.assert_not_called()
         run_command.assert_not_called()
@@ -117,7 +117,7 @@ class TestPruneKubeContext:
             patch("spi.shell.run_command", return_value=failure) as run_command,
             patch("spi.shell.display_result"),
         ):
-            prune_kube_context("spi-stack-dev1")
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
 
         assert all(call.kwargs["check"] is False for call in run_command.call_args_list)
 
@@ -131,7 +131,7 @@ class TestPruneKubeContext:
             patch("spi.shell.run_command", return_value=failure) as run_command,
             patch("spi.shell.display_result") as display_result,
         ):
-            prune_kube_context("spi-stack-dev1")
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
 
         assert [call.args[0] for call in run_command.call_args_list] == [
             ["kubectl", "config", "delete-context", "spi-stack-dev1"],
@@ -172,16 +172,20 @@ class TestPruneChecksClusterIdentity:
         run_command.assert_not_called()
         display_result.assert_not_called()
 
-    def test_an_unknown_api_server_falls_back_to_the_context_name(self):
+    def test_an_unknown_api_server_leaves_the_kubeconfig_alone(self):
+        """A resource group whose AKS creation failed, or a cluster already
+        deleted out of band, cannot prove the context is its own. Guessing
+        would cost a live same-named cluster its credentials."""
         with (
             patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
             patch("spi.shell.kubectl_json", return_value=KUBECONFIG),
-            patch("spi.shell.run_command", return_value=_ok()) as run_command,
-            patch("spi.shell.display_result"),
+            patch("spi.shell.run_command") as run_command,
+            patch("spi.shell.display_result") as display_result,
         ):
             prune_kube_context("spi-stack-dev1", server_fqdn="")
 
-        assert run_command.call_count == 3
+        run_command.assert_not_called()
+        display_result.assert_not_called()
 
 
 class TestCleanupPrunesTheContext:
@@ -226,9 +230,10 @@ class TestCleanupPrunesTheContext:
 
         verbs = [call.args[0][:3] for call in run_command.call_args_list]
         assert verbs[0] == ["az", "aks", "show"]
+        assert "fqdn || privateFqdn" in run_command.call_args_list[0].args[0]
         assert verbs[1] == ["az", "group", "delete"]
 
-    def test_an_unreadable_api_server_still_prunes_by_name(self):
+    def test_an_unreadable_api_server_reaches_the_prune_as_empty(self):
         from spi.config import Config
         from spi.deploy import cleanup_azure
 

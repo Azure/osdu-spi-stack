@@ -437,10 +437,12 @@ def deploy_azure(
 def _cluster_api_server(config: Config) -> str:
     """The API server FQDN of the cluster about to be deleted, or "".
 
-    Read while the resource group still exists so the kubeconfig prune can
-    tell this cluster apart from a same-named one in another subscription.
-    Empty for a private cluster (which reports `privateFqdn` instead) or a
-    resource group that is already gone; the prune then matches on name.
+    Read while the resource group still exists, because it is what proves a
+    kubeconfig context belongs to this cluster rather than a same-named one
+    in another subscription. Comes back empty when the cluster is already
+    gone or was never created, and the prune then leaves the kubeconfig
+    alone. `privateFqdn` covers a private cluster, whose kubeconfig carries
+    that name instead.
     """
     result = run_command(
         [
@@ -452,7 +454,7 @@ def _cluster_api_server(config: Config) -> str:
             "--name",
             config.cluster_name,
             "--query",
-            "fqdn",
+            "fqdn || privateFqdn",
             "--output",
             "tsv",
         ],
