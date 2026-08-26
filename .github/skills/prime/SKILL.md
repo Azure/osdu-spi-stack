@@ -1,85 +1,64 @@
 ---
 name: prime
-description: "Build a lightweight mental model of the osdu-spi-stack repo: structure, conventions, design decisions. Read this at the start of a session, after a long pause, or when re-orienting."
+description: "Orient in the osdu-spi-stack repo: where decisions and designs live, what is currently changing. Run at session start or when re-orienting after a pause."
 ---
 
-# Prime Codebase Understanding
+# Prime
 
-Build a quick mental model of `osdu-spi-stack` so you can answer questions and navigate
-the codebase confidently. The goal is orientation, not deep analysis -- stay under
-20k tokens of context and produce a concise summary the user can scan in 30 seconds.
+Load enough context to navigate `osdu-spi-stack` and to know where to look for
+anything else.
 
-## What NOT to read
+`AGENTS.md` is already in context. It covers the repository map, setup,
+validation commands, conventions, and scope rules. Do not re-derive or restate
+any of it. Prime adds what AGENTS.md lacks: the live indexes and the current
+state of the tree.
 
-Source code (`*.py` files), test bodies, individual Bicep modules, and Kubernetes
-manifest contents are off-limits during prime. Only list their existence. Reading
-them bloats context without adding orientation value. If deeper analysis is needed,
-the user will ask for it separately.
+Budget: once this skill is loaded, run exactly one shell batch, then write
+the report, under 20 lines. Nothing in between. No file reads.
 
-## Phase 1: Project Overview
+## 1. Capture current state
 
-Read these three files (in parallel). They are small and together give the full
-picture of what this project is and how it works.
+Run one command:
 
-| File | What to extract |
-|------|-----------------|
-| `README.md` | Purpose, install path, CLI commands, what gets deployed |
-| `.github/skills/prime/reference.md` | Project layout, CLI reference, key design decisions |
-| `pyproject.toml` | Python version, dependencies, CLI entry point |
-
-## Phase 2: Structure Map
-
-Run `git ls-files` and summarize the directory tree as a compact table, using the
-Project Layout section of `reference.md` as the guide to what each top-level
-directory contains. Count files per directory -- do not list individual files.
-Also run `git log --oneline -10` to capture recent activity -- include the last
-few commit subjects so the user knows what's been changing.
-
-## Phase 3: Architectural Decisions
-
-Read `docs/decisions/README.md` to get the ADR index. This file contains a table of
-all architectural decisions with their titles and rulings. Present the full index
-so the user (and you) know what decisions have been made and can reference them
-later. Do not read individual ADR files -- the index is sufficient for orientation.
-
-## Phase 4: Inventory
-
-Collect these in parallel -- names/counts only, no contents:
-
-### Design docs
-
-```
-docs/design/*.md
+```bash
+git log --oneline -8; git status --short --branch; ls docs/decisions docs/design src/spi
 ```
 
-List filenames so the user knows which subsystems have written-up design notes.
+The log shows what is moving. The listings are the indexes: ADR and design-doc
+filenames carry their titles, and `src/spi` module names describe the CLI's
+concerns, so nothing needs opening. The CLI's full surface is defined in
+`src/spi/cli.py`; open it only when a task touches the CLI.
 
-### Tests
+Translate to the local shell if needed, keeping the three listings labeled
+per directory the way `ls` labels them.
 
-```
-tests/**/*.py
-```
+If the shell is unavailable in this environment, say so in one line and go
+straight to the report using AGENTS.md alone. Do not reconstruct the batch with
+directory-listing tools, web fetches, or subagents; the information is not
+worth a second attempt.
 
-Report count and filenames only. Do not read test bodies.
+## 2. Report
 
-### CI workflows
+Answer in this shape, then stop. The shape applies to the prime report only;
+answer later questions in the session normally, without repeating it:
 
-```
-.github/workflows/*.yml
-```
+- **Stack** one sentence on what the repo deploys and by what mechanism
+  (restating AGENTS.md here is the intentional exception; it makes the report
+  self-contained).
+- **Indexes** where decisions and designs live, how many of each (count
+  numbered ADRs and substantive design docs, not READMEs or templates), and the rule
+  that a change to the deployment model starts with the governing ADR.
+- **In flight** the branch, the last few commit subjects, and whether the
+  tree is clean, naming the dirty paths if not.
+- **Next** two or three candidate entry points, drawn from the stated task if
+  there is one, otherwise from what the recent commits touch.
 
-List workflow filenames so the user can see what runs in CI.
+Leave out ADR rulings, test and workflow listings, file counts beyond the two
+index totals, and dependency versions. Point at `docs/decisions/` rather than reproducing the
+register; the user will ask for a specific record when they want one.
 
-## Phase 5: Summary
+## Out of scope
 
-Present a single concise markdown summary with these sections:
-
-- **Project** -- 1-2 sentence description (Azure-native OSDU deploy via AKS Automatic + Bicep + Flux GitOps)
-- **Tech** -- Python version, Typer/Rich/Pydantic, uv, Bicep, Flux CD, Helm/Kustomize
-- **CLI** -- Key commands: `check`, `up`, `down`, `status`, `info`, `reconcile`, `update`
-- **Structure** -- Directory table from Phase 2
-- **Decisions** -- ADR index from Phase 3 (titles + rulings)
-- **Design docs** -- Filenames from Phase 4
-- **Tests** -- Framework (pytest) and file count
-- **Recent activity** -- Last few commit subjects
-- **Next steps** -- Suggest what to explore for deeper analysis (e.g., read a specific ADR, look at `docs/design/deployment-lifecycle.md`, run `uv run spi check`)
+Source files, test bodies, Bicep modules, Kubernetes manifests, `README.md`,
+`pyproject.toml`, `docs/architecture.md`, and individual ADRs and design docs
+stay closed during prime. Open them when a task needs them.
