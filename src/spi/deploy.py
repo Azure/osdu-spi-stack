@@ -52,7 +52,7 @@ from .ingress import (
 from .paths import INFRA_ROOT
 from .pins import PinError, live_pins, render_lock_with_pins
 from .secrets import ensure_secrets, get_or_create_seed
-from .shell import kubectl_apply_yaml, run_command, run_process
+from .shell import kubectl_apply_yaml, prune_kube_context, run_command, run_process
 from .templates import (
     istio_auth_resources,
     osdu_config_configmap,
@@ -435,7 +435,12 @@ def deploy_azure(
 
 
 def cleanup_azure(config: Config) -> None:
-    """Delete Azure resource group and all resources."""
+    """Delete Azure resource group and all resources.
+
+    The kubeconfig entries `spi up` merged in point at a cluster that is
+    about to stop answering, so they are pruned once Azure accepts the
+    delete request.
+    """
     console.print("\n[bold]Cleaning up Azure resources...[/bold]")
     result = run_command(
         ["az", "group", "delete", "--name", config.resource_group, "--yes", "--no-wait"],
@@ -445,6 +450,8 @@ def cleanup_azure(config: Config) -> None:
     if result.returncode != 0:
         console.print(f"[error]Azure cleanup request failed for {config.resource_group}.[/error]")
         raise typer.Exit(code=1)
+
+    prune_kube_context(config.cluster_name)
 
     console.print("  [info]Waiting briefly for Azure to acknowledge the deletion...[/info]")
     deadline = time.time() + 60

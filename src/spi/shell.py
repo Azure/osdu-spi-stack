@@ -18,6 +18,8 @@
 flux/helm command should be visible to the operator. ``kubectl_apply_yaml``
 retries on transient kube-API errors. ``kubectl_json`` is the silent query
 helper used by status/info/guard where panel output would be noise.
+``prune_kube_context`` clears the kubeconfig entries a deleted cluster
+leaves behind.
 
 Every process the CLI launches goes through ``run_process``. On native Windows, CLIs such as
 Azure CLI install as ``.cmd`` batch shims; ``CreateProcess`` cannot run a
@@ -48,7 +50,7 @@ import typer
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from .console import console
+from .console import console, display_result
 
 TRANSIENT_KUBECTL_ERRORS = (
     "connection refused",
@@ -271,3 +273,49 @@ def kubectl_json(args: List[str]) -> Optional[Dict[str, Any]]:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
         return None
+
+
+def prune_kube_context(context: str) -> None:
+    """Remove the kubeconfig entries left behind by a deleted cluster.
+
+    The cluster and user entries are deleted only when no surviving context
+    still references them, so entries shared with another context stay.
+    Best effort: the cluster is already gone by the time this runs, and
+    ``spi down`` does not require kubectl, so nothing here fails a teardown.
+    """
+    if not shutil.which("kubectl"):
+        return
+
+    view = kubectl_json(["config", "view"])
+    if view is None:
+        return
+
+    contexts = view.get("contexts") or []
+    target = next((c for c in contexts if c.get("name") == context), None)
+    if target is None:
+        return
+
+    entry = target.get("context") or {}
+    cluster = entry.get("cluster", "")
+    user = entry.get("user", "")
+    others = [c.get("context") or {} for c in contexts if c.get("name") != context]
+
+    run_command(
+        ["kubectl", "config", "delete-context", context],
+        description=f"Remove kubeconfig context: {context}",
+        check=False,
+    )
+    if cluster and not any(other.get("cluster") == cluster for other in others):
+        run_command(
+            ["kubectl", "config", "delete-cluster", cluster],
+            description=f"Remove kubeconfig cluster: {cluster}",
+            check=False,
+        )
+    if user and not any(other.get("user") == user for other in others):
+        run_command(
+            ["kubectl", "config", "delete-user", user],
+            description=f"Remove kubeconfig user: {user}",
+            check=False,
+        )
+
+    display_result(f"Removed kubeconfig context {context}")

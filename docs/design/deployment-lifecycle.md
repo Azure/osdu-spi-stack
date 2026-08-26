@@ -126,6 +126,8 @@ spi down --env <env>
 
 This deletes the resource group, which removes the AKS cluster, every PaaS resource it provisioned, and the role assignments scoped at the resource group. The Key Vault enters soft-delete; the next `spi up --env <env>` recovers it in Phase 1 step 4.
 
+Once Azure accepts the delete request, `spi down` prunes the kubeconfig entries the Phase 1 `az aks get-credentials` merged in. The `spi-stack-<env>` context goes unconditionally; its cluster and user entries go only when no surviving context references them, so a kubeconfig shared with another cluster stays intact. The prune runs after the delete is accepted, never before: a rejected delete leaves a live cluster, and its context with it. `spi down` requires only `az`, so a machine without kubectl skips the prune instead of failing the teardown.
+
 ## Worked example: `spi up --env dev1`, what you should see
 
 ```bash
@@ -169,6 +171,7 @@ returns the gateway hostname / IP and (with `--show-secrets`) the Workload Ident
 - `src/spi/azure_infra.py` -- Azure infra provisioning (`provision_azure_infra`: RG, AKS, `main.bicep`, KV recovery)
 - `src/spi/bicep.py` -- `az deployment group create` wrapper
 - `src/spi/bootstrap.py` -- K8s bootstrap (namespaces, StorageClasses, Gateway API CRDs)
+- `src/spi/shell.py` -- command execution; `prune_kube_context()` clears the Phase 4 kubeconfig entries
 - `src/spi/secrets.py` -- middleware secret seed + `platform`/`osdu` credential Secrets
 - `src/spi/images.py` -- resolves and renders `osdu-image-lock`
 - `infra/aks.bicep`, `infra/main.bicep`, `infra/flux.bicep` -- the three Bicep entrypoints
