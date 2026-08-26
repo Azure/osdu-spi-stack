@@ -441,8 +441,9 @@ def _cluster_api_server(config: Config) -> str:
     kubeconfig context belongs to this cluster rather than a same-named one
     in another subscription. Comes back empty when the cluster is already
     gone or was never created, and the prune then leaves the kubeconfig
-    alone. `privateFqdn` covers a private cluster, whose kubeconfig carries
-    that name instead.
+    alone. `privateFqdn` comes first because a private cluster populates both
+    fields, and `az aks get-credentials` without `--public-fqdn` is what wrote
+    the kubeconfig entry this is compared against.
     """
     result = run_command(
         [
@@ -454,7 +455,7 @@ def _cluster_api_server(config: Config) -> str:
             "--name",
             config.cluster_name,
             "--query",
-            "fqdn || privateFqdn",
+            "privateFqdn || fqdn",
             "--output",
             "tsv",
         ],

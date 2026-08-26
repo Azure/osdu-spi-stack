@@ -45,6 +45,7 @@ import shutil
 import subprocess
 import time
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlsplit
 
 import typer
 from rich.panel import Panel
@@ -288,10 +289,17 @@ def kubectl_json(
 
 
 def _kubeconfig_serves(view: Dict[str, Any], cluster: str, server_fqdn: str) -> bool:
-    """Whether the named kubeconfig cluster answers on ``server_fqdn``."""
+    """Whether the named kubeconfig cluster answers on ``server_fqdn``.
+
+    Compares the parsed hostname rather than testing for a substring: an
+    expected ``api.azmk8s.io`` also occurs inside
+    ``api.azmk8s.io.example.invalid``, so a substring test would clear a
+    context pointing at an entirely different host.
+    """
     for item in view.get("clusters") or []:
         if item.get("name") == cluster:
-            return server_fqdn in (item.get("cluster") or {}).get("server", "")
+            server = (item.get("cluster") or {}).get("server", "")
+            return (urlsplit(server).hostname or "").lower() == server_fqdn.lower()
     return False
 
 
@@ -358,6 +366,13 @@ def prune_kube_context(context: str, server_fqdn: str) -> None:
             f"its cluster and user entries are left in place[/warning]"
         )
         return
+
+    if view.get("current-context") == context:
+        run_command(
+            ["kubectl", "config", "unset", "current-context"],
+            description="Clear the deleted context from current-context",
+            check=False,
+        )
 
     others = [c.get("context") or {} for c in contexts if c.get("name") != context]
     if cluster and not any(other.get("cluster") == cluster for other in others):

@@ -151,6 +151,52 @@ class TestPruneKubeContext:
         display_result.assert_not_called()
 
 
+class TestPruneClearsTheActiveContext:
+    """`kubectl config delete-context` removes the entry but leaves
+    `current-context` naming it, so kubectl then fails with
+    `current-context was not found` instead of the dead-cluster error."""
+
+    ACTIVE = {**KUBECONFIG, "current-context": "spi-stack-dev1"}
+
+    def test_the_deleted_context_is_cleared_when_it_was_active(self):
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", return_value=self.ACTIVE),
+            patch("spi.shell.run_command", return_value=_ok()) as run_command,
+            patch("spi.shell.display_result"),
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        assert ["kubectl", "config", "unset", "current-context"] in [
+            call.args[0] for call in run_command.call_args_list
+        ]
+
+    def test_another_context_stays_selected(self):
+        active_elsewhere = {**KUBECONFIG, "current-context": "shared-a"}
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", return_value=active_elsewhere),
+            patch("spi.shell.run_command", return_value=_ok()) as run_command,
+            patch("spi.shell.display_result"),
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        verbs = [call.args[0][2] for call in run_command.call_args_list]
+        assert "unset" not in verbs
+
+    def test_a_failed_context_delete_leaves_the_selection_alone(self):
+        failure = subprocess.CompletedProcess(["kubectl"], 1, "", "read-only")
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", return_value=self.ACTIVE),
+            patch("spi.shell.run_command", return_value=failure) as run_command,
+            patch("spi.shell.display_result"),
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        assert run_command.call_count == 1
+
+
 class TestPruneChecksClusterIdentity:
     """`spi up --env dev1` in two subscriptions builds two `spi-stack-dev1`
     clusters, so both write the same context name. Tearing one down must not
@@ -183,6 +229,28 @@ class TestPruneChecksClusterIdentity:
 
         run_command.assert_not_called()
         display_result.assert_not_called()
+
+    def test_a_server_that_merely_contains_the_fqdn_is_not_a_match(self):
+        """`api.azmk8s.io` occurs inside `api.azmk8s.io.example.invalid`, so a
+        substring test would clear a context pointing at another host."""
+        lookalike = {
+            "contexts": KUBECONFIG["contexts"],
+            "clusters": [
+                {
+                    "name": "spi-stack-dev1",
+                    "cluster": {"server": f"https://{DEV1_FQDN}.example.invalid"},
+                }
+            ],
+        }
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", return_value=lookalike),
+            patch("spi.shell.run_command") as run_command,
+            patch("spi.shell.display_result"),
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        run_command.assert_not_called()
 
     def test_an_unknown_api_server_leaves_the_kubeconfig_alone(self):
         """A resource group whose AKS creation failed, or a cluster already
@@ -242,7 +310,7 @@ class TestCleanupPrunesTheContext:
 
         verbs = [call.args[0][:3] for call in run_command.call_args_list]
         assert verbs[0] == ["az", "aks", "show"]
-        assert "fqdn || privateFqdn" in run_command.call_args_list[0].args[0]
+        assert "privateFqdn || fqdn" in run_command.call_args_list[0].args[0]
         assert verbs[1] == ["az", "group", "delete"]
 
     def test_an_unconfirmed_deletion_leaves_the_context_in_place(self):
