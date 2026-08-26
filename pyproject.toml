@@ -53,6 +53,8 @@ exclude = [
 # corporate networks that block pythonhosted.org can resolve. The proxy lags
 # new releases, so PyPI stays as the best-match fallback; both serve the same
 # public namespace. uv ignores pip.ini, so the index is declared here.
+# `uv sync` downloads from the sources recorded in uv.lock; after an index
+# change, run `uv lock --refresh` on an unrestricted network to re-source it.
 [tool.uv]
 index-strategy = "unsafe-best-match"
 
