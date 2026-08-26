@@ -33,19 +33,25 @@ From a checkout, invoke the CLI as `uv run spi`. The bare `spi` commands in
 `README.md` assume the released wheel installed via `uv tool install`; do not
 expect `spi` on PATH here.
 
-`pre-commit` wraps `ruff check`, `ruff format --check`, `ty check`, and
-`pytest -q` over `src tests`. Run it before every PR; run the individual tools
-when iterating on one kind of failure.
+`pre-commit` lints, formats, type-checks (`ty`), and tests in one pass. The
+ruff hooks auto-fix what they can and fail the run so you re-stage the
+corrected files. Run it before every PR; run individual tools from
+`.pre-commit-config.yaml` when iterating on one kind of failure.
 
 ## Conventions
 
 - **Commits and PR titles** follow [Conventional Commits](https://www.conventionalcommits.org/)
   (`feat`, `fix`, `docs`, `refactor`, `test`, `ci`, `style`, `chore`).
   Squash-merge uses the PR title as the release-note subject, so it must conform.
+  PR descriptions follow the shape in `CONTRIBUTING.md`: why first, then what
+  changed, then honest validation results.
 - **Branches** are named `<type>/<short-name>`, for example `feat/add-redis-component`.
 - **Code**: ruff line length 100 with import sorting; keep `ty` clean.
 - **Prose**: no em dashes; use commas, periods, or semicolons. Files under `docs/`
   additionally follow `docs/STYLE.md`.
+- **Comments** only where they add something the code cannot say: cross-file
+  coupling, an external contract, or why the obvious approach was not taken.
+  Keep them to a line or two; delete comments that restate the code.
 - **Transparency**: every `az` and `kubectl` command the CLI runs is shown to the
   user via a Rich panel before execution.
 
