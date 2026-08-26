@@ -3,7 +3,9 @@ name: Release
 # Merging the release-please PR creates a DRAFT release; the assets job
 # publishes it only after uploading the wheel, so /releases/latest never
 # serves a release without the spi-*-py3-none-any.whl that `spi update`
-# requires (src/spi/update.py). Publishing is what creates the vX.Y.Z tag.
+# requires (src/spi/update.py). The vX.Y.Z tag is created with the draft
+# (force-tag-creation), so release-please still finds the version if the
+# assets job fails before publishing.
 #
 # The App token matters: PRs opened with GITHUB_TOKEN never trigger
 # workflows, so validate.yml would not run on the release PR.
@@ -11,8 +13,8 @@ name: Release
 on:
   push:
     branches: [main]
-  # Rebuild assets for an already-published tag. A failed assets job on a
-  # still-draft release is recovered with "Re-run failed jobs" instead.
+  # Rebuild assets for an existing tag. Prefer "Re-run failed jobs" for a
+  # failed assets job on a still-draft release.
   workflow_dispatch:
     inputs:
       tag:
@@ -83,7 +85,7 @@ jobs:
             REF="$TAG"
           else
             TAG="$RP_TAG"
-            # The tag does not exist while the release is draft; build by SHA.
+            # Build the exact commit release-please recorded for the release.
             REF="$RP_SHA"
           fi
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected tag '$TAG'"; exit 1; }

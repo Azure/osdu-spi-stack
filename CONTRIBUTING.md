@@ -154,9 +154,9 @@ blocked by branch protection.
 Releases are driven by [release-please](https://github.com/googleapis/release-please).
 Every merge to `main` opens or updates a standing pull request titled
 `chore: release X.Y.Z` that carries the changelog and the computed version.
-To cut a release, merge that PR: release-please creates a draft GitHub
-Release, the assets job builds the wheel and sdist via `uv build`, uploads
-them, and publishes the release, which creates the `vX.Y.Z` tag.
+To cut a release, merge that PR: release-please tags `vX.Y.Z` and creates a
+draft GitHub Release; the assets job builds the wheel and sdist via
+`uv build`, uploads them, and publishes.
 
 To cut a specific version instead of the computed one (for example the jump
 to `1.0.0`), open a PR adding `"release-as": "X.Y.Z"` to the `"."` package
