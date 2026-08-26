@@ -98,6 +98,18 @@ class TestPruneKubeContext:
 
         run_command.assert_not_called()
 
+    def test_the_kubeconfig_read_is_shown_to_the_operator(self):
+        """Teardown runs no kubectl command the operator cannot see."""
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", return_value=KUBECONFIG) as kubectl_json,
+            patch("spi.shell.run_command", return_value=_ok()),
+            patch("spi.shell.display_result"),
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        assert kubectl_json.call_args.kwargs["display"] is True
+
     def test_teardown_without_kubectl_installed_is_a_no_op(self):
         with (
             patch("spi.shell.shutil.which", return_value=None),
