@@ -1,134 +1,175 @@
 # OSDU SPI Stack
 
+[![GitHub Release](https://img.shields.io/github/v/release/Azure/osdu-spi-stack)](https://github.com/Azure/osdu-spi-stack/releases)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-### Azure-Native Software for OSDU
+**Deploy [OSDU](https://osduforum.org/) to AKS Automatic using Azure-native services.**
 
-SPI Stack deploys the OSDU platform onto Azure using AKS Automatic and Azure PaaS services with a bootstrap + [Flux CD](https://fluxcd.io/) GitOps model. Infrastructure is provisioned via `az` CLI commands, then Flux continuously reconciles Kubernetes workloads from this Git repository.
+SPI Stack provisions Azure infrastructure, bootstraps AKS, and hands application
+lifecycle management to Flux GitOps. It gives developers and platform engineers a
+reproducible environment for evaluating OSDU on Azure.
 
-This project is currently optimized for Azure dev/test environments and is still evolving.
+> [!IMPORTANT]
+> SPI Stack is designed for development, testing, and platform evaluation. It is
+> not intended for production deployments.
 
-**Who this is for:**
+## Quick Start
 
-- Developers who want a reproducible Azure-based OSDU environment
-- Platform engineers evaluating OSDU with Azure PaaS services
+### 1. Install
 
+Install [`uv`](https://docs.astral.sh/uv/), then install the latest SPI Stack release.
 
-## Why SPI Stack
-
-- **Azure-native**: leverages CosmosDB, Service Bus, Storage, Key Vault, and Entra ID
-- **AKS Automatic**: managed Istio, Karpenter, and Deployment Safeguards out of the box
-- **GitOps-driven**: Flux continuously reconciles desired state after bootstrap
-- **Transparent**: every `az` and `kubectl` command is shown before execution
-- **Workload Identity**: no stored credentials; all Azure access via federated identity
-
-
-## Install
-
-The only tool you need is [`uv`](https://docs.astral.sh/uv/). Each
-[GitHub Release](https://github.com/Azure/osdu-spi-stack/releases) publishes a
-versioned `spi` wheel (`spi-X.Y.Z-py3-none-any.whl`); you install it directly
-from its GitHub Release URL.
-
-### Install the latest release
-
-These commands always resolve the newest release, so they never need updating
-between versions. Pick the one for your shell.
-
-**macOS / Linux (bash, zsh):**
+**macOS and Linux**
 
 ```bash
 uv tool install "$(curl -fsSL https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest \
   | grep -o 'https://github.com/Azure/osdu-spi-stack/releases/download/[^"]*-py3-none-any.whl')"
 ```
 
-**Windows (PowerShell):**
+**Windows PowerShell**
 
 ```powershell
 uv tool install (irm https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest).assets.where({ $_.name -like '*-py3-none-any.whl' }).browser_download_url
 ```
 
-Then verify:
+Verify the installation:
 
 ```bash
 spi --version
 ```
 
-After install the `spi` binary is on PATH; no `uv run` prefix.
+See [Installation](docs/install.md) for pinned versions, upgrades, and troubleshooting.
 
-### Install a specific version (reproducibility)
+### 2. Check prerequisites
 
-To pin an exact version — for CI, reproducible environments, or bug reports —
-install its wheel URL directly (same command on every platform):
-
-```bash
-uv tool install https://github.com/Azure/osdu-spi-stack/releases/download/v0.1.0/spi-0.1.0-py3-none-any.whl
-```
-
-Copy the wheel URL for any version from that release's page under
-[Releases](https://github.com/Azure/osdu-spi-stack/releases).
-
-### Upgrade
-
-After the first install, `spi` checks GitHub Releases and upgrades itself with
-no URL needed:
+Deployment requires `az`, Bicep, `kubectl`, `kubelogin`, Flux, and an Azure subscription
+where your identity can create resource groups, deploy the listed Azure services, and
+create role assignments.
 
 ```bash
-spi update           # check for a newer version and install it
-spi update --check   # check only; do not install
-spi update --force   # reinstall even if already on the latest version
-```
-
-On native Windows installs managed by `uv`, `spi update` intentionally exits
-before replacing the active tool environment. Run the manual recovery command it
-prints from a new terminal instead:
-
-```bash
-uv tool install --force <wheel-url>
-```
-
-> **Note:** `uv tool install git+https://github.com/...@vX.Y.Z` also works,
-> but the wheel-URL forms above are preferred because they preserve the
-> tag-derived version in `spi --version` reliably.
-
-## Quick Start
-
-Once installed:
-
-```bash
-# Check prerequisites
 spi check
+```
 
-# Deploy (provisions Azure resources + activates GitOps)
+### 3. Deploy
+
+```bash
 spi up --env dev1
+```
 
-# Multi-partition deploy (one CosmosDB + Service Bus + storage per partition)
+> [!NOTE]
+> A full deployment typically takes 45–50 minutes, dominated by AKS Automatic
+> provisioning.
+
+> [!WARNING]
+> `spi up` creates billable Azure resources. Cost varies by region, profile,
+> partition count, and runtime. Remove the environment when it is no longer needed.
+
+### 4. Inspect and remove
+
+```bash
+spi status          # Monitor deployment health
+spi info            # View endpoints
+
+# Delete the environment when finished
+spi down --env dev1
+```
+
+## Why SPI Stack
+
+- **Transparent:** Shows each `az` and `kubectl` command before running it.
+- **Azure-native services:** Uses Cosmos DB, Service Bus, Storage, Key Vault, and Entra ID.
+- **AKS Automatic:** Includes managed Istio, Karpenter, and Deployment Safeguards.
+- **GitOps-driven:** Flux owns in-cluster reconciliation after bootstrap.
+- **Secretless authentication:** Workloads access Azure through federated
+  Workload Identity.
+- **Multi-partition:** Creates isolated Cosmos DB, Service Bus, and Storage resources
+  for each OSDU partition.
+
+## Architecture
+
+![SPI Stack architecture](docs/diagrams/architecture.png)
+
+Bicep declares the Azure resources, the `spi` CLI orchestrates provisioning and
+cluster bootstrap, and Flux reconciles the Kubernetes workloads from this repository.
+OSDU services reach Azure PaaS through Workload Identity; no Azure access keys or
+SAS tokens are stored.
+
+See [Architecture](docs/architecture.md) for the control planes, deployment pipeline,
+namespace model, and service topology.
+
+## What It Deploys
+
+SPI Stack creates AKS Automatic plus the Azure services required by OSDU: Cosmos DB,
+Service Bus, Storage Accounts, Key Vault, Azure Container Registry, and Managed
+Identity.
+
+Flux deploys three application namespaces:
+
+| Namespace | Contents |
+|-----------|----------|
+| `foundation` | ECK, CNPG, cert-manager, and trust-manager |
+| `platform` | Elasticsearch, Redis, PostgreSQL, Airflow, and the Istio Gateway |
+| `osdu` | Core OSDU APIs, bootstrap jobs, schema load, and reference services |
+
+### Profiles
+
+| Profile | Deploys | Use when |
+|---------|---------|----------|
+| `core` (default) | Middleware and OSDU services | Evaluating the full stack |
+| `minimal` | Operators and middleware only | Developing or validating the platform layer |
+| `bare` | Azure infrastructure and activated GitOps | Iterating on infrastructure, identity, or custom workloads |
+
+See [Stack profiles](docs/architecture.md#stack-profiles) for the exact layer boundaries.
+
+## Deployment Options
+
+The default command creates the `opendes` partition and uses an Azure-assigned
+hostname. Common variations include:
+
+```bash
+# Multiple OSDU partitions
 spi up --env dev1 --partition opendes --partition tenant1
 
-# Pick an ingress mode (default: azure)
+# Hostnames in an existing Azure DNS zone
 spi up --env dev1 --ingress-mode dns --dns-zone example.com
-spi up --env dev1 --ingress-mode ip       # debug / smoke
 
-# Middleware only, no OSDU services
+# Middleware without OSDU services
 spi up --env dev1 --profile minimal
 ```
 
-### After Deploy
+See [Ingress modes](docs/architecture.md#ingress-profiles) and
+[Deployment lifecycle](docs/design/deployment-lifecycle.md) for the complete behavior.
 
-```bash
-spi status              # Deployment health dashboard
-spi status --watch      # Continuous refresh
-spi info                # Endpoints and credentials
+## Common Commands
 
-spi reconcile --suspend # Freeze: stop Flux auto-reconciliation
-spi reconcile --resume  # Unfreeze: resume Flux auto-reconciliation
+| Command | Purpose |
+|---------|---------|
+| `spi check` | Validate deployment prerequisites |
+| `spi up` | Provision Azure resources and activate GitOps |
+| `spi status` | Show deployment health and reconciliation progress |
+| `spi info` | Show cluster endpoints and optional credentials |
+| `spi reconcile` | Suspend, resume, or refresh Flux reconciliation |
+| `spi service` | Pin services to merge-request pipeline images |
+| `spi update` | Check for and install a newer CLI release |
+| `spi down` | Delete the environment's Azure resources |
 
-spi down --env dev1     # Tear down when done
-```
+Run `spi --help` or `spi <command> --help` for the complete command reference.
 
-## Development Setup
+## Documentation
 
-To work on `spi` itself rather than install it:
+- [Installation](docs/install.md): release installation, version pinning, and upgrades
+- [Architecture](docs/architecture.md): system overview and deployed components
+- [Deployment lifecycle](docs/design/deployment-lifecycle.md): provisioning and
+  reconciliation phases
+- [Flux reconciliation](docs/design/flux-reconciliation.md): image locks, refreshes,
+  and service pins
+- [Gateway and ingress](docs/design/gateway-ingress.md): hostname, TLS, and routing modes
+- [Workload Identity](docs/design/workload-identity.md): identity and Azure RBAC flow
+- [Architecture decisions](docs/decisions/): governing decisions and trade-offs
+
+## Development and Support
+
+To work on the CLI from a checkout:
 
 ```bash
 git clone https://github.com/Azure/osdu-spi-stack.git
@@ -137,123 +178,10 @@ uv sync
 uv run spi --help
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer workflow,
-including pre-commit setup, conventional commits, and the release process.
-
-
-## Operating Model
-
-SPI Stack is **GitOps + bootstrap**, not "pure GitOps from an empty cluster."
-
-The CLI performs a bootstrap phase:
-
-- Provision Azure PaaS resources (CosmosDB, Service Bus, Storage, Key Vault)
-- Create an AKS Automatic cluster with Managed Identity
-- Configure Workload Identity and RBAC role assignments
-- Bootstrap the cluster with namespaces, secrets, ConfigMap, and ServiceAccount
-- Activate the AKS native Flux extension pointing to this repo
-
-After that handoff, **Flux owns steady-state reconciliation** and continuously converges the cluster to the desired state.
-
-<details>
-<summary>Deployment phases</summary>
-
-1. **Core Infra**: Resource Group, AKS Automatic, Managed Identity, Key Vault, ACR
-2. **Data Infra**: CosmosDB (Gremlin + SQL), Service Bus, Storage Accounts
-3. **IAM**: Federated credentials, RBAC role assignments, Key Vault secrets
-4. **K8s Bootstrap**: Namespaces, StorageClasses, secrets, ConfigMap, ServiceAccount
-5. **GitOps**: AKS native Flux extension pointing to this repo
-
-A full `spi up` typically takes ~45-50 minutes, dominated by AKS Automatic provisioning (~30 min). Exact times vary by region.
-
-</details>
-
-<details>
-<summary>Environment isolation</summary>
-
-Use `--env` to run multiple isolated deployments. Each environment gets its own resource group and cluster (e.g., `spi-stack-dev1`, `spi-stack-team`).
-
-```bash
-uv run spi up --env dev1
-uv run spi up --env staging
-```
-
-</details>
-
-
-## What It Deploys
-
-Three namespaces, deployed in dependency order via a 7-layer Kustomization stack:
-
-| Namespace | Layer | Deploys |
-|-----------|-------|---------|
-| **foundation** | Operators | ECK (Elasticsearch), CNPG (PostgreSQL), cert-manager |
-| **platform** | Middleware | Elasticsearch, Redis (TLS), PostgreSQL (Airflow), Airflow, Istio Gateway |
-| **osdu** | Services | partition, entitlements, legal, schema, storage, search, indexer, file, workflow + 3 reference services |
-
-### Profiles
-
-`--profile` selects how much of that stack Flux reconciles:
-
-| Profile | Deploys |
-|---------|---------|
-| `core` (default) | Everything above. |
-| `minimal` | `foundation` and `platform` only — operators, cert-manager, trust-manager, Gateway, Elasticsearch, Redis, PostgreSQL, Airflow. No OSDU services. |
-| `bare` | Nothing; infra plus activated GitOps only. Flux reconciles empty stack and ingress trees. The CLI bootstrap seeds namespaces, secrets, the `osdu-config` ConfigMap, and the Workload Identity ServiceAccount. |
-
-Use `minimal` when you are working on the middleware itself and the OSDU services would only add deploy time. The middleware layers are identical between profiles, so what you validate on `minimal` holds on `core`.
-
-Use `bare` for Bicep, Workload Identity, or RBAC iteration, or for bring-your-own workloads. Re-run `spi up` with `minimal` or `core` to add workloads later.
-
-### Azure PaaS Resources
-
-| Resource | Purpose |
-|----------|---------|
-| AKS Automatic | Kubernetes with managed Istio, Karpenter, Safeguards |
-| CosmosDB Gremlin | Entitlements graph |
-| CosmosDB SQL | OSDU operational data (per partition) |
-| Service Bus | Async messaging (per partition, 14 topics) |
-| Storage Accounts | Blob/table storage (common + per partition) |
-| Key Vault | Centralized secret management |
-| Managed Identity | Workload Identity for all OSDU services |
-
-
-## Prerequisites
-
-Everything is discovered by the CLI:
-
-```bash
-uv run spi check
-```
-
-**Required tools**: az, bicep, kubectl, kubelogin, flux
-
-**System requirements**: Azure subscription with permissions to create resource groups and AKS clusters.
-
-
-## CLI Reference
-
-```
-uv run spi <command> [OPTIONS]
-
-Commands:
-  check      Validate required tools are installed
-  up         Provision Azure infra and deploy the stack   --env NAME [--profile] [--partition] [--ingress-mode] [--dns-zone] [--dry-run]
-  status     Deployment health dashboard                  [--watch]
-  down       Delete all Azure resources                   --env NAME
-  info       Show endpoints and optional credentials      [--show-secrets]
-  reconcile  Force Flux to re-sync from Git               [--suspend] [--resume] [--refresh-images]
-  service    Pin services to MR pipeline images           pin <name> --mr <iid> | reset <name> | list
-```
-
-Use `--dry-run` on `spi up` to preview the Bicep changes (`az deployment group what-if`) before any Azure resources are created beyond the resource group. `--profile` defaults to `core`; `minimal` deploys middleware only, and `bare` activates GitOps against empty stack and ingress trees. `--ingress-mode` defaults to `azure`; the other supported modes are `dns` (per-service hostnames on an owned Azure DNS zone) and `ip` (bare IP, debug only). `--ingress-mode` and `--dns-zone` are rejected with `bare`. `--refresh-images` re-resolves the OSDU community image tags and reconciles the service Kustomizations; active `spi service` pins are overlaid into the refreshed lock rather than reverted (see `docs/design/flux-reconciliation.md`).
-
-
-## Documentation
-
-- [Architecture](docs/architecture.md)  -- 30,000-ft overview of the system
-- [Design docs](docs/design/)  -- how subsystems actually work (deployment lifecycle, Bicep, Flux, Workload Identity, ingress, secrets)
-- [ADRs](docs/decisions/)  -- decision records with alternatives considered
+Development workflow and contribution requirements are in
+[CONTRIBUTING.md](CONTRIBUTING.md). For support boundaries and reporting guidance, see
+[SUPPORT.md](SUPPORT.md). Bugs and feature requests are tracked in [GitHub
+Issues](https://github.com/Azure/osdu-spi-stack/issues).
 
 ## License
 
@@ -273,10 +201,8 @@ using our CLA.
 
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/)
-or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the developer workflow, including pre-commit setup,
-conventional commits, and the release process.
+or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional
+questions or comments.
 
 ## Trademarks
 

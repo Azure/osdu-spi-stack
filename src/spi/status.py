@@ -438,7 +438,7 @@ def render_status():
             Panel(
                 "[bold yellow]GitRepository is SUSPENDED[/bold yellow] -- "
                 "Flux will not auto-reconcile new commits.\n"
-                "[dim]Run 'uv run spi reconcile --resume' to unfreeze.[/dim]",
+                "[dim]Run 'spi reconcile --resume' to unfreeze.[/dim]",
                 border_style="yellow",
             )
         )
