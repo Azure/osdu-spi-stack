@@ -3,12 +3,11 @@
 //
 // Shared storage account (common across partitions) for OSDU platform
 // artifacts: Airflow logs/dags, shared reference data, partition-info table.
-// Container list mirrors COMMON_STORAGE_CONTAINERS from azure_infra.py.
 
-@description('Storage account name (globally unique, 3-24 lowercase alphanumeric).')
+@description('Globally unique storage account name of 3-24 lowercase alphanumeric characters.')
 param name string
 
-@description('Azure region.')
+@description('Azure region where the shared storage account is deployed.')
 param location string
 
 var containerNames = [
@@ -36,6 +35,7 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   properties: {
     accessTier: 'Hot'
     minimumTlsVersion: 'TLS1_2'
+    // Public blob and shared-key access are disabled; workloads use Entra RBAC.
     allowBlobPublicAccess: false
     allowSharedKeyAccess: false
     defaultToOAuthAuthentication: true
@@ -63,4 +63,5 @@ resource tables 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-01-
   name: tableName
 }]
 
+@description('Azure resource ID of the storage account shared across partitions.')
 output resourceId string = storageAccount.id

@@ -1,13 +1,13 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// Key Vault with RBAC authorization. Soft-delete recovery is handled
-// by the CLI pre-check before this template runs; no recovery logic here.
+// Soft-deleted vault recovery requires a live lookup and is performed by the
+// CLI before this module runs.
 
-@description('Key Vault name (globally unique, 3-24 alphanumeric).')
+@description('Globally unique Key Vault name of 3-24 characters, using alphanumerics and nonconsecutive hyphens; must start with a letter and end with an alphanumeric character.')
 param name string
 
-@description('Azure region.')
+@description('Azure region where the Key Vault is deployed.')
 param location string
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
@@ -19,9 +19,11 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
       name: 'standard'
     }
     tenantId: tenant().tenantId
+    // Data-plane access uses Azure RBAC rather than Key Vault access policies.
     enableRbacAuthorization: true
     enableSoftDelete: true
     softDeleteRetentionInDays: 90
+    // VM, disk encryption, and ARM template integrations cannot read secrets.
     enabledForDeployment: false
     enabledForDiskEncryption: false
     enabledForTemplateDeployment: false
@@ -29,5 +31,8 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
+@description('Azure resource ID of the Key Vault.')
 output resourceId string = keyVault.id
+
+@description('Vault URI used by workloads to retrieve secrets.')
 output uri string = keyVault.properties.vaultUri

@@ -4,49 +4,39 @@
 // Private network for AKS Automatic: VNet + NAT gateway + private subnets.
 //
 // Exists specifically to satisfy the "Subnets should be private" Azure
-// Policy (definition 7bca8353-aa3b-429b-904a-9229c4385837) that ships
-// enabled on Microsoft corporate tenants. The policy rejects any subnet
-// where ``defaultOutboundAccess`` is not explicitly ``false``. AKS's own
-// managed-VNet path does not set this property, so the VNet must be
+// Policy (definition 7bca8353-aa3b-429b-904a-9229c4385837). The policy rejects
+// any subnet where ``defaultOutboundAccess`` is not explicitly ``false``.
+// AKS Automatic's managed-VNet path does not set this property, so the VNet is
 // pre-created and passed in via ``vnetSubnetID``/``hostedSystemProfile``
 // on the managed cluster.
-//
-// Outbound connectivity is provided by a user-assigned NAT Gateway with
-// a Standard SKU public IP; the AKS cluster sets
-// ``outboundType: 'userAssignedNATGateway'`` to attach to it.
-//
-// This module is invoked from ``infra/aks.bicep`` so the VNet and the
-// cluster are provisioned in the same deployment and the subnet ID can
-// be passed through a module output rather than threaded through the
-// CLI.
 
 targetScope = 'resourceGroup'
 
-@description('VNet name.')
+@description('Resource name for the AKS virtual network.')
 param vnetName string
 
-@description('Subnet name for AKS user nodes and pods.')
+@description('Name of the subnet used by AKS user nodes.')
 param subnetName string = 'aks-subnet'
 
-@description('Subnet name for the AKS Automatic API server (VNet integration).')
+@description('Name of the delegated subnet used for AKS API server VNet integration.')
 param apiServerSubnetName string = 'apiserver-subnet'
 
-@description('Subnet name for AKS Automatic managed system nodes.')
+@description('Name of the subnet used by AKS Automatic managed system nodes.')
 param systemNodeSubnetName string = 'systemnode-subnet'
 
-@description('NAT Gateway name (user-assigned, attached to the subnet).')
+@description('Resource name for the NAT gateway attached to the node subnets.')
 param natGatewayName string
 
-@description('Public IP name for the NAT Gateway (Standard SKU).')
+@description('Resource name for the public IP assigned to the NAT gateway.')
 param publicIpName string
 
-@description('Azure region.')
+@description('Azure region where the network resources are deployed.')
 param location string = resourceGroup().location
 
-@description('VNet address space.')
+@description('CIDR address space containing all AKS subnets.')
 param vnetAddressPrefix string = '10.240.0.0/16'
 
-@description('User node subnet address prefix (must be within vnetAddressPrefix).')
+@description('CIDR prefix for the user node subnet; must be within vnetAddressPrefix.')
 param subnetAddressPrefix string = '10.240.0.0/17'
 
 @description('API server subnet address prefix. Must be a distinct /28 or larger delegated to Microsoft.ContainerService/managedClusters.')
@@ -54,10 +44,6 @@ param apiServerSubnetAddressPrefix string = '10.240.128.0/28'
 
 @description('Managed system node subnet address prefix. Must be distinct from the user node and API server subnets.')
 param systemNodeSubnetAddressPrefix string = '10.240.128.64/26'
-
-// ──────────────────────────────────────────────
-// Public IP + NAT Gateway (outbound for the private subnet)
-// ──────────────────────────────────────────────
 
 resource publicIp 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
   name: publicIpName
@@ -87,15 +73,9 @@ resource natGateway 'Microsoft.Network/natGateways@2024-01-01' = {
   }
 }
 
-// ──────────────────────────────────────────────
-// VNet + private subnets
-// ──────────────────────────────────────────────
-//
 // The subnet explicitly sets ``defaultOutboundAccess: false`` to satisfy
 // Azure Policy "Subnets should be private". Outbound egress still flows
-// through the attached NAT Gateway; the flag only disables Azure's
-// implicit default-outbound-SNAT (which is being retired in September
-// 2025 anyway, so this also future-proofs the deployment).
+// through the attached NAT gateway; the flag disables implicit outbound SNAT.
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
@@ -108,9 +88,8 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
     }
     subnets: [
       {
-        // Dedicated user node subnet for AKS Automatic node
-        // autoprovisioning. The NAT gateway is attached because the
-        // cluster uses ``outboundType: 'userAssignedNATGateway'``.
+        // The NAT gateway is required by the cluster's
+        // ``userAssignedNATGateway`` outbound mode.
         name: subnetName
         properties: {
           addressPrefix: subnetAddressPrefix
@@ -121,10 +100,8 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         }
       }
       {
-        // Dedicated managed system node subnet required by AKS Automatic
-        // custom networking. Without this, the service-created
-        // "hostedpool" stays on the managed VNet path and rejects the
-        // user-assigned NAT gateway.
+        // AKS Automatic custom networking requires a managed system node
+        // subnet; without it, the hosted pool rejects the user-assigned NAT gateway.
         name: systemNodeSubnetName
         properties: {
           addressPrefix: systemNodeSubnetAddressPrefix
@@ -135,12 +112,8 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         }
       }
       {
-        // Dedicated API server subnet required by AKS Automatic
-        // (API Server VNet Integration). Must be delegated to
-        // Microsoft.ContainerService/managedClusters. Must also be
-        // private (``defaultOutboundAccess: false``) to satisfy the
-        // same Azure Policy that drove us to BYO VNet in the first
-        // place.
+        // API server VNet integration requires a dedicated subnet delegated
+        // to Microsoft.ContainerService/managedClusters.
         name: apiServerSubnetName
         properties: {
           addressPrefix: apiServerSubnetAddressPrefix
@@ -159,17 +132,32 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   }
 }
 
-// ──────────────────────────────────────────────
-// Outputs
-// ──────────────────────────────────────────────
-
+@description('Azure resource ID of the AKS virtual network.')
 output vnetId string = vnet.id
+
+@description('Resource name of the AKS virtual network.')
 output vnetName string = vnet.name
+
+@description('Azure resource ID of the user node subnet.')
 output subnetId string = '${vnet.id}/subnets/${subnetName}'
+
+@description('Resource name of the user node subnet.')
 output subnetName string = subnetName
+
+@description('Azure resource ID of the managed system node subnet.')
 output systemNodeSubnetId string = '${vnet.id}/subnets/${systemNodeSubnetName}'
+
+@description('Resource name of the managed system node subnet.')
 output systemNodeSubnetName string = systemNodeSubnetName
+
+@description('Azure resource ID of the API server subnet.')
 output apiServerSubnetId string = '${vnet.id}/subnets/${apiServerSubnetName}'
+
+@description('Resource name of the API server subnet.')
 output apiServerSubnetName string = apiServerSubnetName
+
+@description('Azure resource ID of the NAT gateway used for cluster egress.')
 output natGatewayId string = natGateway.id
+
+@description('Azure resource ID of the public IP assigned to the NAT gateway.')
 output publicIpId string = publicIp.id
