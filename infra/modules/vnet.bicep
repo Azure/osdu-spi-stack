@@ -15,7 +15,7 @@ targetScope = 'resourceGroup'
 @description('Resource name for the AKS virtual network.')
 param vnetName string
 
-@description('Name of the subnet used by AKS user nodes and pods.')
+@description('Name of the subnet used by AKS user nodes.')
 param subnetName string = 'aks-subnet'
 
 @description('Name of the delegated subnet used for AKS API server VNet integration.')
