@@ -62,13 +62,18 @@ index-strategy = "unsafe-best-match"
 name = "microsoft-pypi-proxy"
 url = "https://packagefeedproxy.microsoft.io/pypi/simple/"
 
+# ruff resolves from the proxy only: best-match would otherwise chase PyPI's
+# newest release, which the proxy has not ingested, and break corporate sync.
+[tool.uv.sources]
+ruff = { index = "microsoft-pypi-proxy" }
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "pyyaml>=6.0.3",
-    "ruff>=0.16.4",
+    "ruff>=0.16.3",
     "ty>=0.0.73",
 ]
 
