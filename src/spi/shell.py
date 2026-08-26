@@ -295,11 +295,20 @@ def _kubeconfig_serves(view: Dict[str, Any], cluster: str, server_fqdn: str) -> 
     expected ``api.azmk8s.io`` also occurs inside
     ``api.azmk8s.io.example.invalid``, so a substring test would clear a
     context pointing at an entirely different host.
+
+    A server the URL parser rejects, such as an unmatched IPv6 bracket, is
+    an unproven identity like any other and leaves the kubeconfig alone.
+    The value comes from the operator's kubeconfig, and raising here would
+    abort a teardown whose resource group is already deleted.
     """
     for item in view.get("clusters") or []:
         if item.get("name") == cluster:
             server = (item.get("cluster") or {}).get("server", "")
-            return (urlsplit(server).hostname or "").lower() == server_fqdn.lower()
+            try:
+                host = urlsplit(server).hostname or ""
+            except ValueError:
+                return False
+            return host.lower() == server_fqdn.lower()
     return False
 
 

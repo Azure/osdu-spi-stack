@@ -252,6 +252,24 @@ class TestPruneChecksClusterIdentity:
 
         run_command.assert_not_called()
 
+    def test_a_server_the_url_parser_rejects_is_not_a_match(self):
+        """`urlsplit` raises on an unmatched IPv6 bracket. The value comes from
+        the operator's kubeconfig, and the resource group is already deleted by
+        the time this runs, so raising would abort a successful teardown."""
+        malformed = {
+            "contexts": KUBECONFIG["contexts"],
+            "clusters": [{"name": "spi-stack-dev1", "cluster": {"server": "https://[::1:443"}}],
+        }
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", return_value=malformed),
+            patch("spi.shell.run_command") as run_command,
+            patch("spi.shell.display_result"),
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        run_command.assert_not_called()
+
     def test_an_unknown_api_server_leaves_the_kubeconfig_alone(self):
         """A resource group whose AKS creation failed, or a cluster already
         deleted out of band, cannot prove the context is its own. Guessing
