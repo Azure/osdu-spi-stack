@@ -120,8 +120,8 @@ def _show_next_steps(config: Config):
         table.add_row("Check operators", "kubectl get pods -n foundation")
         table.add_row("Check middleware", "kubectl get pods -n platform")
         table.add_row("Check services", "kubectl get pods -n osdu")
-    table.add_row("View status", "uv run spi status")
-    table.add_row("Cleanup", f"uv run spi down{config.env_flag}")
+    table.add_row("View status", "spi status")
+    table.add_row("Cleanup", f"spi down{config.env_flag}")
 
     console.print(table)
 
@@ -632,7 +632,7 @@ def reconcile(
             description="Suspend GitRepository (freeze reconciliation)",
         )
         console.print("[warning]GitRepository suspended.[/warning]")
-        console.print("[dim]Run 'uv run spi reconcile --resume' to unfreeze.[/dim]")
+        console.print("[dim]Run 'spi reconcile --resume' to unfreeze.[/dim]")
         return
 
     # spi-namespaces substitutes ISTIO_REVISION from spi-cluster-config, and
