@@ -1,17 +1,14 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// CosmosDB Gremlin account for the OSDU Entitlements graph.
-// Single-region, Session consistency, autoscale up to 4000 RU/s.
-// Local/key auth is disabled; Entitlements must use Microsoft Entra tokens.
 
-@description('CosmosDB Gremlin account name.')
+@description('Globally unique name of the Cosmos DB Gremlin account used by Entitlements.')
 param name string
 
-@description('Azure region.')
+@description('Azure region where the Gremlin account is deployed.')
 param location string
 
-@description('Principal ID (object ID) of the OSDU managed identity that accesses Gremlin data.')
+@description('Principal ID of the OSDU workload identity granted Gremlin data-plane access.')
 param principalId string
 
 var gremlinDataContributorRoleId = '00000000-0000-0000-0000-000000000004'
@@ -22,6 +19,7 @@ resource gremlinAccount 'Microsoft.DocumentDB/databaseAccounts@2023-11-15' = {
   kind: 'GlobalDocumentDB'
   properties: {
     databaseAccountOfferType: 'Standard'
+    // Entitlements uses Entra-backed Workload Identity for data-plane access.
     disableLocalAuth: true
     consistencyPolicy: {
       defaultConsistencyLevel: 'Session'
@@ -72,9 +70,8 @@ resource entitlementsGraph 'Microsoft.DocumentDB/databaseAccounts/gremlinDatabas
   }
 }
 
-// Gremlin data-plane role for the OSDU managed identity: the Entra-token path
-// Entitlements uses now that local auth is disabled. Cosmos-native RBAC (not
-// `az role assignment`), ~5-15 minute propagation.
+// Cosmos Gremlin RBAC is data-plane native, not an Azure role assignment.
+// This role is required because local authentication is disabled.
 resource osduIdentityGremlinDataContributor 'Microsoft.DocumentDB/databaseAccounts/gremlinRoleAssignments@2024-12-01-preview' = {
   parent: gremlinAccount
   name: guid(gremlinAccount.id, principalId, gremlinDataContributorRoleId)
@@ -85,5 +82,8 @@ resource osduIdentityGremlinDataContributor 'Microsoft.DocumentDB/databaseAccoun
   }
 }
 
+@description('Azure resource ID of the Cosmos DB Gremlin account.')
 output resourceId string = gremlinAccount.id
+
+@description('Document endpoint used by Entitlements to connect to the Gremlin account.')
 output documentEndpoint string = gremlinAccount.properties.documentEndpoint

@@ -1,53 +1,37 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// AKS Automatic cluster + managed Istio.
+// AKS Automatic cluster with managed Istio. The BYO VNet requires a dedicated
+// control-plane identity; the pod workload identity is created separately by
+// main.bicep from this template's OIDC issuer output.
 //
-// Scope: only the AKS cluster. The cluster uses a system-assigned
-// managed identity (required by Automatic when the managed vnet path is
-// used). Workload identity for pods is a SEPARATE user-assigned identity
-// created in infra/main.bicep after this template outputs the OIDC
-// issuer URL for federated credentials.
-//
-// One post-deploy imperative step remains: use `az aks mesh
-// enable-istio-cni` to flip managed Istio to CNIChaining. The resource
-// provider rejects proxyRedirectionMechanism at create time even though
-// newer schemas expose it.
+// The CLI enables Istio CNI chaining after deployment because the resource
+// provider rejects proxyRedirectionMechanism during cluster creation.
 
 targetScope = 'resourceGroup'
 
-// ──────────────────────────────────────────────
-// Parameters
-// ──────────────────────────────────────────────
-
-@description('AKS cluster name.')
+@description('Resource name for the AKS Automatic cluster.')
 param clusterName string
 
-@description('Azure region.')
+@description('Azure region where the cluster and its network resources are deployed.')
 param location string = resourceGroup().location
 
-@description('Kubernetes version for the cluster. Must be >= 1.36: earlier AKS Automatic versions block all MutatingWebhookConfigurations (cert-manager, CNPG) at the authorization layer.')
+@description('Kubernetes version accepted by AKS; must be 1.36 or later because required operators use mutating webhooks.')
 param kubernetesVersion string = '1.36'
 
-@description('VM size for the system pool. D4lds_v5 has a 150 GiB cache that fits the 128 GiB default ephemeral OS disk.')
+@description('VM SKU for the system pool; its cache must accommodate the ephemeral OS disk.')
 param systemPoolVmSize string = 'Standard_D4lds_v5'
 
-@description('Availability zones for the system pool. Default is all three; override for regions with zonal capacity or quota gaps (e.g. eastus2 rejects zone 2 for some VM sizes).')
+@description('Availability zones for the system pool; each must support the selected VM SKU and regional quota.')
 param availabilityZones array = [
   '1'
   '2'
   '3'
 ]
 
-// ──────────────────────────────────────────────
-// Private network (BYO VNet)
-// ──────────────────────────────────────────────
-//
-// AKS Automatic's managed-VNet path is blocked on Microsoft corporate
-// tenants by the "Subnets should be private" Azure Policy, which
-// requires ``defaultOutboundAccess: false`` on every subnet. The
-// managed VNet does not set that flag, so we pre-create a VNet and
-// subnet here and pass the subnet ID into the cluster.
+// The "Subnets should be private" Azure Policy requires
+// ``defaultOutboundAccess: false``, which the managed-VNet path does not set.
+// A pre-created VNet is therefore required in subscriptions enforcing the policy.
 
 module vnetModule 'modules/vnet.bicep' = {
   name: 'spi-aks-vnet'
@@ -59,22 +43,13 @@ module vnetModule 'modules/vnet.bicep' = {
   }
 }
 
-// ──────────────────────────────────────────────
-// Cluster control-plane identity (UAMI)
-// ──────────────────────────────────────────────
-//
 // AKS Automatic + BYO VNet rejects SAMI with
-// ``OnlySupportedOnUserAssignedMSICluster``. This is a DIFFERENT
-// identity from the OSDU workload identity in infra/main.bicep; this
-// one is consumed only by the cluster control plane to reconcile
-// network resources in the pre-existing VNet.
+// ``OnlySupportedOnUserAssignedMSICluster``. This identity is used only by the
+// control plane to reconcile the pre-existing VNet, not by OSDU workloads.
 //
 // The UAMI needs ``Network Contributor`` on the VNet so the cluster
-// can attach NICs, manage the NAT gateway association, and reconcile
-// the API server subnet delegation. We scope to the VNet rather than
-// each subnet individually: AKS Automatic uses a node subnet AND a
-// delegated API server subnet (VNet integration), and VNet-level
-// scoping keeps the assignment set minimal.
+// can manage NICs, NAT association, and API server subnet delegation. VNet
+// scope covers every subnet AKS Automatic reconciles.
 
 var clusterIdentityName = '${clusterName}-ctl-id'
 var networkContributorRoleId = '4d97b98b-1d4f-4787-a291-c67834d212e7'
@@ -101,10 +76,6 @@ resource clusterIdentityNetworkContributor 'Microsoft.Authorization/roleAssignme
   ]
 }
 
-// ──────────────────────────────────────────────
-// AKS Automatic cluster
-// ──────────────────────────────────────────────
-//
 // Automatic SKU validation requires:
 //   - UAMI (user-assigned managed identity) when using BYO VNet.
 //     Managed-VNet Automatic clusters require SAMI; BYO-VNet requires
@@ -134,10 +105,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
     kubernetesVersion: kubernetesVersion
     dnsPrefix: clusterName
 
-    // Shorter node RG name than the AKS default
-    // (``${clusterName}_aks_${clusterName}_nodes``). Immutable after
-    // cluster creation, so existing environments keep their old names;
-    // new environments get the clean ``{clusterName}-nodes`` form.
+    // Pin the node resource group name because it is immutable after creation.
     nodeResourceGroup: '${clusterName}-nodes'
 
     enableRBAC: true
@@ -147,8 +115,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
     // Automatic requires public API server for Karpenter.
     publicNetworkAccess: 'Enabled'
 
-    // OIDC issuer URL is output and consumed by infra/main.bicep to
-    // wire federated credentials to the workload-identity SAs.
+    // main.bicep consumes the issuer URL to create federated credentials.
     oidcIssuerProfile: {
       enabled: true
     }
@@ -164,8 +131,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
       defaultNodePools: 'Auto'
     }
 
-    // BYO VNet: outbound goes through the user-assigned NAT Gateway
-    // attached to the subnets in vnet.bicep.
+    // The BYO subnets use the NAT gateway created by vnet.bicep.
     networkProfile: {
       outboundType: 'userAssignedNATGateway'
       networkPlugin: 'azure'
@@ -195,10 +161,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
       }
     }
 
-    // Explicitly enable the CSI disk/file/blob drivers and snapshot
-    // controller. This matches the sister Terraform repo
-    // (../osdu-spi-infra/main/infra/aks.tf:82-87) and avoids PVCs
-    // getting stuck in ExternalProvisioning on fresh clusters.
+    // Explicit drivers prevent PVCs from remaining in ExternalProvisioning.
     storageProfile: {
       diskCSIDriver: {
         enabled: true
@@ -214,9 +177,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
       }
     }
 
-    // System pool. Automatic uses managed hosted pools for its platform
-    // components and Karpenter for user workloads; this explicit pool
-    // preserves the previous deployment shape for system add-ons.
+    // Automatic requires the explicit system pool to use an ephemeral OS disk.
     agentPoolProfiles: [
       {
         name: 'systempool'
@@ -230,13 +191,8 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
       }
     ]
 
-    // Managed Istio with External ingress gateway. CNI chaining is
-    // applied imperatively post-deploy (see top-of-file note).
-    //
-    // revisions is pinned to prevent AKS from silently upgrading the
-    // mesh under us. `asm-1-30` is the newest revision compatible with
-    // Kubernetes 1.36 (asm-1-28 tops out at 1.35 per
-    // `az aks mesh get-revisions`).
+    // Pin the Istio revision so AKS does not upgrade the mesh independently
+    // of the Kubernetes version. ADR-002 records the compatibility requirement.
     serviceMeshProfile: {
       mode: 'Istio'
       istio: {
@@ -259,11 +215,14 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
   ]
 }
 
-// ──────────────────────────────────────────────
-// Outputs (consumed by downstream Bicep + CLI imperative steps)
-// ──────────────────────────────────────────────
-
+@description('Resource name of the deployed AKS cluster.')
 output clusterName string = clusterName
+
+@description('Azure resource ID of the deployed AKS cluster.')
 output clusterResourceId string = aksCluster.id
+
+@description('OIDC issuer URL required when creating workload identity federated credentials.')
 output oidcIssuerUrl string = aksCluster.properties.?oidcIssuerProfile.?issuerURL ?? ''
+
+@description('Principal ID of the control-plane identity used to reconcile network resources.')
 output clusterPrincipalId string = clusterIdentity.properties.principalId

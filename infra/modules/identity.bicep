@@ -1,24 +1,19 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// User-assigned managed identity with federated credentials bound to
-// the fixed set of Kubernetes namespaces that run OSDU workloads.
-//
-// The OIDC issuer URL must come from an existing AKS cluster; the CLI
-// fetches it via `az aks show --query oidcIssuerProfile.issuerUrl`
-// and passes it in. If empty, federated credentials are skipped (useful
-// for CI compile checks, not for a real deploy).
+// Federates the OSDU workload identity to workload-identity-sa in each
+// configured namespace.
 
-@description('Managed identity name.')
+@description('Resource name for the OSDU workload identity.')
 param name string
 
-@description('Azure region.')
+@description('Azure region where the managed identity is deployed.')
 param location string
 
-@description('OIDC issuer URL from AKS. Empty string skips federated credential creation.')
+@description('OIDC issuer URL of the AKS cluster; use an empty string only to omit federation.')
 param oidcIssuerUrl string
 
-@description('Kubernetes namespaces that bind to this identity via workload-identity-sa.')
+@description('Kubernetes namespaces whose workload-identity-sa service account binds to this identity.')
 param federatedNamespaces array = [
   'default'
   'osdu-core'
@@ -37,10 +32,8 @@ resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' 
 
 // ARM's Managed Identity RP rejects concurrent federated credential
 // writes against the same UAMI (ConcurrentFederatedIdentityCredentials-
-// WritesForSingleManagedIdentity). Bicep's default copy-loop schedules
-// iterations in parallel, so @batchSize(1) is required to serialize
-// the 8 credential creations; without it, all-but-one fail on a fresh
-// deploy. Adds ~1-2 minutes to first-run provisioning.
+// WritesForSingleManagedIdentity). Serial execution prevents loop iterations
+// from failing against that provider constraint.
 @batchSize(1)
 resource federatedCredentials 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = [for ns in federatedNamespaces: if (!empty(oidcIssuerUrl)) {
   parent: identity
@@ -54,6 +47,11 @@ resource federatedCredentials 'Microsoft.ManagedIdentity/userAssignedIdentities/
   }
 }]
 
+@description('Azure resource ID of the OSDU workload identity.')
 output resourceId string = identity.id
+
+@description('Client ID used by workload identity service account annotations.')
 output clientId string = identity.properties.clientId
+
+@description('Principal ID used for Azure data-plane role assignments.')
 output principalId string = identity.properties.principalId

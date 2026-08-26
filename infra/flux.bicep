@@ -1,27 +1,22 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// GitOps activation: AKS-native Flux extension plus the cluster-scoped
-// GitRepository + Kustomization that Flux will reconcile against.
-//
-// Deployed AFTER ``infra/aks.bicep`` and ``infra/main.bicep`` and AFTER
-// the CLI's imperative K8s bootstrap phase. The Bicep declaration replaces
-// the previous ``az k8s-configuration flux create`` call; re-deploys drift-
-// reconcile the Kustomization config (sync interval, repo branch, profile
-// path) without the CLI having to branch on create-vs-update.
+// AKS-native Flux extension and cluster-scoped GitOps configuration. This
+// deploys after CLI bootstrap so the osdu-flux namespace and inputs exist
+// before reconciliation starts.
 
 targetScope = 'resourceGroup'
 
-@description('AKS cluster name; Flux is installed as a cluster-scoped extension.')
+@description('Name of the AKS cluster where Flux is installed as a cluster-scoped extension.')
 param clusterName string
 
-@description('Git repository URL (GitHub-style HTTPS).')
+@description('HTTPS URL of the Git repository that Flux reconciles.')
 param repoUrl string
 
-@description('Branch Flux should track.')
+@description('Git branch that Flux reconciles.')
 param repoBranch string = 'main'
 
-@description('Profile path segment under software/stacks/osdu/profiles (e.g., "core").')
+@description('Allowed profile directory under software/stacks/osdu/profiles.')
 @allowed([
   'bare'
   'minimal'
@@ -29,7 +24,7 @@ param repoBranch string = 'main'
 ])
 param profile string = 'core'
 
-@description('Ingress mode path segment under software/stacks/osdu/ingress (azure, dns, or ip).')
+@description('Allowed ingress directory under software/stacks/osdu/ingress.')
 @allowed([
   'azure'
   'dns'
@@ -37,7 +32,7 @@ param profile string = 'core'
 ])
 param ingressMode string = 'azure'
 
-@description('Name of the fluxConfigurations resource on the cluster.')
+@description('Resource name for the cluster Flux configuration.')
 param configurationName string = 'osdu-spi-stack-system'
 
 // The bare profile has no ingress substrate and always selects its empty tree;
@@ -65,13 +60,9 @@ resource fluxExtension 'Microsoft.KubernetesConfiguration/extensions@2024-11-01'
         releaseNamespace: 'flux-system'
       }
     }
-    // Disable Flux multi-tenancy enforcement. With it on (default since
-    // extension v1.9) the agent injects `serviceAccountName: flux-applier`
-    // and the controllers impersonate that SA; AKS Automatic's
-    // protect-system-namespaces ValidatingAdmissionPolicy denies the
-    // impersonation, failing every reconcile with `dry-run failed
-    // (Forbidden)`. With enforcement off the controllers apply as their own
-    // exempt flux-system identities.
+    // Multi-tenancy enforcement injects flux-applier impersonation, which AKS
+    // Automatic admission policy rejects with `dry-run failed (Forbidden)`.
+    // Disabling it lets controllers apply as their exempt flux-system identities.
     configurationSettings: {
       'multiTenancy.enforce': 'false'
     }
@@ -83,11 +74,8 @@ resource gitopsConfig 'Microsoft.KubernetesConfiguration/fluxConfigurations@2024
   scope: aks
   properties: {
     scope: 'cluster'
-    // SPI-owned GitOps objects (GitRepository, Kustomizations) live in
-    // osdu-flux, NOT the extension's flux-system: AKS Automatic's
-    // protect-system-namespace-objects policy denies deployer writes to
-    // flux-system, so the CLI seeds ConfigMaps/secrets into osdu-flux and
-    // the Flux config must reconcile from the same namespace.
+    // AKS Automatic denies deployer writes to flux-system. The CLI seeds
+    // SPI-owned inputs into osdu-flux, so reconciliation uses that namespace.
     namespace: 'osdu-flux'
     sourceKind: 'GitRepository'
     gitRepository: {
@@ -118,5 +106,8 @@ resource gitopsConfig 'Microsoft.KubernetesConfiguration/fluxConfigurations@2024
   ]
 }
 
+@description('Resource name of the deployed Flux configuration.')
 output configurationName string = gitopsConfig.name
+
+@description('Resource name of the deployed Flux extension.')
 output extensionName string = fluxExtension.name
