@@ -117,7 +117,7 @@ The JSON spec at `docs/branch-protection.json` enforces:
 
 | Setting | Value |
 |---|---|
-| Required status checks | `lint`, `typecheck`, `test`, `windows-shims`, `manifests`, `bicep-whatif` |
+| Required status checks | `lint`, `typecheck`, `test`, `windows-shims`, `manifests`, `bicep-whatif`, `pr-title` |
 | Strict status checks | Branches must be up-to-date before merging |
 | Direct pushes | Blocked |
 | Force pushes | Blocked |
@@ -167,3 +167,42 @@ Environment secrets can override them later if these two workflows move to a
 different subscription.
 
 The orphan-RG sweeper is the cleanup backstop for full-workflow cancellation.
+
+## Release automation (release-please)
+
+`release.yml` runs release-please on every push to `main`. It maintains a
+standing `chore: release X.Y.Z` PR; merging that PR creates a draft GitHub
+Release, and the `assets` job builds the wheel, uploads it, and publishes.
+One-time setup:
+
+```bash
+# 1. Install the GitHub App used by Azure/osdu-spi on this repo.
+#    Permissions: Contents write, Pull requests write, Issues write
+#    (the autorelease:* labels go through the issues API).
+
+# 2. App credentials as repo secrets
+gh secret set RELEASE_APP_ID --repo Azure/osdu-spi-stack
+gh secret set RELEASE_APP_PRIVATE_KEY --repo Azure/osdu-spi-stack
+
+# 3. Squash-only merges; the PR title becomes the commit subject and the
+#    body stays blank so PR descriptions cannot inject changelog entries.
+gh api -X PATCH repos/Azure/osdu-spi-stack \
+  -F allow_squash_merge=true -F allow_merge_commit=false -F allow_rebase_merge=false \
+  -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=BLANK
+
+# 4. Remove the labels from the retired label-driven release workflow
+for l in release:patch release:minor release:major; do
+  gh label delete "$l" --repo Azure/osdu-spi-stack --yes
+done
+```
+
+Notes:
+
+- PRs opened with `GITHUB_TOKEN` never trigger workflows; the App token is
+  what lets the required checks report on the release PR.
+- The `pr-title` check runs on `pull_request_target`, so it only exists once
+  `pr-title.yml` is on `main`. Add it to branch protection after that merge,
+  not before, or the PR introducing it deadlocks.
+- Never switch the config to `release-type: python`: it would write the real
+  version into `pyproject.toml`, breaking the `0.0.0+source` sentinel that
+  `spi` uses to detect source checkouts. Stamping stays a build-time step.

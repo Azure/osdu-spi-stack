@@ -1,166 +1,114 @@
 name: Release
 
-# Label-driven release. Apply one of release:patch / release:minor / release:major
-# to a PR before merging into main; on merge, this workflow computes the next
-# semver, generates release notes from conventional commits since the previous
-# tag, builds a wheel via `uv build`, tags the commit, and creates a GitHub
-# Release with the wheel + sdist attached as assets.
+# Merging the release-please PR creates a DRAFT release; the assets job
+# publishes it only after uploading the wheel, so /releases/latest never
+# serves a release without the spi-*-py3-none-any.whl that `spi update`
+# requires (src/spi/update.py). Publishing is what creates the vX.Y.Z tag.
 #
-# Can also be dispatched manually against main with an explicit release type,
-# which is the recovery path when a PR is merged without a label.
-#
-# Adapted from cimpl-stack/.gitlab-ci.yml release:auto stage (lines 360-525).
-# The version-computation and notes-generation shell is platform-agnostic; the
-# only GitHub-specific change is reading labels from the workflow event
-# context instead of via API.
+# The App token matters: PRs opened with GITHUB_TOKEN never trigger
+# workflows, so validate.yml would not run on the release PR.
 
 on:
-  pull_request:
-    types: [closed]
+  push:
     branches: [main]
-  # Manual recovery path. A PR merged without a release:* label cannot cut a
-  # release after the fact: re-running the skipped run replays the original
-  # event payload (so a label added later is invisible), and GitHub does not
-  # allow reopening a merged PR. Dispatch against main to release whatever is
-  # already merged.
+  # Rebuild assets for an already-published tag. A failed assets job on a
+  # still-draft release is recovered with "Re-run failed jobs" instead.
   workflow_dispatch:
     inputs:
-      release_type:
-        description: "Release type"
-        type: choice
-        options: [patch, minor, major]
-        default: patch
+      tag:
+        description: "Existing release tag (vX.Y.Z) to rebuild assets for"
+        required: true
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  release-please:
+    name: release-please
+    if: github.event_name == 'push' && github.repository == 'Azure/osdu-spi-stack'
+    runs-on: ubuntu-latest
+    outputs:
+      # Manifest configs emit path-prefixed outputs; fall back to top-level.
+      release_created: ${{ steps.release.outputs['.--release_created'] || steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs['.--tag_name'] || steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs['.--version'] || steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs['.--sha'] || steps.release.outputs.sha }}
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  assets:
+    name: assets
+    needs: release-please
+    # !cancelled() lets this run when release-please was skipped (dispatch).
     if: >
-      github.event_name == 'workflow_dispatch' || (
-        github.event.pull_request.merged == true && (
-          contains(github.event.pull_request.labels.*.name, 'release:patch') ||
-          contains(github.event.pull_request.labels.*.name, 'release:minor') ||
-          contains(github.event.pull_request.labels.*.name, 'release:major')
-        )
+      !cancelled() && (
+        needs.release-please.outputs.release_created == 'true' ||
+        github.event_name == 'workflow_dispatch'
       )
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Checkout (with full history + tags)
+      - name: Resolve tag, version, and build ref
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+            REF="$TAG"
+          else
+            TAG="${{ needs.release-please.outputs.tag_name }}"
+            # The tag does not exist while the release is draft; build by SHA.
+            REF="${{ needs.release-please.outputs.sha }}"
+          fi
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected tag '$TAG'"; exit 1; }
+          { echo "tag=$TAG"; echo "version=${TAG#v}"; echo "ref=$REF"; } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release commit
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
-          fetch-tags: true
-          ref: main
-
-      - name: Determine release type from PR label or dispatch input
-        id: release_type
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "type=${{ inputs.release_type }}" >> "$GITHUB_OUTPUT"
-          elif ${{ contains(github.event.pull_request.labels.*.name, 'release:major') }}; then
-            echo "type=major" >> "$GITHUB_OUTPUT"
-          elif ${{ contains(github.event.pull_request.labels.*.name, 'release:minor') }}; then
-            echo "type=minor" >> "$GITHUB_OUTPUT"
-          else
-            echo "type=patch" >> "$GITHUB_OUTPUT"
-          fi
-          echo "Release type: $(cat "$GITHUB_OUTPUT" | grep '^type=' | cut -d= -f2)"
-
-      - name: Compute next semver
-        id: version
-        run: |
-          set -euo pipefail
-          # --match 'v*' filters out non-semver tags (e.g., snapshot/overnight tags).
-          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "")
-          if [[ -z "$PREV_TAG" ]]; then
-            CURRENT="0.0.0"
-            PREV_REF=$(git rev-list --max-parents=0 HEAD | head -1)
-          else
-            CURRENT="${PREV_TAG#v}"
-            PREV_REF="$PREV_TAG"
-          fi
-          IFS=. read -r MAJOR MINOR PATCH <<<"$CURRENT"
-          case "${{ steps.release_type.outputs.type }}" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH + 1)) ;;
-          esac
-          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          echo "previous=${PREV_TAG:-<none>}" >> "$GITHUB_OUTPUT"
-          echo "previous_ref=$PREV_REF" >> "$GITHUB_OUTPUT"
-          echo "new=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Previous: ${PREV_TAG:-<none>}"
-          echo "New:      v$NEW_VERSION"
-
-      - name: Generate release notes from conventional commits
-        id: notes
-        run: |
-          set -euo pipefail
-          PREV="${{ steps.version.outputs.previous_ref }}"
-          NEW_VERSION="${{ steps.version.outputs.new }}"
-          RANGE="$PREV..HEAD"
-
-          FEATURES=$(git log "$RANGE" --pretty=format:"- %s (%h)" --grep="^feat" 2>/dev/null || true)
-          FIXES=$(git log "$RANGE" --pretty=format:"- %s (%h)" --grep="^fix" 2>/dev/null || true)
-          DOCS=$(git log "$RANGE" --pretty=format:"- %s (%h)" --grep="^docs" 2>/dev/null || true)
-          REFACTOR=$(git log "$RANGE" --pretty=format:"- %s (%h)" --grep="^refactor" 2>/dev/null || true)
-          TESTS=$(git log "$RANGE" --pretty=format:"- %s (%h)" --grep="^test" 2>/dev/null || true)
-          CI=$(git log "$RANGE" --pretty=format:"- %s (%h)" --grep="^ci" 2>/dev/null || true)
-          STYLE=$(git log "$RANGE" --pretty=format:"- %s (%h)" --grep="^style" 2>/dev/null || true)
-          CHORE=$(git log "$RANGE" --pretty=format:"- %s (%h)" --grep="^chore" 2>/dev/null || true)
-
-          {
-            echo "# Release v${NEW_VERSION}"
-            echo ""
-            [[ -n "$FEATURES" ]] && { echo "## Features"; echo ""; echo "$FEATURES"; echo ""; }
-            [[ -n "$FIXES" ]] && { echo "## Bug Fixes"; echo ""; echo "$FIXES"; echo ""; }
-            [[ -n "$DOCS" ]] && { echo "## Documentation"; echo ""; echo "$DOCS"; echo ""; }
-            [[ -n "$REFACTOR" ]] && { echo "## Refactoring"; echo ""; echo "$REFACTOR"; echo ""; }
-            [[ -n "$TESTS" ]] && { echo "## Tests"; echo ""; echo "$TESTS"; echo ""; }
-            [[ -n "$CI" ]] && { echo "## CI / Build"; echo ""; echo "$CI"; echo ""; }
-            [[ -n "$STYLE" ]] && { echo "## Style"; echo ""; echo "$STYLE"; echo ""; }
-            [[ -n "$CHORE" ]] && { echo "## Chores"; echo ""; echo "$CHORE"; echo ""; }
-            if [[ "$PREV" == "${{ steps.version.outputs.previous }}" && -n "${{ steps.version.outputs.previous }}" ]]; then
-              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV}...v${NEW_VERSION}"
-            fi
-          } > release_notes.md
-          echo "wrote release_notes.md"
-          head -40 release_notes.md
+          ref: ${{ steps.meta.outputs.ref }}
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
-      - name: Stamp pyproject.toml version
+      - name: Stamp pyproject.toml with release version
         run: |
-          NEW_VERSION="${{ steps.version.outputs.new }}"
-          sed -i.bak -E "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" pyproject.toml
+          sed -i.bak -E "s/^version = \".*\"/version = \"${{ steps.meta.outputs.version }}\"/" pyproject.toml
           rm -f pyproject.toml.bak
           grep '^version' pyproject.toml
 
       - name: Build wheel + sdist
         run: |
           uv build
+          # spi update contract: asset must be spi-<version>-py3-none-any.whl
+          test -f "dist/spi-${{ steps.meta.outputs.version }}-py3-none-any.whl"
           ls -la dist/
 
-      - name: Create git tag
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload assets and publish release
         run: |
-          NEW_VERSION="${{ steps.version.outputs.new }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}"
-          git push origin "v${NEW_VERSION}"
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          NEW_VERSION="${{ steps.version.outputs.new }}"
-          gh release create "v${NEW_VERSION}" \
-            --title "Release v${NEW_VERSION}" \
-            --notes-file release_notes.md \
-            dist/*.whl dist/*.tar.gz
+          gh release upload "${{ steps.meta.outputs.tag }}" dist/*.whl dist/*.tar.gz \
+            --clobber --repo "${{ github.repository }}"
+          gh release edit "${{ steps.meta.outputs.tag }}" --draft=false \
+            --repo "${{ github.repository }}"

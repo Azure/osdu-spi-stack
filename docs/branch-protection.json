@@ -7,7 +7,8 @@
       { "context": "test", "app_id": -1 },
       { "context": "windows-shims", "app_id": -1 },
       { "context": "manifests", "app_id": -1 },
-      { "context": "bicep-whatif", "app_id": -1 }
+      { "context": "bicep-whatif", "app_id": -1 },
+      { "context": "pr-title", "app_id": -1 }
     ]
   },
   "enforce_admins": false,
