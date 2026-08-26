@@ -459,7 +459,6 @@ def _cluster_api_server(config: Config) -> str:
             "tsv",
         ],
         description=f"Look up API server for {config.cluster_name}",
-        display=False,
         check=False,
     )
     if result.returncode != 0:
@@ -507,6 +506,5 @@ def cleanup_azure(config: Config) -> None:
     )
     console.print(
         f"  [warning]kubeconfig context {config.cluster_name} is left in place until the "
-        f"deletion is confirmed; remove it with: kubectl config delete-context "
-        f"{config.cluster_name}[/warning]"
+        f"deletion is confirmed[/warning]"
     )

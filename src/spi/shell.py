@@ -323,7 +323,8 @@ def prune_kube_context(context: str, server_fqdn: str) -> None:
             f"points at; leaving it in place[/warning]"
         )
         console.print(
-            f"  [dim]Remove it by hand with: kubectl config delete-context {context}[/dim]"
+            "  [dim]A context of this name can belong to a same-named cluster in another "
+            "subscription; check which server it points at before removing it.[/dim]"
         )
         return
 
