@@ -70,15 +70,21 @@ jobs:
     steps:
       - name: Resolve tag, version, and build ref
         id: meta
+        # Untrusted values reach the shell only through env, never inline.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RP_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RP_SHA: ${{ needs.release-please.outputs.sha }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TAG="${{ inputs.tag }}"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            TAG="$INPUT_TAG"
             REF="$TAG"
           else
-            TAG="${{ needs.release-please.outputs.tag_name }}"
+            TAG="$RP_TAG"
             # The tag does not exist while the release is draft; build by SHA.
-            REF="${{ needs.release-please.outputs.sha }}"
+            REF="$RP_SHA"
           fi
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected tag '$TAG'"; exit 1; }
           { echo "tag=$TAG"; echo "version=${TAG#v}"; echo "ref=$REF"; } >> "$GITHUB_OUTPUT"
@@ -107,8 +113,13 @@ jobs:
           ls -la dist/
 
       - name: Upload assets and publish release
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
         run: |
-          gh release upload "${{ steps.meta.outputs.tag }}" dist/*.whl dist/*.tar.gz \
+          set -euo pipefail
+          # Hide the release while assets change: a failed upload then leaves
+          # a draft, never a published release missing its wheel.
+          gh release edit "$TAG" --draft=true --repo "${{ github.repository }}"
+          gh release upload "$TAG" dist/*.whl dist/*.tar.gz \
             --clobber --repo "${{ github.repository }}"
-          gh release edit "${{ steps.meta.outputs.tag }}" --draft=false \
-            --repo "${{ github.repository }}"
+          gh release edit "$TAG" --draft=false --repo "${{ github.repository }}"
