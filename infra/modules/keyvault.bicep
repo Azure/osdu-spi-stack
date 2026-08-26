@@ -4,7 +4,7 @@
 // Soft-deleted vault recovery requires a live lookup and is performed by the
 // CLI before this module runs.
 
-@description('Globally unique Key Vault name of 3-24 alphanumeric characters.')
+@description('Globally unique Key Vault name of 3-24 characters, using alphanumerics and nonconsecutive hyphens; must start with a letter and end with an alphanumeric character.')
 param name string
 
 @description('Azure region where the Key Vault is deployed.')
