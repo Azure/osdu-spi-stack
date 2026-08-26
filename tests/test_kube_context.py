@@ -231,9 +231,13 @@ class TestPruneClearsTheActiveContext:
     ACTIVE = {**KUBECONFIG, "current-context": "spi-stack-dev1"}
 
     def test_the_deleted_context_is_cleared_when_it_was_active(self):
+        deleted = _without(self.ACTIVE, "spi-stack-dev1")
         with (
             patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("spi.shell.kubectl_json", side_effect=_views(self.ACTIVE)),
+            patch(
+                "spi.shell.kubectl_json",
+                side_effect=[self.ACTIVE, deleted, {**deleted, "current-context": ""}],
+            ),
             patch("spi.shell.run_command", return_value=_ok()) as run_command,
             patch("spi.shell.display_result"),
         ):
@@ -255,6 +259,61 @@ class TestPruneClearsTheActiveContext:
 
         verbs = [call.args[0][2] for call in run_command.call_args_list]
         assert "unset" not in verbs
+
+    def test_a_selection_named_in_two_files_is_cleared_from_both(self):
+        """`unset` writes to the file holding the winning value. A second file
+        naming the deleted context surfaces its own copy, which still selects
+        an entry that is gone."""
+        deleted = _without(self.ACTIVE, "spi-stack-dev1")
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch(
+                "spi.shell.kubectl_json",
+                # The second file's identical value surfaces after the first unset.
+                side_effect=[self.ACTIVE, deleted, deleted, {**deleted, "current-context": ""}],
+            ),
+            patch("spi.shell.run_command", return_value=_ok()) as run_command,
+            patch("spi.shell.display_result"),
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        unsets = [call.args[0] for call in run_command.call_args_list if call.args[0][2] == "unset"]
+        assert len(unsets) == 2
+
+    def test_a_selection_that_will_not_clear_stops_and_warns(self):
+        deleted = _without(self.ACTIVE, "spi-stack-dev1")
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            # Every re-read still names the deleted context, as if another
+            # file keeps supplying it.
+            patch("spi.shell.kubectl_json", side_effect=[self.ACTIVE] + [deleted] * 9),
+            patch("spi.shell.run_command", return_value=_ok()) as run_command,
+            patch("spi.shell.display_result") as display_result,
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        unsets = [c for c in run_command.call_args_list if c.args[0][2] == "unset"]
+        assert len(unsets) == 8
+        display_result.assert_not_called()
+
+    def test_a_failed_unset_stops_before_the_dependent_entries(self):
+        deleted = _without(self.ACTIVE, "spi-stack-dev1")
+        failure = subprocess.CompletedProcess(["kubectl"], 1, "", "read-only")
+
+        def outcome(cmd, **kwargs):
+            return failure if cmd[2] == "unset" else _ok()
+
+        with (
+            patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("spi.shell.kubectl_json", side_effect=[self.ACTIVE, deleted]),
+            patch("spi.shell.run_command", side_effect=outcome) as run_command,
+            patch("spi.shell.display_result") as display_result,
+        ):
+            prune_kube_context("spi-stack-dev1", DEV1_FQDN)
+
+        verbs = [call.args[0][2] for call in run_command.call_args_list]
+        assert verbs == ["delete-context", "unset"]
+        display_result.assert_not_called()
 
     def test_a_failed_context_delete_leaves_the_selection_alone(self):
         failure = subprocess.CompletedProcess(["kubectl"], 1, "", "read-only")
@@ -365,8 +424,8 @@ class TestCleanupPrunesTheContext:
         from spi.config import Config
         from spi.deploy import cleanup_azure
 
-        # `az aks show --query fqdn`, then `az group delete`, then the
-        # `az group exists` poll that ends the wait.
+        # `az aks show --query 'privateFqdn || fqdn'`, then `az group delete`,
+        # then the `az group exists` poll that ends the wait.
         responses = [
             subprocess.CompletedProcess(["az"], 0, f"{DEV1_FQDN}\n", ""),
             subprocess.CompletedProcess(["az"], 0, "", ""),

@@ -300,6 +300,53 @@ def _kubeconfig_serves(view: Dict[str, Any], cluster: str, server_fqdn: str) -> 
     return False
 
 
+# `kubectl config unset` writes to the file holding the winning value, so a
+# multi-file KUBECONFIG that names the deleted context more than once needs
+# one pass per file. Bounded because a value that will not clear must not spin.
+_MAX_SELECTION_CLEARS = 8
+
+
+def _clear_stale_selection(view: Dict[str, Any], context: str) -> Optional[Dict[str, Any]]:
+    """Clear `current-context` while it still selects the deleted context.
+
+    Returns the kubeconfig view left behind, or None when the operator has
+    been told the selection could not be cleared and the caller should stop.
+    A context that surfaces under the deleted name makes the selection valid
+    again and ends the loop.
+    """
+    for _ in range(_MAX_SELECTION_CLEARS):
+        if view.get("current-context") != context:
+            return view
+        if any(c.get("name") == context for c in view.get("contexts") or []):
+            return view
+
+        cleared = run_command(
+            ["kubectl", "config", "unset", "current-context"],
+            description="Clear the deleted context from current-context",
+            check=False,
+        )
+        if cleared.returncode != 0:
+            console.print(
+                f"  [warning]Removed kubeconfig context {context}, but could not clear it "
+                f"from current-context; kubectl will report it as not found[/warning]"
+            )
+            return None
+
+        view = kubectl_json(["config", "view"]) or {}
+        if not view:
+            console.print(
+                f"  [warning]Removed kubeconfig context {context}, but could not re-read "
+                f"the kubeconfig; its cluster and user entries are left in place[/warning]"
+            )
+            return None
+
+    console.print(
+        f"  [warning]Removed kubeconfig context {context}, but current-context still "
+        f"names it after {_MAX_SELECTION_CLEARS} attempts[/warning]"
+    )
+    return None
+
+
 def prune_kube_context(context: str, server_fqdn: str) -> None:
     """Remove the kubeconfig entries left behind by a deleted cluster.
 
@@ -348,8 +395,8 @@ def prune_kube_context(context: str, server_fqdn: str) -> None:
 
     if not _kubeconfig_serves(view, cluster, server_fqdn):
         console.print(
-            f"  [warning]kubeconfig context {context} points at a different cluster; "
-            f"leaving it in place[/warning]"
+            f"  [warning]kubeconfig context {context} does not resolve to the API server of "
+            f"the deleted cluster; leaving it in place[/warning]"
         )
         return
 
@@ -378,17 +425,11 @@ def prune_kube_context(context: str, server_fqdn: str) -> None:
         )
         return
 
-    survivors = after.get("contexts") or []
-    if after.get("current-context") == context and not any(
-        c.get("name") == context for c in survivors
-    ):
-        run_command(
-            ["kubectl", "config", "unset", "current-context"],
-            description="Clear the deleted context from current-context",
-            check=False,
-        )
+    after = _clear_stale_selection(after, context)
+    if after is None:
+        return
 
-    live = [c.get("context") or {} for c in survivors]
+    live = [c.get("context") or {} for c in (after.get("contexts") or [])]
     if cluster and not any(other.get("cluster") == cluster for other in live):
         run_command(
             ["kubectl", "config", "delete-cluster", cluster],
