@@ -460,6 +460,7 @@ def _cluster_api_server(config: Config) -> str:
             "tsv",
         ],
         description=f"Look up API server for {config.cluster_name}",
+        display=False,
         check=False,
     )
     if result.returncode != 0:

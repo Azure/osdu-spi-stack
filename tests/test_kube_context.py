@@ -108,17 +108,19 @@ class TestPruneKubeContext:
 
         run_command.assert_not_called()
 
-    def test_the_kubeconfig_read_is_shown_to_the_operator(self):
-        """Teardown runs no kubectl command the operator cannot see."""
+    def test_every_kubeconfig_change_is_shown_to_the_operator(self):
+        """The command panels exist so an operator sees what the CLI changes.
+        Reads are silent; nothing that edits the kubeconfig may be."""
         with (
             patch("spi.shell.shutil.which", return_value="/usr/bin/kubectl"),
-            patch("spi.shell.kubectl_json", side_effect=_views(KUBECONFIG)) as kubectl_json,
-            patch("spi.shell.run_command", return_value=_ok()),
+            patch("spi.shell.kubectl_json", side_effect=_views(KUBECONFIG)),
+            patch("spi.shell.run_command", return_value=_ok()) as run_command,
             patch("spi.shell.display_result"),
         ):
             prune_kube_context("spi-stack-dev1", DEV1_FQDN)
 
-        assert kubectl_json.call_args.kwargs["display"] is True
+        assert run_command.call_count == 3
+        assert all(call.kwargs.get("display", True) is True for call in run_command.call_args_list)
 
     def test_teardown_without_kubectl_installed_is_a_no_op(self):
         with (

@@ -16,10 +16,10 @@
 
 ``run_command`` is the transparent front door used whenever an az/kubectl/
 flux/helm command should be visible to the operator. ``kubectl_apply_yaml``
-retries on transient kube-API errors. ``kubectl_json`` is the query helper
-for status/info/guard, silent by default because those poll in loops.
-``prune_kube_context`` clears the kubeconfig entries a deleted cluster
-leaves behind.
+retries on transient kube-API errors. ``kubectl_json`` is the silent query
+helper used where panel output would be noise: the panels show what the CLI
+changes, not what it reads. ``prune_kube_context`` clears the kubeconfig
+entries a deleted cluster leaves behind.
 
 Every process the CLI launches goes through ``run_process``. On native Windows, CLIs such as
 Azure CLI install as ``.cmd`` batch shims; ``CreateProcess`` cannot run a
@@ -174,8 +174,15 @@ def run_process(cmd_list: List[str], **kwargs: Any) -> subprocess.CompletedProce
     return subprocess.run(prepared, **kwargs)
 
 
-def display_command(cmd_list: List[str], description: Optional[str] = None) -> None:
-    """Print the transparency panel for a command about to run."""
+def run_command(
+    cmd_list: List[str],
+    capture_output: bool = True,
+    text: bool = True,
+    display: bool = True,
+    description: Optional[str] = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess:
+    """Run a command and display it in a formatted panel."""
     formatted_parts = []
     if cmd_list:
         formatted_parts.append(cmd_list[0])
@@ -190,33 +197,21 @@ def display_command(cmd_list: List[str], description: Optional[str] = None) -> N
 
     formatted_cmd = " ".join(formatted_parts)
 
-    first = cmd_list[0] if cmd_list else ""
-    style_map = {
-        "az": ("azure", "[azure]Azure CLI[/azure]"),
-        "kubectl": ("kubectl", "[kubectl]Kubernetes[/kubectl]"),
-        "flux": ("flux", "[flux]Flux CD[/flux]"),
-        "helm": ("helm", "[helm]Helm[/helm]"),
-    }
-    style, title = style_map.get(first, ("white", "Command"))
-
-    if description:
-        title = f"{title}: {description}"
-
-    command_syntax = Syntax(formatted_cmd, "bash", theme="monokai", line_numbers=False)
-    console.print(Panel(command_syntax, title=title, border_style=style))
-
-
-def run_command(
-    cmd_list: List[str],
-    capture_output: bool = True,
-    text: bool = True,
-    display: bool = True,
-    description: Optional[str] = None,
-    check: bool = True,
-) -> subprocess.CompletedProcess:
-    """Run a command and display it in a formatted panel."""
     if display:
-        display_command(cmd_list, description)
+        first = cmd_list[0] if cmd_list else ""
+        style_map = {
+            "az": ("azure", "[azure]Azure CLI[/azure]"),
+            "kubectl": ("kubectl", "[kubectl]Kubernetes[/kubectl]"),
+            "flux": ("flux", "[flux]Flux CD[/flux]"),
+            "helm": ("helm", "[helm]Helm[/helm]"),
+        }
+        style, title = style_map.get(first, ("white", "Command"))
+
+        if description:
+            title = f"{title}: {description}"
+
+        command_syntax = Syntax(formatted_cmd, "bash", theme="monokai", line_numbers=False)
+        console.print(Panel(command_syntax, title=title, border_style=style))
 
     result = run_process(cmd_list, capture_output=capture_output, text=text)
 
@@ -265,20 +260,13 @@ def kubectl_apply_yaml(
     raise typer.Exit(code=1)
 
 
-def kubectl_json(
-    args: List[str], display: bool = False, description: Optional[str] = None
-) -> Optional[Dict[str, Any]]:
-    """Run a kubectl query and return parsed JSON, or None on failure.
+def kubectl_json(args: List[str]) -> Optional[Dict[str, Any]]:
+    """Run a silent kubectl query and return parsed JSON, or None on failure.
 
-    Silent by default: status/info/guard poll in loops, where the panel from
-    ``run_command`` would bury the output it is printing. ``display`` opts a
-    one-shot read into the panel, and keeps the decoding guards that make a
-    kubeconfig or resource with unexpected bytes return None instead of
-    raising.
+    Used by status/info/guard for background state reads where the
+    transparent command panel from ``run_command`` would be noise.
     """
     cmd = ["kubectl"] + args + ["-o", "json"]
-    if display:
-        display_command(cmd, description)
     result = run_process(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         return None
@@ -334,7 +322,7 @@ def prune_kube_context(context: str, server_fqdn: str) -> None:
     if not shutil.which("kubectl"):
         return
 
-    view = kubectl_json(["config", "view"], display=True, description="Read kubeconfig entries")
+    view = kubectl_json(["config", "view"])
     if view is None:
         return
 
@@ -382,7 +370,7 @@ def prune_kube_context(context: str, server_fqdn: str) -> None:
     # delete-context edits only the file holding the winner, so a shadowed
     # context of the same name can surface here and bring live references
     # with it.
-    after = kubectl_json(["config", "view"], display=True, description="Re-read kubeconfig entries")
+    after = kubectl_json(["config", "view"])
     if after is None:
         console.print(
             f"  [warning]Removed kubeconfig context {context}, but could not re-read the "
