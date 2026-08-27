@@ -279,6 +279,9 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
         )
         return None
 
+    # No --all: the default output keeps partially zone-restricted SKUs with
+    # their restriction payload and hides only sizes the subscription cannot
+    # deploy at all, which the empty-result branch reports.
     published: list = []
     restricted: set = set()
     for sku in json.loads(result.stdout or "[]"):
@@ -292,7 +295,9 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
 
     if not published:
         raise RuntimeError(
-            f"{size} is not offered in {config.location}. Choose a region that offers it."
+            f"{size} is not offered in {config.location}, or this subscription is "
+            "not offered the size there. Choose another region, or set "
+            "SPI_SYSTEM_POOL_VM_SIZE to a size the subscription can deploy."
         )
 
     usable = sorted(set(published) - restricted)
