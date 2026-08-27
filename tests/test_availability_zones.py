@@ -25,6 +25,11 @@ from spi import azure_infra
 from spi.config import Config
 
 
+@pytest.fixture(autouse=True)
+def _clear_system_pool_override(monkeypatch):
+    monkeypatch.delenv("SPI_SYSTEM_POOL_VM_SIZE", raising=False)
+
+
 def _sku(zones, restricted_zones=None):
     sku = {
         "name": azure_infra.SYSTEM_POOL_VM_SIZE,
