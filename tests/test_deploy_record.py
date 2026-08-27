@@ -77,7 +77,9 @@ def test_set_maintenance_retries_conflict(monkeypatch):
     monkeypatch.setattr(
         deploy_record,
         "_patch_record",
-        lambda obj, record: attempts.append(obj["metadata"]["resourceVersion"]) or len(attempts) > 1,
+        lambda obj, record: (
+            attempts.append(obj["metadata"]["resourceVersion"]) or len(attempts) > 1
+        ),
     )
     monkeypatch.setattr(deploy_record.time, "sleep", lambda _seconds: None)
 

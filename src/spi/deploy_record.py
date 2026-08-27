@@ -90,8 +90,7 @@ def _decode_record(obj: dict) -> DeployRecord:
     missing = [key for key in required if not isinstance(data.get(key), str) or not data[key]]
     if missing:
         raise DeployRecordError(
-            f"ConfigMap {DEPLOY_RECORD_CONFIGMAP} is missing required fields: "
-            + ", ".join(missing)
+            f"ConfigMap {DEPLOY_RECORD_CONFIGMAP} is missing required fields: " + ", ".join(missing)
         )
 
     raw_maintenance = data["maintenance"].lower()
@@ -119,18 +118,14 @@ def read_deploy_record(required: bool = False) -> DeployRecord | None:
 def _is_conflict(output: str) -> bool:
     lowered = output.lower()
     return (
-        "conflict" in lowered
-        or "test failed" in lowered
-        or "object has been modified" in lowered
+        "conflict" in lowered or "test failed" in lowered or "object has been modified" in lowered
     )
 
 
 def _patch_record(obj: dict, record: DeployRecord) -> bool:
     resource_version = (obj.get("metadata") or {}).get("resourceVersion", "")
     if not resource_version:
-        raise DeployRecordError(
-            f"ConfigMap {DEPLOY_RECORD_CONFIGMAP} has no resourceVersion"
-        )
+        raise DeployRecordError(f"ConfigMap {DEPLOY_RECORD_CONFIGMAP} has no resourceVersion")
     operation = "replace" if "data" in obj else "add"
     patch = [
         {
@@ -239,6 +234,4 @@ def set_maintenance(enabled: bool) -> DeployRecord:
             return updated
         time.sleep(0.2 * (2**attempt))
 
-    raise DeployRecordError(
-        f"Could not update maintenance after {_CAS_ATTEMPTS} conflicts"
-    )
+    raise DeployRecordError(f"Could not update maintenance after {_CAS_ATTEMPTS} conflicts")

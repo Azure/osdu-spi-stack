@@ -61,7 +61,7 @@ pin file starts the upgrade. Nothing else moves the stack-definition version
 
 | Verb | Workflow | Trigger | Budget |
 |---|---|---|---|
-| refresh | `env-refresh` | weekday cron 05:00 UTC, dispatch | 90 min |
+| refresh | `env-refresh` | weekday cron 05:00 UTC, dispatch | 4.5 h |
 | upgrade | `env-upgrade` | push to `main` touching the pin file, dispatch | 6 h |
 | reset | `env-reset` | Saturday cron 06:00 UTC, confirm-dispatch | 7 h |
 | teardown | `env-teardown` | protected dispatch | 1 h |
@@ -70,7 +70,10 @@ The budgets contain their worst cases: a reset spends up to 45 minutes on
 deletion, 75 minutes provisioning, and 230 minutes in the cold-cluster
 schema-load converge before probes; an upgrade whose `--refresh-images` pass
 moves the schema image spends up to 60 minutes in `spi up` plus the same
-230-minute converge, hence its 6-hour budget.
+230-minute converge, hence its 6-hour budget. A refresh is normally a
+re-reconcile of already-scheduled workloads, but its wait keeps the same
+230-minute allowance for a schema-load Job the standing environment re-runs,
+for example after a node recycle, hence its 4.5-hour budget.
 
 All four verbs share concurrency group `env-shared` with
 `cancel-in-progress: false`, so lifecycle operations serialize against each

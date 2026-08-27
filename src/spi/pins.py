@@ -32,7 +32,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
-from .console import console
+from .console import console, display_yaml
+from .deploy_record import DEPLOY_RECORD_CONFIGMAP, DeployRecordError, read_deploy_record
 from .images import (
     DEFAULT_IMAGE_BRANCH,
     GITLAB_HOST,
@@ -305,6 +306,7 @@ def mutate_lock(
                 },
                 "data": data,
             }
+            display_yaml(json.dumps(document, indent=2), f"ConfigMap: {IMAGE_LOCK_CONFIGMAP}")
             result = run_process(
                 ["kubectl", "create", "-f", "-", "-o", "json"],
                 input=json.dumps(document),
@@ -414,6 +416,30 @@ def reconcile_consumers(services: list[str]) -> None:
         )
 
 
+def _refuse_unless_deployable() -> None:
+    """Enforce the ADR-030 deployable rule on pin writes, fail-closed.
+
+    Refuses while ``maintenance`` is set or the deploy record is absent,
+    the same rule `spi status` reports, so a pin cannot land in an
+    environment mid-lifecycle or one that never completed a deploy.
+    """
+
+    try:
+        record = read_deploy_record(required=False)
+    except DeployRecordError as exc:
+        raise PinError(str(exc)) from exc
+    if record is None:
+        raise PinError(
+            f"ConfigMap {DEPLOY_RECORD_CONFIGMAP} not found; the environment has no "
+            "deploy record. Re-run 'spi up' to write one before pinning."
+        )
+    if record.maintenance:
+        raise PinError(
+            "Environment is in maintenance (a lifecycle run is in progress); "
+            "retry once 'spi status' reports deployable."
+        )
+
+
 def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     """Pin a service (and schema's paired loader) to an MR pipeline image.
 
@@ -425,6 +451,7 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
     if service == SCHEMA_LOAD_SERVICE_NAME:
         raise PinError("Pin 'schema' instead; the loader follows the schema pin.")
+    _refuse_unless_deployable()
 
     targets = [service]
     if service == SCHEMA_SERVICE_NAME:

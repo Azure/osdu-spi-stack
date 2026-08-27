@@ -64,11 +64,16 @@ def test_finalize_suspends_before_record(monkeypatch):
 
     def run(command, **kwargs):
         calls.append(command[:3])
-        stdout = "/subscriptions/sub/resourceGroups/spi-stack-shared" if command[:3] == [
-            "az",
-            "group",
-            "show",
-        ] else ""
+        stdout = (
+            "/subscriptions/sub/resourceGroups/spi-stack-shared"
+            if command[:3]
+            == [
+                "az",
+                "group",
+                "show",
+            ]
+            else ""
+        )
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(deploy, "run_command", run)
@@ -83,9 +88,13 @@ def test_finalize_suspends_before_record(monkeypatch):
     deploy._finalize_gitops_source(config)
 
     assert calls.index("suspend:True:True") < next(
-        index for index, value in enumerate(calls) if isinstance(value, tuple) and value[0] == "record"
+        index
+        for index, value in enumerate(calls)
+        if isinstance(value, tuple) and value[0] == "record"
     )
-    record_call = next(value for value in calls if isinstance(value, tuple) and value[0] == "record")
+    record_call = next(
+        value for value in calls if isinstance(value, tuple) and value[0] == "record"
+    )
     assert record_call[1]["initial_maintenance"] is True
 
 

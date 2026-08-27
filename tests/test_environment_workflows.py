@@ -193,9 +193,7 @@ class TestMaintenanceOrdering:
         assert "--ignore-not-found" in detect["run"]
         assert "initialized=false" in detect["run"]
         assert steps["spi connect"]["if"] == "steps.deployment.outputs.initialized == 'true'"
-        assert steps["Set maintenance"]["if"] == (
-            "steps.deployment.outputs.initialized == 'true'"
-        )
+        assert steps["Set maintenance"]["if"] == ("steps.deployment.outputs.initialized == 'true'")
 
     def test_image_lock_snapshot_tolerates_genuine_absence(self):
         snapshot = _steps(_workflow(ENV_UPGRADE)["jobs"]["quiesce-existing"])[

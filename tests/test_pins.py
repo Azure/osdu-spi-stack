@@ -21,6 +21,7 @@ import pytest
 from typer.testing import CliRunner
 
 from spi import cli, pins
+from spi.deploy_record import DeployRecord, DeployRecordError
 from spi.images import ImageNotFoundError, ImageResolutionError, ResolvedImage
 from spi.pins import (
     LOCK_MUTATION_MAX_ATTEMPTS,
@@ -51,6 +52,17 @@ def _pin(**overrides) -> ServicePin:
     )
     fields.update(overrides)
     return ServicePin(**fields)
+
+
+def _deploy_record(maintenance=False) -> DeployRecord:
+    return DeployRecord(
+        ref="v0.6.0",
+        resolved_commit="d" * 40,
+        deployed_at="2026-08-25T00:00:00Z",
+        cli_version="0.6.0",
+        profile="core",
+        maintenance=maintenance,
+    )
 
 
 def _lock(data=None, pins_annotation="", resource_version="1"):
@@ -150,6 +162,7 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     monkeypatch.setattr(
         pins, "reconcile_consumers", lambda names: calls.__setitem__("reconciled", names)
     )
+    monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: _deploy_record())
     return calls
 
 
@@ -303,6 +316,41 @@ class TestPinService:
     def test_schema_load_direct_pin_rejected(self):
         with pytest.raises(PinError, match="Pin 'schema'"):
             pin_service("schema-load", "1")
+
+    def test_pin_refused_while_maintenance_set(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+        monkeypatch.setattr(
+            pins,
+            "read_deploy_record",
+            lambda required=False: _deploy_record(maintenance=True),
+        )
+
+        with pytest.raises(PinError, match="maintenance"):
+            pin_service("storage", "42")
+
+        assert calls["fetches"] == 0
+        assert calls["patch"] is None
+
+    def test_pin_refused_without_deploy_record(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+        monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: None)
+
+        with pytest.raises(PinError, match="deploy record"):
+            pin_service("storage", "42")
+
+        assert calls["fetches"] == 0
+        assert calls["patch"] is None
+
+    def test_pin_record_read_failure_becomes_pin_error(self, monkeypatch):
+        self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+
+        def raise_unreachable(required=False):
+            raise DeployRecordError("Could not read spi-deploy-record: connection refused")
+
+        monkeypatch.setattr(pins, "read_deploy_record", raise_unreachable)
+
+        with pytest.raises(PinError, match="connection refused"):
+            pin_service("storage", "42")
 
     def test_first_pin_captures_canonical_from_lock(self, monkeypatch):
         lock = _lock(

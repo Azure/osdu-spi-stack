@@ -28,12 +28,12 @@ skews ahead of the cluster contract (ADR-031).
    credential (ADR-032); `azure/login@v3` uses the fork's `AZURE_CLIENT_ID`
    and the tenant and subscription variables.
 2. **Connect.** `spi connect --resource-group $SPI_STACK_RESOURCE_GROUP
-   --cluster $SPI_STACK_CLUSTER` (unbuilt) wraps the hardened kubeconfig
+   --cluster $SPI_STACK_CLUSTER` wraps the hardened kubeconfig
    sequence living in `src/spi/azure_infra.py`: `az aks get-credentials`,
    `kubelogin convert-kubeconfig -l azurecli`, tenant-pinned exec
    environment. The context name carries the `spi-stack` prefix, so
    `guard.verify_spi_cluster()` passes without `SPI_SKIP_GUARD`.
-3. **Gate.** `spi status --json` (unbuilt); exit 0 means deployable and the
+3. **Gate.** `spi status --json`; exit 0 means deployable and the
    job proceeds, exit 2 names the blocker: a convergence failure, the
    `maintenance` flag, or a missing deploy record (ADR-029, ADR-030).
 4. **Deploy.** PR and push events run the same command; the fork build
