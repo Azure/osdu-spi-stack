@@ -21,6 +21,8 @@ from typing import Any
 
 import yaml
 
+from spi.shell import run_process
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SMOKE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "smoke.yml"
 SWEEPER_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sweeper.yml"
@@ -128,7 +130,7 @@ def _run_probe_gateway(tmp_path: Path, endpoints_mode: str) -> subprocess.Comple
     env["PATH"] = f"{stub_dir}{os.pathsep}{env.get('PATH', '')}"
     env["STUB_ENDPOINTS_MODE"] = endpoints_mode
 
-    return subprocess.run(
+    return run_process(
         ["bash", str(PROBE_GATEWAY_SCRIPT), "gateway"],
         env=env,
         capture_output=True,

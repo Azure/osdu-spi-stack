@@ -37,6 +37,10 @@ _LOCATION_RE = re.compile(r"^[a-z][a-z0-9]*$")
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 _SUFFIX_RE = re.compile(r"^[a-z0-9]{5}$")
 
+# IngressMode.IP is a hidden HTTP-only debug fallback; the shared environment's
+# documented schema (ops/environments/README.md) is 'azure' or 'dns' only.
+_DECLARABLE_INGRESS_MODES = {IngressMode.AZURE.value, IngressMode.DNS.value}
+
 
 class _UniqueKeyLoader(yaml.SafeLoader):
     """SafeLoader that rejects a mapping with a repeated key, at any depth.
@@ -146,6 +150,14 @@ def _validate_shape(data: dict) -> None:
             f"nameSuffix {name_suffix!r} must be exactly five lowercase alphanumeric characters"
         )
 
+    ingress_mode = data.get("ingressMode")
+    if isinstance(ingress_mode, str) and ingress_mode not in _DECLARABLE_INGRESS_MODES:
+        raise EnvironmentDeclarationError(
+            f"ingressMode {ingress_mode!r} must be one of "
+            f"{sorted(_DECLARABLE_INGRESS_MODES)}; 'ip' is a debug-only fallback with no "
+            "HTTPS listener and cannot be declared here"
+        )
+
 
 # Field name -> on-disk alias, for fields where they differ. Lets a rejected
 # snake_case key (e.g. from populate_by_name muscle memory) be pointed at the
@@ -195,9 +207,17 @@ def load_declaration(path: Path | str | None = None) -> EnvironmentDeclaration |
     An absent file is the expected steady state before activation and after
     any future teardown; callers (the lifecycle workflows) must treat `None`
     as a clean skip, never as an error. A present-but-invalid file still
-    raises `EnvironmentDeclarationError`.
+    raises `EnvironmentDeclarationError`, including a mismatch between `env`
+    and the filename stem: this module's contract is `<name>.yaml`, and a
+    typo in either one must not silently deploy the wrong environment.
     """
     resolved = Path(path) if path is not None else DEFAULT_DECLARATION_PATH
     if not resolved.exists():
         return None
-    return parse_declaration(resolved.read_text(encoding="utf-8"))
+    declaration = parse_declaration(resolved.read_text(encoding="utf-8"))
+    if declaration.env != resolved.stem:
+        raise EnvironmentDeclarationError(
+            f"env {declaration.env!r} does not match declaration filename "
+            f"{resolved.name!r}; expected {resolved.stem}.yaml"
+        )
+    return declaration

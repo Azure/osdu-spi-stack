@@ -105,6 +105,22 @@ def test_rejects_an_unknown_ingress_mode():
         parse_declaration(yaml_text)
 
 
+def test_rejects_the_hidden_ip_ingress_mode():
+    yaml_text = VALID_YAML.replace("ingressMode: azure", "ingressMode: ip")
+
+    with pytest.raises(EnvironmentDeclarationError, match="ingressMode"):
+        parse_declaration(yaml_text)
+
+
+@pytest.mark.parametrize("ingress_mode", ["azure", "dns"])
+def test_accepts_declarable_ingress_modes(ingress_mode):
+    yaml_text = VALID_YAML.replace("ingressMode: azure", f"ingressMode: {ingress_mode}")
+
+    declaration = parse_declaration(yaml_text)
+
+    assert declaration.ingress_mode.value == ingress_mode
+
+
 def test_rejects_an_extra_key():
     yaml_text = VALID_YAML + "extraKey: nope\n"
 
@@ -197,3 +213,22 @@ def test_load_declaration_raises_for_an_invalid_existing_file(tmp_path: Path):
 
     with pytest.raises(EnvironmentDeclarationError):
         load_declaration(path)
+
+
+def test_load_declaration_raises_when_env_does_not_match_filename(tmp_path: Path):
+    # A typo either side must fail closed, not deploy a second environment.
+    path = tmp_path / "shared.yaml"
+    path.write_text(VALID_YAML.replace("env: shared", "env: shraed"), encoding="utf-8")
+
+    with pytest.raises(EnvironmentDeclarationError, match="shraed"):
+        load_declaration(path)
+
+
+def test_load_declaration_accepts_a_matching_env_and_filename(tmp_path: Path):
+    path = tmp_path / "other.yaml"
+    path.write_text(VALID_YAML.replace("env: shared", "env: other"), encoding="utf-8")
+
+    declaration = load_declaration(path)
+
+    assert isinstance(declaration, EnvironmentDeclaration)
+    assert declaration.env == "other"

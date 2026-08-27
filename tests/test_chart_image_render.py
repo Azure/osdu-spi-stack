@@ -21,11 +21,12 @@ when Helm is not installed.
 """
 
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+
+from spi.shell import run_process
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHART_DIR = REPO_ROOT / "software" / "charts" / "osdu-spi-service"
@@ -38,7 +39,7 @@ def _rendered_image(extra_set: dict[str, str]) -> str:
     for key, value in extra_set.items():
         set_args += ["--set", f"{key}={value}"]
 
-    result = subprocess.run(
+    result = run_process(
         ["helm", "template", "chart-image-test", str(CHART_DIR), *set_args],
         capture_output=True,
         text=True,
