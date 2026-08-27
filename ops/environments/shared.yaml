@@ -1,0 +1,7 @@
+env: shared
+stackVersion: v0.6.0
+profile: core
+location: westus3
+ingressMode: azure
+imageBranch: master
+nameSuffix: a43c7
