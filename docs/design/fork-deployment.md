@@ -1,0 +1,150 @@
+# Fork Deployment Loop
+
+**What this explains.** The sequence a fork's CI runs to deploy a just-built
+image into the shared environment and test against it: authenticate, connect,
+pin, verify, test, restore, and the recovery path for pins nothing restored.
+The durable rulings behind it are ADR-031 (the pin seam), ADR-032 (identity),
+and ADR-033 (canonical source).
+
+**Why it matters.** Eight fork repositories consume this contract from
+workflow YAML they do not own (the `Azure/osdu-spi` template syncs it to
+them). When a deploy misbehaves, the operator debugging it needs the exact
+sequence, what each step asserts, and which recovery path applies.
+
+**Status.** Target mechanism ahead of the code; this is phases 1 and 4 of the
+roadmap in [environment-lifecycle.md](environment-lifecycle.md). Remove the
+marks as the phases land.
+
+## The sequence
+
+Each job authenticates fresh (the OIDC JWT lives ~5 minutes; one
+`azure/login` per job, the smoke pipeline's discipline).
+
+1. **Authenticate.** `azure/login@v3` with the fork's `AZURE_CLIENT_ID`
+   (its UAMI, ADR-032) and the tenant and subscription variables.
+2. **Connect.** `spi connect --resource-group $SPI_STACK_RESOURCE_GROUP
+   --cluster $SPI_STACK_CLUSTER` (unbuilt) wraps the hardened kubeconfig
+   sequence living in `src/spi/azure_infra.py`: `az aks get-credentials`,
+   `kubelogin convert-kubeconfig -l azurecli`, tenant-pinned exec
+   environment. The context name carries the `spi-stack` prefix, so
+   `guard.verify_spi_cluster()` passes without `SPI_SKIP_GUARD`.
+3. **Gate.** `spi status --json` (unbuilt); proceed only when `.deployable`
+   is true. A set `maintenance` flag or a missing deploy record stops the job
+   here with a reason (ADR-029, ADR-030).
+4. **Deploy.** On PR events:
+
+   ```bash
+   spi service pin "$SERVICE" \
+     --image "ghcr.io/azure/${REPO}@${DIGEST}" \
+     --ephemeral --run-id "$GITHUB_RUN_ID" \
+     --source-repo "$GITHUB_REPOSITORY" --source-sha "$GITHUB_SHA" \
+     --source-run-url "$RUN_URL"
+   ```
+
+   On push events to a trusted branch: `spi service refresh "$SERVICE"`
+   re-resolves the canonical image instead (ADR-033); no pin bookkeeping.
+5. **Verify.** `spi service verify "$SERVICE" --image <ref>` (unbuilt)
+   asserts the Deployment's pod template and a running pod's `imageID` carry
+   the digest and the rollout is complete. Deployment and container names
+   default to the service name; `K8S_DEPLOYMENT_NAME` and
+   `K8S_CONTAINER_NAME` cover deviants.
+6. **Test.** The integration-test job re-runs the verify as a pre-flight
+   (the cross-pipeline guard: a colliding deploy fails fast, naming the
+   colliding run from the pin annotation), resolves endpoints from
+   `spi info --json`, resolves the secret map from Key Vault, health-gates
+   the declared dependencies, then runs the suite.
+7. **Restore.** An always-run job on PR pipelines:
+   `spi service reset "$SERVICE" --if-run "$GITHUB_RUN_ID"`. The reset is
+   conditional on ownership: it acts only while the live pin's `run_id` still
+   matches, so a newer run's pin is left standing.
+
+## Pin annotation schema
+
+The pin rides the `spi-stack.osdu.dev/pins` annotation on the
+`osdu-image-lock` ConfigMap (ADR-017), one record per service:
+
+| Field | Content |
+|---|---|
+| `origin` | `gitlab-mr` or `github` |
+| `repository`, `tag`, `digest` | the pinned image |
+| `source_repo`, `source_sha` | what built it |
+| `source_run_url`, `run_id` | the owning workflow run, for humans and for ownership checks |
+| `ephemeral` | true when CI placed it; the only pins automation may sweep |
+| `applied_at` | pin time |
+| `canonical_*` | the restore target, recorded atomically with the overwrite |
+
+Older annotations without the new fields keep decoding; the new fields
+default empty, which reads as a non-ephemeral operator pin.
+
+## Stale-pin recovery
+
+A cancelled run, an expired token, or a lost runner strands a pin the restore
+job never returns. The weekday refresh workflow runs the backstop:
+
+- `spi service reset --ephemeral --stale-only` (unbuilt) sweeps an ephemeral
+  pin only when its owning workflow run reports a terminal state (queried
+  through the recorded run URL; the fork repos are public) or, when that
+  state is unreachable, when the pin's age exceeds a threshold longer than
+  any deploy-plus-test budget.
+- `spi service refresh` per GitHub-origin service then re-asserts each
+  canonical, which doubles as the retention keep-alive (ADR-033).
+
+A pin swept mid-run cannot happen silently: the test job's pre-flight verify
+fails with the pin's replacement named, and the re-run is the recovery.
+
+## Fork repository configuration
+
+| Variable | Set by | Meaning |
+|---|---|---|
+| `AZURE_CLIENT_ID` (secret), `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | `spi onboard` | the fork's UAMI and its home |
+| `SPI_STACK_RESOURCE_GROUP`, `SPI_STACK_CLUSTER` | `spi onboard` | environment coordinates for `spi connect` |
+| `K8S_DEPLOYMENT_NAME`, `K8S_CONTAINER_NAME` | `spi onboard` | verify targets; default to the service name |
+| `ACCEPTANCE_TEST_DIR` | operator | Maven module path of the suite |
+| `ACCEPTANCE_TEST_SECRET_MAP` | operator | `ENV_VAR=keyvault-secret-name` pairs; an unknown or unresolvable entry fails the job before Maven starts |
+| `ACCEPTANCE_TEST_DEPENDENCIES` | operator | services whose health endpoints gate the suite; also absorbs a sibling's rolling restart |
+
+`spi onboard <service> --repo Azure/osdu-spi-<service>` (unbuilt,
+`src/spi/onboard.py`) provisions the UAMI, its three federated credentials,
+the role assignments and group membership (ADR-032), then stamps the
+variables above via `gh`. It is idempotent and supports `--dry-run`. Once the
+configuration is present, the template's readiness tooling activates the
+reserved required checks `🚀 Deploy to spi-stack` and `🧪 Integration Tests`
+on the fork; the jobs themselves live in the template's workflows, not in
+this repo.
+
+## Recipes
+
+Hand-pin a fork image against a standing environment and return it:
+
+```bash
+spi service pin partition \
+  --image ghcr.io/azure/osdu-spi-partition@sha256:<digest>
+spi service verify partition --image ghcr.io/azure/osdu-spi-partition@sha256:<digest>
+spi service list        # shows the pin without the ephemeral marker
+spi service reset partition
+```
+
+An operator pin placed this way carries no `ephemeral` marker, so the weekday
+backstop leaves it alone until the reset.
+
+Inspect what a stranded pin belongs to:
+
+```bash
+kubectl get cm osdu-image-lock -n osdu-flux \
+  -o jsonpath='{.metadata.annotations.spi-stack\.osdu\.dev/pins}' | jq
+```
+
+## Related ADRs
+
+- [ADR-017: Per-deploy image lock](../decisions/017-osdu-image-lock.md)
+- [ADR-030: Machine-readable status and the deploy record](../decisions/030-machine-readable-status-contract.md)
+- [ADR-031: Fork-built images deploy as ephemeral lock pins](../decisions/031-fork-image-deploys-as-ephemeral-pins.md)
+- [ADR-032: Per-fork deploy identity and namespace RBAC](../decisions/032-per-fork-deploy-identity.md)
+- [ADR-033: Canonical image source follows onboarding](../decisions/033-canonical-image-source-follows-onboarding.md)
+
+## Source files
+
+- `src/spi/pins.py`, `src/spi/images.py`, `src/spi/cli.py`, `src/spi/guard.py`
+- `src/spi/onboard.py` (planned)
+- `software/charts/osdu-spi-service/templates/deployment.yaml`
+- The fork-side jobs: `Azure/osdu-spi` `.github/template-workflows/`

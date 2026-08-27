@@ -15,24 +15,28 @@ to object names and labels this repo is free to reshape.
 `spi status --json` emits a versioned envelope and typed exit codes; a deploy
 record written at the end of `spi up` supplies the version fields.
 
-- Envelope: `apiVersion: spi.osdu.dev/v1`, `ready` (true when each
-  Kustomization reports `Ready=True`, the same predicate
-  `scripts/wait_for_flux_ready.sh` polls), a typed `reason` naming the first
-  blocking object when not ready, `suspended`, `maintenance`, Kustomization
-  counts with a not-ready list, `stack` (ref, resolved commit, deploy
-  timestamp, CLI version, profile), `images` (branch, resolved-at, count,
-  pinned services), and `baseUrl`.
+- Envelope: `apiVersion: spi.osdu.dev/v1`, `ready`, `deployable`, a typed
+  `reason` naming the first blocking object when not ready, `suspended`,
+  `maintenance`, Kustomization counts with a not-ready list, `stack` (ref,
+  resolved commit, deploy timestamp, CLI version, profile), `images` (branch,
+  resolved-at, count, pinned services), and `baseUrl`.
+- `ready` and `deployable` answer different questions. `ready` is Flux
+  convergence: each Kustomization reports `Ready=True`, the same predicate
+  `scripts/wait_for_flux_ready.sh` polls. `deployable` is `ready` with
+  `maintenance` unset and a deploy record present; it is the field deploy
+  gates read, and `spi service pin` (ADR-031) enforces the same rule itself,
+  refusing while `maintenance` is set or the record is absent.
 - Exit codes: 0 ready, 2 not ready with a reason, 1 unreachable or guard
-  failure. CI gates on the exit code and reads the JSON only for detail.
+  failure. CI gates on the exit code for convergence waits and on
+  `deployable` for deploys.
 - The deploy record is written twice, for two audiences: RG tags
   (`spi-stack-version`, `spi-deployed-utc`) readable with no cluster access,
   and a `spi-deploy-record` ConfigMap in `osdu-flux` (ADR-019) holding the
   ref, the resolved commit from `GitRepository.status.artifact.revision`, the
   CLI version, profile, and timestamp.
-- The ConfigMap also carries a `maintenance` flag the lifecycle workflows set
-  before an upgrade or reset and clear after; `spi service pin` (ADR-031)
-  refuses while it is set, so a fork deploy fails fast with a reason instead
-  of racing a lifecycle operation.
+- The ConfigMap also carries the `maintenance` flag. Status surfaces it and
+  derives `deployable`; when it is set and cleared, and the fail-closed rules
+  around it, are ADR-029's ruling.
 - Endpoints, partitions, and secret references stay in `spi info --json`,
   which gains the same `apiVersion` field plus `azure.tenant_id` and the
   data-plane application id that acceptance suites need to mint tokens.
@@ -49,12 +53,16 @@ Rejected: consumers read `kubectl get kustomizations -o json` directly. No CLI
 change at all, but it freezes internal object names and labels into eight
 external repositories.
 
+Rejected: fold `maintenance` into `ready`. One field for consumers, but the
+ops workflows need the convergence answer while `maintenance` is set, and
+collapsing the two would take it from them.
+
 ## Consequences
 
 - The envelope is a compatibility contract: renaming a field is a breaking
   change for fork CI, hence the `apiVersion` gate.
-- A stuck `maintenance` flag blocks fork deploys until an operator clears it;
-  the workflows must clear it on failure paths, not only on success.
+- Environments provisioned before the deploy record existed refuse pins until
+  a re-run `spi up` writes one; fail-closed is chosen over a bypass flag.
 - The renderer and the JSON path share one collector in `src/spi/status.py`,
   so the human table and the machine answer cannot disagree.
 - `spi status --json` reports Flux convergence, not application correctness; a

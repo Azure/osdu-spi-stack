@@ -33,26 +33,21 @@ binds to one Entra group so onboarding never edits cluster manifests.
     get/list, `pods/log` get, `events` list, `configmaps` get/list.
   No create or delete on anything, and no Kubernetes `secrets` verb in either
   namespace: acceptance secrets come from Key Vault.
-- **`spi onboard <service> --repo Azure/osdu-spi-<service>`** (new
-  `src/spi/onboard.py`) provisions the identity, credentials, role
-  assignments, and group membership, then stamps the fork's repository
-  configuration via `gh`: secret `AZURE_CLIENT_ID`, variables for tenant,
-  subscription, the environment coordinates, and the deployment and container
-  names. Idempotent, with `--dry-run`. The acceptance-suite variables
-  (`ACCEPTANCE_TEST_*`) stay operator-set.
-- **CI passes the guard, never bypasses it.** A `spi connect` command
-  extracts the hardened kubeconfig sequence from `src/spi/azure_infra.py`
-  (get-credentials, `kubelogin` conversion, tenant-pinned exec environment);
-  the resulting context name carries the `spi-stack` prefix, so
-  `guard.verify_spi_cluster()` passes on its own terms and `SPI_SKIP_GUARD`
-  stays out of CI.
+- **Onboarding a fork is one idempotent CLI operation.** `spi onboard`
+  provisions the identity, credentials, role assignments, and group
+  membership, and stamps the fork's repository configuration; re-running it
+  repairs drift. The acceptance-suite variables stay operator-set. Command
+  mechanics live in `docs/design/fork-deployment.md`.
+- **CI passes the guard, never bypasses it.** Fork jobs acquire their
+  kubeconfig through the CLI, which yields a context the guard's fingerprint
+  check accepts; `SPI_SKIP_GUARD` stays out of CI.
 
 Rejected: one shared app registration for the fleet. One credential to
 manage, but 24 subjects exceed the 20-credential cap, and a single leaked
 credential would span eight repositories.
 
-Rejected: `SPI_SKIP_GUARD=1` in CI with an arbitrary kube context. Removes
-the need for `spi connect`, but discards the fingerprint check that keeps a
+Rejected: `SPI_SKIP_GUARD=1` in CI with an arbitrary kube context. Removes a
+CLI step from the job, but discards the fingerprint check that keeps a
 mis-targeted kubeconfig from writing another cluster's lock.
 
 Rejected: per-secret Key Vault scoping. Tighter least privilege, but RBAC

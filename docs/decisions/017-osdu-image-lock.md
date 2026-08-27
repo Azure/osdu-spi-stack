@@ -17,14 +17,14 @@ Resolve OSDU images into a single `osdu-image-lock` ConfigMap in `osdu-flux`, an
 
 Shape:
 
-- `src/spi/images.py` resolves each service in `IMAGE_REGISTRY` from its origin. GitLab-origin entries query the community registry API for the newest immutable SHA tag on the configured branch (default `master`); entries carrying a `github_repo` field resolve their fork's GHCR `main` image instead (ADR-031). The schema-load image is resolved from the selected schema-service SHA and fails fast if that exact loader tag is absent.
+- `src/spi/images.py` resolves each service in `IMAGE_REGISTRY` from its origin. GitLab-origin entries query the community registry API for the newest immutable SHA tag on the configured branch (default `master`); entries carrying a `github_repo` field resolve their fork's GHCR `main` image instead (ADR-033). The schema-load image is resolved from the selected schema-service SHA and fails fast if that exact loader tag is absent.
 - The lock is applied during K8s bootstrap (Phase 4) before Flux reconciles. Keys are uppercase service names: `PARTITION_IMAGE`, `PARTITION_IMAGE_TAG`, `PARTITION_IMAGE_DIGEST`, etc.
 - Service Kustomizations under `software/stacks/osdu/profiles/core/` reference the ConfigMap with `spec.postBuild.substituteFrom`, so `${PARTITION_IMAGE}` in a YAML expands at apply time. Service Helm chart values stay generic; the lock holds the pin.
 - The digest keys are load-bearing: the `osdu-spi-service` chart accepts `image.digest` and renders `repository@digest` when it is set, `repository:tag` otherwise, and service YAMLs pass `${<SERVICE>_IMAGE_DIGEST}`. An entry without a digest falls back to its tag, so a lock written before digests joined still renders.
 - `spi reconcile --refresh-images` re-resolves and re-applies the ConfigMap, then reconciles the service Kustomizations and `spi-osdu-schema-load` before `spi-osdu-reference`. Updates are explicit, not silent.
 - The schema-load Job is included in the live lock. Because a completed Kubernetes Job cannot be updated in place, its Flux Kustomization uses `force: true` so a changed image tag replaces the Job and re-runs the loader.
 - The schema-load Job substitutes its image with no static default, so a lock generated before the loader joined would leave the Job unresolvable. `spi reconcile` backfills the missing `SCHEMA_LOAD_*` keys from the schema tag the lock already pins, leaving every other service pin untouched.
-- The registry is a source parameter, not part of the decision. The GHCR origin (ADR-031) changed only the resolution path in `src/spi/images.py` and the pin flow's provenance checks; the lock, the substitution seam, and the refresh and pin semantics carried over unchanged.
+- The registry is a source parameter, not part of the decision. The GHCR origin (ADR-033) changed only the resolution path in `src/spi/images.py` and the pin flow's provenance checks; the lock, the substitution seam, and the refresh and pin semantics carried over unchanged.
 
 ### Per-service MR pins
 

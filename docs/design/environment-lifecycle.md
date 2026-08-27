@@ -26,6 +26,12 @@ The environment is one deployment of the ordinary stack: `spi up --env shared
 a dev environment; what differs is that its version is pinned to a release tag
 and its lifecycle runs on workflows instead of an operator's terminal.
 
+Version is three axes, not one. The stack definition is pinned by the file
+above (ADR-028). Canonical service images advance on refresh under each
+service's source policy (ADR-033) and are recorded in the image lock.
+Ephemeral test pins (ADR-031) are transient overlays. `spi status --json`
+reports the first two; `spi service list` the third.
+
 ## The pin and the bump flow
 
 `ops/environments/shared.yaml` (unbuilt) declares the environment:
@@ -64,47 +70,60 @@ selects on the `spi-stack-ci-*` name pattern and the sweep-eligibility tag,
 and the shared RG carries neither.
 
 **Refresh** proves the environment is serving and sweeps what fork CI left
-behind, in four steps: set and later clear the `maintenance` flag (ADR-030),
-run the pin backstop (`spi service reset --ephemeral`, then `spi service
-refresh` per GitHub-origin service, ADR-031), trigger `spi reconcile`, then
-gate on `scripts/wait_for_flux_ready.sh` and the gateway probes lifted from
-`smoke.yml`. A red refresh run at 05:00 UTC is the alarm that fires before the
-first fork pipeline of the day hits the same failure.
+behind: set the `maintenance` flag, run the pin backstop (sweep ephemeral
+pins whose owning run has ended, then `spi service refresh` per GitHub-origin
+service; [fork-deployment.md](fork-deployment.md)), trigger `spi reconcile`,
+gate on `scripts/wait_for_flux_ready.sh` plus the gateway probes lifted from
+`smoke.yml`, and clear the flag only after they pass. A failed step leaves
+the flag set (ADR-029), so a red 05:00 UTC run blocks the day's fork deploys
+with a reason instead of letting them race a sick environment.
 
 **Upgrade** is `spi up --env shared --tag <new> --refresh-images` re-run on
 the standing environment, preceded by a lock snapshot (`kubectl get cm
 osdu-image-lock -o yaml` uploaded as a workflow artifact) and followed by the
-same wait and probes. The provision path is the upgrade path (ADR-029); new
-stack version and new OSDU images advance together at the bump, the one
-reviewed moment.
+same wait, probes, and flag clear. The provision path is the upgrade path
+(ADR-029). The `--refresh-images` pass moves canonical images at the same
+time, but the bump pins only the stack-definition axis; canonicals also
+advance between upgrades on the weekday refresh (ADR-033).
 
 **Reset** is teardown plus cold provision at the pinned tag: snapshot the
 lock, `spi down`, poll until `az group exists` reports false (the CLI's own
 wait covers acknowledgement only), `spi up --tag <pin>`, then the cold-cluster
-wait with the 155-minute schema-load budget. The Key Vault soft-delete corpse
-is absorbed by the recovery already in `spi up`. After the rebuild, the
-test-identity ensure step re-seeds the acceptance-tester Key Vault secrets;
-the Entra principals themselves survive the RG deletion (ADR-029).
+wait with the 155-minute schema-load budget. The Key Vault returns through
+the soft-delete recovery already in `spi up`, so its secrets can return with
+it; the test-identity ensure step verifies and repairs the acceptance-tester
+secrets and role assignments rather than assuming loss (ADR-029). The rebuilt
+environment starts with `maintenance` set and opens to deploys only after the
+probes pass.
 
 ## Surfaces fork CI consumes
 
-- `spi status --json` (unbuilt): ready or not, with a typed reason, the
-  deployed version, and the `maintenance` flag. Exit 0/2/1 (ADR-030).
+- `spi status --json` (unbuilt): `ready` for convergence, `deployable` as the
+  deploy gate, a typed reason, the deployed version, and the `maintenance`
+  flag. Exit 0/2/1 (ADR-030).
 - `spi info --json`: endpoints, partitions, Azure coordinates, secret
   references. In `azure` ingress mode the FQDN embeds the per-deployment
   suffix and changes on each reset, so consumers re-read it per run rather
   than caching it.
 - `spi connect`, `spi service pin/verify/reset/refresh` (unbuilt): the deploy
-  seam (ADR-031, ADR-032). The fork-side jobs live in the `Azure/osdu-spi`
-  template's workflows, not here.
+  seam. The sequence and its recovery paths are
+  [fork-deployment.md](fork-deployment.md); the fork-side jobs live in the
+  `Azure/osdu-spi` template's workflows, not here.
 
 ## Recipes
 
-Stand up the shared environment (after the versioning phase lands):
+Stand up the shared environment (after the versioning phase lands). Each
+argument comes from the declaration file; nothing is typed twice:
 
 ```bash
-uv run spi up --env shared --profile core --location westus3 \
-  --tag "$(yq .stackVersion ops/environments/shared.yaml)"
+decl=ops/environments/shared.yaml
+uv run spi up \
+  --env "$(yq .env $decl)" \
+  --profile "$(yq .profile $decl)" \
+  --location "$(yq .location $decl)" \
+  --ingress-mode "$(yq .ingressMode $decl)" \
+  --image-branch "$(yq .imageBranch $decl)" \
+  --tag "$(yq .stackVersion $decl)"
 bash scripts/wait_for_flux_ready.sh --timeout 13800
 uv run spi status --json | jq .ready   # true when converged
 ```
@@ -127,9 +146,9 @@ gh run watch
 
 1. **Foundations** (unbuilt): `spi status --json`; chart digest rendering and
    the `render_lock_with_pins` digest fix; the generalized pin surface
-   (`--image`, `verify`, `refresh`, `reset --ephemeral`, `connect`); the two
-   fork RBAC Roles. Exit test: hand-pin a partition GHCR digest against a
-   standing environment and reset it.
+   (`--image`, `verify`, `refresh`, ownership-checked `reset`, `connect`);
+   the two fork RBAC Roles. Exit test: hand-pin a partition GHCR digest
+   against a standing environment and reset it.
 2. **Versioning** (unbuilt): `repoTag` in `infra/flux.bicep`, `spi up --tag`,
    the deploy record, the tri-state `--refresh-images`, the pin file; stand up
    `shared` at the release tag then in place.
@@ -139,7 +158,7 @@ gh run watch
    template-side deploy, integration-test, and restore jobs under the reserved
    check names.
 5. **Canonical flips** (unbuilt): `github_repo` on each onboarded service's
-   registry entry, one PR per service.
+   registry entry, one PR per service (ADR-033).
 
 ## Related ADRs
 
@@ -150,6 +169,7 @@ gh run watch
 - [ADR-030: Machine-readable status and the deploy record](../decisions/030-machine-readable-status-contract.md)
 - [ADR-031: Fork-built images deploy as ephemeral lock pins](../decisions/031-fork-image-deploys-as-ephemeral-pins.md)
 - [ADR-032: Per-fork deploy identity and namespace RBAC](../decisions/032-per-fork-deploy-identity.md)
+- [ADR-033: Canonical image source follows onboarding](../decisions/033-canonical-image-source-follows-onboarding.md)
 
 ## Source files
 

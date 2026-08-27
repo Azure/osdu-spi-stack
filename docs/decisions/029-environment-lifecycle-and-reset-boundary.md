@@ -14,10 +14,12 @@ incident.
 
 ## Decision
 
-The environment has five verbs, composed from existing commands. The instance
-(Flux-managed workloads, the image lock, in-cluster state) is what refresh and
-upgrade move; the substrate (RG, AKS, PaaS, Flux extension) changes only on
-reset.
+The environment has five verbs, composed from existing commands, with an
+explicit boundary between them: refresh changes runtime state only; upgrade
+re-runs the provision path and may change substrate and workloads in place
+(the ARM deployments are incremental); reset deletes and recreates the
+substrate, and only that full resource-group rebuild clears both cluster and
+PaaS state.
 
 | Verb | Mechanism | Cost | Trigger |
 |---|---|---|---|
@@ -31,7 +33,7 @@ reset.
   idempotent (RG create-when-absent, ARM incremental deployments, seed-secret
   reuse, re-suspend per ADR-014), so a re-run with a new tag is the in-place
   upgrade and there is no second code path to trust separately.
-- **Reset is the only reset.** The weekly teardown-and-rebuild at the pinned
+- **No partial reset exists.** The weekly teardown-and-rebuild at the pinned
   tag sheds accreted state in both layers and keeps the rebuild path
   continuously proven at the `core` profile, which the nightly smoke (default
   `bare`) does not exercise. Saturday puts the outage where the merge gate is
@@ -40,9 +42,17 @@ reset.
   readiness wait, and the probes each exist; the ops workflow
   (`docs/design/environment-lifecycle.md`) sequences them. Refresh also runs
   the pin backstop (ADR-031).
+- **Lifecycle workflows own the `maintenance` flag** that ADR-030 surfaces.
+  A workflow sets it before it changes the environment and clears it only
+  after the readiness wait and probes pass; a failed run leaves it set for an
+  operator. A freshly provisioned shared environment starts with it set, and
+  a missing deploy record reads as not deployable, so fork deploys fail
+  closed instead of racing a half-built environment.
 - **Test identities belong to the lifecycle.** Acceptance-tester service
-  principals survive a reset (Entra objects outlive the RG) but their Key Vault
-  secrets do not; an idempotent ensure step re-seeds them after each reset.
+  principals are Entra objects and outlive the RG, and the Key Vault returns
+  through the soft-delete recovery in `spi up`, so its secrets can return
+  with it. An idempotent ensure step after each reset verifies and repairs
+  the required secrets and role assignments rather than assuming loss.
 - Lifecycle operations serialize under one concurrency group; fork deploys do
   not (ADR-031).
 
@@ -59,16 +69,23 @@ Rejected: a `spi refresh` CLI verb. One command for a human operator, but it
 would re-implement `scripts/wait_for_flux_ready.sh`'s watch loop in Python;
 `spi reconcile && spi status --watch` covers the interactive case.
 
+Rejected: clear the `maintenance` flag on a workflow's failure path. Restores
+availability without an operator, but reopens deploys against an environment
+whose upgrade or rebuild did not finish; unavailability with a reason is the
+safer failure.
+
 ## Consequences
 
 - The Saturday reset is a full outage window of up to 4 hours; a fork pipeline
   that runs into it fails at deploy and is re-run, not queued.
+- A red upgrade, reset, or refresh leaves the environment refusing deploys
+  until an operator intervenes; availability is traded against testing on a
+  half-changed platform.
 - State accretion is bounded to one week, and the rebuild is exercised weekly
   rather than attempted for the first time during an incident.
-- An upgrade restarts services in place; fork test jobs observe rolling
-  restarts during the window, absorbed by their dependency health gate
-  (ADR-031).
+- An upgrade restarts services in place, and its incremental ARM deployments
+  can change substrate resources; fork test jobs observe rolling restarts
+  during the window, absorbed by their dependency health gate (ADR-031).
 - The reset must wait for actual RG deletion before re-provisioning
   (`cleanup_azure` acknowledges the delete within 60 s but does not wait for
-  completion), and relies on the Key Vault soft-delete recovery already in
-  `spi up`.
+  completion).
