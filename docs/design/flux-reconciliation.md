@@ -25,7 +25,7 @@ Changes that flow through this loop:
 
 ### Service update loop (from `osdu-image-lock`)
 
-OSDU service images move on a different cadence than the repo. Per [ADR-017](../decisions/017-osdu-image-lock.md), `spi up` queries the OSDU community GitLab registry for the newest immutable SHA tag per service, renders the result into a `osdu-image-lock` ConfigMap in `osdu-flux`, and applies it.
+OSDU service images move on a different cadence than the repo. Per [ADR-017](../decisions/017-osdu-image-lock.md), the first `spi up` against a cluster queries the OSDU community GitLab registry for the newest immutable SHA tag per service, renders the result into a `osdu-image-lock` ConfigMap in `osdu-flux`, and applies it. A re-run against a cluster that holds a lock preserves it; only an explicit `--refresh-images` re-resolves. (The preserve-on-re-run behavior is the ADR-017 tri-state ruling, currently ahead of the code, which still re-resolves on each `spi up`.)
 
 The service Kustomizations under `software/stacks/osdu/profiles/core/` carry `postBuild.substituteFrom` blocks that reference `osdu-image-lock`. When Flux reconciles those Kustomizations, the `${PARTITION_IMAGE_REPOSITORY}` and `${PARTITION_IMAGE_TAG}` expressions in the rendered YAML expand against the live ConfigMap. Updating the lock and reconciling the Kustomization triggers a rolling update.
 

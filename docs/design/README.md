@@ -22,6 +22,8 @@ Design docs reference ADRs for decision rationale. They do not re-justify decisi
 | [Workload Identity](workload-identity.md) | One UAMI, one ServiceAccount, the token federation chain, what the JWT projection in ADR-016 does after the bearer arrives |
 | [Gateway and ingress](gateway-ingress.md) | The three ingress modes (`azure`, `dns`, `ip`) concretely, what each provisions, how to switch, how to debug a 404 |
 | [Secret lifecycle](secret-lifecycle.md) | The three secret stores, what Bicep writes vs what the CLI writes post-handoff, how trust-manager mirrors CAs into `osdu` |
+| [Environment lifecycle](environment-lifecycle.md) | How the shared backing environment for fork CI is versioned, refreshed, upgraded, and reset, and which surfaces fork pipelines consume |
+| [Fork deployment](fork-deployment.md) | The fork CI deploy loop end to end: authenticate, connect, pin, verify, test, restore, and how stranded pins are recovered |
 
 ## Doc template
 
@@ -42,6 +44,7 @@ When writing a new design doc, copy the shape of an existing one and replace the
 - The filename stem matches the doc stem. Multiple diagrams for one doc use a suffix.
 - Markdown references the `.png` so it renders inline on GitHub.
 - The `.excalidraw` source is the editable truth. When you update a diagram, edit the source in [Excalidraw](https://excalidraw.com/), re-export the PNG, and commit both.
+- Posters are the exception: an HTML-authored infographic keeps its `.html` file as the editable source next to the exported `.png` (for example `environment-lifecycle.html`). Edit the HTML and re-render it to PNG rather than recreating it in Excalidraw.
 
 ## Contribution guide
 
