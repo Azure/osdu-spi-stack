@@ -440,6 +440,77 @@ def _refuse_unless_deployable() -> None:
         )
 
 
+def _post_write_maintenance_check() -> str | None:
+    """Return why a lifecycle run intervened during the write, or None.
+
+    Re-reads the deploy record after the lock write closes the ADR-029
+    window between `_refuse_unless_deployable`'s pre-check and the CAS write:
+    a lifecycle run can set `maintenance` while `pin_service` is doing its
+    GitLab round trips and lock mutation. An unreadable or now-absent record
+    is treated the same as maintenance, since both mean the environment is
+    no longer deployable (ADR-030).
+    """
+
+    try:
+        record = read_deploy_record(required=False)
+    except DeployRecordError as exc:
+        return f"the post-write deployability recheck failed ({exc})"
+    if record is None:
+        return "the deploy record disappeared"
+    if record.maintenance:
+        return "a lifecycle run started maintenance"
+    return None
+
+
+def _revert_pin(written: dict[str, ServicePin], description: str) -> list[str]:
+    """Undo exactly the pins ``written`` still holds live, restoring canonical.
+
+    Mirrors `reset_service`'s canonical restore, scoped to the pins this
+    call wrote: a name is reverted only when its live pin still matches
+    (``mr``, ``applied_at``) what this call recorded, so a pin a concurrent
+    `spi service pin` has since replaced is left standing rather than
+    reverting someone else's write. Returns the names actually reverted.
+    """
+
+    reverted: list[str] = []
+
+    def compute(lock: dict | None) -> dict:
+        if lock is None:
+            raise PinError(
+                f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE} "
+                "while reverting a pin."
+            )
+        nonlocal reverted
+        pins = decode_pins(lock)
+        data = dict(lock.get("data") or {})
+        reverted = []
+        for name, pin in written.items():
+            live = pins.get(name)
+            if live is None or live.mr != pin.mr or live.applied_at != pin.applied_at:
+                continue
+            pins.pop(name)
+            data.update(
+                _lock_entry_patch(
+                    name,
+                    pin.canonical_repository,
+                    pin.canonical_tag,
+                    pin.canonical_created_at,
+                    pin.canonical_digest,
+                )
+            )
+            reverted.append(name)
+
+        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+        if pins:
+            annotations[PINS_ANNOTATION] = encode_pins(pins)
+        else:
+            annotations.pop(PINS_ANNOTATION, None)
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    mutate_lock(compute, description)
+    return reverted
+
+
 def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     """Pin a service (and schema's paired loader) to an MR pipeline image.
 
@@ -572,6 +643,26 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
 
     description = f"Pin {', '.join(targets)} to MR !{mr_iid} image"
     mutate_lock(compute, description)
+
+    written = dict(results)
+    blocker = _post_write_maintenance_check()
+    if blocker:
+        names = ", ".join(sorted(written))
+        try:
+            reverted = _revert_pin(written, f"Revert pin for {names} ({blocker})")
+        except PinError as exc:
+            raise PinError(
+                f"{blocker} while pinning {names}, and reverting the pin failed: {exc}. "
+                f"The pin may still be live; run 'spi service reset {service}' to confirm "
+                "and clear it."
+            ) from exc
+        outcome = (
+            f"reverted {', '.join(sorted(reverted))} to its canonical image"
+            if reverted
+            else "a newer pin had already replaced it, so nothing was reverted"
+        )
+        raise PinError(f"{blocker} while pinning {names}; {outcome}.")
+
     reconcile_consumers([name for name, _ in results] + released)
     return results
 

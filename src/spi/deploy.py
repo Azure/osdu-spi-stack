@@ -374,11 +374,12 @@ def _resolved_revision(repository: dict, expected_ref: str, ref_field: str) -> s
 
     revision = repository.get("status", {}).get("artifact", {}).get("revision", "")
     prefix, separator, digest = revision.partition("@")
-    accepted_refs = {
-        expected_ref,
-        f"refs/heads/{expected_ref}",
-        f"refs/tags/{expected_ref}",
-    }
+    # Flux reports the bare ref name for branch/tag sources (the qualified
+    # refs/heads|tags/ form is only used for spec.ref.name, which this CLI
+    # never sets); restrict the qualified form to ref_field's own namespace
+    # so a tag deployment can't validate a same-named branch's artifact.
+    namespace = "refs/tags/" if ref_field == "tag" else "refs/heads/"
+    accepted_refs = {expected_ref, f"{namespace}{expected_ref}"}
     match = re.fullmatch(r"(?:sha1|sha256):([0-9a-fA-F]{40,64})", digest)
     if separator != "@" or prefix not in accepted_refs or match is None:
         raise RuntimeError(

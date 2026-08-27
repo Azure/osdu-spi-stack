@@ -47,6 +47,62 @@ def test_resolved_revision_rejects_wrong_ref():
         )
 
 
+def test_resolved_revision_accepts_qualified_tag_form():
+    sha = "a" * 40
+
+    assert (
+        deploy._resolved_revision(
+            _git_repository("tag", "v0.6.0", f"refs/tags/v0.6.0@sha1:{sha}"),
+            "v0.6.0",
+            "tag",
+        )
+        == sha
+    )
+
+
+def test_resolved_revision_rejects_same_named_branch_for_tag_deployment():
+    sha = "a" * 40
+
+    with pytest.raises(RuntimeError, match="does not identify"):
+        deploy._resolved_revision(
+            _git_repository("tag", "v0.6.0", f"refs/heads/v0.6.0@sha1:{sha}"),
+            "v0.6.0",
+            "tag",
+        )
+
+
+def test_resolved_revision_accepts_branch_form_for_branch_deployment():
+    sha = "a" * 40
+
+    assert (
+        deploy._resolved_revision(
+            _git_repository("branch", "main", f"main@sha1:{sha}"),
+            "main",
+            "branch",
+        )
+        == sha
+    )
+    assert (
+        deploy._resolved_revision(
+            _git_repository("branch", "main", f"refs/heads/main@sha1:{sha}"),
+            "main",
+            "branch",
+        )
+        == sha
+    )
+
+
+def test_resolved_revision_rejects_same_named_tag_for_branch_deployment():
+    sha = "a" * 40
+
+    with pytest.raises(RuntimeError, match="does not identify"):
+        deploy._resolved_revision(
+            _git_repository("branch", "main", f"refs/tags/main@sha1:{sha}"),
+            "main",
+            "branch",
+        )
+
+
 def test_finalize_suspends_before_record(monkeypatch):
     calls = []
     config = Config.from_env("shared", repo_tag="v0.6.0")
@@ -117,6 +173,38 @@ def test_finalize_resuspends_on_reconcile_failure(monkeypatch):
         deploy._finalize_gitops_source(config)
 
     assert calls == [(False, True), (True, False)]
+
+
+def test_finalize_resuspends_when_revision_names_wrong_namespace(monkeypatch):
+    """A same-named branch artifact must still fail closed: re-suspend, no record."""
+    calls = []
+    config = Config.from_env("shared", repo_tag="v0.6.0")
+    monkeypatch.setattr(deploy, "_wait_for_git_repository", lambda: None)
+    monkeypatch.setattr(
+        deploy,
+        "_set_source_suspended",
+        lambda suspended, check=True: calls.append((suspended, check)),
+    )
+    monkeypatch.setattr(
+        deploy,
+        "run_command",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        deploy,
+        "_read_git_repository",
+        lambda: _git_repository("tag", "v0.6.0", f"refs/heads/v0.6.0@sha1:{'a' * 40}"),
+    )
+    record_calls = []
+    monkeypatch.setattr(
+        deploy, "upsert_deploy_record", lambda **kwargs: record_calls.append(kwargs)
+    )
+
+    with pytest.raises(RuntimeError, match="does not identify"):
+        deploy._finalize_gitops_source(config)
+
+    assert calls == [(False, True), (True, False)]
+    assert record_calls == []
 
 
 def test_up_rejects_explicit_branch_with_tag():

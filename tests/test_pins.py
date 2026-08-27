@@ -105,35 +105,35 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     ``attempts`` (how many patch calls were issued).
     """
 
-    current_lock: dict = lock
+    box = [lock]
     attempts = 0
     conflicts_left = conflicts
-    calls: dict = {"patch": None, "reconciled": None, "attempts": 0}
+    calls: dict = {"patch": None, "reconciled": None, "attempts": 0, "box": box}
 
     def fake_read_lock(required=True):
-        return current_lock
+        return box[0]
 
     def fake_run_command(cmd, description=None, check=True, **kwargs):
-        nonlocal current_lock, attempts, conflicts_left
+        nonlocal attempts, conflicts_left
         assert cmd[:3] == ["kubectl", "patch", "configmap"]
         attempts += 1
         patch_ops = json.loads(cmd[cmd.index("-p") + 1])
         test_op, data_op, annotations_op = patch_ops
-        current_rv = (current_lock.get("metadata") or {}).get("resourceVersion", "0")
+        current_rv = (box[0].get("metadata") or {}).get("resourceVersion", "0")
 
         if conflicts_left > 0:
             conflicts_left -= 1
             # Simulate another writer landing an unrelated pin concurrently.
-            other_annotations = dict((current_lock.get("metadata") or {}).get("annotations") or {})
-            other_pins = decode_pins(current_lock)
+            other_annotations = dict((box[0].get("metadata") or {}).get("annotations") or {})
+            other_pins = decode_pins(box[0])
             other_pins["_concurrent"] = _pin(mr="999")
             other_annotations[pins.PINS_ANNOTATION] = encode_pins(other_pins)
-            current_lock = {
+            box[0] = {
                 "metadata": {
                     "resourceVersion": str(int(current_rv) + 1),
                     "annotations": other_annotations,
                 },
-                "data": dict(current_lock.get("data") or {}),
+                "data": dict(box[0].get("data") or {}),
             }
             return subprocess.CompletedProcess(
                 cmd, 1, stdout="", stderr="the object has been modified; please try again"
@@ -151,7 +151,7 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
             },
             "data": dict(data_op["value"]),
         }
-        current_lock = new_lock
+        box[0] = new_lock
         calls["patch"] = (dict(data_op["value"]), decode_pins(new_lock))
         calls["attempts"] = attempts
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(new_lock), stderr="")
@@ -443,6 +443,99 @@ class TestPinService:
         self._wire(monkeypatch, lock, {"schema"})
         with pytest.raises(PinError, match="service reset schema.*reconcile --refresh-images"):
             pin_service("schema", "2")
+
+
+class TestPinServicePostWriteRecheck:
+    """A lifecycle run can set `maintenance` between the pre-write refusal and
+    the lock's CAS write; the post-write recheck closes that window."""
+
+    def _wire(self, monkeypatch, lock, resolved_names):
+        calls = _wire_lock(monkeypatch, lock)
+        mr = {"source_branch": "fix/x", "sha": "b" * 40}
+        monkeypatch.setattr(pins, "fetch_merge_request", lambda project_id, mr_iid: mr)
+
+        def fake_resolve(service, mr_iid, mr_snapshot=None):
+            assert mr_snapshot is mr
+            if service not in resolved_names:
+                raise MissingPipelineImageError(f"{service}: no image")
+            return (
+                ResolvedImage(service, f"repo/{service}-fix-x", "b" * 40, "now", "sha256:new"),
+                mr_snapshot,
+            )
+
+        monkeypatch.setattr(pins, "resolve_mr_image", fake_resolve)
+        return calls
+
+    def test_reverts_pin_when_maintenance_appears_after_write(self, monkeypatch):
+        lock = _lock(data=_canonical_data("storage"))
+        calls = self._wire(monkeypatch, lock, {"storage"})
+        records = iter([_deploy_record(), _deploy_record(maintenance=True)])
+        monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
+
+        with pytest.raises(PinError, match="maintenance"):
+            pin_service("storage", "42")
+
+        data, saved = calls["patch"]
+        assert data["STORAGE_IMAGE_TAG"] == "c" * 40
+        assert data["STORAGE_IMAGE_REPOSITORY"] == "repo/storage-master"
+        assert "storage" not in saved
+        assert calls["reconciled"] is None
+
+    def test_leaves_a_replaced_pin_alone(self, monkeypatch):
+        """If another `spi service pin` lands on the same service in the
+        post-write window, that newer pin is left standing rather than
+        reverted."""
+        lock = _lock(data=_canonical_data("storage"))
+        calls = self._wire(monkeypatch, lock, {"storage"})
+
+        def fake_read_deploy_record(required=False):
+            if calls["patch"] is None:
+                return _deploy_record()
+            current = calls["box"][0]
+            other = _pin(mr="99", applied_at="2026-08-25T01:00:00Z")
+            calls["box"][0] = {
+                "metadata": {
+                    "resourceVersion": str(int(current["metadata"]["resourceVersion"]) + 1),
+                    "annotations": {pins.PINS_ANNOTATION: encode_pins({"storage": other})},
+                },
+                "data": dict(current["data"]),
+            }
+            return _deploy_record(maintenance=True)
+
+        monkeypatch.setattr(pins, "read_deploy_record", fake_read_deploy_record)
+
+        with pytest.raises(PinError, match="maintenance"):
+            pin_service("storage", "42")
+
+        final_pins = decode_pins(calls["box"][0])
+        assert final_pins["storage"].mr == "99"
+        assert calls["reconciled"] is None
+
+    def test_reports_pin_still_live_when_revert_fails(self, monkeypatch):
+        lock = _lock(data=_canonical_data("storage"))
+        calls = self._wire(monkeypatch, lock, {"storage"})
+
+        def fake_read_lock(required=True):
+            if calls["patch"] is not None:
+                raise PinError("cluster unreachable")
+            return calls["box"][0]
+
+        monkeypatch.setattr(pins, "read_lock", fake_read_lock)
+        records = iter([_deploy_record(), _deploy_record(maintenance=True)])
+        monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
+
+        with pytest.raises(PinError, match="spi service reset storage"):
+            pin_service("storage", "42")
+
+    def test_happy_path_still_reconciles_when_maintenance_never_appears(self, monkeypatch):
+        lock = _lock(data=_canonical_data("storage"))
+        calls = self._wire(monkeypatch, lock, {"storage"})
+        monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: _deploy_record())
+
+        results = pin_service("storage", "42")
+
+        assert [name for name, _ in results] == ["storage"]
+        assert calls["reconciled"] == ["storage"]
 
 
 class TestResetService:
