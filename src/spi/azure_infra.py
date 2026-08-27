@@ -68,8 +68,8 @@ SYSTEM_POOL_VM_SIZE = "Standard_D4lds_v5"
 
 
 def _system_pool_vm_size() -> str:
-    """SPI_SYSTEM_POOL_VM_SIZE overrides the default; the size must still
-    support the ephemeral OS disk Automatic requires on the system pool.
+    """SPI_SYSTEM_POOL_VM_SIZE overrides the default; zone resolution also
+    preflights the size's ephemeral OS disk support.
     """
     return os.environ.get("SPI_SYSTEM_POOL_VM_SIZE", "").strip() or SYSTEM_POOL_VM_SIZE
 
@@ -284,6 +284,7 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
     # deploy at all, which the empty-result branch reports.
     published: list = []
     restricted: set = set()
+    ephemeral_supported: "bool | None" = None
     # The catalogue returns canonical SKU names regardless of query casing.
     for sku in json.loads(result.stdout or "[]"):
         if (sku.get("name") or "").lower() != size.lower():
@@ -293,12 +294,24 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
         for restriction in sku.get("restrictions") or []:
             if restriction.get("type") == "Zone":
                 restricted.update((restriction.get("restrictionInfo") or {}).get("zones") or [])
+        for capability in sku.get("capabilities") or []:
+            if capability.get("name") == "EphemeralOSDiskSupported":
+                ephemeral_supported = str(capability.get("value")).lower() == "true"
 
     if not published:
         raise RuntimeError(
             f"{size} is not offered in {config.location}, or this subscription is "
             "not offered the size there. Choose another region, or set "
             "SPI_SYSTEM_POOL_VM_SIZE to a size the subscription can deploy."
+        )
+
+    # Absent capability means unknown; only an explicit False is fatal, and
+    # local disk capacity remains ARM-validated.
+    if ephemeral_supported is False:
+        raise RuntimeError(
+            f"{size} does not support the ephemeral OS disk the system pool "
+            "requires (osDiskType Ephemeral in infra/aks.bicep). Set "
+            "SPI_SYSTEM_POOL_VM_SIZE to a size with ephemeral OS disk support."
         )
 
     usable = sorted(set(published) - restricted)

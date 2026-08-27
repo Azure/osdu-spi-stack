@@ -30,7 +30,7 @@ def _clear_system_pool_override(monkeypatch):
     monkeypatch.delenv("SPI_SYSTEM_POOL_VM_SIZE", raising=False)
 
 
-def _sku(zones, restricted_zones=None):
+def _sku(zones, restricted_zones=None, ephemeral=None):
     sku = {
         "name": azure_infra.SYSTEM_POOL_VM_SIZE,
         "locationInfo": [{"zones": zones}],
@@ -38,6 +38,10 @@ def _sku(zones, restricted_zones=None):
     }
     if restricted_zones:
         sku["restrictions"].append({"type": "Zone", "restrictionInfo": {"zones": restricted_zones}})
+    if ephemeral is not None:
+        sku["capabilities"] = [
+            {"name": "EphemeralOSDiskSupported", "value": "True" if ephemeral else "False"}
+        ]
     return sku
 
 
@@ -121,6 +125,27 @@ def test_env_override_changes_the_queried_size():
     ):
         assert azure_infra._resolve_system_pool_zones(cfg) == ["1", "2", "3"]
     assert override in run_cmd.call_args.args[0]
+
+
+def test_size_without_ephemeral_os_disk_support_is_rejected():
+    cfg = Config.from_env("dev1")
+    with mock.patch.object(
+        azure_infra,
+        "run_command",
+        return_value=_result([_sku(["1", "2", "3"], ephemeral=False)]),
+    ):
+        with pytest.raises(RuntimeError, match="ephemeral OS disk"):
+            azure_infra._resolve_system_pool_zones(cfg)
+
+
+def test_ephemeral_os_disk_capability_passes_when_supported():
+    cfg = Config.from_env("dev1")
+    with mock.patch.object(
+        azure_infra,
+        "run_command",
+        return_value=_result([_sku(["1", "2", "3"], ephemeral=True)]),
+    ):
+        assert azure_infra._resolve_system_pool_zones(cfg) == ["1", "2", "3"]
 
 
 def test_override_casing_matches_canonical_sku_names():

@@ -29,9 +29,9 @@ list, a restriction stops the deployment rather than shrinking the set. The
 size itself is passed from the same constant, so the CLI and the template
 cannot disagree on which SKU the zones were resolved for. The env var
 `SPI_SYSTEM_POOL_VM_SIZE` overrides the size for both the query and the
-template, so an override receives the same preflight validation; the chosen
-size must still support the ephemeral OS disk AKS Automatic requires on the
-system pool.
+template, so an override receives the same preflight validation, the
+catalogue's `EphemeralOSDiskSupported` capability included; local disk
+capacity remains ARM-validated.
 
 Three states stop the deployment preflight, each naming the size and region:
 the size is not offered in the region, no zone survives the restrictions, or a
