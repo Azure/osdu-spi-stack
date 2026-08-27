@@ -62,9 +62,16 @@ from .shell import run_command
 INFRA_MAIN_BICEP = INFRA_ROOT / "main.bicep"
 INFRA_AKS_BICEP = INFRA_ROOT / "aks.bicep"
 
-# Single source for the system pool size: passed to aks.bicep and used to
-# resolve the zones this exact size can use in the target subscription.
+# Default system pool size: passed to aks.bicep and used to resolve the
+# zones this exact size can use in the target subscription.
 SYSTEM_POOL_VM_SIZE = "Standard_D4lds_v5"
+
+
+def _system_pool_vm_size() -> str:
+    """SPI_SYSTEM_POOL_VM_SIZE overrides the default; the size must still
+    support the ephemeral OS disk Automatic requires on the system pool.
+    """
+    return os.environ.get("SPI_SYSTEM_POOL_VM_SIZE", "").strip() or SYSTEM_POOL_VM_SIZE
 
 
 # ─────────────────────────────────────────────────────────────
@@ -246,6 +253,7 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
     (ADR-027), or None when the SKU catalogue cannot be read and the caller
     should leave the template default in place.
     """
+    size = _system_pool_vm_size()
     result = run_command(
         [
             "az",
@@ -254,7 +262,7 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
             "--location",
             config.location,
             "--size",
-            SYSTEM_POOL_VM_SIZE,
+            size,
             "--resource-type",
             "virtualMachines",
             "--output",
@@ -274,7 +282,7 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
     published: list = []
     restricted: set = set()
     for sku in json.loads(result.stdout or "[]"):
-        if sku.get("name") != SYSTEM_POOL_VM_SIZE:
+        if sku.get("name") != size:
             continue
         for info in sku.get("locationInfo") or []:
             published.extend(info.get("zones") or [])
@@ -284,15 +292,13 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
 
     if not published:
         raise RuntimeError(
-            f"{SYSTEM_POOL_VM_SIZE} is not offered in {config.location}. "
-            "Choose a region that offers it."
+            f"{size} is not offered in {config.location}. Choose a region that offers it."
         )
 
     usable = sorted(set(published) - restricted)
     if not usable:
         raise RuntimeError(
-            f"{SYSTEM_POOL_VM_SIZE} has no usable availability zone in {config.location} "
-            "for this subscription."
+            f"{size} has no usable availability zone in {config.location} for this subscription."
         )
 
     # Automatic validates the system pool against the region's published zone
@@ -301,7 +307,7 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
         raise RuntimeError(
             f"AKS Automatic requires every availability zone in {config.location}, but "
             f"zone(s) {', '.join(sorted(restricted))} are restricted for "
-            f"{SYSTEM_POOL_VM_SIZE} in this subscription. Deploy in another region "
+            f"{size} in this subscription. Deploy in another region "
             "or subscription."
         )
 
@@ -337,7 +343,7 @@ def create_aks_automatic(
     aks_parameters = {
         "clusterName": config.cluster_name,
         "location": config.location,
-        "systemPoolVmSize": SYSTEM_POOL_VM_SIZE,
+        "systemPoolVmSize": _system_pool_vm_size(),
     }
     if zones is not None:
         aks_parameters["availabilityZones"] = zones

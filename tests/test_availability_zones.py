@@ -15,6 +15,7 @@
 """Tests for subscription-resolved system pool availability zones (ADR-027)."""
 
 import json
+import os
 import subprocess
 from unittest import mock
 
@@ -103,6 +104,31 @@ def test_failed_sku_query_falls_back_to_template_default():
     failed = subprocess.CompletedProcess(args=["az"], returncode=1, stdout="", stderr="throttled")
     with mock.patch.object(azure_infra, "run_command", return_value=failed):
         assert azure_infra._resolve_system_pool_zones(cfg) is None
+
+
+def test_env_override_changes_the_queried_size():
+    cfg = Config.from_env("dev1")
+    override = "Standard_D8lds_v5"
+    sku = {"name": override, "locationInfo": [{"zones": ["1", "2", "3"]}], "restrictions": []}
+    with (
+        mock.patch.dict(os.environ, {"SPI_SYSTEM_POOL_VM_SIZE": override}),
+        mock.patch.object(azure_infra, "run_command", return_value=_result([sku])) as run_cmd,
+    ):
+        assert azure_infra._resolve_system_pool_zones(cfg) == ["1", "2", "3"]
+    assert override in run_cmd.call_args.args[0]
+
+
+def test_env_override_reaches_the_bicep_parameters():
+    cfg = Config.from_env("dev1")
+    override = "Standard_D8lds_v5"
+    with (
+        mock.patch.dict(os.environ, {"SPI_SYSTEM_POOL_VM_SIZE": override}),
+        mock.patch.object(azure_infra, "_resolve_system_pool_zones", return_value=["1", "2", "3"]),
+        mock.patch.object(azure_infra, "run_bicep_deployment", return_value={}) as run_bicep,
+    ):
+        azure_infra.create_aks_automatic(cfg, "deployer-id", "ServicePrincipal", dry_run=True)
+
+    assert run_bicep.call_args.kwargs["parameters"]["systemPoolVmSize"] == override
 
 
 def test_create_aks_automatic_passes_resolved_zones_to_bicep():
