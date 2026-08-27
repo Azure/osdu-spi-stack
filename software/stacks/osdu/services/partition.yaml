@@ -24,6 +24,7 @@ spec:
     image:
       repository: ${PARTITION_IMAGE_REPOSITORY}
       tag: "${PARTITION_IMAGE_TAG}"
+      digest: "${PARTITION_IMAGE_DIGEST}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu

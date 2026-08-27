@@ -32,10 +32,12 @@ mkdir -p "$OUT"
 echo "Capturing diagnostics to $OUT"
 
 {
-    if command -v uv >/dev/null 2>&1; then
+    if command -v spi >/dev/null 2>&1; then
+        spi status 2>&1 || echo "(spi status failed)"
+    elif command -v uv >/dev/null 2>&1; then
         uv run spi status 2>&1 || echo "(spi status failed)"
     else
-        echo "(uv not available)"
+        echo "(spi and uv not available)"
     fi
 } > "$OUT/spi-status.txt"
 

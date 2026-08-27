@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SMOKE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "smoke.yml"
 SWEEPER_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sweeper.yml"
 CI_SETUP = REPO_ROOT / "docs" / "CI_SETUP.md"
+PROBE_GATEWAY_SCRIPT = REPO_ROOT / "scripts" / "probe_gateway.sh"
 
 
 def _workflow(path: Path = SMOKE_WORKFLOW) -> dict[str, Any]:
@@ -121,7 +122,13 @@ def test_verify_gate_outlives_the_schema_load_and_reference_timeouts():
     # the wait timeout can be exhausted by those steps alone, letting the job
     # get cancelled while its probes are still healthy. Require the margin to
     # cover the probe's own worst-case retry budget plus a setup allowance.
-    probe_step = _steps(verify)["Acceptance probe (HTTPS terminates)"]["run"]
+    # The retry loop itself lives in scripts/probe_gateway.sh (shared with the
+    # env-upgrade/env-refresh lifecycle workflows), not inline in the step.
+    https_step = _steps(verify)["Acceptance probe (HTTPS terminates)"]["run"]
+    assert "probe_gateway.sh https" in https_step, (
+        "the HTTPS acceptance probe step must call scripts/probe_gateway.sh"
+    )
+    probe_step = PROBE_GATEWAY_SCRIPT.read_text(encoding="utf-8")
     attempts_match = re.search(r"seq 1 (\d+)", probe_step)
     max_time_match = re.search(r"--max-time (\d+)", probe_step)
     sleep_match = re.search(r"sleep (\d+)", probe_step)

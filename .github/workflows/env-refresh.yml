@@ -1,0 +1,255 @@
+name: Environment Refresh
+
+# Proves ops/environments/shared.yaml's standing environment is still
+# serving: quiesce, reconcile the pinned source (no image or version
+# change), wait for Flux, probe the gateway, and reopen for deploys only
+# after every check passes. Runs weekdays at 05:00 UTC and by manual
+# dispatch.
+#
+# Every operational CLI call in this workflow uses the bare `spi` installed
+# from the declared stackVersion's release wheel, never `uv run spi`.
+# Source Python (scripts/export_environment.py) only parses and validates
+# the declaration.
+#
+# See docs/design/environment-lifecycle.md for the full lifecycle contract.
+
+on:
+  schedule:
+    - cron: "0 5 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: env-shared
+  cancel-in-progress: false
+
+env:
+  DECLARATION_PATH: ops/environments/shared.yaml
+
+jobs:
+  declare:
+    name: declare
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      env: ${{ steps.export.outputs.env }}
+      stack_version: ${{ steps.export.outputs.stack_version }}
+      profile: ${{ steps.export.outputs.profile }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Validate and export declaration
+        id: export
+        # Source Python parsing the declaration, not an operational spi call;
+        # see the workflow header.
+        run: |
+          uv sync --frozen
+          uv run python scripts/export_environment.py --declaration-path "$DECLARATION_PATH"
+
+      - name: Gate on declaration presence
+        id: gate
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.export.outputs.declaration_found }}" != "true" ]; then
+            echo "::notice::No declaration at $DECLARATION_PATH; nothing to do (clean skip)."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  detect:
+    name: detect-existing-environment
+    needs: declare
+    if: needs.declare.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    environment: azure-shared
+    outputs:
+      exists: ${{ steps.detect.outputs.exists }}
+    env:
+      ENV_NAME: ${{ needs.declare.outputs.env }}
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Detect existing resource group and AKS cluster
+        id: detect
+        run: |
+          set -euo pipefail
+          RG="spi-stack-${ENV_NAME}"
+          if ! RG_EXISTS=$(az group exists --name "$RG" --only-show-errors); then
+            echo "::error::Failed to determine whether resource group $RG exists"
+            exit 1
+          fi
+          if [ "$RG_EXISTS" = "false" ]; then
+            echo "::notice::No resource group at $RG yet; nothing to refresh (clean skip)."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$RG_EXISTS" != "true" ]; then
+            echo "::error::Unexpected result from az group exists: $RG_EXISTS"
+            exit 1
+          fi
+          if ! AKS_COUNT=$(az aks list --resource-group "$RG" --only-show-errors \
+              --query "[?name=='$RG'] | length(@)" --output tsv); then
+            echo "::error::Failed to inspect AKS resources in $RG"
+            exit 1
+          fi
+          if [ "$AKS_COUNT" = "1" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No cluster at $RG yet; nothing to refresh (clean skip)."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  refresh:
+    name: refresh
+    needs: [declare, detect]
+    if: needs.declare.outputs.should_run == 'true' && needs.detect.outputs.exists == 'true'
+    runs-on: ubuntu-latest
+    environment: azure-shared
+    # Plain reconcile against an already-provisioned, version-pinned cluster:
+    # no cold-start image resolution or Bicep pass, so the wait below only
+    # needs to cover a Flux re-reconcile of already-scheduled workloads. The
+    # 230-minute wait budget still allows for a cold schema-load Job if the
+    # standing environment happens to need one (e.g. after a node recycle).
+    timeout-minutes: 270
+    env:
+      ENV_NAME: ${{ needs.declare.outputs.env }}
+      STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v5
+        with:
+          version: latest
+
+      - name: Install kubelogin
+        env:
+          KUBELOGIN_VERSION: v0.1.4
+        run: |
+          set -euo pipefail
+          curl -sSLo kubelogin.zip \
+            "https://github.com/Azure/kubelogin/releases/download/${KUBELOGIN_VERSION}/kubelogin-linux-amd64.zip"
+          unzip -q kubelogin.zip -d kubelogin
+          sudo install kubelogin/bin/linux_amd64/kubelogin /usr/local/bin/kubelogin
+          kubelogin --version
+
+      - name: Install Flux CLI
+        uses: fluxcd/flux2/action@main
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Pre-cache Azure tokens
+        run: |
+          set -euo pipefail
+          az account get-access-token --resource https://management.azure.com -o none
+          az account get-access-token --resource 6dae42f8-4368-4678-94ff-3960e28e3630 -o none
+
+      - name: Install exact release wheel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${STACK_VERSION#v}"
+          WHEEL="spi-${VERSION}-py3-none-any.whl"
+          gh release download "$STACK_VERSION" --repo "${{ github.repository }}" \
+            --pattern "$WHEEL" --dir release-wheel --clobber
+          pipx install "release-wheel/$WHEEL"
+          INSTALLED=$(spi --version)
+          echo "Installed: $INSTALLED"
+          [[ "$INSTALLED" == *"$VERSION"* ]] || {
+            echo "::error::installed CLI ($INSTALLED) does not match declared stackVersion ($STACK_VERSION)"
+            exit 1
+          }
+
+      - name: spi connect
+        run: spi connect --resource-group "spi-stack-${ENV_NAME}" --cluster "spi-stack-${ENV_NAME}"
+
+      - name: Quiesce (set maintenance)
+        # Named separately from reconcile so a future fork-drain protocol can
+        # be inserted here, after quiesce and before mutation, without
+        # changing this workflow's shape.
+        run: spi maintenance set
+
+      - name: spi reconcile
+        # Plain reconcile: preserves the version-pinned source and the
+        # current image lock. Canonical images do not advance on this
+        # schedule during the pre-onboarding phase; see
+        # docs/design/environment-lifecycle.md.
+        run: spi reconcile
+
+      - name: Wait for Flux Kustomizations to be Ready
+        run: bash scripts/wait_for_flux_ready.sh --timeout 13800
+
+      - name: Acceptance probe (gateway reachable)
+        if: needs.declare.outputs.profile != 'bare'
+        run: bash scripts/probe_gateway.sh gateway
+
+      - name: Acceptance probe (HTTPS terminates)
+        if: needs.declare.outputs.profile != 'bare'
+        run: bash scripts/probe_gateway.sh https
+
+      - name: Verify stack version and source suspension are unchanged
+        run: |
+          set -euo pipefail
+          set +e
+          STATUS_JSON=$(spi status --json)
+          STATUS_EXIT=$?
+          set -e
+          if [ "$STATUS_EXIT" -eq 1 ]; then
+            echo "$STATUS_JSON"
+            echo "::error::spi status --json failed (exit 1); see the contract-read error above"
+            exit 1
+          fi
+          echo "$STATUS_JSON" | jq .
+
+          ACTUAL_REF=$(echo "$STATUS_JSON" | jq -r .stack.ref)
+          SUSPENDED=$(echo "$STATUS_JSON" | jq -r .suspended)
+
+          if [ "$ACTUAL_REF" != "$STACK_VERSION" ]; then
+            echo "::error::deployed ref ($ACTUAL_REF) drifted from declared stackVersion ($STACK_VERSION)"
+            exit 1
+          fi
+          if [ "$SUSPENDED" != "true" ]; then
+            echo "::error::GitRepository is not suspended after a refresh reconcile"
+            exit 1
+          fi
+
+      - name: Clear maintenance
+        # Only reached once readiness, gateway probes, and the version/
+        # suspension assertion above have all passed. Never wrapped in
+        # if: always().
+        run: spi maintenance clear
+
+      - name: Require deployable status
+        run: spi status --json
+
+      - name: Capture diagnostics on failure
+        if: failure()
+        run: bash scripts/capture_diagnostics.sh "env-refresh-${{ github.run_id }}"
+
+      - name: Upload diagnostics artifact
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: env-refresh-diagnostics-${{ github.run_id }}
+          path: diagnostics/
+          if-no-files-found: ignore

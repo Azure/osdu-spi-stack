@@ -20,13 +20,16 @@ Workload Identity SAs, in-cluster seed secrets), activates GitOps via Flux,
 and writes the KV runtime secrets that OSDU services read at startup.
 """
 
+import json
 import os
-import subprocess
+import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 import typer
 
+from . import __version__
 from .azure_infra import provision_azure_infra
 from .bicep import run_bicep_deployment
 from .bootstrap import (
@@ -37,6 +40,7 @@ from .bootstrap import (
 )
 from .config import Config, IngressMode, Profile
 from .console import console, display_result, display_yaml
+from .deploy_record import upsert_deploy_record
 from .images import (
     DEFAULT_IMAGE_BRANCH,
     ImageResolutionError,
@@ -50,7 +54,7 @@ from .ingress import (
     resolve_post_deploy_inputs,
 )
 from .paths import INFRA_ROOT
-from .pins import PinError, live_pins, render_lock_with_pins
+from .pins import ServicePin, apply_image_lock, apply_schema_load_backfill, read_lock
 from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, prune_kube_context, run_command, run_process
 from .templates import (
@@ -164,13 +168,39 @@ def _resolve_image_lock(image_branch: str) -> dict[str, ResolvedImage]:
     return resolved
 
 
-def _create_image_lock(image_lock_yaml: str) -> None:
-    """Apply the generated osdu-image-lock ConfigMap."""
+def _ensure_image_lock(
+    config: Config,
+    refresh_images: bool | None,
+    image_branch: str,
+    resolved_images: dict[str, ResolvedImage],
+) -> dict[str, ServicePin]:
+    """Create or refresh the core image lock according to the CLI intent."""
 
-    console.print("\n[bold]Creating OSDU image lock...[/bold]")
-    display_yaml(image_lock_yaml, "ConfigMap: osdu-image-lock")
-    kubectl_apply_yaml(image_lock_yaml, "apply osdu-image-lock ConfigMap")
-    display_result("osdu-image-lock ConfigMap created")
+    if config.profile is not Profile.CORE:
+        return {}
+
+    if refresh_images is not True:
+        existing_lock = read_lock(required=False)
+        if existing_lock is not None:
+            apply_schema_load_backfill(branch=image_branch)
+            return {}
+        if refresh_images is False:
+            raise RuntimeError(
+                "The core image lock is missing and --no-refresh-images was specified. "
+                "Rerun with --refresh-images or omit the image option to create it."
+            )
+        resolved_images = _resolve_image_lock(image_branch)
+
+    console.print("\n[bold]Updating OSDU image lock...[/bold]")
+    pins = apply_image_lock(resolved_images, image_branch)
+    display_result("osdu-image-lock ConfigMap updated")
+    if pins:
+        console.print(
+            "[warning]Active service pins preserved: "
+            + ", ".join(f"{name} (MR !{pin.mr})" for name, pin in sorted(pins.items()))
+            + "; release with 'spi service reset <service>'.[/warning]"
+        )
+    return pins
 
 
 def _write_keyvault_bootstrap_secrets(
@@ -258,38 +288,107 @@ def _write_keyvault_bootstrap_secrets(
     display_result(f"{len(secrets_to_write)} Key Vault secrets written")
 
 
-def _pin_gitops_source() -> None:
-    """Suspend the GitRepository so future commits don't auto-roll (ADR-014).
-
-    Waits up to 120s for the source-controller to publish its first artifact,
-    then patches ``spec.suspend: true``. The wait is non-fatal: on timeout we
-    warn and suspend anyway. Downstream Kustomizations/HelmReleases keep
-    reconciling from the cached artifact.
-    """
-    console.print("\n[bold]Pinning environment to deploy commit...[/bold]")
-
-    wait_result = run_process(
+def _read_git_repository() -> dict:
+    result = run_process(
         [
             "kubectl",
-            "wait",
-            "--for=condition=Ready",
-            f"gitrepository/{GITREPO_NAME}",
+            "get",
+            "gitrepository",
+            GITREPO_NAME,
             "-n",
             "osdu-flux",
-            "--timeout=120s",
+            "-o",
+            "json",
         ],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-        stdin=subprocess.DEVNULL,
     )
-    if wait_result.returncode != 0:
-        console.print(
-            "  [warning]GitRepository did not become Ready within 120s; "
-            "suspending anyway. Run 'spi reconcile' if reconciliation stalls.[/warning]"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or "kubectl failed"
+        raise RuntimeError(f"Could not read GitRepository {GITREPO_NAME}: {detail}")
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Could not parse GitRepository {GITREPO_NAME}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"GitRepository {GITREPO_NAME} returned an invalid object")
+    return parsed
+
+
+def _wait_for_git_repository(timeout_seconds: int = 600) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        result = run_process(
+            [
+                "kubectl",
+                "get",
+                "gitrepository",
+                GITREPO_NAME,
+                "-n",
+                "osdu-flux",
+                "-o",
+                "name",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return
+        detail = (result.stderr or result.stdout or "").lower()
+        if detail and not any(
+            marker in detail
+            for marker in ("not found", "no matches for kind", "doesn't have a resource type")
+        ):
+            raise RuntimeError(
+                f"Could not discover GitRepository {GITREPO_NAME}: "
+                f"{(result.stderr or result.stdout).strip()}"
+            )
+        time.sleep(5)
+    raise RuntimeError(
+        f"GitRepository {GITREPO_NAME} did not appear within {timeout_seconds} seconds"
+    )
+
+
+def _resolved_revision(repository: dict, expected_ref: str, ref_field: str) -> str:
+    actual_ref = repository.get("spec", {}).get("ref", {}).get(ref_field, "")
+    if actual_ref != expected_ref:
+        raise RuntimeError(
+            f"GitRepository requested {ref_field} {actual_ref!r}, expected {expected_ref!r}"
         )
 
+    ready = next(
+        (
+            condition
+            for condition in repository.get("status", {}).get("conditions", [])
+            if condition.get("type") == "Ready"
+        ),
+        {},
+    )
+    if ready.get("status") != "True":
+        detail = ready.get("message") or ready.get("reason") or "not Ready"
+        raise RuntimeError(f"GitRepository {GITREPO_NAME} is not Ready: {detail}")
+
+    revision = repository.get("status", {}).get("artifact", {}).get("revision", "")
+    prefix, separator, digest = revision.partition("@")
+    accepted_refs = {
+        expected_ref,
+        f"refs/heads/{expected_ref}",
+        f"refs/tags/{expected_ref}",
+    }
+    match = re.fullmatch(r"(?:sha1|sha256):([0-9a-fA-F]{40,64})", digest)
+    if separator != "@" or prefix not in accepted_refs or match is None:
+        raise RuntimeError(
+            f"GitRepository artifact revision {revision!r} does not identify {expected_ref!r}"
+        )
+    return match.group(1).lower()
+
+
+def _set_source_suspended(suspended: bool, *, check: bool = True) -> None:
+    action = "Suspend" if suspended else "Resume"
     run_command(
         [
             "kubectl",
@@ -300,21 +399,98 @@ def _pin_gitops_source() -> None:
             "osdu-flux",
             "--type=merge",
             "-p",
-            '{"spec":{"suspend":true}}',
+            json.dumps({"spec": {"suspend": suspended}}),
         ],
-        description="Suspend GitRepository (pin to deploy commit)",
-        check=False,
+        description=f"{action} GitRepository",
+        check=check,
     )
-    display_result(
-        "GitRepository pinned. Run 'spi reconcile' to pull updates, "
-        "or 'spi reconcile --resume' to enable auto-reconciliation."
+
+
+def _finalize_gitops_source(config: Config) -> None:
+    """Verify the requested source revision, suspend it, and record the deploy."""
+
+    expected_ref = config.repo_tag or config.repo_branch
+    ref_field = "tag" if config.repo_tag else "branch"
+    console.print(f"\n[bold]Verifying GitOps source {ref_field}: {expected_ref}...[/bold]")
+
+    _wait_for_git_repository()
+    try:
+        _set_source_suspended(False)
+        run_command(
+            [
+                "flux",
+                "reconcile",
+                "source",
+                "git",
+                GITREPO_NAME,
+                "-n",
+                "osdu-flux",
+                "--timeout",
+                "10m",
+            ],
+            description=f"Reconcile GitRepository ({expected_ref})",
+        )
+        resolved_commit = _resolved_revision(
+            _read_git_repository(),
+            expected_ref,
+            ref_field,
+        )
+    except Exception:
+        _set_source_suspended(True, check=False)
+        raise
+
+    _set_source_suspended(True)
+    deployed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    resource_group_id = run_command(
+        [
+            "az",
+            "group",
+            "show",
+            "--name",
+            config.resource_group,
+            "--query",
+            "id",
+            "--output",
+            "tsv",
+        ],
+        description="Resolve resource group ID",
+        display=False,
+    ).stdout.strip()
+    if not resource_group_id:
+        raise RuntimeError(f"Could not resolve resource group ID for {config.resource_group}")
+    run_command(
+        [
+            "az",
+            "tag",
+            "update",
+            "--resource-id",
+            resource_group_id,
+            "--operation",
+            "Merge",
+            "--tags",
+            f"spi-stack-version={expected_ref}",
+            f"spi-deployed-utc={deployed_at}",
+            "--output",
+            "none",
+        ],
+        description="Record deployed stack version on resource group",
     )
+    record = upsert_deploy_record(
+        ref=expected_ref,
+        resolved_commit=resolved_commit,
+        deployed_at=deployed_at,
+        cli_version=__version__,
+        profile=config.profile.value,
+        initial_maintenance=bool(config.repo_tag),
+    )
+    state = "maintenance enabled" if record.maintenance else "deployable after convergence"
+    display_result(f"GitRepository pinned to {expected_ref} ({resolved_commit[:12]}); {state}.")
 
 
 def deploy_azure(
     config: Config,
     dry_run: bool = False,
-    refresh_images: bool = True,
+    refresh_images: bool | None = None,
     image_branch: str = DEFAULT_IMAGE_BRANCH,
     azure_account: Optional[Dict[str, Any]] = None,
     deployer_principal: Optional[Tuple[str, str]] = None,
@@ -358,23 +534,7 @@ def deploy_azure(
     ensure_secrets()
     create_storage_classes()
     install_gateway_api_crds()
-    if resolved_images:
-        try:
-            pins = live_pins()
-        except PinError as exc:
-            console.print(f"[error]{exc}[/error]")
-            console.print(
-                "[error]Cannot verify service pin state; aborting before the "
-                "image lock overwrite could revert an active pin.[/error]"
-            )
-            raise typer.Exit(code=1)
-        _create_image_lock(render_lock_with_pins(resolved_images, image_branch, pins))
-        if pins:
-            console.print(
-                "[warning]Active service pins preserved: "
-                + ", ".join(f"{name} (MR !{pin.mr})" for name, pin in sorted(pins.items()))
-                + "; release with 'spi service reset <service>'.[/warning]"
-            )
+    _ensure_image_lock(config, refresh_images, image_branch, resolved_images)
     _create_osdu_config(config, infra_outputs)
     _create_istio_auth(config, infra_outputs)
     _create_spi_init_values(config)
@@ -398,6 +558,7 @@ def deploy_azure(
             "clusterName": config.cluster_name,
             "repoUrl": config.repo_url,
             "repoBranch": config.repo_branch,
+            "repoTag": config.repo_tag,
             "profile": config.profile.value,
             "ingressMode": config.ingress_mode.value,
         },
@@ -428,10 +589,9 @@ def deploy_azure(
         redis_password=seed["redis_password"],
     )
 
-    # Phase 7: Pin the environment to the deploy commit (ADR-014).
-    # Future commits to the tracked branch won't auto-reconcile until the
-    # user runs 'spi reconcile' or 'spi reconcile --resume'.
-    _pin_gitops_source()
+    # Phase 7: verify and suspend the requested source, then publish the
+    # deploy record used by machine consumers.
+    _finalize_gitops_source(config)
 
 
 def _cluster_api_server(config: Config) -> str:

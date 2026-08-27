@@ -373,10 +373,26 @@ def resolve_image_lock(branch: str = DEFAULT_IMAGE_BRANCH) -> dict[str, Resolved
 
 
 def image_lock_missing_schema_load(lock_data: Mapping[str, str]) -> bool:
-    """Report whether an existing lock predates schema-load's inclusion."""
+    """Report whether an existing lock predates schema-load's inclusion.
+
+    A lock missing the composed ref counts as missing even when it already
+    carries repository/tag: the schema-load Job substitutes the single
+    ``_IMAGE_REF`` key (ADR-013), so a lock recorded before that key existed
+    still needs backfilling.
+    """
 
     key = image_lock_key(SCHEMA_LOAD_SERVICE_NAME)
-    return not (lock_data.get(f"{key}_IMAGE_REPOSITORY") and lock_data.get(f"{key}_IMAGE_TAG"))
+    return not (
+        lock_data.get(f"{key}_IMAGE_REPOSITORY")
+        and lock_data.get(f"{key}_IMAGE_TAG")
+        and lock_data.get(f"{key}_IMAGE_REF")
+    )
+
+
+def image_ref(repository: str, tag: str, digest: str) -> str:
+    """Return the digest-first image reference, falling back to the tag."""
+
+    return f"{repository}@{digest}" if digest else f"{repository}:{tag}"
 
 
 def schema_load_lock_patch(
@@ -392,6 +408,19 @@ def schema_load_lock_patch(
     newest master build.
     """
 
+    key = image_lock_key(SCHEMA_LOAD_SERVICE_NAME)
+    existing_repository = lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
+    existing_tag = lock_data.get(f"{key}_IMAGE_TAG", "")
+    if existing_repository and existing_tag:
+        existing_digest = lock_data.get(f"{key}_IMAGE_DIGEST", "")
+        return {
+            f"{key}_IMAGE_REF": image_ref(
+                existing_repository,
+                existing_tag,
+                existing_digest,
+            )
+        }
+
     schema_tag = lock_data.get(f"{image_lock_key(SCHEMA_SERVICE_NAME)}_IMAGE_TAG", "")
     if not schema_tag:
         raise ImageResolutionError(
@@ -405,16 +434,16 @@ def schema_load_lock_patch(
         schema_tag,
     )
 
-    key = image_lock_key(SCHEMA_LOAD_SERVICE_NAME)
     patch = {
         f"{key}_IMAGE": image.image,
         f"{key}_IMAGE_REPOSITORY": image.repository,
         f"{key}_IMAGE_TAG": image.tag,
         f"{key}_IMAGE_CREATED_AT": image.created_at,
         f"{key}_IMAGE_DIGEST": image.digest,
+        f"{key}_IMAGE_REF": image_ref(image.repository, image.tag, image.digest),
     }
     count = lock_data.get("IMAGE_COUNT", "")
-    if count.isdigit():
+    if count.isdigit() and not existing_repository and not existing_tag:
         patch["IMAGE_COUNT"] = str(int(count) + 1)
     return patch
 
@@ -423,15 +452,19 @@ def _yaml_string(value: str) -> str:
     return json.dumps(str(value))
 
 
-def render_image_lock_configmap(
-    resolved: dict[str, ResolvedImage],
-    branch: str = DEFAULT_IMAGE_BRANCH,
-    resolved_at: datetime | None = None,
-    extra_annotations: Mapping[str, str] | None = None,
-) -> str:
-    """Render the Flux substitution ConfigMap for service image pins."""
+IMAGE_BRANCH_ANNOTATION = "spi-stack.osdu.dev/image-branch"
+IMAGE_RESOLVED_AT_ANNOTATION = "spi-stack.osdu.dev/resolved-at"
 
-    timestamp = (resolved_at or datetime.now(timezone.utc)).isoformat()
+
+def build_lock_data(
+    resolved: dict[str, ResolvedImage], branch: str, timestamp: str
+) -> dict[str, str]:
+    """Return the complete image-lock ConfigMap ``data`` for a resolved image set.
+
+    Shared by the YAML renderer below and the live-cluster compare-and-retry
+    mutation in ``pins.py``, so both build the same keys from one place.
+    """
+
     data: dict[str, str] = {
         "IMAGE_BRANCH": branch,
         "IMAGE_RESOLVED_AT": timestamp,
@@ -445,6 +478,30 @@ def render_image_lock_configmap(
         data[f"{key}_IMAGE_TAG"] = image.tag
         data[f"{key}_IMAGE_CREATED_AT"] = image.created_at
         data[f"{key}_IMAGE_DIGEST"] = image.digest
+        data[f"{key}_IMAGE_REF"] = image_ref(image.repository, image.tag, image.digest)
+    return data
+
+
+def build_lock_annotations(branch: str, timestamp: str) -> dict[str, str]:
+    """Return the base image-branch/resolved-at annotations for the lock."""
+
+    return {
+        IMAGE_BRANCH_ANNOTATION: branch,
+        IMAGE_RESOLVED_AT_ANNOTATION: timestamp,
+    }
+
+
+def render_image_lock_configmap(
+    resolved: dict[str, ResolvedImage],
+    branch: str = DEFAULT_IMAGE_BRANCH,
+    resolved_at: datetime | None = None,
+    extra_annotations: Mapping[str, str] | None = None,
+) -> str:
+    """Render the Flux substitution ConfigMap for service image pins."""
+
+    timestamp = (resolved_at or datetime.now(timezone.utc)).isoformat()
+    data = build_lock_data(resolved, branch, timestamp)
+    base_annotations = build_lock_annotations(branch, timestamp)
 
     lines = [
         "apiVersion: v1",
@@ -455,8 +512,9 @@ def render_image_lock_configmap(
         "  labels:",
         "    app.kubernetes.io/managed-by: osdu-spi-stack",
         "  annotations:",
-        f"    spi-stack.osdu.dev/image-branch: {_yaml_string(branch)}",
-        f"    spi-stack.osdu.dev/resolved-at: {_yaml_string(timestamp)}",
+        f"    {IMAGE_BRANCH_ANNOTATION}: {_yaml_string(base_annotations[IMAGE_BRANCH_ANNOTATION])}",
+        f"    {IMAGE_RESOLVED_AT_ANNOTATION}: "
+        f"{_yaml_string(base_annotations[IMAGE_RESOLVED_AT_ANNOTATION])}",
     ]
     annotations = dict(extra_annotations or {})
     for key in sorted(annotations):

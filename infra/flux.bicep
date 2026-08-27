@@ -16,6 +16,9 @@ param repoUrl string
 @description('Git branch that Flux reconciles.')
 param repoBranch string = 'main'
 
+@description('Git tag that Flux reconciles. When set, this takes the place of repoBranch.')
+param repoTag string = ''
+
 @description('Allowed profile directory under software/stacks/osdu/profiles.')
 @allowed([
   'bare'
@@ -43,6 +46,14 @@ var ingressPath = profile == 'bare'
   : profile == 'minimal'
     ? './software/stacks/osdu/ingress/${ingressMode}-minimal'
     : './software/stacks/osdu/ingress/${ingressMode}'
+
+var repositoryRef = empty(repoTag)
+  ? {
+      branch: repoBranch
+    }
+  : {
+      tag: repoTag
+    }
 
 resource aks 'Microsoft.ContainerService/managedClusters@2024-10-01' existing = {
   name: clusterName
@@ -80,9 +91,7 @@ resource gitopsConfig 'Microsoft.KubernetesConfiguration/fluxConfigurations@2024
     sourceKind: 'GitRepository'
     gitRepository: {
       url: repoUrl
-      repositoryRef: {
-        branch: repoBranch
-      }
+      repositoryRef: repositoryRef
       syncIntervalInSeconds: 600
       timeoutInSeconds: 600
     }

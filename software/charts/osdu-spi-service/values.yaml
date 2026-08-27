@@ -16,6 +16,9 @@
 image:
   repository: ""
   tag: "latest"
+  # -- Immutable digest (sha256:...); rendered as repository@digest when set,
+  # falling back to repository:tag when empty.
+  digest: ""
   pullPolicy: IfNotPresent
 
 replicaCount: 1

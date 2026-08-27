@@ -23,6 +23,7 @@ App Registration `osdu-spi-stack-github` exists in the
 | Federated context (PR builds) | Pull request |
 | Federated context (main builds) | `refs/heads/main` |
 | Federated context (Smoke + Sweeper) | Environment `azure-smoke` |
+| Federated context (env-upgrade + env-refresh) | Environment `azure-shared` |
 | RBAC | `Contributor` + `User Access Administrator` at subscription scope |
 
 The exact `sub` values are controlled by the repository's GitHub OIDC subject
@@ -51,7 +52,8 @@ az ad sp create --id "$APP_ID"
 for ENTRY in \
   "pull-request:<PULL_REQUEST_SUBJECT>" \
   "main:<MAIN_BRANCH_SUBJECT>" \
-  "azure-smoke:<AZURE_SMOKE_ENVIRONMENT_SUBJECT>"; do
+  "azure-smoke:<AZURE_SMOKE_ENVIRONMENT_SUBJECT>" \
+  "azure-shared:<AZURE_SHARED_ENVIRONMENT_SUBJECT>"; do
   NAME="${ENTRY%%:*}"
   SUBJECT="${ENTRY#*:}"
   az ad app federated-credential create --id "$APP_ID" --parameters "{
@@ -168,12 +170,79 @@ different subscription.
 
 The orphan-RG sweeper is the cleanup backstop for full-workflow cancellation.
 
+## GitHub Environment `azure-shared`
+
+Used by every Azure-touching job in `env-upgrade.yml` and `env-refresh.yml`.
+Same reviewer-free shape as `azure-smoke`, for the same reason: a scheduled
+`env-refresh` run must reconcile and probe without a human approval gate, and
+both lifecycle workflows share the `env-shared` concurrency group, so one
+waiting run would block every later trigger.
+
+```bash
+gh api -X PUT "repos/Azure/osdu-spi-stack/environments/azure-shared" \
+  --input - <<EOF
+{
+  "wait_timer": 0,
+  "reviewers": [],
+  "deployment_branch_policy": {
+    "protected_branches": true,
+    "custom_branch_policies": false
+  },
+  "can_admins_bypass": true
+}
+EOF
+```
+
+With no environment-level `AZURE_*` secrets configured, it inherits the
+existing repository secrets. Add its exact OIDC subject to the same App
+Registration as the other federated contexts (see
+[Azure OIDC federation](#azure-oidc-federation) above) before dispatching
+`env-upgrade` for the first time; a mismatched or missing subject fails
+`azure/login@v3` with `AADSTS70021` rather than silently using another
+identity.
+
+### To verify
+
+```bash
+gh api "repos/Azure/osdu-spi-stack/environments/azure-shared" \
+  --jq '{reviewers: .protection_rules, branch_policy: .deployment_branch_policy}'
+```
+
+## Tag protection (immutable release tags)
+
+`docs/tag-ruleset.json` restricts `update` and `deletion` on any `v*` tag
+while leaving `creation` unrestricted, so release-please can still create
+the next release tag. This must be active before the first
+`env-upgrade` dispatch: a stack version an operator has already deployed and
+recorded must not be able to move to a different commit or disappear out
+from under a standing environment.
+
+```bash
+gh api -X POST repos/Azure/osdu-spi-stack/rulesets \
+  --input docs/tag-ruleset.json
+```
+
+### To verify
+
+```bash
+gh api repos/Azure/osdu-spi-stack/rulesets \
+  --jq '.[] | select(.name == "immutable-release-tags") | {target, enforcement, conditions}'
+gh api "repos/Azure/osdu-spi-stack/rulesets/$(gh api repos/Azure/osdu-spi-stack/rulesets --jq '.[] | select(.name=="immutable-release-tags") | .id')" \
+  --jq '.rules | map(.type)'
+```
+
+The second command should print exactly `["update", "deletion"]`.
+
 ## Release automation (release-please)
 
 `release.yml` runs release-please on every push to `main`. It maintains a
 standing `chore: release X.Y.Z` PR; merging that PR creates a draft GitHub
 Release, and the `assets` job builds the wheel, uploads it, and publishes.
-One-time setup:
+After a real new release, a `bump-environment` job opens a PR bumping the
+live `ops/environments/shared.yaml` declaration's `stackVersion` to match;
+merging that PR triggers `env-upgrade`. `.release-please-config.json`
+excludes `ops/environments` from commit parsing, so merging the bump PR
+cannot itself start another release. One-time setup:
 
 ```bash
 # 1. Add this repo to the osdu-spi-automation GitHub App installation.
@@ -209,3 +278,30 @@ Notes:
 - Never switch the config to `release-type: python`: it would write the real
   version into `pyproject.toml`, breaking the `0.0.0+source` sentinel that
   `spi` uses to detect source checkouts. Stamping stays a build-time step.
+- `bump-environment` reuses `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`
+  (step 2 above) to open the `stackVersion` bump PR, generating its own App
+  token rather than reusing release-please's.
+
+## Activation ordering for the shared backing environment
+
+The lifecycle workflows (`env-upgrade.yml`, `env-refresh.yml`) exist from the
+moment this repository merges them, but they act on nothing until a live
+declaration exists. Apply the prerequisites above in this order, once:
+
+1. Apply and verify the immutable `v*` tag ruleset
+   ([Tag protection](#tag-protection-immutable-release-tags)).
+2. Create and verify the `azure-shared` GitHub environment, and add its exact
+   OIDC subject to the App Registration
+   ([GitHub Environment `azure-shared`](#github-environment-azure-shared)).
+3. Merge the activation PR adding `ops/environments/shared.yaml` (see
+   `ops/environments/README.md`). This is an environment-only commit;
+   release-please's `exclude-paths` keeps it from starting a release.
+4. Dispatch `env-upgrade` manually to perform the first provision; the
+   push that created the declaration only reports that manual activation is
+   required.
+5. Dispatch `env-refresh` once to prove the scheduled path; later weekday
+   runs use the same workflow unattended.
+
+Doing this out of order is unsafe: a first provision before the tag ruleset
+is active could deploy from a tag that is later moved or deleted out from
+under the standing environment.

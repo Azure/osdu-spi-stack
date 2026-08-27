@@ -26,11 +26,15 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from typing import Callable
 
+from .console import console
 from .images import (
+    DEFAULT_IMAGE_BRANCH,
     GITLAB_HOST,
     IMAGE_LOCK_CONFIGMAP,
     IMAGE_LOCK_NAMESPACE,
@@ -40,10 +44,15 @@ from .images import (
     ImageNotFoundError,
     ImageResolutionError,
     ResolvedImage,
+    build_lock_annotations,
+    build_lock_data,
     gitlab_get,
     image_lock_key,
+    image_lock_missing_schema_load,
+    image_ref,
     render_image_lock_configmap,
     resolve_image_commit,
+    schema_load_lock_patch,
 )
 from .shell import run_command, run_process
 
@@ -56,6 +65,18 @@ _FILE_KUSTOMIZATIONS = {
     "schema-load/": "spi-osdu-schema-load",
 }
 
+# Bounded resourceVersion compare-and-retry for the live image lock.
+LOCK_MUTATION_MAX_ATTEMPTS = 5
+_LOCK_MUTATION_BASE_DELAY_SECONDS = 1.0
+_CONFLICT_MARKERS = (
+    "the object has been modified",
+    "test operation",
+    "test failed",
+    "unprocessable entity",
+    "conflict",
+    "already exists",
+)
+
 
 class PinError(RuntimeError):
     """Raised when a pin cannot be resolved, applied, or reset."""
@@ -63,6 +84,11 @@ class PinError(RuntimeError):
 
 class MissingPipelineImageError(PinError):
     """Raised when neither MR branch has an image for the MR head commit."""
+
+
+class LockConflictError(PinError):
+    """Raised when the image lock could not be safely mutated after
+    repeated concurrent-write conflicts."""
 
 
 @dataclass(frozen=True)
@@ -78,6 +104,9 @@ class ServicePin:
     canonical_created_at: str
     canonical_digest: str
     applied_at: str
+    # Optional so a pin encoded before these fields existed keeps decoding.
+    created_at: str = ""
+    digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -221,30 +250,132 @@ def _lock_entry_patch(service: str, repository: str, tag: str, created_at: str, 
         f"{key}_IMAGE_TAG": tag,
         f"{key}_IMAGE_CREATED_AT": created_at,
         f"{key}_IMAGE_DIGEST": digest,
+        f"{key}_IMAGE_REF": image_ref(repository, tag, digest),
     }
 
 
-def patch_lock(data: dict[str, str], pins: dict[str, ServicePin], description: str) -> None:
-    """Merge-patch the live lock's data keys and pins annotation together."""
+def _resource_version(lock: dict) -> str:
+    return str((lock.get("metadata") or {}).get("resourceVersion", ""))
 
-    patch = {
-        "metadata": {"annotations": {PINS_ANNOTATION: encode_pins(pins) if pins else None}},
-        "data": data,
-    }
-    run_command(
-        [
-            "kubectl",
-            "patch",
-            "configmap",
-            IMAGE_LOCK_CONFIGMAP,
-            "-n",
-            IMAGE_LOCK_NAMESPACE,
-            "--type=merge",
-            "-p",
-            json.dumps(patch),
-        ],
-        description=description,
-    )
+
+def _is_conflict(stderr: str) -> bool:
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _CONFLICT_MARKERS)
+
+
+def mutate_lock(
+    mutator: Callable[[dict | None], dict],
+    description: str,
+    max_attempts: int = LOCK_MUTATION_MAX_ATTEMPTS,
+) -> dict:
+    """Create or update the live image lock with bounded compare-and-retry.
+
+    ``mutator`` is called with the freshly read ConfigMap, or ``None`` when
+    it does not exist yet, and must return the complete desired object
+    (only its ``data`` and ``metadata.annotations`` are used). It runs again
+    on every retry so a concurrent writer's change is recomputed from a
+    fresh read instead of clobbered by a stale patch.
+
+    A missing lock is created; losing the create race to another writer
+    rereads and falls into the update path. An existing lock is updated
+    with a JSON Patch carrying a ``test`` precondition on
+    ``metadata.resourceVersion`` ahead of the ``data``/``annotations``
+    replacement, so the patch verb stays compatible with future patch-only
+    RBAC. Only a resourceVersion test failure or a losing create race is
+    retried, with bounded exponential backoff; any other failure raises a
+    clear terminal error immediately.
+    """
+
+    delay = _LOCK_MUTATION_BASE_DELAY_SECONDS
+    for attempt in range(1, max_attempts + 1):
+        lock = read_lock(required=False)
+        desired = mutator(lock)
+        data = desired.get("data") or {}
+        annotations = (desired.get("metadata") or {}).get("annotations") or {}
+
+        if lock is None:
+            document = {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": IMAGE_LOCK_CONFIGMAP,
+                    "namespace": IMAGE_LOCK_NAMESPACE,
+                    "labels": {"app.kubernetes.io/managed-by": "osdu-spi-stack"},
+                    "annotations": annotations,
+                },
+                "data": data,
+            }
+            result = run_process(
+                ["kubectl", "create", "-f", "-", "-o", "json"],
+                input=json.dumps(document),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if result.returncode == 0:
+                return json.loads(result.stdout) if result.stdout.strip() else document
+            stderr = (result.stderr or result.stdout or "").strip()
+            if "already exists" in stderr.lower():
+                if attempt < max_attempts:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                raise LockConflictError(
+                    f"{description}: exceeded {max_attempts} attempts due to concurrent "
+                    f"writers: {stderr}"
+                )
+            raise PinError(f"{description}: could not create {IMAGE_LOCK_CONFIGMAP}: {stderr}")
+
+        patch = json.dumps(
+            [
+                {
+                    "op": "test",
+                    "path": "/metadata/resourceVersion",
+                    "value": _resource_version(lock),
+                },
+                {"op": "add", "path": "/data", "value": data},
+                {"op": "add", "path": "/metadata/annotations", "value": annotations},
+            ]
+        )
+        result = run_command(
+            [
+                "kubectl",
+                "patch",
+                "configmap",
+                IMAGE_LOCK_CONFIGMAP,
+                "-n",
+                IMAGE_LOCK_NAMESPACE,
+                "--type=json",
+                "-p",
+                patch,
+                "-o",
+                "json",
+            ],
+            description=description,
+            check=False,
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout) if result.stdout.strip() else lock
+        stderr = (result.stderr or result.stdout or "").strip()
+        if _is_conflict(stderr):
+            if attempt < max_attempts:
+                console.print(
+                    f"  [warning]{description}: concurrent write detected, retrying "
+                    f"(attempt {attempt}/{max_attempts})[/warning]"
+                )
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise LockConflictError(
+                f"{description}: exceeded {max_attempts} attempts due to concurrent "
+                f"writers: {stderr}"
+            )
+        raise PinError(f"{description}: could not update {IMAGE_LOCK_CONFIGMAP}: {stderr}")
+
+    # Every iteration above returns or raises; this satisfies static analysis
+    # that the loop cannot fall through without one of the two.
+    raise AssertionError("unreachable: mutate_lock attempt loop exited without result")
 
 
 # Dependency order for pin consumers: a changed schema image has to reach the
@@ -299,13 +430,10 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     if service == SCHEMA_SERVICE_NAME:
         targets.append(SCHEMA_LOAD_SERVICE_NAME)
 
-    lock = read_lock() or {}
-    lock_data = lock.get("data", {}) or {}
-    pins = decode_pins(lock)
-    applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
+    # Resolve MR pipeline images once, independent of the lock's state: this
+    # is a network round trip and must not repeat on every CAS retry.
     resolved: list[tuple[str, ResolvedImage, dict]] = []
-    released: dict[str, ServicePin] = {}
+    loader_missing = False
     mr_snapshots: dict[int, dict] = {}
     for name in targets:
         project_id = IMAGE_REGISTRY[name].project_id
@@ -313,12 +441,35 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
             mr_snapshots[project_id] = fetch_merge_request(project_id, mr_iid)
         try:
             image, mr = resolve_mr_image(name, mr_iid, mr_snapshots[project_id])
-        except MissingPipelineImageError as exc:
+        except MissingPipelineImageError:
             if name != SCHEMA_LOAD_SERVICE_NAME:
                 raise
             # The MR may not rebuild the loader image; the service pin alone
-            # is still a valid experiment. A loader still pinned by an earlier
-            # MR must not survive as a mismatched pair, so release it here.
+            # is still a valid experiment.
+            loader_missing = True
+            continue
+        resolved.append((name, image, mr))
+
+    applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    results: list[tuple[str, ServicePin]] = []
+    released: list[str] = []
+
+    def compute(lock: dict | None) -> dict:
+        if lock is None:
+            raise PinError(
+                f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
+                "is this a core-profile cluster?"
+            )
+        nonlocal results, released
+        lock_data = lock.get("data") or {}
+        pins = decode_pins(lock)
+        data = dict(lock_data)
+        results = []
+        released_now: dict[str, ServicePin] = {}
+
+        if loader_missing:
+            # A loader still pinned by an earlier MR must not survive as a
+            # mismatched pair with the newly pinned schema image; release it.
             stale = pins.pop(SCHEMA_LOAD_SERVICE_NAME, None)
             if stale:
                 if not stale.canonical_repository or not stale.canonical_tag:
@@ -326,73 +477,75 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
                         f"{SCHEMA_LOAD_SERVICE_NAME} is pinned to MR !{stale.mr} with no "
                         "canonical image recorded; run 'spi service reset schema' to remove "
                         "the invalid pin, then 'spi reconcile --refresh-images' before re-pinning."
-                    ) from exc
-                released[name] = stale
-            continue
-        resolved.append((name, image, mr))
+                    )
+                released_now[SCHEMA_LOAD_SERVICE_NAME] = stale
 
-    data: dict[str, str] = {}
-    results: list[tuple[str, ServicePin]] = []
-    prepared: list[tuple[str, ResolvedImage, ServicePin]] = []
-    for name, image, mr in resolved:
-        key = image_lock_key(name)
-        existing = pins.get(name)
-        canonical_repository = (
-            existing.canonical_repository
-            if existing
-            else lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
-        )
-        canonical_tag = (
-            existing.canonical_tag if existing else lock_data.get(f"{key}_IMAGE_TAG", "")
-        )
-        if not canonical_repository or not canonical_tag:
-            raise PinError(
-                f"{name}: image lock records no canonical repository or tag; "
-                "run 'spi reconcile --refresh-images' to backfill the lock before pinning."
-            )
-        pin = ServicePin(
-            mr=str(mr_iid),
-            branch=mr.get("source_branch", ""),
-            repository=image.repository,
-            tag=image.tag,
-            # First pin captures the canonical image; re-pinning keeps it.
-            canonical_repository=canonical_repository,
-            canonical_tag=canonical_tag,
-            canonical_created_at=(
-                existing.canonical_created_at
+        for name, image, mr in resolved:
+            key = image_lock_key(name)
+            existing = pins.get(name)
+            canonical_repository = (
+                existing.canonical_repository
                 if existing
-                else lock_data.get(f"{key}_IMAGE_CREATED_AT", "")
-            ),
-            canonical_digest=(
-                existing.canonical_digest if existing else lock_data.get(f"{key}_IMAGE_DIGEST", "")
-            ),
-            applied_at=applied_at,
-        )
-        prepared.append((name, image, pin))
-
-    for name, image, pin in prepared:
-        pins[name] = pin
-        data.update(
-            _lock_entry_patch(name, image.repository, image.tag, image.created_at, image.digest)
-        )
-        results.append((name, pin))
-
-    for name, stale in released.items():
-        data.update(
-            _lock_entry_patch(
-                name,
-                stale.canonical_repository,
-                stale.canonical_tag,
-                stale.canonical_created_at,
-                stale.canonical_digest,
+                else lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
             )
-        )
+            canonical_tag = (
+                existing.canonical_tag if existing else lock_data.get(f"{key}_IMAGE_TAG", "")
+            )
+            if not canonical_repository or not canonical_tag:
+                raise PinError(
+                    f"{name}: image lock records no canonical repository or tag; "
+                    "run 'spi reconcile --refresh-images' to backfill the lock before pinning."
+                )
+            pin = ServicePin(
+                mr=str(mr_iid),
+                branch=mr.get("source_branch", ""),
+                repository=image.repository,
+                tag=image.tag,
+                # First pin captures the canonical image; re-pinning keeps it.
+                canonical_repository=canonical_repository,
+                canonical_tag=canonical_tag,
+                canonical_created_at=(
+                    existing.canonical_created_at
+                    if existing
+                    else lock_data.get(f"{key}_IMAGE_CREATED_AT", "")
+                ),
+                canonical_digest=(
+                    existing.canonical_digest
+                    if existing
+                    else lock_data.get(f"{key}_IMAGE_DIGEST", "")
+                ),
+                applied_at=applied_at,
+                created_at=image.created_at,
+                digest=image.digest,
+            )
+            pins[name] = pin
+            data.update(
+                _lock_entry_patch(name, image.repository, image.tag, image.created_at, image.digest)
+            )
+            results.append((name, pin))
 
-    description = f"Pin {', '.join(n for n, _ in results)} to MR !{mr_iid} image"
-    if released:
-        description += f"; release stale {', '.join(sorted(released))}"
-    patch_lock(data, pins, description)
-    reconcile_consumers([name for name, _ in results] + sorted(released))
+        for name, stale in released_now.items():
+            data.update(
+                _lock_entry_patch(
+                    name,
+                    stale.canonical_repository,
+                    stale.canonical_tag,
+                    stale.canonical_created_at,
+                    stale.canonical_digest,
+                )
+            )
+        released = sorted(released_now)
+
+        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+        if pins:
+            annotations[PINS_ANNOTATION] = encode_pins(pins)
+        else:
+            annotations.pop(PINS_ANNOTATION, None)
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    description = f"Pin {', '.join(targets)} to MR !{mr_iid} image"
+    mutate_lock(compute, description)
+    reconcile_consumers([name for name, _ in results] + released)
     return results
 
 
@@ -403,42 +556,52 @@ def reset_service(service: str) -> ResetResult:
         known = ", ".join(sorted(IMAGE_REGISTRY))
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
 
-    lock = read_lock() or {}
-    pins = decode_pins(lock)
-    targets = [service]
+    targets_all = [service]
     if service == SCHEMA_SERVICE_NAME:
-        targets.append(SCHEMA_LOAD_SERVICE_NAME)
-    targets = [name for name in targets if name in pins]
-    if not targets:
-        raise PinError(f"{service} is not pinned.")
+        targets_all.append(SCHEMA_LOAD_SERVICE_NAME)
 
-    data: dict[str, str] = {}
     restored: list[str] = []
     refresh_required: list[str] = []
-    for name in targets:
-        pin = pins.pop(name)
-        if not pin.canonical_repository or not pin.canonical_tag:
-            refresh_required.append(name)
-            continue
-        data.update(
-            _lock_entry_patch(
-                name,
-                pin.canonical_repository,
-                pin.canonical_tag,
-                pin.canonical_created_at,
-                pin.canonical_digest,
-            )
-        )
-        restored.append(name)
 
-    description_parts = []
-    if restored:
-        description_parts.append(f"Reset {', '.join(restored)} to canonical image")
-    if refresh_required:
-        description_parts.append(
-            f"Remove invalid pins for {', '.join(refresh_required)} pending image refresh"
-        )
-    patch_lock(data, pins, "; ".join(description_parts))
+    def compute(lock: dict | None) -> dict:
+        if lock is None:
+            raise PinError(
+                f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
+                "is this a core-profile cluster?"
+            )
+        nonlocal restored, refresh_required
+        pins = decode_pins(lock)
+        targets = [name for name in targets_all if name in pins]
+        if not targets:
+            raise PinError(f"{service} is not pinned.")
+
+        data = dict(lock.get("data") or {})
+        restored = []
+        refresh_required = []
+        for name in targets:
+            pin = pins.pop(name)
+            if not pin.canonical_repository or not pin.canonical_tag:
+                refresh_required.append(name)
+                continue
+            data.update(
+                _lock_entry_patch(
+                    name,
+                    pin.canonical_repository,
+                    pin.canonical_tag,
+                    pin.canonical_created_at,
+                    pin.canonical_digest,
+                )
+            )
+            restored.append(name)
+
+        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+        if pins:
+            annotations[PINS_ANNOTATION] = encode_pins(pins)
+        else:
+            annotations.pop(PINS_ANNOTATION, None)
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    mutate_lock(compute, f"Reset {service}")
     if restored:
         reconcile_consumers(restored)
     return ResetResult(tuple(restored), tuple(refresh_required))
@@ -473,6 +636,86 @@ def render_lock_with_pins(
     overlaid = dict(resolved)
     for name, pin in pins.items():
         if name in overlaid:
-            overlaid[name] = ResolvedImage(name, pin.repository, pin.tag, "", "")
+            overlaid[name] = ResolvedImage(
+                name, pin.repository, pin.tag, pin.created_at, pin.digest
+            )
     extra = {PINS_ANNOTATION: encode_pins(pins)} if pins else None
     return render_image_lock_configmap(overlaid, branch=branch, extra_annotations=extra)
+
+
+def apply_image_lock(
+    resolved: dict[str, ResolvedImage],
+    branch: str,
+    description: str = "Update the osdu-image-lock ConfigMap",
+    max_attempts: int = LOCK_MUTATION_MAX_ATTEMPTS,
+) -> dict[str, ServicePin]:
+    """Create or refresh the live image lock, preserving active pins.
+
+    The reusable compare-and-retry entry point for ``spi up
+    --refresh-images``, first-lock creation, and ``spi reconcile
+    --refresh-images``. Active pins are decoded from a freshly read lock on
+    every retry, so a pin or reset applied by a concurrent writer survives
+    the refresh. Returns the pins that were preserved.
+    """
+
+    active_pins: dict[str, ServicePin] = {}
+
+    def compute(lock: dict | None) -> dict:
+        nonlocal active_pins
+        active_pins = decode_pins(lock) if lock is not None else {}
+        overlaid = dict(resolved)
+        for name, pin in active_pins.items():
+            if name in overlaid:
+                overlaid[name] = ResolvedImage(
+                    name, pin.repository, pin.tag, pin.created_at, pin.digest
+                )
+        timestamp = datetime.now(timezone.utc).isoformat()
+        data = build_lock_data(overlaid, branch, timestamp)
+        annotations = build_lock_annotations(branch, timestamp)
+        if active_pins:
+            annotations[PINS_ANNOTATION] = encode_pins(active_pins)
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    mutate_lock(compute, description, max_attempts=max_attempts)
+    return active_pins
+
+
+class _NoBackfillNeeded(Exception):
+    """Internal sentinel: the lock is absent or already carries schema-load."""
+
+
+def apply_schema_load_backfill(
+    branch: str = DEFAULT_IMAGE_BRANCH,
+    description: str = "Backfill schema-load into the osdu-image-lock ConfigMap",
+    max_attempts: int = LOCK_MUTATION_MAX_ATTEMPTS,
+) -> bool:
+    """Add schema-load's lock entries to a lock that predates them.
+
+    Returns False without writing anything when the lock does not exist yet
+    (minimal/bare profiles never create one) or already carries schema-load's
+    keys, including its composed ref. Recomputes the patch from the schema
+    tag the fresh lock records on every retry, so backfilling never races a
+    concurrent schema pin/reset/refresh.
+    """
+
+    backfilled = False
+
+    def compute(lock: dict | None) -> dict:
+        if lock is None:
+            raise _NoBackfillNeeded
+        lock_data = lock.get("data") or {}
+        if not image_lock_missing_schema_load(lock_data):
+            raise _NoBackfillNeeded
+        nonlocal backfilled
+        patch = schema_load_lock_patch(lock_data, branch=branch)
+        data = dict(lock_data)
+        data.update(patch)
+        backfilled = True
+        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    try:
+        mutate_lock(compute, description, max_attempts=max_attempts)
+    except _NoBackfillNeeded:
+        return False
+    return backfilled

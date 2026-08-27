@@ -14,7 +14,9 @@
 
 """Deployment status dashboard."""
 
+import json
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -23,7 +25,293 @@ from rich.table import Table
 from rich.text import Text
 
 from .console import console
-from .shell import kubectl_json
+from .deploy_record import DeployRecord, DeployRecordError, read_deploy_record
+from .pins import PinError, decode_pins
+from .shell import kubectl_json, run_process
+
+STATUS_API_VERSION = "spi.osdu.dev/v1"
+
+
+class StatusError(RuntimeError):
+    """Raised when required status inputs cannot be collected."""
+
+
+@dataclass(frozen=True)
+class StatusReason:
+    code: str
+    message: str
+    resource: str | None
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "resource": self.resource,
+        }
+
+
+@dataclass(frozen=True)
+class KustomizationState:
+    name: str
+    ready: bool
+    reason: str
+    message: str
+
+    def to_dict(self) -> dict[str, str | bool]:
+        return {
+            "name": self.name,
+            "ready": self.ready,
+            "reason": self.reason,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
+class StackState:
+    ref: str
+    resolved_commit: str
+    deployed_at: str
+    cli_version: str
+    profile: str
+
+    @staticmethod
+    def from_record(record: DeployRecord | None) -> "StackState":
+        if record is None:
+            return StackState("", "", "", "", "")
+        return StackState(
+            ref=record.ref,
+            resolved_commit=record.resolved_commit,
+            deployed_at=record.deployed_at,
+            cli_version=record.cli_version,
+            profile=record.profile,
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "ref": self.ref,
+            "resolvedCommit": self.resolved_commit,
+            "deployedAt": self.deployed_at,
+            "cliVersion": self.cli_version,
+            "profile": self.profile,
+        }
+
+
+@dataclass(frozen=True)
+class ImageState:
+    branch: str
+    resolved_at: str
+    count: int
+    pinned_services: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, str | int | list[str]]:
+        return {
+            "branch": self.branch,
+            "resolvedAt": self.resolved_at,
+            "count": self.count,
+            "pinnedServices": list(self.pinned_services),
+        }
+
+
+@dataclass(frozen=True)
+class StatusSnapshot:
+    ready: bool
+    deployable: bool
+    reason: StatusReason | None
+    suspended: bool
+    maintenance: bool
+    kustomizations: tuple[KustomizationState, ...]
+    stack: StackState
+    images: ImageState
+    base_url: str
+    kustomization_items: tuple[dict, ...]
+
+    def to_dict(self) -> dict:
+        not_ready = [item.to_dict() for item in self.kustomizations if not item.ready]
+        return {
+            "apiVersion": STATUS_API_VERSION,
+            "ready": self.ready,
+            "deployable": self.deployable,
+            "reason": self.reason.to_dict() if self.reason else None,
+            "suspended": self.suspended,
+            "maintenance": self.maintenance,
+            "kustomizations": {
+                "total": len(self.kustomizations),
+                "ready": sum(1 for item in self.kustomizations if item.ready),
+                "notReady": not_ready,
+            },
+            "stack": self.stack.to_dict(),
+            "images": self.images.to_dict(),
+            "baseUrl": self.base_url,
+        }
+
+
+def _required_kubectl_json(args: list[str], description: str) -> dict:
+    result = run_process(
+        ["kubectl", *args, "-o", "json"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or "kubectl failed"
+        raise StatusError(f"Could not {description}: {detail}")
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise StatusError(f"Could not parse {description}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise StatusError(f"Could not parse {description}: expected a JSON object")
+    return parsed
+
+
+def _optional_configmap(name: str, namespace: str) -> dict | None:
+    result = run_process(
+        [
+            "kubectl",
+            "get",
+            "configmap",
+            name,
+            "-n",
+            namespace,
+            "--ignore-not-found",
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or "kubectl failed"
+        raise StatusError(f"Could not read ConfigMap {name}: {detail}")
+    if not result.stdout.strip():
+        return None
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise StatusError(f"Could not parse ConfigMap {name}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise StatusError(f"Could not parse ConfigMap {name}: expected a JSON object")
+    return parsed
+
+
+def _ready_condition(item: dict) -> dict:
+    conditions = item.get("status", {}).get("conditions", [])
+    return next((condition for condition in conditions if condition.get("type") == "Ready"), {})
+
+
+def collect_status() -> StatusSnapshot:
+    kustomization_data = _required_kubectl_json(
+        ["get", "kustomizations", "-n", "osdu-flux"],
+        "read Flux Kustomizations",
+    )
+    raw_items = kustomization_data.get("items")
+    if not isinstance(raw_items, list):
+        raise StatusError("Flux Kustomization response has no items list")
+
+    items = tuple(
+        sorted(
+            (item for item in raw_items if isinstance(item, dict)),
+            key=lambda item: (
+                item.get("metadata", {}).get("labels", {}).get("spi-stack.layer", "9"),
+                item.get("metadata", {}).get("name", ""),
+            ),
+        )
+    )
+    states = []
+    for item in items:
+        condition = _ready_condition(item)
+        states.append(
+            KustomizationState(
+                name=item.get("metadata", {}).get("name", ""),
+                ready=condition.get("status") == "True",
+                reason=condition.get("reason", ""),
+                message=condition.get("message", ""),
+            )
+        )
+
+    git_repository = _required_kubectl_json(
+        ["get", "gitrepository", "osdu-spi-stack-system", "-n", "osdu-flux"],
+        "read the Flux GitRepository",
+    )
+    suspended = bool(git_repository.get("spec", {}).get("suspend", False))
+
+    try:
+        record = read_deploy_record(required=False)
+    except DeployRecordError as exc:
+        raise StatusError(str(exc)) from exc
+
+    image_lock = _optional_configmap("osdu-image-lock", "osdu-flux")
+    lock_data = (image_lock or {}).get("data") or {}
+    if not isinstance(lock_data, dict):
+        raise StatusError("ConfigMap osdu-image-lock has invalid data")
+    raw_count = lock_data.get("IMAGE_COUNT", "0")
+    if not isinstance(raw_count, str) or not raw_count.isdigit():
+        raise StatusError("ConfigMap osdu-image-lock has an invalid IMAGE_COUNT")
+    try:
+        pins = decode_pins(image_lock) if image_lock is not None else {}
+    except PinError as exc:
+        raise StatusError(str(exc)) from exc
+
+    from .info import collect_info
+
+    base_url = str(collect_info().get("base_url", ""))
+    ready = bool(states) and all(state.ready for state in states)
+    maintenance = record.maintenance if record else False
+    deployable = ready and record is not None and not maintenance
+
+    reason: StatusReason | None = None
+    if not states:
+        reason = StatusReason(
+            code="no_kustomizations",
+            message="No Flux Kustomizations are visible.",
+            resource="kustomizations/osdu-flux",
+        )
+    else:
+        first_not_ready = next((state for state in states if not state.ready), None)
+        if first_not_ready is not None:
+            detail = first_not_ready.message or first_not_ready.reason or "not Ready"
+            reason = StatusReason(
+                code="kustomization_not_ready",
+                message=f"{first_not_ready.name}: {detail}",
+                resource=f"kustomization/osdu-flux/{first_not_ready.name}",
+            )
+        elif maintenance:
+            reason = StatusReason(
+                code="maintenance",
+                message="The environment is in maintenance.",
+                resource="configmap/osdu-flux/spi-deploy-record",
+            )
+        elif record is None:
+            reason = StatusReason(
+                code="missing_deploy_record",
+                message="The environment has no deploy record; rerun spi up.",
+                resource="configmap/osdu-flux/spi-deploy-record",
+            )
+
+    return StatusSnapshot(
+        ready=ready,
+        deployable=deployable,
+        reason=reason,
+        suspended=suspended,
+        maintenance=maintenance,
+        kustomizations=tuple(states),
+        stack=StackState.from_record(record),
+        images=ImageState(
+            branch=str(lock_data.get("IMAGE_BRANCH", "")),
+            resolved_at=str(lock_data.get("IMAGE_RESOLVED_AT", "")),
+            count=int(raw_count),
+            pinned_services=tuple(sorted(pins)),
+        ),
+        base_url=base_url,
+        kustomization_items=items,
+    )
+
+
+def status_exit_code(snapshot: StatusSnapshot) -> int:
+    return 0 if snapshot.deployable else 2
 
 
 def status_icon(ready: bool, message: str = "") -> Text:
@@ -87,7 +375,7 @@ def short_image(image: str) -> str:
     return image.rsplit("/", 1)[-1]
 
 
-def get_kustomization_table() -> Table:
+def get_kustomization_table(items: tuple[dict, ...] | None = None) -> Table:
     table = Table(title="Flux Kustomizations", border_style="cyan", expand=True)
     table.add_column("Name", style="bold")
     table.add_column("Layer", justify="center")
@@ -95,18 +383,24 @@ def get_kustomization_table() -> Table:
     table.add_column("Message")
     table.add_column("Age", justify="right")
 
-    data = kubectl_json(["get", "kustomizations", "-n", "osdu-flux"])
-    if not data or "items" not in data:
+    if items is None:
+        data = kubectl_json(["get", "kustomizations", "-n", "osdu-flux"])
+        if not data or "items" not in data:
+            table.add_row("[dim]No kustomizations found[/dim]", "", "", "", "")
+            return table
+        items = tuple(
+            sorted(
+                data["items"],
+                key=lambda x: (
+                    x.get("metadata", {}).get("labels", {}).get("spi-stack.layer", "9"),
+                    x.get("metadata", {}).get("name", ""),
+                ),
+            )
+        )
+
+    if not items:
         table.add_row("[dim]No kustomizations found[/dim]", "", "", "", "")
         return table
-
-    items = sorted(
-        data["items"],
-        key=lambda x: (
-            x.get("metadata", {}).get("labels", {}).get("spi-stack.layer", "9"),
-            x.get("metadata", {}).get("name", ""),
-        ),
-    )
 
     for item in items:
         name = item.get("metadata", {}).get("name", "")
@@ -398,19 +692,20 @@ def get_pod_table(namespace: str, title: str) -> Table:
     return table
 
 
-def get_summary() -> Panel:
-    from .guard import get_suspend_status
-
+def get_summary(snapshot: StatusSnapshot | None = None) -> Panel:
     counts = {"ready": 0, "progressing": 0, "failed": 0}
-    data = kubectl_json(["get", "kustomizations", "-n", "osdu-flux"])
-    if data and "items" in data:
-        for item in data["items"]:
-            conditions = item.get("status", {}).get("conditions", [])
-            ready = next((c for c in conditions if c.get("type") == "Ready"), {})
-            if ready.get("status") == "True":
-                counts["ready"] += 1
-            else:
-                counts["progressing"] += 1
+    if snapshot is not None:
+        for item in snapshot.kustomizations:
+            counts["ready" if item.ready else "progressing"] += 1
+    else:
+        data = kubectl_json(["get", "kustomizations", "-n", "osdu-flux"])
+        if data and "items" in data:
+            for item in data["items"]:
+                ready = _ready_condition(item)
+                if ready.get("status") == "True":
+                    counts["ready"] += 1
+                else:
+                    counts["progressing"] += 1
 
     total = sum(counts.values())
     if total == 0:
@@ -423,17 +718,21 @@ def get_summary() -> Panel:
         parts.append(f"[notready]{counts['progressing']} progressing[/notready]")
 
     text = f"Kustomizations: {' / '.join(parts)}  ({counts['ready']}/{total} complete)"
-    if get_suspend_status():
+    suspended = snapshot.suspended if snapshot is not None else False
+    if snapshot is None:
+        from .guard import get_suspend_status
+
+        suspended = get_suspend_status()
+    if suspended:
         text += "  [bold yellow]| SUSPENDED[/bold yellow]"
     return Panel(text, title="Summary", border_style="cyan")
 
 
-def render_status():
-    from .guard import get_suspend_status
-
+def render_status(snapshot: StatusSnapshot | None = None):
+    snapshot = snapshot or collect_status()
     console.print(Panel("[bold]SPI Stack Status[/bold]", border_style="cyan"))
 
-    if get_suspend_status():
+    if snapshot.suspended:
         console.print(
             Panel(
                 "[bold yellow]GitRepository is SUSPENDED[/bold yellow] -- "
@@ -444,8 +743,8 @@ def render_status():
         )
 
     sections = [
-        get_summary(),
-        get_kustomization_table(),
+        get_summary(snapshot),
+        get_kustomization_table(snapshot.kustomization_items),
         get_helmrelease_table(),
         get_custom_resources(platform_ns="platform"),
     ]
@@ -472,7 +771,15 @@ def watch_status(interval: int = 30):
     try:
         while True:
             console.clear()
-            render_status()
+            try:
+                render_status()
+            except StatusError as exc:
+                console.print(
+                    Panel(
+                        f"[warning]Status temporarily unavailable:[/warning] {exc}",
+                        border_style="yellow",
+                    )
+                )
             console.print(f"[dim]Next refresh in {interval}s... (Ctrl+C to stop)[/dim]")
             time.sleep(interval)
     except KeyboardInterrupt:

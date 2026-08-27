@@ -69,7 +69,12 @@ done
 fmt_mmss() { printf '%02d:%02d' $(( $1 / 60 )) $(( $1 % 60 )); }
 
 dump_status() {
-    if command -v uv >/dev/null 2>&1; then
+    # Prefer an installed `spi` (the lifecycle workflows' declared release
+    # wheel); fall back to `uv run spi` only for a source checkout that has
+    # never installed the CLI, e.g. local development or the Smoke job.
+    if command -v spi >/dev/null 2>&1; then
+        spi status 2>&1 || true
+    elif command -v uv >/dev/null 2>&1; then
         uv run spi status 2>&1 || true
     else
         kubectl get kustomizations -A 2>&1 || true
