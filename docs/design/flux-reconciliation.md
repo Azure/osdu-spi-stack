@@ -201,7 +201,7 @@ Pods roll one at a time as each `HelmRelease` reconciles. `spi status --watch` s
 - `software/stacks/osdu/profiles/core/stack.yaml` -- the layer DAG
 - `software/stacks/osdu/ingress/<mode>/stack.yaml` -- ingress overlay Kustomizations
 - `src/spi/images.py` -- `osdu-image-lock` rendering
-- `src/spi/deploy.py` -- `_pin_gitops_source`, `reconcile_gitops_source`
+- `src/spi/deploy.py` -- `_finalize_gitops_source`, `_set_source_suspended`
 - `src/spi/guard.py` -- suspend status checks
 - `src/spi/status.py` -- the layer-grouped dashboard
 - `src/spi/deploy_record.py` -- the `maintenance` flag and stack version record

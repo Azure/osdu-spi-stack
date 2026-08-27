@@ -151,6 +151,22 @@ def test_rejects_a_missing_required_key(missing_line):
         parse_declaration(yaml_text)
 
 
+def test_rejects_a_duplicated_required_key():
+    # yaml.safe_load would silently keep the second value here; a reviewer
+    # approving the PR sees the first stackVersion line.
+    yaml_text = VALID_YAML + "stackVersion: v0.7.0\n"
+
+    with pytest.raises(EnvironmentDeclarationError, match="stackVersion"):
+        parse_declaration(yaml_text)
+
+
+def test_rejects_a_duplicated_non_required_key():
+    yaml_text = VALID_YAML + "location: eastus2\n"
+
+    with pytest.raises(EnvironmentDeclarationError, match="location"):
+        parse_declaration(yaml_text)
+
+
 def test_rejects_non_mapping_yaml():
     with pytest.raises(EnvironmentDeclarationError, match="mapping"):
         parse_declaration("- just\n- a\n- list\n")

@@ -436,11 +436,11 @@ def _finalize_gitops_source(config: Config) -> None:
             expected_ref,
             ref_field,
         )
+        _set_source_suspended(True)
     except Exception:
         _set_source_suspended(True, check=False)
         raise
 
-    _set_source_suspended(True)
     deployed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     resource_group_id = run_command(
         [

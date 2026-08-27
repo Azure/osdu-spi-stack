@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 
 import yaml
+import yaml.constructor
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_core import ErrorDetails
 
@@ -35,6 +36,31 @@ _TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 _LOCATION_RE = re.compile(r"^[a-z][a-z0-9]*$")
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 _SUFFIX_RE = re.compile(r"^[a-z0-9]{5}$")
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that rejects a mapping with a repeated key, at any depth.
+
+    Plain `yaml.safe_load` keeps the last value for a duplicate mapping key
+    with no error, so two `stackVersion:` entries would silently validate
+    against whichever one came last: a reviewer approving the PR sees the
+    first line while a lifecycle workflow deploys the second.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        self.flatten_mapping(node)
+        mapping: dict = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in mapping:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
 
 
 class EnvironmentDeclarationError(ValueError):
@@ -147,7 +173,7 @@ def parse_declaration(raw: str) -> EnvironmentDeclaration:
     a declaration is either a fully trustworthy typed object or an error.
     """
     try:
-        data = yaml.safe_load(raw)
+        data = yaml.load(raw, Loader=_UniqueKeyLoader)
     except yaml.YAMLError as exc:
         raise EnvironmentDeclarationError(f"invalid YAML: {exc}") from exc
 

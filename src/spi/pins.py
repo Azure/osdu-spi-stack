@@ -419,10 +419,27 @@ def reconcile_consumers(services: list[str]) -> None:
 def _refuse_unless_deployable() -> None:
     """Enforce the ADR-030 deployable rule on pin writes, fail-closed.
 
-    Refuses while ``maintenance`` is set or the deploy record is absent,
-    the same rule `spi status` reports, so a pin cannot land in an
-    environment mid-lifecycle or one that never completed a deploy.
+    Refuses unless every Kustomization is Ready, the deploy record is
+    present, and ``maintenance`` is unset: the same `deployable` rule
+    `spi status` reports, computed from the same
+    ``collect_kustomization_readiness`` predicate so the CLI and the JSON
+    contract cannot disagree on Flux convergence. Deferred import: status.py
+    imports from this module, so a module-level import here would cycle.
     """
+
+    from .status import StatusError, collect_kustomization_readiness
+
+    try:
+        readiness = collect_kustomization_readiness()
+    except StatusError as exc:
+        raise PinError(str(exc)) from exc
+    if not readiness.ready:
+        detail = (
+            readiness.reason.message if readiness.reason else "not all Kustomizations are Ready"
+        )
+        raise PinError(
+            f"Environment is not ready ({detail}); retry once 'spi status' reports deployable."
+        )
 
     try:
         record = read_deploy_record(required=False)
@@ -449,6 +466,13 @@ def _post_write_maintenance_check() -> str | None:
     GitLab round trips and lock mutation. An unreadable or now-absent record
     is treated the same as maintenance, since both mean the environment is
     no longer deployable (ADR-030).
+
+    Deliberately does not recheck Kustomization readiness: `reconcile_consumers`
+    runs immediately after this check succeeds and is expected to carry the
+    affected Kustomization through a Ready -> not-Ready -> Ready cycle, so
+    readiness right after the write is not a signal that anything went wrong.
+    Only `maintenance`, which exclusively a concurrent lifecycle run sets,
+    distinguishes that from an ordinary write.
     """
 
     try:

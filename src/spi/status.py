@@ -67,6 +67,20 @@ class KustomizationState:
 
 
 @dataclass(frozen=True)
+class KustomizationReadiness:
+    """Flux convergence, computed once so nothing can disagree with it.
+
+    `spi status` and the ADR-030/031 pin guard both derive their Ready
+    answer from this, rather than each re-reading Kustomizations.
+    """
+
+    items: tuple[dict, ...]
+    states: tuple[KustomizationState, ...]
+    ready: bool
+    reason: StatusReason | None
+
+
+@dataclass(frozen=True)
 class StackState:
     ref: str
     resolved_commit: str
@@ -202,7 +216,14 @@ def _ready_condition(item: dict) -> dict:
     return next((condition for condition in conditions if condition.get("type") == "Ready"), {})
 
 
-def collect_status() -> StatusSnapshot:
+def collect_kustomization_readiness() -> KustomizationReadiness:
+    """Read Flux Kustomizations and derive Ready convergence and its blocker.
+
+    The single predicate for Flux readiness: `collect_status` and the pin
+    guard in `pins.py` (ADR-030/031) both call this rather than each
+    re-deriving `ready` from `kubectl get kustomizations`.
+    """
+
     kustomization_data = _required_kubectl_json(
         ["get", "kustomizations", "-n", "osdu-flux"],
         "read Flux Kustomizations",
@@ -231,6 +252,35 @@ def collect_status() -> StatusSnapshot:
                 message=condition.get("message", ""),
             )
         )
+    states = tuple(states)
+    ready = bool(states) and all(state.ready for state in states)
+
+    reason: StatusReason | None = None
+    if not states:
+        reason = StatusReason(
+            code="no_kustomizations",
+            message="No Flux Kustomizations are visible.",
+            resource="kustomizations/osdu-flux",
+        )
+    else:
+        first_not_ready = next((state for state in states if not state.ready), None)
+        if first_not_ready is not None:
+            detail = first_not_ready.message or first_not_ready.reason or "not Ready"
+            reason = StatusReason(
+                code="kustomization_not_ready",
+                message=f"{first_not_ready.name}: {detail}",
+                resource=f"kustomization/osdu-flux/{first_not_ready.name}",
+            )
+
+    return KustomizationReadiness(items=items, states=states, ready=ready, reason=reason)
+
+
+def collect_status() -> StatusSnapshot:
+    kustomization_readiness = collect_kustomization_readiness()
+    items = kustomization_readiness.items
+    states = kustomization_readiness.states
+    ready = kustomization_readiness.ready
+    reason = kustomization_readiness.reason
 
     git_repository = _required_kubectl_json(
         ["get", "gitrepository", "osdu-spi-stack-system", "-n", "osdu-flux"],
@@ -258,27 +308,13 @@ def collect_status() -> StatusSnapshot:
     from .info import collect_info
 
     base_url = str(collect_info().get("base_url", ""))
-    ready = bool(states) and all(state.ready for state in states)
     maintenance = record.maintenance if record else False
     deployable = ready and record is not None and not maintenance
 
-    reason: StatusReason | None = None
-    if not states:
-        reason = StatusReason(
-            code="no_kustomizations",
-            message="No Flux Kustomizations are visible.",
-            resource="kustomizations/osdu-flux",
-        )
-    else:
-        first_not_ready = next((state for state in states if not state.ready), None)
-        if first_not_ready is not None:
-            detail = first_not_ready.message or first_not_ready.reason or "not Ready"
-            reason = StatusReason(
-                code="kustomization_not_ready",
-                message=f"{first_not_ready.name}: {detail}",
-                resource=f"kustomization/osdu-flux/{first_not_ready.name}",
-            )
-        elif maintenance:
+    # A Kustomization-readiness blocker takes precedence; maintenance and a
+    # missing record only matter once Flux itself has converged.
+    if reason is None:
+        if maintenance:
             reason = StatusReason(
                 code="maintenance",
                 message="The environment is in maintenance.",
@@ -297,7 +333,7 @@ def collect_status() -> StatusSnapshot:
         reason=reason,
         suspended=suspended,
         maintenance=maintenance,
-        kustomizations=tuple(states),
+        kustomizations=states,
         stack=StackState.from_record(record),
         images=ImageState(
             branch=str(lock_data.get("IMAGE_BRANCH", "")),

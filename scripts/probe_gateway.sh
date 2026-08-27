@@ -48,18 +48,27 @@ EOF
 
 probe_gateway() {
     # `kubectl get endpoints <name>` 404s if the named Service is missing, and
-    # returns an empty address list if it exists with no ready backend pods.
-    # Querying the whole namespace's Services/pods would pass on either fault.
-    local addresses
+    # returns an empty address list if it exists with no ready backend pods;
+    # not-ready addresses live in a separate notReadyAddresses array this
+    # jsonpath never reads. stderr goes to its own file, never into
+    # `addresses`, so a Kubernetes 1.33+ deprecated-API warning there can
+    # never itself satisfy the non-empty check below.
+    local addresses stderr_file stderr_output
+    stderr_file=$(mktemp)
     if ! addresses=$(kubectl get endpoints "$ISTIO_INGRESS_SERVICE" -n "$ISTIO_NAMESPACE" \
-        -o jsonpath='{.subsets[*].addresses[*].ip}' 2>&1); then
-        echo "Failed to read endpoints for ${ISTIO_INGRESS_SERVICE} in ${ISTIO_NAMESPACE}: ${addresses}" >&2
+        -o jsonpath='{.subsets[*].addresses[*].ip}' 2>"$stderr_file"); then
+        stderr_output=$(cat "$stderr_file")
+        rm -f "$stderr_file"
+        echo "Failed to read endpoints for ${ISTIO_INGRESS_SERVICE} in ${ISTIO_NAMESPACE}: ${stderr_output}" >&2
         kubectl get svc -n "$ISTIO_NAMESPACE" || true
         kubectl get pods -n "$ISTIO_NAMESPACE" || true
         return 1
     fi
+    stderr_output=$(cat "$stderr_file")
+    rm -f "$stderr_file"
     if [[ -z "$addresses" ]]; then
-        echo "${ISTIO_INGRESS_SERVICE} has no ready endpoints; dumping service and pod state" >&2
+        echo "${ISTIO_INGRESS_SERVICE} exists but has no ready endpoint addresses; dumping service and pod state" >&2
+        [[ -n "$stderr_output" ]] && echo "kubectl stderr: ${stderr_output}" >&2
         kubectl get svc -n "$ISTIO_NAMESPACE" || true
         kubectl get pods -n "$ISTIO_NAMESPACE" || true
         return 1

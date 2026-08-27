@@ -20,7 +20,7 @@ import subprocess
 import pytest
 from typer.testing import CliRunner
 
-from spi import cli, pins
+from spi import cli, pins, status
 from spi.deploy_record import DeployRecord, DeployRecordError
 from spi.images import ImageNotFoundError, ImageResolutionError, ResolvedImage
 from spi.pins import (
@@ -36,6 +36,7 @@ from spi.pins import (
     ref_slug,
     reset_service,
 )
+from spi.status import KustomizationReadiness, StatusError, StatusReason
 
 
 def _pin(**overrides) -> ServicePin:
@@ -52,6 +53,23 @@ def _pin(**overrides) -> ServicePin:
     )
     fields.update(overrides)
     return ServicePin(**fields)
+
+
+def _readiness(ready=True, blocker: str | None = None) -> KustomizationReadiness:
+    """A `collect_kustomization_readiness` result, Ready by default.
+
+    ``blocker`` names the not-Ready Kustomization for the refusal-path
+    tests, mirroring the `kustomization_not_ready` reason `spi status` emits.
+    """
+    reason = None
+    if not ready:
+        name = blocker or "spi-osdu-services"
+        reason = StatusReason(
+            code="kustomization_not_ready",
+            message=f"{name}: Progressing",
+            resource=f"kustomization/osdu-flux/{name}",
+        )
+    return KustomizationReadiness(items=(), states=(), ready=ready, reason=reason)
 
 
 def _deploy_record(maintenance=False) -> DeployRecord:
@@ -163,6 +181,7 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
         pins, "reconcile_consumers", lambda names: calls.__setitem__("reconciled", names)
     )
     monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: _deploy_record())
+    monkeypatch.setattr(status, "collect_kustomization_readiness", lambda: _readiness())
     return calls
 
 
@@ -326,6 +345,34 @@ class TestPinService:
         )
 
         with pytest.raises(PinError, match="maintenance"):
+            pin_service("storage", "42")
+
+        assert calls["fetches"] == 0
+        assert calls["patch"] is None
+
+    def test_pin_refused_while_not_ready(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+        monkeypatch.setattr(
+            status,
+            "collect_kustomization_readiness",
+            lambda: _readiness(ready=False, blocker="spi-osdu-services"),
+        )
+
+        with pytest.raises(PinError, match="spi-osdu-services: Progressing"):
+            pin_service("storage", "42")
+
+        assert calls["fetches"] == 0
+        assert calls["patch"] is None
+
+    def test_pin_readiness_check_failure_becomes_pin_error(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+
+        def raise_unreachable():
+            raise StatusError("Could not read Flux Kustomizations: connection refused")
+
+        monkeypatch.setattr(status, "collect_kustomization_readiness", raise_unreachable)
+
+        with pytest.raises(PinError, match="connection refused"):
             pin_service("storage", "42")
 
         assert calls["fetches"] == 0

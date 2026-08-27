@@ -207,6 +207,40 @@ def test_finalize_resuspends_when_revision_names_wrong_namespace(monkeypatch):
     assert record_calls == []
 
 
+def test_finalize_resuspends_when_final_suspend_fails(monkeypatch):
+    """A failing final suspend must not leave the source resumed or swallow the error."""
+    calls = []
+    config = Config.from_env("shared", repo_tag="v0.6.0")
+    monkeypatch.setattr(deploy, "_wait_for_git_repository", lambda: None)
+
+    def set_suspended(suspended, check=True):
+        calls.append((suspended, check))
+        if suspended and check:
+            raise RuntimeError("patch failed")
+
+    monkeypatch.setattr(deploy, "_set_source_suspended", set_suspended)
+    monkeypatch.setattr(
+        deploy,
+        "run_command",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        deploy,
+        "_read_git_repository",
+        lambda: _git_repository("tag", "v0.6.0", f"v0.6.0@sha1:{'a' * 40}"),
+    )
+    record_calls = []
+    monkeypatch.setattr(
+        deploy, "upsert_deploy_record", lambda **kwargs: record_calls.append(kwargs)
+    )
+
+    with pytest.raises(RuntimeError, match="patch failed"):
+        deploy._finalize_gitops_source(config)
+
+    assert calls == [(False, True), (True, True), (True, False)]
+    assert record_calls == []
+
+
 def test_up_rejects_explicit_branch_with_tag():
     result = CliRunner().invoke(
         cli.app,
