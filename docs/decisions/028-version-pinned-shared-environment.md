@@ -26,15 +26,24 @@ whole declaration lives in one reviewed file.
   otherwise. `spi up --tag vX.Y.Z` carries it, mutually exclusive with a
   non-default `--branch`. Dev and smoke environments keep branch tracking.
 - A `vX.Y.Z` tag from release-please snapshots the full tree, `software/`
-  included, so the release process is unchanged; certifying a release is the
-  smoke pipeline's job, not a new one. A repository ruleset forbids updating
-  or deleting `v*` tags, so a tag names one commit for as long as it exists,
-  and the deploy record keeps the resolved commit for audit.
-- `ops/environments/shared.yaml` declares the environment: name, `stackVersion`,
-  profile, location, ingress mode, image branch. It advances only through a
+  included, so the release process is unchanged. A release is certified by
+  the shared environment itself: the bump merge upgrades it, the probes
+  pass, and until they do the fail-closed `maintenance` flag (ADR-029) holds
+  fork deploys while an operator rolls the pin back. The nightly smoke
+  proves the provision path, not the tag. A repository ruleset forbids
+  updating or deleting `v*` tags, so a tag names one commit for as long as
+  it exists, and the deploy record keeps the resolved commit for audit.
+- `ops/environments/shared.yaml` declares the environment: name,
+  `stackVersion`, profile, location, ingress mode, image branch, and the
+  environment's five-character name suffix. It advances only through a
   reviewed PR to `main`; merging a `stackVersion` bump triggers the upgrade
-  workflow (ADR-029). The lifecycle workflows read each provisioning argument
-  from this file; none is duplicated on a workflow command line.
+  workflow (ADR-029). The lifecycle workflows read each provisioning
+  argument from this file; none is duplicated on a workflow command line.
+- Persisting the suffix in the declaration (fed back through `spi up
+  --name-suffix`) is what survives a reset: the RG tag that normally carries
+  it dies with the RG, and without it a rebuild derives new resource names,
+  a new hostname, and a Key Vault name whose soft-delete recovery can never
+  find the old vault (ADR-029).
 - Publishing a release opens the bump PR automatically (a job in
   `.github/workflows/release.yml` under the release App token, so the resulting
   PR triggers checks). Merging stays with a human.

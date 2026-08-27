@@ -20,29 +20,33 @@ marks as the phases land.
 Each job authenticates fresh (the OIDC JWT lives ~5 minutes; one
 `azure/login` per job, the smoke pipeline's discipline).
 
-1. **Authenticate.** `azure/login@v3` with the fork's `AZURE_CLIENT_ID`
-   (its UAMI, ADR-032) and the tenant and subscription variables.
+1. **Authenticate.** The deploy and test jobs run in the fork's protected
+   `spi-stack` GitHub environment, the subject of the UAMI's federated
+   credential (ADR-032); `azure/login@v3` uses the fork's `AZURE_CLIENT_ID`
+   and the tenant and subscription variables.
 2. **Connect.** `spi connect --resource-group $SPI_STACK_RESOURCE_GROUP
    --cluster $SPI_STACK_CLUSTER` (unbuilt) wraps the hardened kubeconfig
    sequence living in `src/spi/azure_infra.py`: `az aks get-credentials`,
    `kubelogin convert-kubeconfig -l azurecli`, tenant-pinned exec
    environment. The context name carries the `spi-stack` prefix, so
    `guard.verify_spi_cluster()` passes without `SPI_SKIP_GUARD`.
-3. **Gate.** `spi status --json` (unbuilt); proceed only when `.deployable`
-   is true. A set `maintenance` flag or a missing deploy record stops the job
-   here with a reason (ADR-029, ADR-030).
-4. **Deploy.** On PR events:
+3. **Gate.** `spi status --json` (unbuilt); exit 0 means deployable and the
+   job proceeds, exit 2 names the blocker: a convergence failure, the
+   `maintenance` flag, or a missing deploy record (ADR-029, ADR-030).
+4. **Deploy.** PR and push events run the same command; the fork build
+   publishes to `ghcr.io/azure/<service>` under the short `SERVICE_NAME`:
 
    ```bash
    spi service pin "$SERVICE" \
-     --image "ghcr.io/azure/${REPO}@${DIGEST}" \
+     --image "ghcr.io/azure/${SERVICE}@${DIGEST}" \
      --ephemeral --run-id "$GITHUB_RUN_ID" \
      --source-repo "$GITHUB_REPOSITORY" --source-sha "$GITHUB_SHA" \
      --source-run-url "$RUN_URL"
    ```
 
-   On push events to a trusted branch: `spi service refresh "$SERVICE"`
-   re-resolves the canonical image instead (ADR-033); no pin bookkeeping.
+   Push events skip the restore job; the weekday refresh converges the
+   canonical afterward, forward to the fork's `main` once the service has
+   flipped (ADR-031, ADR-033).
 5. **Verify.** `spi service verify "$SERVICE" --image <ref>` (unbuilt)
    asserts the Deployment's pod template and a running pod's `imageID` carry
    the digest and the rollout is complete. Deployment and container names
@@ -91,6 +95,8 @@ job never returns. The weekday refresh workflow runs the backstop:
 
 A pin swept mid-run cannot happen silently: the test job's pre-flight verify
 fails with the pin's replacement named, and the re-run is the recovery.
+Push-deployed pins are swept the same way; after a service's flip the
+refresh resolves the same or a newer `main` image, so nothing regresses.
 
 ## Fork repository configuration
 
@@ -104,9 +110,11 @@ fails with the pin's replacement named, and the re-run is the recovery.
 | `ACCEPTANCE_TEST_DEPENDENCIES` | operator | services whose health endpoints gate the suite; also absorbs a sibling's rolling restart |
 
 `spi onboard <service> --repo Azure/osdu-spi-<service>` (unbuilt,
-`src/spi/onboard.py`) provisions the UAMI, its three federated credentials,
-the role assignments and group membership (ADR-032), then stamps the
-variables above via `gh`. It is idempotent and supports `--dry-run`. Once the
+`src/spi/onboard.py`) provisions the UAMI, its federated credential for the
+fork's protected `spi-stack` environment, and the Azure role assignments
+(ADR-032), stamps the variables above via `gh`, and emits the RoleBinding
+subject line whose stack PR completes cluster access. It is idempotent and
+supports `--dry-run`. Once the
 configuration is present, the template's readiness tooling activates the
 reserved required checks `🚀 Deploy to spi-stack` and `🧪 Integration Tests`
 on the fork; the jobs themselves live in the template's workflows, not in
@@ -118,8 +126,8 @@ Hand-pin a fork image against a standing environment and return it:
 
 ```bash
 spi service pin partition \
-  --image ghcr.io/azure/osdu-spi-partition@sha256:<digest>
-spi service verify partition --image ghcr.io/azure/osdu-spi-partition@sha256:<digest>
+  --image ghcr.io/azure/partition@sha256:<digest>
+spi service verify partition --image ghcr.io/azure/partition@sha256:<digest>
 spi service list        # shows the pin without the ephemeral marker
 spi service reset partition
 ```

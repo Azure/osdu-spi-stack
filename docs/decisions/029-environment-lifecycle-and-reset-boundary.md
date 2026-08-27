@@ -25,8 +25,8 @@ PaaS state.
 |---|---|---|---|
 | status | `spi status --json` (ADR-030) | seconds | on demand |
 | refresh | `spi reconcile`, then `scripts/wait_for_flux_ready.sh`, then probes | 5 to 20 min healthy | weekday cron |
-| upgrade | `spi up --env shared --tag vNEW --refresh-images` re-run | 15 to 40 min plus rollouts | `stackVersion` bump merge (ADR-028) |
-| reset | `spi down`, poll until the RG is gone, `spi up --tag <pin>` | 2.5 to 4 h | Saturday cron |
+| upgrade | `spi up --env shared --tag vNEW --refresh-images` re-run | 20 to 60 min; hours when refreshed images rerun schema-load | `stackVersion` bump merge (ADR-028) |
+| reset | `spi down`, poll until the RG is gone, `spi up --tag <pin>` | 3 to 6 h | Saturday cron |
 | teardown | `spi down` | 15 to 45 min | protected manual dispatch |
 
 - **Upgrade is the provision path re-run.** Each phase of `deploy_azure()` is
@@ -48,11 +48,21 @@ PaaS state.
   operator. A freshly provisioned shared environment starts with it set, and
   a missing deploy record reads as not deployable, so fork deploys fail
   closed instead of racing a half-built environment.
+- **Setting the flag stops new deploys; a drain covers the in-flight ones.**
+  GitHub concurrency groups are repository-scoped, so nothing in Actions can
+  serialize this repo's lifecycle runs against eight forks' deploy jobs.
+  The pins are the cross-repository signal: after setting the flag, the
+  workflow waits until every ephemeral pin's owning run (recorded in the pin,
+  ADR-031) has finished, bounded by a drain window sized to the fork
+  deploy-plus-test budget, and only then mutates the environment.
 - **Test identities belong to the lifecycle.** Acceptance-tester service
-  principals are Entra objects and outlive the RG, and the Key Vault returns
-  through the soft-delete recovery in `spi up`, so its secrets can return
-  with it. An idempotent ensure step after each reset verifies and repairs
-  the required secrets and role assignments rather than assuming loss.
+  principals are Entra objects and outlive the RG. The Key Vault returns
+  through the soft-delete recovery in `spi up` because the declaration file
+  persists the environment's name suffix across the RG deletion (ADR-028);
+  without that, a rebuild would derive a new vault name and the old secrets
+  would be unreachable. An idempotent ensure step after each reset verifies
+  and repairs the required secrets and role assignments rather than assuming
+  loss.
 - Lifecycle operations serialize under one concurrency group; fork deploys do
   not (ADR-031).
 
@@ -76,8 +86,10 @@ safer failure.
 
 ## Consequences
 
-- The Saturday reset is a full outage window of up to 4 hours; a fork pipeline
-  that runs into it fails at deploy and is re-run, not queued.
+- The Saturday reset is a full outage window of up to 6 hours (deletion,
+  cold provision, and a schema-load converge that alone budgets 230
+  minutes); a fork pipeline that runs into it fails at deploy and is re-run,
+  not queued.
 - A red upgrade, reset, or refresh leaves the environment refusing deploys
   until an operator intervenes; availability is traded against testing on a
   half-changed platform.

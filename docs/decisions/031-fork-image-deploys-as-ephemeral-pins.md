@@ -36,18 +36,25 @@ annotation schema live in `docs/design/fork-deployment.md`.
   whose owning run has reached a terminal state, or whose age exceeds the
   threshold when that state is unreachable. Operator pins never carry the
   marker and are never swept.
-- **Roll-forward on trusted branches.** Push builds re-resolve the service's
-  canonical image (ADR-033) instead of pinning; re-running that refresh is
-  idempotent, so it needs no staleness detection.
+- **Push builds deploy the same way.** A push to a trusted branch pins its
+  digest ephemerally with no restore job; the weekday refresh then converges
+  the canonical under the service's source policy (ADR-033), backward to the
+  community image before a service's flip and forward to its fork `main`
+  after it. One deploy path, and the template never needs to know a
+  service's flip state.
 - **Digest rendering.** The `osdu-spi-service` chart accepts `image.digest`
   and renders `repository@digest` when present, `repository:tag` otherwise
   (ADR-017); GitLab-resolved canonicals gain pull-by-digest against upstream
   tag pruning as a side effect.
-- **Concurrency is per service.** Deploy jobs serialize per service; nothing
-  serializes across services. Bootstrap dependencies (partition,
-  entitlements) need no wider lock: HelmRelease rollout semantics keep the
-  old pods serving until new pods pass readiness, and a failed rollout
-  remediates back, so a broken image never takes traffic.
+- **Concurrency is per service; the lock write is compare-and-set.** Deploy
+  jobs serialize per service; nothing serializes across services. All
+  services share one lock object, so every pin, reset, and refresh submits
+  its update conditioned on the lock's `resourceVersion` and retries on
+  conflict; two services pinning at once serialize at the API server instead
+  of overwriting each other's pin records. Bootstrap dependencies
+  (partition, entitlements) need no wider lock: HelmRelease rollout
+  semantics keep the old pods serving until new pods pass readiness, and a
+  failed rollout remediates back, so a broken image never takes traffic.
 
 Rejected: `kubectl set image` on the Deployment. The most direct mechanism,
 and the next HelmRelease reconcile reverts it under ADR-014; it also leaves
@@ -70,7 +77,10 @@ services under the same owner, the mechanism ADR-017 already declined.
 
 - A test job can still observe a sibling service's rolling restart mid-run;
   the acceptance jobs' dependency health gate absorbs the window rather than
-  any lock preventing it.
+  any lock preventing it. A candidate that passes readiness but is
+  behaviorally broken can also fail a concurrently running sibling suite;
+  the accepted recovery is that sibling's re-run after restore, not
+  isolation.
 - The `ephemeral` marker plus the recorded owner are the boundary automation
   respects: restore and sweep act only on pins they can prove theirs or
   stale, and an operator's investigation pin survives the night.

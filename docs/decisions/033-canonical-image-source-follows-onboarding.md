@@ -22,12 +22,22 @@ A service's canonical source flips from community GitLab to its fork's GHCR
   reads the fork's GHCR image; unset, community GitLab stays canonical.
 - The flip lands after the fork's deploy and test gates are active, so the
   image line the environment runs is the one those gates certify.
-- The weekday refresh re-resolves GitHub-origin canonicals (ADR-029), which
-  keeps the environment's digest inside GHCR's 30-day `sha-*` retention even
-  when the fork is quiet.
-- Before its flip, a fork's push builds deploy as ordinary ephemeral pins and
-  the backstop returns the service to the community canonical; the
-  transitional behavior needs no dedicated mechanism.
+- The weekday refresh re-resolves GitHub-origin canonicals (ADR-029), and
+  that cadence is load-bearing against GHCR retention: continued fork builds
+  move `main-snapshot` to newer package versions, and the retention job then
+  deletes older `sha-*`-only versions outright, digest included. The refresh
+  keeps the environment's canonical current so it never ages into that
+  deletion bucket; a genuinely quiet fork is safe without it, because its
+  newest version keeps the `main-snapshot` tag and is not selected.
+- A pin's restore target is captured when the pin is written (`canonical_*`,
+  ADR-017), so reset restores the capture and refresh applies the policy: a
+  flip while a pin is active does not retarget the pin, and the restored
+  pre-flip image stands until the next refresh re-resolves under the new
+  source.
+- Push builds deploy as ephemeral pins on both sides of the flip (ADR-031);
+  the refresh then converges the canonical, backward to the community image
+  before the flip and forward to the fork's `main` after it. The transition
+  needs no dedicated mechanism.
 
 Rejected: community GitLab stays canonical for the fleet permanently. No
 divergence from upstream to track, but the shared environment then never runs
@@ -46,10 +56,10 @@ declaration.
 - Divergence between community `master` and a fork's `main` becomes visible
   per service: two services can canonically run images from different
   lineages during the onboarding period, and the lock records which.
-- The environment inherits a retention coupling: if the weekday refresh stops
-  running for longer than the GHCR retention window, a quiet service's
-  canonical digest can outlive its `sha-*` tag; the digest reference itself
-  stays pullable.
+- The environment inherits a retention coupling: if the weekday refresh
+  stalls for longer than the retention window while fork builds continue,
+  the recorded canonical can age into a version the retention job has
+  deleted, and the digest becomes unpullable, not merely untagged.
 - Reversal is the same one line back, with the next refresh restoring the
   community image.
 - Which source is canonical is readable from `src/spi/images.py` and from the

@@ -16,19 +16,22 @@ to object names and labels this repo is free to reshape.
 record written at the end of `spi up` supplies the version fields.
 
 - Envelope: `apiVersion: spi.osdu.dev/v1`, `ready`, `deployable`, a typed
-  `reason` naming the first blocking object when not ready, `suspended`,
-  `maintenance`, Kustomization counts with a not-ready list, `stack` (ref,
-  resolved commit, deploy timestamp, CLI version, profile), `images` (branch,
-  resolved-at, count, pinned services), and `baseUrl`.
+  `reason` naming the first deployability blocker when `deployable` is false
+  (a non-ready Kustomization, the `maintenance` flag, or a missing deploy
+  record), `suspended`, `maintenance`, Kustomization counts with a not-ready
+  list, `stack` (ref, resolved commit, deploy timestamp, CLI version,
+  profile), `images` (branch, resolved-at, count, pinned services), and
+  `baseUrl`.
 - `ready` and `deployable` answer different questions. `ready` is Flux
   convergence: each Kustomization reports `Ready=True`, the same predicate
   `scripts/wait_for_flux_ready.sh` polls. `deployable` is `ready` with
-  `maintenance` unset and a deploy record present; it is the field deploy
-  gates read, and `spi service pin` (ADR-031) enforces the same rule itself,
-  refusing while `maintenance` is set or the record is absent.
-- Exit codes: 0 ready, 2 not ready with a reason, 1 unreachable or guard
-  failure. CI gates on the exit code for convergence waits and on
-  `deployable` for deploys.
+  `maintenance` unset and a deploy record present; `spi service pin`
+  (ADR-031) enforces the same rule itself, refusing while `maintenance` is
+  set or the record is absent.
+- Exit codes: 0 deployable, 2 not deployable with the typed `reason`, 1
+  unreachable or guard failure. Fork CI gates on the exit code alone. The
+  lifecycle workflows, which run while `maintenance` is set, read `ready`
+  from the JSON instead of the exit code.
 - The deploy record is written twice, for two audiences: RG tags
   (`spi-stack-version`, `spi-deployed-utc`) readable with no cluster access,
   and a `spi-deploy-record` ConfigMap in `osdu-flux` (ADR-019) holding the
