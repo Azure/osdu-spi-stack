@@ -492,6 +492,9 @@ jobs:
           ACTUAL_REF=$(echo "$STATUS_JSON" | jq -r .stack.ref)
           RESOLVED=$(echo "$STATUS_JSON" | jq -r .stack.resolvedCommit)
           SUSPENDED=$(echo "$STATUS_JSON" | jq -r .suspended)
+          READY=$(echo "$STATUS_JSON" | jq -r .ready)
+          MAINTENANCE=$(echo "$STATUS_JSON" | jq -r .maintenance)
+          REASON_CODE=$(echo "$STATUS_JSON" | jq -r .reason.code)
 
           if [ "$ACTUAL_REF" != "$STACK_VERSION" ]; then
             echo "::error::deployed ref ($ACTUAL_REF) does not match declared stackVersion ($STACK_VERSION)"
@@ -503,6 +506,21 @@ jobs:
           fi
           if [ "$SUSPENDED" != "true" ]; then
             echo "::error::GitRepository is not suspended after a tag deployment"
+            exit 1
+          fi
+          # Exit 2 covers every deployability blocker, not just maintenance
+          # (ADR-030); confirm convergence held and maintenance is the only
+          # reason deploys are still refused before the next step clears it.
+          if [ "$READY" != "true" ]; then
+            echo "::error::environment is not ready (ready=$READY); refusing to clear maintenance"
+            exit 1
+          fi
+          if [ "$MAINTENANCE" != "true" ]; then
+            echo "::error::maintenance flag is not set (maintenance=$MAINTENANCE); refusing to clear"
+            exit 1
+          fi
+          if [ "$REASON_CODE" != "maintenance" ]; then
+            echo "::error::deployability is blocked by $REASON_CODE, not maintenance; refusing to clear"
             exit 1
           fi
 

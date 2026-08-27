@@ -11,7 +11,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from .console import display_yaml
-from .shell import kubectl_apply_yaml, run_command, run_process
+from .shell import run_command, run_process
 
 DEPLOY_RECORD_CONFIGMAP = "spi-deploy-record"
 DEPLOY_RECORD_NAMESPACE = "osdu-flux"
@@ -160,6 +160,42 @@ def _patch_record(obj: dict, record: DeployRecord) -> bool:
     )
 
 
+def _create_record(record: DeployRecord) -> bool:
+    """Create the deploy record ConfigMap. Returns False on a losing create race.
+
+    Create-only (not apply) so a concurrent writer's record is never
+    silently overwritten; the caller rereads and falls into the compare-and-
+    set patch path on a losing race, same as `mutate_lock` in pins.py.
+    """
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": DEPLOY_RECORD_CONFIGMAP,
+            "namespace": DEPLOY_RECORD_NAMESPACE,
+            "labels": {"app.kubernetes.io/managed-by": "osdu-spi-stack"},
+        },
+        "data": record.to_data(),
+    }
+    display_yaml(json.dumps(manifest, indent=2), f"ConfigMap: {DEPLOY_RECORD_CONFIGMAP}")
+    result = run_process(
+        ["kubectl", "create", "-f", "-"],
+        input=json.dumps(manifest),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode == 0:
+        return True
+    detail = (result.stderr or result.stdout or "").strip()
+    if "already exists" in detail.lower():
+        return False
+    raise DeployRecordError(
+        f"Could not create {DEPLOY_RECORD_CONFIGMAP}: {detail or 'kubectl failed'}"
+    )
+
+
 def upsert_deploy_record(
     *,
     ref: str,
@@ -187,29 +223,16 @@ def upsert_deploy_record(
         )
 
         if obj is None:
-            manifest = {
-                "apiVersion": "v1",
-                "kind": "ConfigMap",
-                "metadata": {
-                    "name": DEPLOY_RECORD_CONFIGMAP,
-                    "namespace": DEPLOY_RECORD_NAMESPACE,
-                    "labels": {"app.kubernetes.io/managed-by": "osdu-spi-stack"},
-                },
-                "data": record.to_data(),
-            }
-            display_yaml(json.dumps(manifest, indent=2), f"ConfigMap: {DEPLOY_RECORD_CONFIGMAP}")
-            kubectl_apply_yaml(
-                json.dumps(manifest),
-                f"apply {DEPLOY_RECORD_CONFIGMAP} ConfigMap",
-            )
+            if _create_record(record):
+                return record
+        elif _patch_record(obj, record):
             return record
 
-        if _patch_record(obj, record):
-            return record
         time.sleep(0.2 * (2**attempt))
 
     raise DeployRecordError(
-        f"Could not update {DEPLOY_RECORD_CONFIGMAP} after {_CAS_ATTEMPTS} conflicts"
+        f"Could not update {DEPLOY_RECORD_CONFIGMAP} after {_CAS_ATTEMPTS} attempts "
+        "due to concurrent writers"
     )
 
 

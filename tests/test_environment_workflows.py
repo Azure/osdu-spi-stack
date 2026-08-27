@@ -149,15 +149,14 @@ class TestCleanSkip:
                 f"job {job_name} must gate on declare.outputs.should_run"
             )
 
-    def test_env_refresh_skips_when_declaration_or_cluster_absent(self):
+    def test_env_refresh_skips_when_declaration_absent(self):
         workflow = _workflow(ENV_REFRESH)
         declare_gate = _steps(workflow["jobs"]["declare"])["Gate on declaration presence"]
         assert "declaration_found" in declare_gate["run"]
         assert "should_run=false" in declare_gate["run"]
 
         refresh_job = workflow["jobs"]["refresh"]
-        assert "needs.declare.outputs.should_run" in refresh_job["if"]
-        assert "needs.detect.outputs.exists" in refresh_job["if"]
+        assert refresh_job["if"] == "needs.declare.outputs.should_run == 'true'"
 
     def test_azure_detection_distinguishes_absence_from_api_failure(self):
         for path in (ENV_UPGRADE, ENV_REFRESH):
@@ -167,6 +166,44 @@ class TestCleanSkip:
             assert "if ! RG_EXISTS=$(az group exists" in detect
             assert "if ! AKS_COUNT=$(az aks list" in detect
             assert "exit 1" in detect
+
+
+class TestEnvRefreshDetectFailsClosed:
+    """declare already gates should_run on the declaration's presence, so by
+    the time detect runs, the declaration is known present. An absent
+    resource group or missing cluster there means the live environment was
+    deleted, not a legitimate first-provision skip.
+
+    env-upgrade's own detect job is intentionally left as a clean skip: see
+    test_env_upgrade_detect_still_treats_absence_as_a_first_provision_skip.
+    """
+
+    def test_detect_job_no_longer_exposes_an_exists_output(self):
+        job = _workflow(ENV_REFRESH)["jobs"]["detect"]
+        assert "outputs" not in job
+
+    def test_detect_fails_closed_on_absent_resource_group_or_cluster(self):
+        detect = _steps(_workflow(ENV_REFRESH)["jobs"]["detect"])[
+            "Detect existing resource group and AKS cluster"
+        ]["run"]
+        assert "clean skip" not in detect
+        assert "exists=" not in detect
+        assert "does not exist even though" in detect
+        assert "No AKS cluster named" in detect
+
+    def test_refresh_job_no_longer_gates_on_a_detect_exists_output(self):
+        refresh_job = _workflow(ENV_REFRESH)["jobs"]["refresh"]
+        assert refresh_job["if"] == "needs.declare.outputs.should_run == 'true'"
+        assert refresh_job["needs"] == ["declare", "detect"]
+
+    def test_env_upgrade_detect_still_treats_absence_as_a_first_provision_skip(self):
+        job = _workflow(ENV_UPGRADE)["jobs"]["detect"]
+        assert job["outputs"]["exists"] == "${{ steps.detect.outputs.exists }}"
+        detect = _steps(job)["Detect existing resource group and AKS cluster"]["run"]
+        assert "exists=false" in detect
+        assert "exists=true" in detect
+        quiesce = _workflow(ENV_UPGRADE)["jobs"]["quiesce-existing"]
+        assert "needs.detect.outputs.exists == 'true'" in quiesce["if"]
 
 
 class TestMaintenanceOrdering:
@@ -242,6 +279,26 @@ class TestMaintenanceOrdering:
             "maintenance must never be cleared from an if: always() failure path"
         )
 
+    def test_env_refresh_requires_deploy_record_before_setting_maintenance(self):
+        # A prior provision can die after creating AKS but before writing
+        # the deploy record; unlike env-upgrade, refresh has no provision
+        # job to recover with, so it must fail closed rather than let
+        # `spi maintenance set` surface the record's own error uninterpreted.
+        refresh_steps = _workflow(ENV_REFRESH)["jobs"]["refresh"]["steps"]
+        names = [s["name"] for s in refresh_steps if "name" in s]
+
+        connect_idx = names.index("spi connect")
+        require_idx = names.index("Require an initialized deployment")
+        quiesce_idx = names.index("Quiesce (set maintenance)")
+        assert connect_idx < require_idx < quiesce_idx
+
+        require_step = next(
+            s for s in refresh_steps if s.get("name") == "Require an initialized deployment"
+        )
+        assert "spi-deploy-record" in require_step["run"]
+        assert "--ignore-not-found" in require_step["run"]
+        assert "exit 1" in require_step["run"]
+
 
 class TestAssertionsAndDeployability:
     def test_env_upgrade_verify_asserts_ref_resolved_commit_and_suspended(self):
@@ -257,6 +314,27 @@ class TestAssertionsAndDeployability:
         assertion = refresh_steps["Verify stack version and source suspension are unchanged"]["run"]
         assert ".stack.ref" in assertion
         assert ".suspended" in assertion
+
+    def test_env_upgrade_verify_requires_maintenance_as_the_sole_blocker(self):
+        # Exit 2 from `spi status --json` covers every deployability blocker
+        # (a non-ready Kustomization, a missing deploy record, or
+        # maintenance itself; ADR-030), so the ref/suspended assertions
+        # alone cannot tell a readiness regression from a clean maintenance
+        # window. Assert the JSON fields directly instead.
+        verify_steps = _steps(_workflow(ENV_UPGRADE)["jobs"]["verify"])
+        assertion = verify_steps["Verify deployed stack matches the declaration"]["run"]
+        assert ".ready" in assertion
+        assert ".maintenance" in assertion
+        assert ".reason.code" in assertion
+        assert 'REASON_CODE" != "maintenance"' in assertion
+
+    def test_env_refresh_verify_requires_maintenance_as_the_sole_blocker(self):
+        refresh_steps = _steps(_workflow(ENV_REFRESH)["jobs"]["refresh"])
+        assertion = refresh_steps["Verify stack version and source suspension are unchanged"]["run"]
+        assert ".ready" in assertion
+        assert ".maintenance" in assertion
+        assert ".reason.code" in assertion
+        assert 'REASON_CODE" != "maintenance"' in assertion
 
     def test_both_workflows_require_deployable_status_as_the_final_gate(self):
         for path, job_name in ((ENV_UPGRADE, "verify"), (ENV_REFRESH, "refresh")):

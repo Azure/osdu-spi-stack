@@ -59,6 +59,28 @@ def test_bare_still_waits_for_flux_but_skips_ingress_probes():
         assert verify_steps[name]["if"] == "${{ needs.provision.outputs.profile != 'bare' }}"
 
 
+def test_probe_gateway_requires_the_named_service_to_have_ready_endpoints():
+    """kubectl exits 0 even when a Service query or a field-selector pod list
+    comes back empty, so probing the whole aks-istio-ingress namespace can
+    pass with no gateway Service and no ready backend. The check must target
+    the named add-on Service and fail when it has zero ready endpoints.
+    """
+    script = PROBE_GATEWAY_SCRIPT.read_text(encoding="utf-8")
+    func_match = re.search(r"probe_gateway\(\) \{(.*?)\n\}", script, re.DOTALL)
+    assert func_match, "could not find probe_gateway() function body"
+    body = func_match.group(1)
+
+    assert "ISTIO_INGRESS_SERVICE" in body, (
+        "probe_gateway must query the named add-on Service, not the whole namespace"
+    )
+    assert "kubectl get endpoints" in body, (
+        "probe_gateway must check for ready endpoints, not just that kubectl exits 0"
+    )
+    assert re.search(r'\[\[\s*-z\s*"\$\w+"\s*\]\]', body), (
+        "probe_gateway must fail when the Service has zero ready endpoint addresses"
+    )
+
+
 def test_every_smoke_job_and_the_sweeper_use_the_same_environment():
     jobs = _workflow()["jobs"]
     sweeper = _workflow(SWEEPER_WORKFLOW)["jobs"]["sweep"]

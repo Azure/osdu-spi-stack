@@ -71,8 +71,6 @@ jobs:
     if: needs.declare.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     environment: azure-shared
-    outputs:
-      exists: ${{ steps.detect.outputs.exists }}
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
     steps:
@@ -84,18 +82,19 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Detect existing resource group and AKS cluster
-        id: detect
         run: |
           set -euo pipefail
+          # declare already gates should_run on the declaration's presence,
+          # so it is known present here; an absent RG or cluster means the
+          # live environment was deleted, not a first-provision skip.
           RG="spi-stack-${ENV_NAME}"
           if ! RG_EXISTS=$(az group exists --name "$RG" --only-show-errors); then
             echo "::error::Failed to determine whether resource group $RG exists"
             exit 1
           fi
           if [ "$RG_EXISTS" = "false" ]; then
-            echo "::notice::No resource group at $RG yet; nothing to refresh (clean skip)."
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::error::Resource group $RG does not exist even though $DECLARATION_PATH declares the environment; refusing to report a clean refresh."
+            exit 1
           fi
           if [ "$RG_EXISTS" != "true" ]; then
             echo "::error::Unexpected result from az group exists: $RG_EXISTS"
@@ -106,17 +105,15 @@ jobs:
             echo "::error::Failed to inspect AKS resources in $RG"
             exit 1
           fi
-          if [ "$AKS_COUNT" = "1" ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::No cluster at $RG yet; nothing to refresh (clean skip)."
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+          if [ "$AKS_COUNT" != "1" ]; then
+            echo "::error::No AKS cluster named $RG in $RG even though $DECLARATION_PATH declares the environment; refusing to report a clean refresh."
+            exit 1
           fi
 
   refresh:
     name: refresh
     needs: [declare, detect]
-    if: needs.declare.outputs.should_run == 'true' && needs.detect.outputs.exists == 'true'
+    if: needs.declare.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     environment: azure-shared
     # Plain reconcile against an already-provisioned, version-pinned cluster:
@@ -183,6 +180,21 @@ jobs:
       - name: spi connect
         run: spi connect --resource-group "spi-stack-${ENV_NAME}" --cluster "spi-stack-${ENV_NAME}"
 
+      - name: Require an initialized deployment
+        # A prior provision can die after creating AKS but before writing
+        # the deploy record. Unlike env-upgrade, refresh has no provision
+        # job to recover with, so fail closed with a clear reason instead
+        # of letting the record's own error surface uninterpreted from
+        # `spi maintenance set`.
+        run: |
+          set -euo pipefail
+          RECORD=$(kubectl get configmap spi-deploy-record -n osdu-flux \
+            --ignore-not-found -o name)
+          if [ -z "$RECORD" ]; then
+            echo "::error::AKS exists without spi-deploy-record; a prior provision likely died before completing. Only env-upgrade's provision path can recover this."
+            exit 1
+          fi
+
       - name: Quiesce (set maintenance)
         # Named separately from reconcile so a future fork-drain protocol can
         # be inserted here, after quiesce and before mutation, without
@@ -223,6 +235,9 @@ jobs:
 
           ACTUAL_REF=$(echo "$STATUS_JSON" | jq -r .stack.ref)
           SUSPENDED=$(echo "$STATUS_JSON" | jq -r .suspended)
+          READY=$(echo "$STATUS_JSON" | jq -r .ready)
+          MAINTENANCE=$(echo "$STATUS_JSON" | jq -r .maintenance)
+          REASON_CODE=$(echo "$STATUS_JSON" | jq -r .reason.code)
 
           if [ "$ACTUAL_REF" != "$STACK_VERSION" ]; then
             echo "::error::deployed ref ($ACTUAL_REF) drifted from declared stackVersion ($STACK_VERSION)"
@@ -230,6 +245,21 @@ jobs:
           fi
           if [ "$SUSPENDED" != "true" ]; then
             echo "::error::GitRepository is not suspended after a refresh reconcile"
+            exit 1
+          fi
+          # Exit 2 covers every deployability blocker, not just maintenance
+          # (ADR-030); confirm convergence held and maintenance is the only
+          # reason deploys are still refused before the next step clears it.
+          if [ "$READY" != "true" ]; then
+            echo "::error::environment is not ready (ready=$READY); refusing to clear maintenance"
+            exit 1
+          fi
+          if [ "$MAINTENANCE" != "true" ]; then
+            echo "::error::maintenance flag is not set (maintenance=$MAINTENANCE); refusing to clear"
+            exit 1
+          fi
+          if [ "$REASON_CODE" != "maintenance" ]; then
+            echo "::error::deployability is blocked by $REASON_CODE, not maintenance; refusing to clear"
             exit 1
           fi
 

@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Acceptance probes for the Istio ingress gateway: pods/service reachable,
-# then a real HTTPS handshake against the Gateway's listener hostname.
+# Acceptance probes for the Istio ingress gateway: the add-on Service has a
+# ready endpoint, then a real HTTPS handshake against the Gateway's listener
+# hostname.
 #
 # Extracted from smoke.yml so smoke, env-upgrade, and env-refresh share one
 # probe implementation instead of three copies drifting apart. A pod-level
@@ -24,7 +25,7 @@
 #
 # Usage: probe_gateway.sh <gateway|https>
 #
-#   gateway  Confirm the ingress gateway Service exists and has Running pods.
+#   gateway  Confirm the named add-on Service exists and has a ready endpoint.
 #   https    Handshake the Gateway's HTTPS listener; empty in ip mode (no-op).
 #
 # Exit codes:
@@ -34,6 +35,11 @@
 
 set -euo pipefail
 
+# Namespace/Service the AKS managed Istio add-on owns (ADR-026); the Gateway
+# binds to this Service by hostname rather than one the stack renders itself.
+ISTIO_NAMESPACE="aks-istio-ingress"
+ISTIO_INGRESS_SERVICE="aks-istio-ingressgateway-external"
+
 usage() {
     cat <<'EOF'
 Usage: probe_gateway.sh <gateway|https>
@@ -41,13 +47,29 @@ EOF
 }
 
 probe_gateway() {
-    kubectl get svc -n aks-istio-ingress
-    kubectl get pods -n aks-istio-ingress --field-selector=status.phase=Running
+    # `kubectl get endpoints <name>` 404s if the named Service is missing, and
+    # returns an empty address list if it exists with no ready backend pods.
+    # Querying the whole namespace's Services/pods would pass on either fault.
+    local addresses
+    if ! addresses=$(kubectl get endpoints "$ISTIO_INGRESS_SERVICE" -n "$ISTIO_NAMESPACE" \
+        -o jsonpath='{.subsets[*].addresses[*].ip}' 2>&1); then
+        echo "Failed to read endpoints for ${ISTIO_INGRESS_SERVICE} in ${ISTIO_NAMESPACE}: ${addresses}" >&2
+        kubectl get svc -n "$ISTIO_NAMESPACE" || true
+        kubectl get pods -n "$ISTIO_NAMESPACE" || true
+        return 1
+    fi
+    if [[ -z "$addresses" ]]; then
+        echo "${ISTIO_INGRESS_SERVICE} has no ready endpoints; dumping service and pod state" >&2
+        kubectl get svc -n "$ISTIO_NAMESPACE" || true
+        kubectl get pods -n "$ISTIO_NAMESPACE" || true
+        return 1
+    fi
+    echo "${ISTIO_INGRESS_SERVICE} has ready endpoint(s): ${addresses}"
 }
 
 probe_https() {
     local host
-    host=$(kubectl get gateway spi-gateway -n aks-istio-ingress \
+    host=$(kubectl get gateway spi-gateway -n "$ISTIO_NAMESPACE" \
         -o jsonpath='{.spec.listeners[?(@.protocol=="HTTPS")].hostname}' | awk '{print $1}')
     if [[ -z "$host" ]]; then
         echo "No HTTPS listener on spi-gateway; skipping TLS probe (ip mode)."

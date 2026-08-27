@@ -21,6 +21,7 @@ from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic_core import ErrorDetails
 
 from .config import IngressMode, Profile
 
@@ -52,10 +53,14 @@ class EnvironmentDeclaration(BaseModel):
     Field names are `snake_case` for Python use; the YAML on disk (and the
     values re-exported to `GITHUB_OUTPUT`) use the camelCase aliases below.
     `extra="forbid"` enforces the strict key set: an unexpected key is a
-    validation error, not a silently ignored field.
+    validation error, not a silently ignored field. Population is by alias
+    only (no `populate_by_name`): the on-disk schema is camelCase, exactly,
+    and accepting the snake_case field name too would let a declaration
+    written as `stack_version:` validate here yet be missed by the
+    `^stackVersion:` bump automation in `.github/workflows/release.yml`.
     """
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     env: str
     stack_version: str = Field(alias="stackVersion")
@@ -116,6 +121,24 @@ def _validate_shape(data: dict) -> None:
         )
 
 
+# Field name -> on-disk alias, for fields where they differ. Lets a rejected
+# snake_case key (e.g. from populate_by_name muscle memory) be pointed at the
+# camelCase key the schema actually accepts, instead of a bare "extra field".
+_ALIAS_BY_FIELD_NAME: dict[str, str] = {
+    name: field.alias
+    for name, field in EnvironmentDeclaration.model_fields.items()
+    if field.alias and field.alias != name
+}
+
+
+def _describe_error(error: ErrorDetails) -> str:
+    loc = ".".join(str(part) for part in error["loc"])
+    if error["type"] == "extra_forbidden" and loc in _ALIAS_BY_FIELD_NAME:
+        alias = _ALIAS_BY_FIELD_NAME[loc]
+        return f"{loc}: unexpected key; the on-disk schema uses {alias!r}, not {loc!r}"
+    return f"{loc}: {error['msg']}"
+
+
 def parse_declaration(raw: str) -> EnvironmentDeclaration:
     """Parse and strictly validate declaration YAML text.
 
@@ -136,10 +159,7 @@ def parse_declaration(raw: str) -> EnvironmentDeclaration:
     try:
         return EnvironmentDeclaration.model_validate(data)
     except ValidationError as exc:
-        messages = "; ".join(
-            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
-            for error in exc.errors()
-        )
+        messages = "; ".join(_describe_error(error) for error in exc.errors())
         raise EnvironmentDeclarationError(f"schema validation failed: {messages}") from exc
 
 

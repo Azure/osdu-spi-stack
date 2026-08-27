@@ -113,6 +113,26 @@ def test_rejects_an_extra_key():
 
 
 @pytest.mark.parametrize(
+    ("snake_case_key", "camel_case_key", "sample_value"),
+    [
+        ("stack_version", "stackVersion", "v0.6.0"),
+        ("ingress_mode", "ingressMode", "azure"),
+        ("image_branch", "imageBranch", "master"),
+        ("name_suffix", "nameSuffix", "x7k2q"),
+    ],
+)
+def test_rejects_a_snake_case_key_and_names_the_camelcase_key(
+    snake_case_key, camel_case_key, sample_value
+):
+    # populate_by_name is intentionally off: a snake_case key must be
+    # rejected, not silently accepted alongside its camelCase alias.
+    yaml_text = VALID_YAML + f"{snake_case_key}: {sample_value}\n"
+
+    with pytest.raises(EnvironmentDeclarationError, match=f"{snake_case_key}.*{camel_case_key}"):
+        parse_declaration(yaml_text)
+
+
+@pytest.mark.parametrize(
     "missing_line",
     [
         "env: shared\n",
