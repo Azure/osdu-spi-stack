@@ -285,7 +285,7 @@ def _build_internal_services() -> list:
     ]
 
 
-def render_info(show_secrets: bool = False, show_apis: bool = False, output_json: bool = False):
+def _collect_info(show_secret_refs: bool = False) -> tuple[dict, list]:
     from .guard import get_suspend_status
 
     cfg = _read_ingress_config()
@@ -299,6 +299,7 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
     partition_rows = _build_partitions_rows(partitions, env)
 
     info = {
+        "apiVersion": "spi.osdu.dev/v1",
         "ingress_mode": mode,
         "base_url": base,
         "endpoints": endpoints,
@@ -313,6 +314,8 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
             "cosmos_endpoint": osdu.get("PRIMARY_COSMOSDB_ENDPOINT", ""),
             "storage_account": osdu.get("PRIMARY_STORAGE_ACCOUNT_NAME", ""),
             "servicebus": osdu.get("PRIMARY_SERVICEBUS_NAMESPACE", ""),
+            "tenant_id": osdu.get("AZURE_TENANT_ID", ""),
+            "data_plane_application_id": osdu.get("AAD_CLIENT_ID", ""),
         },
         "partitions": [
             {
@@ -327,7 +330,7 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
         "suspended": get_suspend_status(),
     }
 
-    if show_secrets:
+    if show_secret_refs:
         creds_list = _get_live_credentials()
         # JSON output is the path most likely to be piped into logs or CI
         # artifacts, so it carries secret references, never values; the
@@ -337,6 +340,32 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
         ]
     else:
         creds_list = []
+
+    return info, creds_list
+
+
+def collect_info() -> dict:
+    """Collect the stable non-secret information contract."""
+
+    info, _credentials = _collect_info(show_secret_refs=False)
+    return info
+
+
+def render_info(show_secrets: bool = False, show_apis: bool = False, output_json: bool = False):
+    info, creds_list = _collect_info(show_secret_refs=show_secrets)
+    mode = info["ingress_mode"]
+    base = info["base_url"]
+    endpoints = info["endpoints"]
+    middleware = info["middleware_uis"]
+    partition_rows = [
+        (
+            f"{item['name']} (primary)" if item["primary"] else item["name"],
+            item["cosmos_account"],
+            item["servicebus_namespace"],
+            item["storage_account"],
+        )
+        for item in info["partitions"]
+    ]
 
     if output_json:
         print(json.dumps(info, indent=2))

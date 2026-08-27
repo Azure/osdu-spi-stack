@@ -26,6 +26,7 @@ spec:
     image:
       repository: ${FILE_IMAGE_REPOSITORY}
       tag: "${FILE_IMAGE_TAG}"
+      digest: "${FILE_IMAGE_DIGEST}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu

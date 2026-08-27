@@ -109,3 +109,13 @@ def test_flux_bicep_allows_every_profile():
     allowed_block = match.group("values")
     for profile in Profile:
         assert f"'{profile.value}'" in allowed_block
+
+
+def test_flux_bicep_emits_exclusive_branch_or_tag_reference():
+    source = (INFRA_DIR / "flux.bicep").read_text()
+
+    assert "param repoTag string = ''" in source
+    assert "var repositoryRef = empty(repoTag)" in source
+    assert "branch: repoBranch" in source
+    assert "tag: repoTag" in source
+    assert "repositoryRef: repositoryRef" in source

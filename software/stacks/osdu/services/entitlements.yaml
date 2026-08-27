@@ -26,6 +26,7 @@ spec:
     image:
       repository: ${ENTITLEMENTS_IMAGE_REPOSITORY}
       tag: "${ENTITLEMENTS_IMAGE_TAG}"
+      digest: "${ENTITLEMENTS_IMAGE_DIGEST}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu

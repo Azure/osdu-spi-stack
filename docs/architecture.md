@@ -230,13 +230,17 @@ Changes to this repository (middleware manifests, profile definitions, service Y
 
 ### Service update loop
 
-When an OSDU service merges to master, its GitLab CI pipeline builds a new container image and the community registry exposes a new immutable SHA tag. The first `spi up` resolves the current master tags and writes them to `osdu-flux/osdu-image-lock`; a re-run preserves an existing lock unless `--refresh-images` re-resolves it ([ADR-017](decisions/017-osdu-image-lock.md); the preserve-on-re-run half is ahead of the code). The service Kustomizations consume that ConfigMap through Flux post-build substitution. This keeps the deployed image set explicit while avoiding stale, pruned tags in long-lived test workflows.
+When an OSDU service merges to master, its GitLab CI pipeline builds a new container image and the community registry exposes a new immutable SHA tag. The first `spi up` resolves the current master tags and writes them to `osdu-flux/osdu-image-lock`; a re-run preserves an existing lock unless `--refresh-images` re-resolves it ([ADR-017](decisions/017-osdu-image-lock.md)). An explicit `--no-refresh-images` fails closed if a core deployment has no lock yet. The service Kustomizations consume that ConfigMap through Flux post-build substitution. This keeps the deployed image set explicit while avoiding stale, pruned tags in long-lived test workflows.
 
 Run `spi reconcile --refresh-images` to resolve a fresh image lock for an existing cluster, then reconcile the service Kustomizations and schema-load before reference services. Schema-load uses the same selected SHA as schema-service, with the loader repository checked for that exact tag. A plain `spi reconcile` leaves the pins alone, except that it backfills the schema-load entries into a lock generated before the loader joined it.
 
 ### Suspend and resume
 
 `spi reconcile --suspend` patches `spec.suspend: true` on the `GitRepository`; Flux stops fetching new revisions. `spi reconcile` (no flag) triggers a one-shot reconcile. `spi reconcile --resume` unpins the source. `spi status` and `spi info` surface a suspend warning when the source is pinned.
+
+### The shared backing environment
+
+`spi-stack-shared` is an ordinary deployment of this same stack (`spi up --env shared --tag <vX.Y.Z>`), pinned to an immutable release tag rather than a branch, with its own resource-name suffix, deploy record, and `maintenance` flag (`src/spi/deploy_record.py`). Two GitHub Actions workflows own its lifecycle: `env-upgrade.yml` provisions it and moves it to a new `stackVersion` after a reviewed bump PR merges, and `env-refresh.yml` reconciles and probes it on a weekday schedule. Both read `ops/environments/shared.yaml`, a strictly typed declaration (`src/spi/environment.py`), install the exact release wheel that declaration names, and never mutate the environment without first setting `maintenance` and clearing it only after Flux readiness and gateway probes pass. See [environment-lifecycle.md](design/environment-lifecycle.md) for the full contract, including what this lifecycle does not yet do (reset, teardown, fork onboarding).
 
 ## Configuration and Secret Model
 

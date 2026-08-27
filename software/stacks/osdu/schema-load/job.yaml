@@ -64,12 +64,14 @@ spec:
             defaultMode: 0755
       containers:
         - name: loader
-          # Resolved live from the osdu-image-lock ConfigMap, on the same SHA
-          # selected for schema-service. No static default: a pinned
-          # SHA goes stale as upstream prunes it. A lock that predates
-          # schema-load's inclusion is backfilled by `spi reconcile` before
-          # Flux applies this Job.
-          image: ${SCHEMA_LOAD_IMAGE_REPOSITORY}:${SCHEMA_LOAD_IMAGE_TAG}
+          # Resolved live from the osdu-image-lock ConfigMap's composed
+          # SCHEMA_LOAD_IMAGE_REF (repository@digest, or repository:tag when
+          # no digest was recorded), on the same SHA selected for
+          # schema-service. No static default: a pinned SHA goes stale as
+          # upstream prunes it. A lock that predates schema-load's inclusion
+          # or its ref is backfilled by `spi reconcile` before Flux applies
+          # this Job.
+          image: ${SCHEMA_LOAD_IMAGE_REF}
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:

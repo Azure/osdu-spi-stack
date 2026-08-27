@@ -264,7 +264,7 @@ class TestSchemaLoadImageSubstitution:
         job = yaml.safe_load((STACKS / "schema-load" / "job.yaml").read_text(encoding="utf-8"))
         image = job["spec"]["template"]["spec"]["containers"][0]["image"]
 
-        assert image == "${SCHEMA_LOAD_IMAGE_REPOSITORY}:${SCHEMA_LOAD_IMAGE_TAG}"
+        assert image == "${SCHEMA_LOAD_IMAGE_REF}"
 
     def test_schema_load_script_keeps_its_shell_references(self):
         doc = yaml.safe_load((STACKS / "schema-load" / "script.yaml").read_text(encoding="utf-8"))

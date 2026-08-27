@@ -25,7 +25,7 @@ Changes that flow through this loop:
 
 ### Service update loop (from `osdu-image-lock`)
 
-OSDU service images move on a different cadence than the repo. Per [ADR-017](../decisions/017-osdu-image-lock.md), the first `spi up` against a cluster queries the OSDU community GitLab registry for the newest immutable SHA tag per service, renders the result into a `osdu-image-lock` ConfigMap in `osdu-flux`, and applies it. A re-run against a cluster that holds a lock preserves it; only an explicit `--refresh-images` re-resolves. (The preserve-on-re-run behavior is the ADR-017 tri-state ruling, currently ahead of the code, which still re-resolves on each `spi up`.)
+OSDU service images move on a different cadence than the repo. Per [ADR-017](../decisions/017-osdu-image-lock.md), the first `spi up` against a cluster queries the OSDU community GitLab registry for the newest immutable SHA tag per service, renders the result into a `osdu-image-lock` ConfigMap in `osdu-flux`, and applies it. A re-run against a cluster that holds a lock preserves it; only an explicit `--refresh-images` re-resolves. An explicit `--no-refresh-images` fails closed when a core deployment has no lock yet.
 
 The service Kustomizations under `software/stacks/osdu/profiles/core/` carry `postBuild.substituteFrom` blocks that reference `osdu-image-lock`. When Flux reconciles those Kustomizations, the `${PARTITION_IMAGE_REPOSITORY}` and `${PARTITION_IMAGE_TAG}` expressions in the rendered YAML expand against the live ConfigMap. Updating the lock and reconciling the Kustomization triggers a rolling update.
 
@@ -132,6 +132,20 @@ The substitution is not marked `optional`. A missing ConfigMap fails `spi-namesp
 
 `spi status` and `spi info` both show a yellow `SUSPENDED` banner when the source is pinned.
 
+`spi up --tag vX.Y.Z` pins the `GitRepository` to an immutable release tag
+instead of a branch (`infra/flux.bicep`'s `repositoryRef` emits `{tag:
+...}` rather than `{branch: ...}`); the CLI verifies
+`status.artifact.revision` names that tag's resolved commit before suspending,
+so the deploy record's `resolvedCommit` never names a different ref. A tag
+deployment also writes `maintenance: true` to the `spi-deploy-record`
+ConfigMap (`src/spi/deploy_record.py`), a second, independent gate on top of
+`suspend`: `spi status --json`'s `deployable` field is `false` while
+maintenance is set, even once every Kustomization is `Ready`. Only a
+lifecycle workflow (`env-upgrade`, `env-refresh`) clears it, and only after
+its own Flux-readiness wait and gateway probes pass; see
+[environment-lifecycle.md](environment-lifecycle.md) for the full contract
+and [ADR-029](../decisions/029-environment-lifecycle-and-reset-boundary.md).
+
 ## Worked example: debug a stuck service
 
 Symptom: `spi osdu-services` reports `Ready=False` after the timeout.
@@ -179,12 +193,15 @@ Pods roll one at a time as each `HelmRelease` reconciles. `spi status --watch` s
 - [ADR-015](../decisions/015-partition-entitlements-bootstrap.md) -- Partition + Entitlements Bootstrap
 - [ADR-017](../decisions/017-osdu-image-lock.md) -- Per-Deploy Image Lock
 - [ADR-018](../decisions/018-karpenter-nodepool-authoring.md) -- Karpenter NodePool Authoring
+- [ADR-028](../decisions/028-version-pinned-shared-environment.md) -- Version-Pinned Shared Backing Environment
+- [ADR-029](../decisions/029-environment-lifecycle-and-reset-boundary.md) -- Environment Lifecycle Verbs and the Reset Boundary
 
 ## Source files
 
 - `software/stacks/osdu/profiles/core/stack.yaml` -- the layer DAG
 - `software/stacks/osdu/ingress/<mode>/stack.yaml` -- ingress overlay Kustomizations
 - `src/spi/images.py` -- `osdu-image-lock` rendering
-- `src/spi/deploy.py` -- `_pin_gitops_source`, `reconcile_gitops_source`
+- `src/spi/deploy.py` -- `_finalize_gitops_source`, `_set_source_suspended`
 - `src/spi/guard.py` -- suspend status checks
 - `src/spi/status.py` -- the layer-grouped dashboard
+- `src/spi/deploy_record.py` -- the `maintenance` flag and stack version record

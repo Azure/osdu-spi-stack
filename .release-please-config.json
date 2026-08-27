@@ -10,7 +10,8 @@
       "prerelease": false,
       "include-v-in-tag": true,
       "include-component-in-tag": false,
-      "versioning": "default"
+      "versioning": "default",
+      "exclude-paths": ["ops/environments"]
     }
   },
   "plugins": ["sentence-case"],

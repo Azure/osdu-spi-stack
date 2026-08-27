@@ -42,6 +42,7 @@ _theme = Theme(
 )
 
 console = Console(theme=_theme)
+error_console = Console(theme=_theme, stderr=True)
 
 
 def display_result(success_message: str) -> None:

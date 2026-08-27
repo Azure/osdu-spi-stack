@@ -10,7 +10,6 @@ injection and a missing ConfigMap stalls every layer above namespaces.
 Both the detection and the paths that write the ConfigMap are covered here.
 """
 
-import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -147,6 +146,10 @@ class TestReconcileRefreshesClusterConfig:
                 ),
             ),
             patch("spi.cli.create_istio_revision_configmap") as configmap,
+            # Reads the live lock through pins.run_process, which the
+            # spi.cli.run_command patch above does not intercept; without
+            # this the default reconcile path shells out to real kubectl.
+            patch("spi.cli.apply_schema_load_backfill", return_value=False),
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
         assert result.exit_code == 0, result.output
@@ -173,14 +176,14 @@ class TestReconcileRefreshesClusterConfig:
                 "spi.cli.resolve_image_lock",
                 side_effect=cli.ImageResolutionError("schema: registry repository not found"),
             ),
-            patch("spi.cli.kubectl_apply_yaml") as apply_yaml,
+            patch("spi.cli.apply_image_lock") as apply_lock,
             patch("spi.cli.run_command") as run_command,
         ):
             result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
 
         assert result.exit_code == 1
         assert "Unable to resolve OSDU service images" in result.output
-        apply_yaml.assert_not_called()
+        apply_lock.assert_not_called()
         run_command.assert_not_called()
 
     def test_refresh_images_aborts_when_pin_state_unreadable(self):
@@ -203,15 +206,13 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
-            patch("spi.cli.live_pins", side_effect=PinError("could not read lock")),
-            patch("spi.cli.kubectl_apply_yaml") as apply_yaml,
+            patch("spi.cli.apply_image_lock", side_effect=PinError("could not read lock")),
             patch("spi.cli.run_command") as run_command,
         ):
             result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
 
         assert result.exit_code == 1
         assert "Refusing to refresh" in result.output
-        apply_yaml.assert_not_called()
         run_command.assert_not_called()
 
     def test_refresh_images_reconciles_schema_load_before_reference(self):
@@ -240,9 +241,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
-            patch("spi.cli.live_pins", return_value={}),
-            patch("spi.cli.render_lock_with_pins", return_value="kind: ConfigMap\n"),
-            patch("spi.cli.kubectl_apply_yaml"),
+            patch("spi.cli.apply_image_lock", return_value={}),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
         ):
             result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
@@ -286,9 +285,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
-            patch("spi.cli.live_pins", return_value={}),
-            patch("spi.cli.render_lock_with_pins", return_value="kind: ConfigMap\n"),
-            patch("spi.cli.kubectl_apply_yaml"),
+            patch("spi.cli.apply_image_lock", return_value={}),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
         ):
             result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
@@ -333,6 +330,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.run_command", side_effect=_run_command),
+            patch("spi.cli.apply_schema_load_backfill", return_value=False),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
 
@@ -346,113 +344,72 @@ class TestSchemaLoadImageLockBackfill:
     the loader entries before Flux applies the manifest.
     """
 
-    LEGACY_LOCK = json.dumps(
-        {
-            "data": {
-                "IMAGE_BRANCH": "master",
-                "IMAGE_COUNT": "13",
-                "SCHEMA_IMAGE_TAG": "1" * 40,
-            }
-        }
-    )
-
-    def _invoke(self, lock_stdout: str, resolution_error: str = "", *args: str):
+    def _invoke(self, changed: bool, error: Exception | None = None, *args: str):
         runner = CliRunner()
+        events = []
 
         def _run_command(cmd_list, **kwargs):
-            if cmd_list[:3] == ["kubectl", "get", "configmap"]:
-                return SimpleNamespace(returncode=0, stdout=lock_stdout, stderr="")
+            events.append(cmd_list)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        if resolution_error:
-            lock_patcher = patch(
-                "spi.cli.schema_load_lock_patch",
-                side_effect=cli.ImageResolutionError(resolution_error),
-            )
-        else:
-            lock_patcher = patch(
-                "spi.cli.schema_load_lock_patch",
-                return_value={"SCHEMA_LOAD_IMAGE_TAG": "1" * 40},
-            )
+        def _backfill(*, branch):
+            events.append(("backfill", branch))
+            if error:
+                raise error
+            return changed
 
         with (
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
-            lock_patcher as lock_patch,
+            patch("spi.cli.apply_schema_load_backfill", side_effect=_backfill) as backfill,
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
 
-        assert result.exit_code == 0, result.output
-        return lock_patch, run_command
-
-    def _patch_calls(self, run_command):
-        return [
-            call.args[0]
-            for call in run_command.call_args_list
-            if call.args[0][:3] == ["kubectl", "patch", "configmap"]
-        ]
+        return result, backfill, run_command, events
 
     def test_legacy_lock_is_backfilled(self):
-        lock_patch, run_command = self._invoke(self.LEGACY_LOCK)
+        result, backfill, _, _ = self._invoke(True)
 
-        lock_patch.assert_called_once()
-        assert lock_patch.call_args.args[0]["SCHEMA_IMAGE_TAG"] == "1" * 40
-        patches = self._patch_calls(run_command)
-        assert len(patches) == 1
-        assert patches[0][3] == "osdu-image-lock"
-        assert json.loads(patches[0][-1]) == {"data": {"SCHEMA_LOAD_IMAGE_TAG": "1" * 40}}
+        assert result.exit_code == 0, result.output
+        backfill.assert_called_once_with(branch="master")
+        assert "updated with schema-load" in result.output
 
     def test_current_lock_is_left_alone(self):
-        current = json.dumps(
-            {
-                "data": {
-                    "SCHEMA_IMAGE_TAG": "1" * 40,
-                    "SCHEMA_LOAD_IMAGE_REPOSITORY": "registry/schema-load",
-                    "SCHEMA_LOAD_IMAGE_TAG": "1" * 40,
-                }
-            }
-        )
-        lock_patch, run_command = self._invoke(current)
+        result, backfill, _, _ = self._invoke(False)
 
-        lock_patch.assert_not_called()
-        assert self._patch_calls(run_command) == []
+        assert result.exit_code == 0, result.output
+        backfill.assert_called_once_with(branch="master")
+        assert "updated with schema-load" not in result.output
 
     def test_absent_lock_is_skipped(self):
         """minimal/bare profiles never create the lock."""
-        lock_patch, run_command = self._invoke("")
+        result, backfill, _, _ = self._invoke(False)
 
-        lock_patch.assert_not_called()
-        assert self._patch_calls(run_command) == []
+        assert result.exit_code == 0, result.output
+        backfill.assert_called_once_with(branch="master")
 
-    def test_resolution_failure_warns_without_aborting(self):
-        """A loader tag the registry pruned cannot be backfilled, but the rest
-        of the reconcile still has to run."""
-        lock_patch, run_command = self._invoke(
-            self.LEGACY_LOCK,
-            resolution_error="schema-load: tag not found",
+    def test_resolution_failure_aborts_before_reconcile(self):
+        result, backfill, run_command, _ = self._invoke(
+            False,
+            cli.ImageResolutionError("schema-load: tag not found"),
         )
 
-        lock_patch.assert_called_once()
-        assert self._patch_calls(run_command) == []
+        assert result.exit_code == 1
+        assert "Unable to backfill" in result.output
+        backfill.assert_called_once_with(branch="master")
+        run_command.assert_not_called()
 
     def test_resume_backfills_before_unsuspending_source(self):
-        """Resume has to backfill a legacy lock before Flux can fetch the new
-        schema-load manifest.
-        """
-        lock_patch, run_command = self._invoke(self.LEGACY_LOCK, "", "--resume")
+        result, backfill, _, events = self._invoke(True, None, "--resume")
 
-        lock_patch.assert_called_once()
-        commands = [call.args[0] for call in run_command.call_args_list]
-        configmap_patch = next(
-            index
-            for index, args in enumerate(commands)
-            if args[:3] == ["kubectl", "patch", "configmap"]
-        )
+        assert result.exit_code == 0, result.output
+        backfill.assert_called_once_with(branch="master")
+        backfill_call = events.index(("backfill", "master"))
         gitrepository_patch = next(
             index
-            for index, args in enumerate(commands)
-            if args[:3] == ["kubectl", "patch", "gitrepository"]
+            for index, event in enumerate(events)
+            if isinstance(event, list) and event[:3] == ["kubectl", "patch", "gitrepository"]
         )
-        assert configmap_patch < gitrepository_patch
+        assert backfill_call < gitrepository_patch

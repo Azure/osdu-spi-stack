@@ -428,13 +428,22 @@ def test_resolve_images_schema_load_only_reports_alternate_error(monkeypatch):
 
 def test_image_lock_missing_schema_load_detects_legacy_lock():
     legacy = {"SCHEMA_IMAGE_TAG": "a" * 40}
-    current = {
+    missing_ref = {
         "SCHEMA_IMAGE_TAG": "a" * 40,
         "SCHEMA_LOAD_IMAGE_REPOSITORY": "registry/schema-load",
         "SCHEMA_LOAD_IMAGE_TAG": "a" * 40,
     }
+    current = {
+        "SCHEMA_IMAGE_TAG": "a" * 40,
+        "SCHEMA_LOAD_IMAGE_REPOSITORY": "registry/schema-load",
+        "SCHEMA_LOAD_IMAGE_TAG": "a" * 40,
+        "SCHEMA_LOAD_IMAGE_REF": "registry/schema-load:" + "a" * 40,
+    }
 
     assert images.image_lock_missing_schema_load(legacy) is True
+    # A lock with repository/tag but no composed ref still needs backfilling:
+    # the Job substitutes the single ref key.
+    assert images.image_lock_missing_schema_load(missing_ref) is True
     assert images.image_lock_missing_schema_load(current) is False
 
 
@@ -474,7 +483,29 @@ def test_schema_load_lock_patch_resolves_from_recorded_schema_tag(monkeypatch):
         f"community.opengroup.org:5555/osdu/schema-load-master:{schema_sha}"
     )
     assert patch["SCHEMA_LOAD_IMAGE_DIGEST"] == "sha256:loader-matched"
+    assert (
+        patch["SCHEMA_LOAD_IMAGE_REF"]
+        == "community.opengroup.org:5555/osdu/schema-load-master@sha256:loader-matched"
+    )
     assert patch["IMAGE_COUNT"] == "14"
+
+
+def test_schema_load_lock_patch_composes_missing_ref_without_incrementing_count(monkeypatch):
+    def fail(url: str):
+        raise AssertionError(f"registry must not be queried to compose an existing image: {url}")
+
+    monkeypatch.setattr(images, "gitlab_get", fail)
+    patch = images.schema_load_lock_patch(
+        {
+            "IMAGE_BRANCH": "master",
+            "IMAGE_COUNT": "14",
+            "SCHEMA_LOAD_IMAGE_REPOSITORY": "registry/schema-load",
+            "SCHEMA_LOAD_IMAGE_TAG": "a" * 40,
+            "SCHEMA_LOAD_IMAGE_DIGEST": "sha256:loader",
+        }
+    )
+
+    assert patch == {"SCHEMA_LOAD_IMAGE_REF": "registry/schema-load@sha256:loader"}
 
 
 def test_schema_load_lock_patch_without_schema_tag_raises(monkeypatch):
@@ -485,3 +516,59 @@ def test_schema_load_lock_patch_without_schema_tag_raises(monkeypatch):
 
     with pytest.raises(ImageResolutionError, match="no schema image tag"):
         images.schema_load_lock_patch({"IMAGE_BRANCH": "master"})
+
+
+class TestImageRef:
+    def test_digest_first_composition(self):
+        assert images.image_ref("repo/x", "v1", "sha256:abc") == "repo/x@sha256:abc"
+
+    def test_tag_fallback_when_digest_empty(self):
+        assert images.image_ref("repo/x", "v1", "") == "repo/x:v1"
+
+
+class TestLockDataRefRendering:
+    def test_render_image_lock_includes_composed_ref_per_service(self):
+        resolved = {
+            name: ResolvedImage(
+                name=name,
+                repository=f"community.opengroup.org:5555/example/{name}",
+                tag="1" * 40,
+                created_at="2026-05-22T00:00:00+00:00",
+                digest=f"sha256:{name}",
+            )
+            for name in image_lock_names()
+        }
+
+        yaml = render_image_lock_configmap(
+            resolved,
+            branch="master",
+            resolved_at=datetime(2026, 5, 22, tzinfo=timezone.utc),
+        )
+
+        assert (
+            'PARTITION_IMAGE_REF: "community.opengroup.org:5555/example/partition@sha256:partition"'
+            in yaml
+        )
+        assert (
+            'SCHEMA_LOAD_IMAGE_REF: "community.opengroup.org:5555/example/schema-load@sha256:schema-load"'
+            in yaml
+        )
+
+    def test_render_image_lock_falls_back_to_tag_when_digest_missing(self):
+        resolved = {
+            name: ResolvedImage(
+                name=name,
+                repository=f"community.opengroup.org:5555/example/{name}",
+                tag="1" * 40,
+                created_at="",
+                digest="",
+            )
+            for name in image_lock_names()
+        }
+
+        yaml = render_image_lock_configmap(resolved, branch="master")
+
+        assert (
+            f'PARTITION_IMAGE_REF: "community.opengroup.org:5555/example/partition:{"1" * 40}"'
+            in yaml
+        )

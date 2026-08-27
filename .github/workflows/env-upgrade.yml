@@ -1,0 +1,579 @@
+name: Environment Upgrade
+
+# Deploys ops/environments/shared.yaml's stackVersion onto the standing
+# spi-stack-shared environment: a first provision when the resource group
+# and cluster do not exist yet, or a version bump when they do. Triggered by
+# a push touching the declaration file and by manual dispatch.
+#
+# Every operational CLI call in this workflow uses the bare `spi` installed
+# from the declared stackVersion's release wheel, never `uv run spi`: the
+# executing code and the pinned Flux ref must name the same release. Source
+# Python (scripts/export_environment.py) is the one exception, and it only
+# parses and validates the declaration.
+#
+# See docs/design/environment-lifecycle.md for the full lifecycle contract.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ops/environments/shared.yaml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: env-shared
+  cancel-in-progress: false
+
+env:
+  DECLARATION_PATH: ops/environments/shared.yaml
+
+jobs:
+  declare:
+    name: declare
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      env: ${{ steps.export.outputs.env }}
+      stack_version: ${{ steps.export.outputs.stack_version }}
+      profile: ${{ steps.export.outputs.profile }}
+      location: ${{ steps.export.outputs.location }}
+      ingress_mode: ${{ steps.export.outputs.ingress_mode }}
+      image_branch: ${{ steps.export.outputs.image_branch }}
+      name_suffix: ${{ steps.export.outputs.name_suffix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history: the first-activation check below diffs the
+          # declaration against the commit before this push.
+          fetch-depth: 0
+
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Validate and export declaration
+        id: export
+        # Source Python parsing the declaration, not an operational spi call;
+        # see the workflow header. uv sync installs no Azure tooling, only
+        # the checkout's own pyyaml/pydantic for schema validation.
+        run: |
+          uv sync --frozen
+          uv run python scripts/export_environment.py --declaration-path "$DECLARATION_PATH"
+
+      - name: Detect first activation
+        id: initial-creation
+        if: steps.export.outputs.declaration_found == 'true' && github.event_name == 'push'
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BEFORE_SHA" ] || ! git cat-file -e "${BEFORE_SHA}:${DECLARATION_PATH}" 2>/dev/null; then
+            echo "initial_creation=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "initial_creation=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Gate on declaration presence and first activation
+        id: gate
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.export.outputs.declaration_found }}" != "true" ]; then
+            echo "::notice::No declaration at $DECLARATION_PATH; nothing to do (clean skip)."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ steps.initial-creation.outputs.initial_creation }}" = "true" ]; then
+            echo "::notice::$DECLARATION_PATH was just created. This push does not provision automatically; dispatch env-upgrade manually to perform the first activation."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  verify-release:
+    name: verify-release
+    needs: declare
+    if: needs.declare.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
+    steps:
+      - name: Verify the release and wheel asset exist
+        run: |
+          set -euo pipefail
+          WHEEL="spi-${STACK_VERSION#v}-py3-none-any.whl"
+          ASSETS=$(gh release view "$STACK_VERSION" --repo "${{ github.repository }}" --json assets --jq '.assets[].name')
+          if ! grep -qx "$WHEEL" <<<"$ASSETS"; then
+            echo "::error::release $STACK_VERSION has no $WHEEL asset"
+            exit 1
+          fi
+          echo "Found $WHEEL on release $STACK_VERSION"
+
+  detect:
+    name: detect-existing-environment
+    needs: declare
+    if: needs.declare.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    environment: azure-shared
+    outputs:
+      exists: ${{ steps.detect.outputs.exists }}
+    env:
+      ENV_NAME: ${{ needs.declare.outputs.env }}
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Detect existing resource group and AKS cluster
+        id: detect
+        run: |
+          set -euo pipefail
+          RG="spi-stack-${ENV_NAME}"
+          if ! RG_EXISTS=$(az group exists --name "$RG" --only-show-errors); then
+            echo "::error::Failed to determine whether resource group $RG exists"
+            exit 1
+          fi
+          if [ "$RG_EXISTS" = "false" ]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$RG_EXISTS" != "true" ]; then
+            echo "::error::Unexpected result from az group exists: $RG_EXISTS"
+            exit 1
+          fi
+          if ! AKS_COUNT=$(az aks list --resource-group "$RG" --only-show-errors \
+              --query "[?name=='$RG'] | length(@)" --output tsv); then
+            echo "::error::Failed to inspect AKS resources in $RG"
+            exit 1
+          fi
+          if [ "$AKS_COUNT" = "1" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  quiesce-existing:
+    name: quiesce-existing-environment
+    needs: [declare, verify-release, detect]
+    if: needs.declare.outputs.should_run == 'true' && needs.detect.outputs.exists == 'true'
+    runs-on: ubuntu-latest
+    environment: azure-shared
+    timeout-minutes: 20
+    env:
+      ENV_NAME: ${{ needs.declare.outputs.env }}
+      STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v5
+        with:
+          version: latest
+
+      - name: Install kubelogin
+        env:
+          KUBELOGIN_VERSION: v0.1.4
+        run: |
+          set -euo pipefail
+          curl -sSLo kubelogin.zip \
+            "https://github.com/Azure/kubelogin/releases/download/${KUBELOGIN_VERSION}/kubelogin-linux-amd64.zip"
+          unzip -q kubelogin.zip -d kubelogin
+          sudo install kubelogin/bin/linux_amd64/kubelogin /usr/local/bin/kubelogin
+          kubelogin --version
+
+      - name: Install Flux CLI
+        uses: fluxcd/flux2/action@main
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Pre-cache Azure tokens
+        run: |
+          set -euo pipefail
+          az account get-access-token --resource https://management.azure.com -o none
+          az account get-access-token --resource 6dae42f8-4368-4678-94ff-3960e28e3630 -o none
+
+      - name: Install exact release wheel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${STACK_VERSION#v}"
+          WHEEL="spi-${VERSION}-py3-none-any.whl"
+          gh release download "$STACK_VERSION" --repo "${{ github.repository }}" \
+            --pattern "$WHEEL" --dir release-wheel --clobber
+          pipx install "release-wheel/$WHEEL"
+          INSTALLED=$(spi --version)
+          echo "Installed: $INSTALLED"
+          [[ "$INSTALLED" == "spi $VERSION" ]] || {
+            echo "::error::installed CLI ($INSTALLED) does not match declared stackVersion ($STACK_VERSION)"
+            exit 1
+          }
+
+      - name: Connect for deployment-state detection
+        run: |
+          set -euo pipefail
+          RG="spi-stack-${ENV_NAME}"
+          az aks get-credentials --resource-group "$RG" --name "$RG" --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+      - name: Detect initialized deployment
+        id: deployment
+        run: |
+          set -euo pipefail
+          RECORD=$(kubectl get configmap spi-deploy-record -n osdu-flux \
+            --ignore-not-found -o name)
+          if [ -n "$RECORD" ]; then
+            echo "initialized=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::AKS exists without spi-deploy-record; treating it as an incomplete first provision."
+            echo "initialized=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: spi connect
+        if: steps.deployment.outputs.initialized == 'true'
+        run: spi connect --resource-group "spi-stack-${ENV_NAME}" --cluster "spi-stack-${ENV_NAME}"
+
+      - name: Set maintenance
+        if: steps.deployment.outputs.initialized == 'true'
+        run: spi maintenance set
+
+      - name: Snapshot image lock
+        run: |
+          set -euo pipefail
+          kubectl get configmap osdu-image-lock -n osdu-flux \
+            --ignore-not-found -o yaml > osdu-image-lock-snapshot.yaml
+          if [ ! -s osdu-image-lock-snapshot.yaml ]; then
+            rm -f osdu-image-lock-snapshot.yaml
+            echo "::notice::No image lock exists yet; continuing without a snapshot."
+          fi
+
+      - name: Upload image lock snapshot
+        uses: actions/upload-artifact@v7
+        with:
+          name: osdu-image-lock-snapshot-${{ github.run_id }}
+          path: osdu-image-lock-snapshot.yaml
+          if-no-files-found: ignore
+
+      - name: Capture diagnostics on failure
+        if: failure()
+        run: bash scripts/capture_diagnostics.sh "env-upgrade-quiesce-${{ github.run_id }}"
+
+      - name: Upload diagnostics artifact
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: env-upgrade-diagnostics-quiesce-${{ github.run_id }}
+          path: diagnostics/
+          if-no-files-found: ignore
+
+  provision:
+    name: provision
+    needs: [declare, verify-release, detect, quiesce-existing]
+    if: |
+      always() &&
+      needs.declare.outputs.should_run == 'true' &&
+      needs.verify-release.result == 'success' &&
+      needs.detect.result == 'success' &&
+      (needs.quiesce-existing.result == 'success' || needs.quiesce-existing.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: azure-shared
+    # AKS Automatic + PaaS Bicep plus Flux extension plus tool/login overhead
+    # is ~45-50 min per smoke.yml's provision job; --refresh-images adds one
+    # community-registry resolution pass. 90 gives headroom for both a first
+    # provision and a version-bump re-run.
+    timeout-minutes: 90
+    env:
+      ENV_NAME: ${{ needs.declare.outputs.env }}
+      PROFILE: ${{ needs.declare.outputs.profile }}
+      LOCATION: ${{ needs.declare.outputs.location }}
+      INGRESS_MODE: ${{ needs.declare.outputs.ingress_mode }}
+      IMAGE_BRANCH: ${{ needs.declare.outputs.image_branch }}
+      NAME_SUFFIX: ${{ needs.declare.outputs.name_suffix }}
+      STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v5
+        with:
+          version: latest
+
+      - name: Install kubelogin
+        env:
+          KUBELOGIN_VERSION: v0.1.4
+        run: |
+          set -euo pipefail
+          curl -sSLo kubelogin.zip \
+            "https://github.com/Azure/kubelogin/releases/download/${KUBELOGIN_VERSION}/kubelogin-linux-amd64.zip"
+          unzip -q kubelogin.zip -d kubelogin
+          sudo install kubelogin/bin/linux_amd64/kubelogin /usr/local/bin/kubelogin
+          kubelogin --version
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: 'v3.16.2'
+
+      - name: Install Flux CLI
+        uses: fluxcd/flux2/action@main
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Pre-cache Azure tokens and resolve deployer OID
+        id: prelogin
+        # See smoke.yml for why every audience spi up reaches into is
+        # pre-cached while the 5-minute GitHub OIDC JWT is still fresh.
+        run: |
+          set -euo pipefail
+          az account get-access-token --resource https://management.azure.com -o none
+          az account get-access-token --resource https://graph.microsoft.com -o none
+          az account get-access-token --resource 6dae42f8-4368-4678-94ff-3960e28e3630 -o none
+          az account get-access-token --resource https://vault.azure.net -o none
+          OID=$(az ad sp show --id "${{ secrets.AZURE_CLIENT_ID }}" --query id -o tsv)
+          if [ -z "$OID" ]; then
+            echo "::error::Failed to resolve deployer service principal OID"
+            exit 1
+          fi
+          echo "oid=$OID" >> "$GITHUB_OUTPUT"
+
+      - name: Install exact release wheel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${STACK_VERSION#v}"
+          WHEEL="spi-${VERSION}-py3-none-any.whl"
+          gh release download "$STACK_VERSION" --repo "${{ github.repository }}" \
+            --pattern "$WHEEL" --dir release-wheel --clobber
+          pipx install "release-wheel/$WHEEL"
+          INSTALLED=$(spi --version)
+          echo "Installed: $INSTALLED"
+          [[ "$INSTALLED" == "spi $VERSION" ]] || {
+            echo "::error::installed CLI ($INSTALLED) does not match declared stackVersion ($STACK_VERSION)"
+            exit 1
+          }
+
+      - name: spi up
+        env:
+          SPI_DEPLOYER_OID: ${{ steps.prelogin.outputs.oid }}
+        run: |
+          set -euo pipefail
+          ARGS=(
+            --env "$ENV_NAME"
+            --profile "$PROFILE"
+            --location "$LOCATION"
+            --image-branch "$IMAGE_BRANCH"
+            --name-suffix "$NAME_SUFFIX"
+            --tag "$STACK_VERSION"
+            --refresh-images
+          )
+          # The declaration always carries an ingressMode, but 'bare' deploys
+          # no ingress substrate and spi up rejects the option (ADR-012).
+          if [ "$PROFILE" != "bare" ]; then
+            ARGS+=(--ingress-mode "$INGRESS_MODE")
+          fi
+          spi up "${ARGS[@]}"
+
+      - name: Capture diagnostics on failure
+        if: failure()
+        run: bash scripts/capture_diagnostics.sh "env-upgrade-provision-${{ github.run_id }}"
+
+      - name: Upload diagnostics artifact
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: env-upgrade-diagnostics-provision-${{ github.run_id }}
+          path: diagnostics/
+          if-no-files-found: ignore
+
+  verify:
+    name: verify
+    needs: [declare, provision]
+    if: needs.declare.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    environment: azure-shared
+    # Covers the wait_for_flux_ready.sh --timeout below plus setup and probe
+    # margin; see smoke.yml's verify job for the same core-profile budget.
+    timeout-minutes: 300
+    env:
+      ENV_NAME: ${{ needs.declare.outputs.env }}
+      STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v5
+        with:
+          version: latest
+
+      - name: Install kubelogin
+        env:
+          KUBELOGIN_VERSION: v0.1.4
+        run: |
+          set -euo pipefail
+          curl -sSLo kubelogin.zip \
+            "https://github.com/Azure/kubelogin/releases/download/${KUBELOGIN_VERSION}/kubelogin-linux-amd64.zip"
+          unzip -q kubelogin.zip -d kubelogin
+          sudo install kubelogin/bin/linux_amd64/kubelogin /usr/local/bin/kubelogin
+          kubelogin --version
+
+      - name: Install Flux CLI
+        uses: fluxcd/flux2/action@main
+
+      - name: Azure login (OIDC)
+        # Fresh OIDC JWT: the wait below can run long after spi up's own JWT
+        # would have expired.
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Pre-cache Azure tokens
+        run: |
+          set -euo pipefail
+          az account get-access-token --resource https://management.azure.com -o none
+          az account get-access-token --resource 6dae42f8-4368-4678-94ff-3960e28e3630 -o none
+
+      - name: Install exact release wheel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${STACK_VERSION#v}"
+          WHEEL="spi-${VERSION}-py3-none-any.whl"
+          gh release download "$STACK_VERSION" --repo "${{ github.repository }}" \
+            --pattern "$WHEEL" --dir release-wheel --clobber
+          pipx install "release-wheel/$WHEEL"
+          INSTALLED=$(spi --version)
+          echo "Installed: $INSTALLED"
+          [[ "$INSTALLED" == "spi $VERSION" ]] || {
+            echo "::error::installed CLI ($INSTALLED) does not match declared stackVersion ($STACK_VERSION)"
+            exit 1
+          }
+
+      - name: spi connect
+        run: spi connect --resource-group "spi-stack-${ENV_NAME}" --cluster "spi-stack-${ENV_NAME}"
+
+      - name: Resolve the upgraded source revision
+        id: revision
+        # Every Kustomization still reports Ready for the previous revision
+        # the moment spi up returns, so the wait below needs the commit it
+        # must see applied before convergence counts (ADR-029).
+        run: |
+          set -euo pipefail
+          set +e
+          STATUS_JSON=$(spi status --json)
+          STATUS_EXIT=$?
+          set -e
+          if [ "$STATUS_EXIT" -eq 1 ]; then
+            echo "$STATUS_JSON"
+            echo "::error::spi status --json failed (exit 1); see the contract-read error above"
+            exit 1
+          fi
+          RESOLVED=$(echo "$STATUS_JSON" | jq -r '.stack.resolvedCommit // ""')
+          if [ -z "$RESOLVED" ] || [ "$RESOLVED" = "null" ]; then
+            echo "::error::deploy record has no resolvedCommit; cannot gate convergence on the upgraded revision"
+            exit 1
+          fi
+          echo "revision=$RESOLVED" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Flux Kustomizations to be Ready
+        env:
+          EXPECT_REVISION: ${{ steps.revision.outputs.revision }}
+        run: |
+          bash scripts/wait_for_flux_ready.sh --timeout 13800 \
+            --expect-revision "$EXPECT_REVISION"
+
+      - name: Acceptance probe (gateway reachable)
+        if: needs.declare.outputs.profile != 'bare'
+        run: bash scripts/probe_gateway.sh gateway
+
+      - name: Acceptance probe (HTTPS terminates)
+        if: needs.declare.outputs.profile != 'bare'
+        run: bash scripts/probe_gateway.sh https
+
+      - name: Verify deployed stack matches the declaration
+        run: |
+          set -euo pipefail
+          set +e
+          STATUS_JSON=$(spi status --json)
+          STATUS_EXIT=$?
+          set -e
+          if [ "$STATUS_EXIT" -eq 1 ]; then
+            echo "$STATUS_JSON"
+            echo "::error::spi status --json failed (exit 1); see the contract-read error above"
+            exit 1
+          fi
+          echo "$STATUS_JSON" | jq .
+
+          ACTUAL_REF=$(echo "$STATUS_JSON" | jq -r .stack.ref)
+          RESOLVED=$(echo "$STATUS_JSON" | jq -r .stack.resolvedCommit)
+          SUSPENDED=$(echo "$STATUS_JSON" | jq -r .suspended)
+          READY=$(echo "$STATUS_JSON" | jq -r .ready)
+          MAINTENANCE=$(echo "$STATUS_JSON" | jq -r .maintenance)
+          REASON_CODE=$(echo "$STATUS_JSON" | jq -r .reason.code)
+
+          if [ "$ACTUAL_REF" != "$STACK_VERSION" ]; then
+            echo "::error::deployed ref ($ACTUAL_REF) does not match declared stackVersion ($STACK_VERSION)"
+            exit 1
+          fi
+          if [ -z "$RESOLVED" ] || [ "$RESOLVED" = "null" ]; then
+            echo "::error::deploy record has no resolvedCommit"
+            exit 1
+          fi
+          if [ "$SUSPENDED" != "true" ]; then
+            echo "::error::GitRepository is not suspended after a tag deployment"
+            exit 1
+          fi
+          # Exit 2 covers every deployability blocker, not just maintenance
+          # (ADR-030); confirm convergence held and maintenance is the only
+          # reason deploys are still refused before the next step clears it.
+          if [ "$READY" != "true" ]; then
+            echo "::error::environment is not ready (ready=$READY); refusing to clear maintenance"
+            exit 1
+          fi
+          if [ "$MAINTENANCE" != "true" ]; then
+            echo "::error::maintenance flag is not set (maintenance=$MAINTENANCE); refusing to clear"
+            exit 1
+          fi
+          if [ "$REASON_CODE" != "maintenance" ]; then
+            echo "::error::deployability is blocked by $REASON_CODE, not maintenance; refusing to clear"
+            exit 1
+          fi
+
+      - name: Clear maintenance
+        # Only reached once readiness, gateway probes, and the ref/suspend
+        # assertion above have all passed. Never wrapped in if: always().
+        run: spi maintenance clear
+
+      - name: Require deployable status
+        run: spi status --json
+
+      - name: Capture diagnostics on failure
+        if: failure()
+        run: bash scripts/capture_diagnostics.sh "env-upgrade-verify-${{ github.run_id }}"
+
+      - name: Upload diagnostics artifact
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: env-upgrade-diagnostics-verify-${{ github.run_id }}
+          path: diagnostics/
+          if-no-files-found: ignore

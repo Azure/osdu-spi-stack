@@ -9,9 +9,11 @@ being ready when they run. When it is not, the operator needs to know which
 verb applies, what it costs, and what it will not fix; improvising that during
 an incident is how a 20-minute refresh becomes a 4-hour rebuild.
 
-**Status.** This doc describes the target mechanism ahead of the code. Each
-section marks what is unbuilt; the roadmap at the bottom is the build order.
-Remove the marks as the phases land.
+**Status.** `env-upgrade` and `env-refresh` are implemented and described
+below as built. `env-reset` and `env-teardown`, the pin backstop, the drain,
+and the test-identity ensure step remain unbuilt; those sections still
+describe the target mechanism ahead of the code. Remove the remaining marks
+as those phases land.
 
 ![The backing environment at a glance](../diagrams/environment-lifecycle.png)
 
@@ -59,7 +61,7 @@ pin file starts the upgrade. Nothing else moves the stack-definition version
 
 | Verb | Workflow | Trigger | Budget |
 |---|---|---|---|
-| refresh | `env-refresh` | weekday cron 05:00 UTC, dispatch | 90 min |
+| refresh | `env-refresh` | weekday cron 05:00 UTC, dispatch | 4.5 h |
 | upgrade | `env-upgrade` | push to `main` touching the pin file, dispatch | 6 h |
 | reset | `env-reset` | Saturday cron 06:00 UTC, confirm-dispatch | 7 h |
 | teardown | `env-teardown` | protected dispatch | 1 h |
@@ -68,49 +70,63 @@ The budgets contain their worst cases: a reset spends up to 45 minutes on
 deletion, 75 minutes provisioning, and 230 minutes in the cold-cluster
 schema-load converge before probes; an upgrade whose `--refresh-images` pass
 moves the schema image spends up to 60 minutes in `spi up` plus the same
-230-minute converge, hence its 6-hour budget.
+230-minute converge, hence its 6-hour budget. A refresh is normally a
+re-reconcile of already-scheduled workloads, but its wait keeps the same
+230-minute allowance for a schema-load Job the standing environment re-runs,
+for example after a node recycle, hence its 4.5-hour budget.
 
-All four (unbuilt) share concurrency group `env-shared` with
+All four verbs share concurrency group `env-shared` with
 `cancel-in-progress: false`, so lifecycle operations serialize against each
 other; fork deploys serialize per service and are otherwise concurrent
-(ADR-031). GitHub concurrency groups are repository-scoped, so nothing here
-can serialize against fork jobs in other repositories: coordination with the
-fleet is the `maintenance` flag (which stops new deploys) plus the drain
-(which waits out in-flight ones; ADR-029). The workflows
-run under a GitHub environment `azure-shared` on the same app registration as
-the smoke pipeline, reusing its job shape: one fresh OIDC login per job, token
-pre-caching, `scripts/capture_diagnostics.sh` on failure
-([ci-smoke.md](ci-smoke.md)). The sweeper cannot touch the shared RG: it
-selects on the `spi-stack-ci-*` name pattern and the sweep-eligibility tag,
-and the shared RG carries neither.
+(ADR-031). Only `refresh` and `upgrade` are implemented; `reset` and
+`teardown` remain unbuilt, but reuse the same group when they land. GitHub
+concurrency groups are repository-scoped, so nothing here can serialize
+against fork jobs in other repositories: coordination with the fleet is the
+`maintenance` flag (which stops new deploys) plus, once fork onboarding
+lands, the drain (which will wait out in-flight ones; ADR-029). The
+workflows run under a GitHub environment `azure-shared` on the same app
+registration as the smoke pipeline, reusing its job shape: one fresh OIDC
+login per job, token pre-caching, `scripts/capture_diagnostics.sh` on
+failure ([ci-smoke.md](ci-smoke.md)). The sweeper cannot touch the shared
+RG: it selects on the `spi-stack-ci-*` name pattern and the sweep-eligibility
+tag, and the shared RG carries neither.
 
-**Refresh** proves the environment is serving and sweeps what fork CI left
-behind: set the `maintenance` flag and drain in-flight deploys (wait,
-bounded, until each ephemeral pin's owning run has finished; ADR-029), run
-the pin backstop (sweep ephemeral pins whose owning run has ended, then
-`spi service refresh` per GitHub-origin service;
-[fork-deployment.md](fork-deployment.md)), trigger `spi reconcile`, gate on
-`scripts/wait_for_flux_ready.sh` plus the gateway probes lifted from
-`smoke.yml`, and clear the flag only after they pass. A failed step leaves
-the flag set (ADR-029), so a red 05:00 UTC run blocks the day's fork deploys
-with a reason instead of letting them race a sick environment.
+**Refresh** (`env-refresh.yml`, implemented) proves the environment is
+serving: set the `maintenance` flag in a named quiesce step, run plain `spi
+reconcile` (preserving the version-pinned source and the current image
+lock; canonical images do not advance on this schedule during the
+pre-onboarding phase), gate on `scripts/wait_for_flux_ready.sh` plus the
+gateway probes shared with `smoke.yml` via `scripts/probe_gateway.sh`,
+assert the deployed ref and source suspension are unchanged, and clear the
+flag only after every check passes. A failed step leaves the flag set
+(ADR-029), so a red 05:00 UTC run blocks the day's fork deploys with a
+reason instead of letting them race a sick environment. The pin backstop
+(sweep ephemeral pins whose owning run has ended, then `spi service refresh`
+per GitHub-origin service; [fork-deployment.md](fork-deployment.md)) and the
+drain insert between the quiesce step and the reconcile once fork onboarding
+lands, without changing the workflow's shape.
 
-**Upgrade** is `spi up --env shared --tag <new> --refresh-images` re-run on
-the standing environment, preceded by the `maintenance` flag, the drain, and
-a lock snapshot (`kubectl get cm osdu-image-lock -n osdu-flux -o yaml`
-uploaded as a workflow artifact), and followed by the same wait, probes, and
-flag clear. The workflow reads the declaration from `main`, then installs
-and runs the `stackVersion` release wheel, which carries its own Bicep, so
+**Upgrade** (`env-upgrade.yml`, implemented) is `spi up --env shared --tag
+<new> --refresh-images` re-run on the standing environment. For an existing
+environment, it is preceded by `spi connect`, the `maintenance` flag, and a
+lock snapshot (`kubectl get cm osdu-image-lock -n osdu-flux -o yaml` uploaded
+as a workflow artifact); a first provision skips those steps and lets `spi up
+--tag` create the deploy record with maintenance already set. Both paths are
+followed by the same wait, probes, and flag clear. The workflow reads the
+declaration from `main` in a `declare` job, then every later job installs and
+runs the `stackVersion` release wheel, which carries its own Bicep, so
 the executing code and the Flux ref name the same release and the deploy
 record carries the stamped CLI version (ADR-028). The source rollover is
 revision-verified: resume the suspended source, reconcile, check that
-`GitRepository.status.artifact.revision` names the tag's commit, converge,
-write the deploy record, suspend again (ADR-029). The `--refresh-images`
-pass moves canonical images at the same time, but the bump pins only the
-stack-definition axis; canonicals also advance between upgrades on the
-weekday refresh (ADR-033).
+`GitRepository.status.artifact.revision` names the tag's commit, suspend the
+source again, then write the deploy record with maintenance still enabled
+(ADR-029). The verification job separately waits for workload convergence
+and clears maintenance only after its probes pass. The `--refresh-images`
+pass moves canonical images during an upgrade, but the bump pins only the
+stack-definition axis. Weekday refreshes preserve those canonicals until the
+future fork-onboarding phase adds selective canonical refresh (ADR-033).
 
-**Reset** is teardown plus cold provision at the pinned tag: flag, drain,
+**Reset** (unbuilt) is teardown plus cold provision at the pinned tag: flag, drain,
 snapshot the lock, `spi down`, poll until `az group exists` reports false
 (the CLI's own wait covers acknowledgement only), then `spi up --tag <pin>
 --name-suffix <declared>` and the cold-cluster wait with the 155-minute
@@ -125,26 +141,33 @@ to deploys only after the probes pass.
 
 ## Surfaces fork CI consumes
 
-- `spi status --json` (unbuilt): `ready` for convergence, `deployable` as the
+- `spi status --json`: `ready` for convergence, `deployable` as the
   deploy gate, a typed reason, the deployed version, and the `maintenance`
-  flag. Exit 0/2/1 (ADR-030).
+  flag. Exit 0/2/1 (ADR-030). Implemented; both lifecycle workflows gate on
+  it.
 - `spi info --json`: endpoints, partitions, Azure coordinates, secret
   references. In `azure` ingress mode the FQDN embeds the environment's name
   suffix; the declaration file persists the suffix across resets (ADR-028),
   so the hostname is stable, and consumers still re-read it per run rather
   than caching a value.
-- `spi connect`, `spi service pin/verify/reset/refresh` (unbuilt): the deploy
-  seam. The sequence and its recovery paths are
-  [fork-deployment.md](fork-deployment.md); the fork-side jobs live in the
-  `Azure/osdu-spi` template's workflows, not here.
+- `spi connect`: implemented; lifecycle jobs use it after a fresh OIDC login
+  when reconnecting to an initialized deployment. `spi up` owns the cluster
+  connection during provision, and the upgrade workflow uses a direct,
+  short-lived AKS connection only to recognize an incomplete first provision
+  that has no deploy record yet.
+- `spi service pin/verify/reset/refresh` (unbuilt beyond the existing
+  `pin`/`reset`): the fork deploy seam. The sequence and its recovery paths
+  are [fork-deployment.md](fork-deployment.md); the fork-side jobs live in
+  the `Azure/osdu-spi` template's workflows, not here.
 
 ## Recipes
 
-Stand up the shared environment (after the versioning phase lands). Install
-the release wheel matching `stackVersion` first: the wheel carries the Bicep
-and stamps the CLI version the deploy record audits, where a source checkout
-would record `0.0.0+source`. Each argument comes from the declaration file;
-nothing is typed twice:
+Stand up the shared environment. This is what `env-upgrade.yml`'s
+`provision` job automates; run it by hand only to reproduce or debug a
+run outside CI. Install the release wheel matching `stackVersion` first: the
+wheel carries the Bicep and stamps the CLI version the deploy record audits,
+where a source checkout would record `0.0.0+source`. Each argument comes
+from the declaration file; nothing is typed twice:
 
 ```bash
 decl=ops/environments/shared.yaml
@@ -156,9 +179,15 @@ spi up \
   --image-branch "$(yq .imageBranch $decl)" \
   --name-suffix "$(yq .nameSuffix $decl)" \
   --tag "$(yq .stackVersion $decl)"
-bash scripts/wait_for_flux_ready.sh --timeout 13800
+bash scripts/wait_for_flux_ready.sh --timeout 13800 \
+  --expect-revision "$(spi status --json | jq -r .stack.resolvedCommit)"
 spi status --json | jq .ready   # true when converged
 ```
+
+Drop `--ingress-mode` when the declaration's profile is `bare`: that profile
+deploys no ingress substrate and `spi up` rejects the option (ADR-012).
+`--expect-revision` is what makes the wait mean anything on an upgrade,
+where every Kustomization is still Ready for the revision being replaced.
 
 This recipe is provision-only: the fresh environment holds `maintenance`
 (ADR-029) until the `env-refresh` workflow, or its manual dispatch, runs the
@@ -180,16 +209,20 @@ gh run watch
 
 ## Implementation roadmap
 
-1. **Foundations** (unbuilt): `spi status --json`; chart digest rendering and
-   the `render_lock_with_pins` digest fix; the generalized pin surface
-   (`--image`, `verify`, `refresh`, ownership-checked `reset`, `connect`);
-   the two fork RBAC Roles. Exit test: hand-pin a partition GHCR digest
-   against a standing environment and reset it.
-2. **Versioning** (unbuilt): `repoTag` in `infra/flux.bicep`, `spi up --tag`,
-   the deploy record, the tri-state `--refresh-images`, the pin file; stand up
-   `shared` at the release tag then in place.
-3. **Ops workflows** (unbuilt): `env-refresh`, `env-upgrade`, `env-reset`,
-   `env-teardown`, the bump-PR job, the test-identity ensure step.
+1. **Foundations** (partially built): `spi status --json`, `spi connect`,
+   chart digest rendering, and digest-preserving lock overlays are
+   implemented (ADR-030). Still unbuilt: the generalized pin surface
+   (`--image`, `verify`, `refresh`, ownership-checked `reset`) and the two
+   fork RBAC Roles. Exit test: hand-pin a partition GHCR digest against a
+   standing environment and reset it.
+2. **Versioning** (built for the backing environment): `repoTag` in
+   `infra/flux.bicep`, `spi up --tag`, the deploy record, the declaration
+   schema (`src/spi/environment.py`), and tri-state image refresh are
+   implemented; `shared` stands up at the release tag via `env-upgrade`.
+3. **Ops workflows** (mostly built): `env-refresh`, `env-upgrade`, and the
+   bump-PR job are implemented. Still unbuilt: `env-reset`, `env-teardown`,
+   the test-identity ensure step, and the pin backstop/drain insertion
+   points noted above.
 4. **Onboarding** (unbuilt): `spi onboard`; onboard `osdu-spi-partition`; the
    template-side deploy, integration-test, and restore jobs under the reserved
    check names.
@@ -209,9 +242,13 @@ gh run watch
 
 ## Source files
 
-- `ops/environments/shared.yaml` (planned)
+- `ops/environments/shared.yaml` (planned), `ops/environments/README.md`
+- `src/spi/environment.py`, `src/spi/deploy_record.py`
 - `infra/flux.bicep`
 - `src/spi/cli.py`, `src/spi/deploy.py`, `src/spi/status.py`,
   `src/spi/pins.py`, `src/spi/images.py`
-- `.github/workflows/release.yml`, `.github/workflows/smoke.yml`
-- `scripts/wait_for_flux_ready.sh`, `scripts/capture_diagnostics.sh`
+- `.github/workflows/release.yml`, `.github/workflows/smoke.yml`,
+  `.github/workflows/env-upgrade.yml`, `.github/workflows/env-refresh.yml`
+- `scripts/export_environment.py`, `scripts/wait_for_flux_ready.sh`,
+  `scripts/probe_gateway.sh`, `scripts/capture_diagnostics.sh`
+- `.release-please-config.json`, `docs/tag-ruleset.json`

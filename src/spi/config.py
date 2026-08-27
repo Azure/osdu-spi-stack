@@ -81,6 +81,7 @@ class Config(BaseModel):
     env: str = ""
     repo_url: str = "https://github.com/Azure/osdu-spi-stack.git"
     repo_branch: str = "main"
+    repo_tag: str = ""
     cluster_name: str = BASE_NAME
     # Azure
     resource_group: str = BASE_NAME

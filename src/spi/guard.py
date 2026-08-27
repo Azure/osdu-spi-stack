@@ -23,7 +23,7 @@ import os
 import typer
 
 from .config import BASE_NAME
-from .console import console
+from .console import console, error_console
 from .shell import kubectl_json, run_process
 
 
@@ -93,7 +93,9 @@ def verify_spi_cluster() -> str:
     """
     if os.environ.get("SPI_SKIP_GUARD", "") == "1":
         ctx = _get_current_context() or "unknown"
-        console.print(
+        # Diagnostic, not command output: keep it off stdout so `--json` callers
+        # (status, info) still get parseable output on a successful bypass.
+        error_console.print(
             f"  [warning]Cluster guard bypassed (SPI_SKIP_GUARD=1), context: {ctx}[/warning]"
         )
         return ctx

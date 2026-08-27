@@ -16,6 +16,7 @@
 
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import typer
@@ -26,26 +27,23 @@ from . import __version__
 from .bootstrap import create_istio_revision_configmap
 from .checks import PREREQ_TOOLS, check_prerequisites
 from .config import Config, IngressMode, Profile
-from .console import console, display_result, display_yaml
+from .console import console, display_result
 from .guard import get_suspend_status, verify_spi_cluster
 from .images import (
     DEFAULT_IMAGE_BRANCH,
-    IMAGE_LOCK_CONFIGMAP,
-    IMAGE_LOCK_NAMESPACE,
     ImageResolutionError,
-    image_lock_missing_schema_load,
     resolve_image_lock,
-    schema_load_lock_patch,
 )
 from .ingress import resolve_acme_email, resolve_ingress_mode
 from .pins import (
     PinError,
+    apply_image_lock,
+    apply_schema_load_backfill,
     live_pins,
     pin_service,
-    render_lock_with_pins,
     reset_service,
 )
-from .shell import kubectl_apply_yaml, run_command
+from .shell import run_command
 
 app = typer.Typer(
     name="spi",
@@ -57,6 +55,9 @@ service_app = typer.Typer(
     help="Pin individual services to merge-request pipeline images for validation."
 )
 app.add_typer(service_app, name="service")
+
+maintenance_app = typer.Typer(help="Manage backing-environment maintenance state.")
+app.add_typer(maintenance_app, name="maintenance")
 
 
 def _version_callback(value: bool) -> None:
@@ -91,7 +92,10 @@ def _show_config(config: Config):
     table.add_row("Resource Group", config.resource_group)
     table.add_row("Location", config.location)
     table.add_row("Repository", config.repo_url)
-    table.add_row("Branch", config.repo_branch)
+    if config.repo_tag:
+        table.add_row("Tag", config.repo_tag)
+    else:
+        table.add_row("Branch", config.repo_branch)
     table.add_row("Data Partitions", ", ".join(config.data_partitions))
     table.add_row("Key Vault", config.keyvault_name)
     if config.profile is not Profile.BARE:
@@ -184,66 +188,14 @@ def _reconcile_kustomization(name: str) -> None:
 
 
 def _backfill_schema_load_lock(image_branch: str) -> None:
-    """Add the schema-load entries to a lock generated before it joined.
-
-    The schema-load Job substitutes SCHEMA_LOAD_IMAGE_REPOSITORY and
-    SCHEMA_LOAD_IMAGE_TAG with no static fallback (ADR-013), so a cluster whose
-    osdu-image-lock predates that change has to have the lock updated before
-    Flux applies the manifest. The loader is resolved from the schema tag the
-    lock already pins, leaving every other service pin untouched.
-    """
-    result = run_command(
-        [
-            "kubectl",
-            "get",
-            "configmap",
-            IMAGE_LOCK_CONFIGMAP,
-            "-n",
-            IMAGE_LOCK_NAMESPACE,
-            "--ignore-not-found",
-            "-o",
-            "json",
-        ],
-        description=f"Read {IMAGE_LOCK_CONFIGMAP} ConfigMap",
-        display=False,
-    )
-    raw = result.stdout.strip()
-    if not raw:
-        # minimal/bare profiles never create the lock; nothing to backfill.
-        return
-
+    """Backfill schema-load through the shared image-lock CAS primitive."""
     try:
-        lock_data = json.loads(raw).get("data") or {}
-    except json.JSONDecodeError:
-        console.print(f"[warning]{IMAGE_LOCK_CONFIGMAP} is not readable as JSON.[/warning]")
-        return
-
-    if not image_lock_missing_schema_load(lock_data):
-        return
-
-    console.print("\n[bold]Backfilling schema-load into the image lock...[/bold]")
-    try:
-        patch = schema_load_lock_patch(lock_data, branch=image_branch)
-    except ImageResolutionError as exc:
-        console.print(f"[warning]Unable to backfill the schema-load image: {exc}[/warning]")
-        console.print("[dim]Run 'spi reconcile --refresh-images' to resolve a fresh lock.[/dim]")
-        return
-
-    run_command(
-        [
-            "kubectl",
-            "patch",
-            "configmap",
-            IMAGE_LOCK_CONFIGMAP,
-            "-n",
-            IMAGE_LOCK_NAMESPACE,
-            "--type=merge",
-            "-p",
-            json.dumps({"data": patch}),
-        ],
-        description=f"Backfill schema-load entries in {IMAGE_LOCK_CONFIGMAP}",
-    )
-    display_result(f"{IMAGE_LOCK_CONFIGMAP} ConfigMap updated with schema-load")
+        changed = apply_schema_load_backfill(branch=image_branch)
+    except (ImageResolutionError, PinError) as exc:
+        console.print(f"[error]Unable to backfill the schema-load image: {exc}[/error]")
+        raise typer.Exit(code=1)
+    if changed:
+        display_result("osdu-image-lock ConfigMap updated with schema-load")
 
 
 def _build_config(
@@ -251,6 +203,7 @@ def _build_config(
     env: str = "",
     repo_url: str = "https://github.com/Azure/osdu-spi-stack.git",
     branch: str = "main",
+    tag: str = "",
     location: str = "westus3",
     data_partitions: Optional[List[str]] = None,
     ingress_mode: IngressMode = IngressMode.AZURE,
@@ -265,6 +218,7 @@ def _build_config(
         profile=profile,
         repo_url=repo_url,
         repo_branch=branch,
+        repo_tag=tag,
         location=location,
         data_partitions=data_partitions or ["opendes"],
         ingress_mode=ingress_mode,
@@ -274,7 +228,11 @@ def _build_config(
     )
 
 
-def _resolve_name_suffix(env: str, for_up: bool) -> str:
+def _resolve_name_suffix(
+    env: str,
+    for_up: bool,
+    requested_suffix: str | None = None,
+) -> str:
     """Resolve the per-deployment name suffix from the resource group tag.
 
     Lookup order:
@@ -294,22 +252,40 @@ def _resolve_name_suffix(env: str, for_up: bool) -> str:
     from .config import generate_name_suffix
 
     if not env:
+        if requested_suffix:
+            raise typer.BadParameter("--name-suffix requires --env", param_hint="--name-suffix")
         return ""
+    if requested_suffix is not None:
+        if not re.fullmatch(r"[a-z0-9]{5}", requested_suffix):
+            raise typer.BadParameter(
+                "must be exactly five lowercase alphanumeric characters",
+                param_hint="--name-suffix",
+            )
 
     from .azure_infra import detect_legacy_keyvault, read_rg_suffix_tag, write_rg_suffix_tag
 
     rg = f"spi-stack-{env}"
     existing = read_rg_suffix_tag(rg)
     if existing is not None:
+        if requested_suffix is not None and requested_suffix != existing:
+            raise typer.BadParameter(
+                f"does not match the resource group's recorded suffix {existing!r}",
+                param_hint="--name-suffix",
+            )
         return existing
 
     # RG missing or RG present without our tag. Distinguish legacy from fresh.
     if detect_legacy_keyvault(rg, env):
+        if requested_suffix:
+            raise typer.BadParameter(
+                "cannot be set on a legacy unsuffixed environment",
+                param_hint="--name-suffix",
+            )
         if for_up:
             write_rg_suffix_tag(rg, "")
         return ""
 
-    suffix = generate_name_suffix()
+    suffix = requested_suffix or generate_name_suffix()
     if for_up:
         # Brand-new RGs get tagged by create_resource_group via --tags.
         # If the RG already exists (resumed/failed deploy with no legacy KV),
@@ -327,13 +303,18 @@ def _resolve_name_suffix(env: str, for_up: bool) -> str:
 
 def _resolve_up_context(
     env: str,
+    requested_suffix: str | None = None,
 ) -> Tuple[str, Dict[str, Any], Tuple[str, str]]:
     """Resolve read-only Azure identity state before suffix persistence."""
     from .azure_infra import _get_azure_account, _resolve_deployer_principal
 
     account = _get_azure_account()
     deployer_principal = _resolve_deployer_principal(account)
-    name_suffix = _resolve_name_suffix(env, for_up=True)
+    name_suffix = _resolve_name_suffix(
+        env,
+        for_up=True,
+        requested_suffix=requested_suffix,
+    )
     return name_suffix, account, deployer_principal
 
 
@@ -398,7 +379,16 @@ def up(
         "--repo",
         help="Git repository URL",
     ),
-    branch: str = typer.Option("main", "--branch", help="Git branch"),
+    branch: Optional[str] = typer.Option(
+        None,
+        "--branch",
+        help="Git branch. Defaults to main when --tag is not used.",
+    ),
+    tag: Optional[str] = typer.Option(
+        None,
+        "--tag",
+        help="Immutable release tag for the GitOps source, e.g. v0.6.0.",
+    ),
     location: str = typer.Option(
         "westus3",
         "--location",
@@ -435,18 +425,45 @@ def up(
         help="Preview Azure PaaS changes via Bicep what-if. Creates the resource group "
         "(required by what-if) but skips AKS, Kubernetes bootstrap, and GitOps.",
     ),
-    refresh_images: bool = typer.Option(
-        True,
+    refresh_images: Optional[bool] = typer.Option(
+        None,
         "--refresh-images/--no-refresh-images",
-        help="Resolve current OSDU master image tags and write the Flux image lock.",
+        help="Refresh canonical service images, or preserve an existing image lock by default.",
     ),
     image_branch: str = typer.Option(
         DEFAULT_IMAGE_BRANCH,
         "--image-branch",
         help="OSDU image branch suffix to resolve from the community registry.",
     ),
+    name_suffix: Optional[str] = typer.Option(
+        None,
+        "--name-suffix",
+        help="Stable five-character resource-name suffix for a declared environment.",
+    ),
 ):
     """Provision Azure infrastructure and deploy the OSDU SPI stack."""
+    if tag and branch is not None:
+        raise typer.BadParameter(
+            "--tag cannot be combined with an explicit --branch",
+            param_hint="--tag",
+        )
+    if tag and not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+        raise typer.BadParameter(
+            "must match vX.Y.Z",
+            param_hint="--tag",
+        )
+    if tag and __version__ == "0.0.0+source":
+        raise typer.BadParameter(
+            "requires the released spi wheel matching the requested tag",
+            param_hint="--tag",
+        )
+    if tag and tag.removeprefix("v") != __version__:
+        raise typer.BadParameter(
+            f"requires spi {tag.removeprefix('v')}, but this process is spi {__version__}",
+            param_hint="--tag",
+        )
+    resolved_branch = branch or "main"
+
     if profile is None:
         profile = Profile.CORE
 
@@ -476,13 +493,17 @@ def up(
 
     # Resolve the deployer before suffix persistence so an identity failure
     # cannot mutate an existing untagged resource group.
-    name_suffix, azure_account, deployer_principal = _resolve_up_context(env)
+    name_suffix, azure_account, deployer_principal = _resolve_up_context(
+        env,
+        requested_suffix=name_suffix,
+    )
 
     config = _build_config(
         profile=profile,
         env=env,
         repo_url=repo_url,
-        branch=branch,
+        branch=resolved_branch,
+        tag=tag or "",
         location=location,
         data_partitions=data_partitions,
         ingress_mode=resolved_ingress,
@@ -519,10 +540,16 @@ def up(
             console.print(
                 "\n[success]SPI Stack deployment initiated. Flux is reconciling in the background.[/success]"
             )
-            console.print(
-                "[dim]Environment is pinned to the current commit. "
-                "Run 'spi reconcile' to pull updates when ready.[/dim]\n"
-            )
+            if config.repo_tag:
+                console.print(
+                    f"[dim]Environment is pinned to {config.repo_tag} with maintenance enabled. "
+                    "Clear maintenance only after readiness and probes pass.[/dim]\n"
+                )
+            else:
+                console.print(
+                    "[dim]Environment is pinned to the resolved branch commit. "
+                    "Run 'spi reconcile' to re-apply it when ready.[/dim]\n"
+                )
     except Exception as e:
         console.print(f"\n[error]Deployment failed: {e}[/error]")
         raise typer.Exit(code=1)
@@ -548,6 +575,29 @@ def down(
 
 
 @app.command()
+def connect(
+    resource_group: str = typer.Option(
+        ...,
+        "--resource-group",
+        help="Resource group containing the AKS cluster.",
+    ),
+    cluster: str = typer.Option(
+        ...,
+        "--cluster",
+        help="AKS cluster name.",
+    ),
+):
+    """Connect kubectl to an existing SPI Stack cluster."""
+    check_prerequisites(["az", "kubectl", "kubelogin"])
+
+    from .azure_infra import connect_cluster
+
+    connect_cluster(resource_group, cluster)
+    ctx = verify_spi_cluster()
+    console.print(f"[success]Connected to SPI Stack cluster: {ctx}[/success]")
+
+
+@app.command()
 def info(
     show_secrets: bool = typer.Option(
         False, "--show-secrets", help="Display live Kubernetes credentials"
@@ -570,17 +620,69 @@ def info(
 @app.command()
 def status(
     watch: bool = typer.Option(False, "--watch", "-w", help="Continuous refresh"),
+    output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
 ):
     """Show deployment health and reconciliation progress."""
-    ctx = verify_spi_cluster()
-    console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+    if watch and output_json:
+        raise typer.BadParameter(
+            "--watch cannot be combined with --json",
+            param_hint="--json",
+        )
 
-    from .status import render_status, watch_status
+    ctx = verify_spi_cluster()
+
+    from .status import StatusError, collect_status, render_status, status_exit_code, watch_status
 
     if watch:
+        console.print(f"  [dim]Cluster context: {ctx}[/dim]")
         watch_status()
-    else:
-        render_status()
+        return
+
+    try:
+        snapshot = collect_status()
+    except StatusError as exc:
+        if output_json:
+            typer.echo(str(exc), err=True)
+        else:
+            console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+
+    if output_json:
+        print(json.dumps(snapshot.to_dict(), indent=2))
+        raise typer.Exit(code=status_exit_code(snapshot))
+
+    console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+    render_status(snapshot)
+
+
+@maintenance_app.command("set")
+def maintenance_set():
+    """Prevent deploys while lifecycle maintenance is in progress."""
+    verify_spi_cluster()
+
+    from .deploy_record import DeployRecordError, set_maintenance
+
+    try:
+        set_maintenance(True)
+    except DeployRecordError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+    console.print("[warning]Environment maintenance enabled.[/warning]")
+
+
+@maintenance_app.command("clear")
+def maintenance_clear():
+    """Allow deploys after readiness and probes have passed."""
+    verify_spi_cluster()
+
+    from .deploy_record import DeployRecordError, set_maintenance
+
+    try:
+        set_maintenance(False)
+    except DeployRecordError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+    console.print("[success]Environment maintenance cleared.[/success]")
 
 
 @app.command()
@@ -680,7 +782,11 @@ def reconcile(
             )
 
         try:
-            pins = live_pins()
+            pins = apply_image_lock(
+                resolved,
+                image_branch,
+                description="Refresh the osdu-image-lock ConfigMap",
+            )
         except PinError as exc:
             console.print(f"[error]{exc}[/error]")
             console.print(
@@ -688,9 +794,6 @@ def reconcile(
                 "unreadable; a refresh could silently revert an active pin.[/error]"
             )
             raise typer.Exit(code=1)
-        image_lock_yaml = render_lock_with_pins(resolved, image_branch, pins)
-        display_yaml(image_lock_yaml, "ConfigMap: osdu-image-lock")
-        kubectl_apply_yaml(image_lock_yaml, "apply osdu-image-lock ConfigMap")
         display_result("osdu-image-lock ConfigMap updated")
         for name, pin in sorted(pins.items()):
             console.print(

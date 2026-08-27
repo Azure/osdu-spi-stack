@@ -38,8 +38,12 @@ PaaS state.
   GitRepository sits suspended (ADR-014), and a `Ready=True` wait can pass
   on the stale cached artifact after `repositoryRef` changes. The upgrade
   sequence is fixed: resume the source, request reconciliation, verify
-  `status.artifact.revision` names the tag's commit, converge, write the
-  deploy record, suspend again.
+  `status.artifact.revision` names the tag's commit, suspend again, and
+  write the deploy record. The convergence wait carries the same
+  requirement one level down: every Kustomization still reports `Ready=True`
+  for the previous revision until it reconciles, so convergence counts only
+  once `status.lastAppliedRevision` names the recorded commit. Convergence
+  and the probes follow under the still-set `maintenance` flag.
 - **No partial reset exists.** The weekly teardown-and-rebuild at the pinned
   tag sheds accreted state in both layers and keeps the rebuild path
   continuously proven at the `core` profile, which the nightly smoke (default

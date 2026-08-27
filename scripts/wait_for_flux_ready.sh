@@ -28,6 +28,10 @@
 #   4. Dumps `spi status` every --status-interval seconds for the rich
 #      table view in the log and one final time on exit (success or fail).
 #
+# An upgrade re-points the source at a new revision while every Kustomization
+# still reports Ready for the previous one, so --expect-revision additionally
+# requires status.lastAppliedRevision to name the given commit (ADR-029).
+#
 # Exit codes:
 #   0  every Kustomization Ready=True
 #   1  --timeout elapsed, or --grace elapsed before any Kustomization appeared
@@ -40,11 +44,13 @@ TIMEOUT=1800
 HEARTBEAT=30
 STATUS_INTERVAL=180
 GRACE=600
+EXPECT_REVISION=""
 
 usage() {
     cat <<'EOF'
 Usage: wait_for_flux_ready.sh [--timeout SECONDS] [--heartbeat SECONDS]
                               [--status-interval SECONDS] [--grace SECONDS]
+                              [--expect-revision COMMIT]
 EOF
 }
 
@@ -54,6 +60,7 @@ while [ $# -gt 0 ]; do
         --heartbeat) HEARTBEAT="$2"; shift 2 ;;
         --status-interval) STATUS_INTERVAL="$2"; shift 2 ;;
         --grace) GRACE="$2"; shift 2 ;;
+        --expect-revision) EXPECT_REVISION="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -69,7 +76,12 @@ done
 fmt_mmss() { printf '%02d:%02d' $(( $1 / 60 )) $(( $1 % 60 )); }
 
 dump_status() {
-    if command -v uv >/dev/null 2>&1; then
+    # Prefer an installed `spi` (the lifecycle workflows' declared release
+    # wheel); fall back to `uv run spi` only for a source checkout that has
+    # never installed the CLI, e.g. local development or the Smoke job.
+    if command -v spi >/dev/null 2>&1; then
+        spi status 2>&1 || true
+    elif command -v uv >/dev/null 2>&1; then
         uv run spi status 2>&1 || true
     else
         kubectl get kustomizations -A 2>&1 || true
@@ -114,7 +126,11 @@ refresh_federated_assertion() {
     fi
 }
 
-print_banner "wait_for_flux_ready · timeout $(fmt_mmss "$TIMEOUT") · heartbeat ${HEARTBEAT}s · spi status every ${STATUS_INTERVAL}s"
+BANNER="wait_for_flux_ready · timeout $(fmt_mmss "$TIMEOUT") · heartbeat ${HEARTBEAT}s · spi status every ${STATUS_INTERVAL}s"
+if [ -n "$EXPECT_REVISION" ]; then
+    BANNER="$BANNER · revision $EXPECT_REVISION"
+fi
+print_banner "$BANNER"
 
 while :; do
     elapsed=$(( SECONDS - START ))
@@ -126,7 +142,7 @@ while :; do
 
     if [ "$elapsed" -ge "$TIMEOUT" ]; then
         echo
-        echo "ERROR: timed out after $(fmt_mmss "$elapsed") waiting for Kustomizations to become Ready" >&2
+        echo "ERROR: timed out after $(fmt_mmss "$elapsed") waiting for Kustomizations to become Ready${EXPECT_REVISION:+ at $EXPECT_REVISION}" >&2
         echo "Final status:" >&2
         dump_status >&2
         exit 1
@@ -166,16 +182,16 @@ while :; do
         fi
     else
         SEEN_KUSTOMIZATIONS=1
-        per_layer=$(jq -c '
+        per_layer=$(jq -c --arg rev "$EXPECT_REVISION" '
+            def converged:
+                ((.status.conditions // []) | any(.type == "Ready" and .status == "True"))
+                and ($rev == "" or ((.status.lastAppliedRevision // "") | contains($rev)));
             .items
             | group_by(.metadata.labels["spi-stack.layer"] // "-")
             | map({
                 layer: (.[0].metadata.labels["spi-stack.layer"] // "-"),
                 total: length,
-                ready: ([ .[]
-                    | select((.status.conditions // [])[]?
-                        | select(.type == "Ready" and .status == "True"))
-                ] | length)
+                ready: ([ .[] | select(converged) ] | length)
               })
             | sort_by(.layer)
         ' <<<"$ksts_json")
