@@ -53,10 +53,12 @@ annotation schema live in `docs/design/fork-deployment.md`.
   tag pruning as a side effect.
 - **Concurrency is per service; the lock write is compare-and-set.** Deploy
   jobs serialize per service; nothing serializes across services. All
-  services share one lock object, so every pin, reset, and refresh submits
-  its update conditioned on the lock's `resourceVersion` and retries on
-  conflict; two services pinning at once serialize at the API server instead
-  of overwriting each other's pin records. Bootstrap dependencies
+  services share one lock object and one pins annotation, so every lock
+  mutation (pin, reset, refresh, and the render paths in `spi up` and
+  `--refresh-images`) submits its update conditioned on the lock's
+  `resourceVersion` and retries on conflict; two services pinning at once
+  serialize at the API server instead of the later annotation write dropping
+  the earlier pin's ownership and restore target. Bootstrap dependencies
   (partition, entitlements) need no wider lock: HelmRelease rollout
   semantics keep the old pods serving until new pods pass readiness, and a
   failed rollout remediates back, so an image that fails readiness never
@@ -86,8 +88,8 @@ services under the same owner, the mechanism ADR-017 already declined.
   the acceptance jobs' dependency health gate absorbs the window rather than
   any lock preventing it. A candidate that passes readiness but is
   behaviorally broken can also fail a concurrently running sibling suite;
-  the accepted recovery is that sibling's re-run after restore, not
-  isolation.
+  the exposure lasts until the pin's restore or sweep, and the accepted
+  recovery is that sibling's re-run, not isolation.
 - The `ephemeral` marker plus the recorded owner are the boundary automation
   respects: restore and sweep act only on pins they can prove theirs or
   stale, and an operator's investigation pin survives the night.

@@ -25,12 +25,13 @@ A service's canonical source flips from community GitLab to its fork's GHCR
 - The flip lands after the fork's deploy and test gates are active, so the
   image line the environment runs is the one those gates certify.
 - The weekday refresh re-resolves GitHub-origin canonicals (ADR-029), and
-  that cadence is load-bearing against GHCR retention: continued fork builds
-  move `main-snapshot` to newer package versions, and the retention job then
+  that cadence matters against GHCR retention: continued fork builds move
+  `main-snapshot` to newer package versions, and the retention job then
   deletes older `sha-*`-only versions outright, digest included. The refresh
-  keeps the environment's canonical current so it never ages into that
-  deletion bucket; a genuinely quiet fork is safe without it, because its
-  newest version keeps the `main-snapshot` tag and is not selected.
+  extends no version's life; it moves an environment that fell behind up to
+  the current version before its recorded one lands in that deletion bucket.
+  A genuinely quiet fork needs no such protection: its newest version keeps
+  the `main-snapshot` tag and is never selected.
 - A pin's restore target is captured when the pin is written (`canonical_*`,
   ADR-017), so reset restores the capture and refresh applies the policy: a
   flip while a pin is active does not retarget the pin, and the restored

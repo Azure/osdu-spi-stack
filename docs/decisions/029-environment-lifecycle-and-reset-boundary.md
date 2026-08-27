@@ -69,9 +69,11 @@ PaaS state.
   (ADR-031), and the workflow holds a quiescence interval longer than that
   write-and-recheck path after the pin set empties before mutating. A drain
   that exhausts its window aborts with the flag still set; it never proceeds
-  into mutation. `spi up` preserves the recorded `maintenance` value when it
-  rewrites the deploy record, so an upgrade cannot reopen the environment
-  before its probes pass.
+  into mutation. The one case the recheck cannot cancel, a runner dying
+  between its write and its recheck, leaves a pin the drain scan still sees
+  and the sweep still owns. `spi up` preserves the recorded `maintenance`
+  value when it rewrites the deploy record, so an upgrade cannot reopen the
+  environment before its probes pass.
 - **Test identities belong to the lifecycle.** Acceptance-tester service
   principals are Entra objects and outlive the RG. The Key Vault returns
   through the soft-delete recovery in `spi up` because the declaration file
@@ -100,6 +102,12 @@ Rejected: clear the `maintenance` flag on a workflow's failure path. Restores
 availability without an operator, but reopens deploys against an environment
 whose upgrade or rebuild did not finish; unavailability with a reason is the
 safer failure.
+
+Rejected: a cluster-side Lease serializing pin admission against the
+maintenance transition. A genuinely atomic gate, but it adds a coordination
+object whose crashed holder blocks every deploy and lifecycle run; the
+recheck-plus-quiescence protocol converges without one, and the drain scan
+covers the single orphan case it leaves.
 
 ## Consequences
 
