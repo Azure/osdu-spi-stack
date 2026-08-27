@@ -36,18 +36,21 @@ authorization names each identity explicitly.
   - `spi-fork-deployer` in `osdu-flux`: `configmaps` get/list; `configmaps`
     patch restricted by `resourceNames` to `osdu-image-lock`, so a fork
     cannot touch `spi-deploy-record`, the `maintenance` flag, or any other
-    GitOps input; `kustomizations` get/list/watch/patch (the reconcile
-    trigger and wait); `gitrepositories` get (the guard's fingerprint check
-    hard-fails without it); `helmreleases` get/list.
+    GitOps input; `kustomizations` get/list/watch for the converge wait,
+    with no patch: the lock's watch label makes reconciliation follow the
+    lock write (ADR-031), so no Flux mutation is granted; `gitrepositories`
+    get (the guard's fingerprint check hard-fails without it);
+    `helmreleases` get/list.
   - `spi-fork-verifier` in `osdu`: `deployments` get/list/watch, `pods`
     get/list, `pods/log` get, `events` list, `configmaps` get/list.
   No create or delete on anything, and no Kubernetes `secrets` verb in either
   namespace: acceptance secrets come from Key Vault.
-- **Onboarding a fork is one idempotent CLI operation.** `spi onboard`
-  provisions the identity, credentials, role assignments, and group
-  membership, and stamps the fork's repository configuration; re-running it
-  repairs drift. The acceptance-suite variables stay operator-set. Command
-  mechanics live in `docs/design/fork-deployment.md`.
+- **Onboarding is one command plus one reviewed stack PR.** `spi onboard`
+  provisions the identity, its environment-bound credential, and the Azure
+  role assignments, stamps the fork's repository configuration, and opens
+  the stack PR that adds the RoleBinding subject line; re-running it repairs
+  drift. The acceptance-suite variables stay operator-set. Command mechanics
+  live in `docs/design/fork-deployment.md`.
 - **CI passes the guard, never bypasses it.** Fork jobs acquire their
   kubeconfig through the CLI, which yields a context the guard's fingerprint
   check accepts; `SPI_SKIP_GUARD` stays out of CI.
@@ -79,6 +82,12 @@ carry.
 
 ## Consequences
 
+- The enforced boundary is the lock object, not a service's keys within it:
+  any onboarded fork identity can rewrite a sibling service's lock entry.
+  That is accepted for a single-trust-level shared dev environment; pin
+  provenance and the template's trust gating are the compensating controls,
+  and per-service lock objects or an admission policy are the escalation if
+  the fleet ever spans trust levels.
 - Eight standing identities instead of one: more objects to audit, and
   per-repo revocation (delete one UAMI, one fork loses access, the rest keep
   working).

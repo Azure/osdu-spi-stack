@@ -19,7 +19,7 @@ Remove the marks as the phases land.
 
 | Layer | Contents | Advances by |
 |---|---|---|
-| Substrate | RG `spi-stack-shared`, AKS Automatic, PaaS, Flux extension | Weekly reset only |
+| Substrate | RG `spi-stack-shared`, AKS Automatic, PaaS, Flux extension | Reset rebuilds it; an upgrade's incremental ARM pass may also move it in place (ADR-029) |
 | Instance | Flux-managed workloads, `osdu-image-lock`, in-cluster middleware state | Refresh, upgrade, and fork deploys (ADR-031) |
 | Version contract | `ops/environments/shared.yaml` | Reviewed PR (ADR-028) |
 
@@ -32,7 +32,8 @@ Version is three axes, not one. The stack definition is pinned by the file
 above (ADR-028). Canonical service images advance on refresh under each
 service's source policy (ADR-033) and are recorded in the image lock.
 Ephemeral test pins (ADR-031) are transient overlays. `spi status --json`
-reports the first two; `spi service list` the third.
+reports all three, the pinned-service list included; `spi service list`
+details the pins.
 
 ## The pin and the bump flow
 
@@ -51,7 +52,8 @@ nameSuffix: x7k2q
 Publishing a release opens a `stackVersion` bump PR (a job in
 `.github/workflows/release.yml` under the release App token). Merging the bump
 is the reviewed moment when the environment advances; the push trigger on the
-pin file starts the upgrade. Nothing else moves the version (ADR-028).
+pin file starts the upgrade. Nothing else moves the stack-definition version
+(ADR-028).
 
 ## Lifecycle verbs
 
@@ -96,10 +98,15 @@ with a reason instead of letting them race a sick environment.
 the standing environment, preceded by the `maintenance` flag, the drain, and
 a lock snapshot (`kubectl get cm osdu-image-lock -n osdu-flux -o yaml`
 uploaded as a workflow artifact), and followed by the same wait, probes, and
-flag clear. The provision path is the upgrade path (ADR-029). The
-`--refresh-images` pass moves canonical images at the same time, but the
-bump pins only the stack-definition axis; canonicals also advance between
-upgrades on the weekday refresh (ADR-033).
+flag clear. The workflow reads the declaration from `main`, then checks out
+`stackVersion` and runs that commit's CLI and Bicep, so the executing code
+and the Flux ref name the same commit (ADR-028). The source rollover is
+revision-verified: resume the suspended source, reconcile, check that
+`GitRepository.status.artifact.revision` names the tag's commit, converge,
+write the deploy record, suspend again (ADR-029). The `--refresh-images`
+pass moves canonical images at the same time, but the bump pins only the
+stack-definition axis; canonicals also advance between upgrades on the
+weekday refresh (ADR-033).
 
 **Reset** is teardown plus cold provision at the pinned tag: flag, drain,
 snapshot the lock, `spi down`, poll until `az group exists` reports false
@@ -147,6 +154,10 @@ uv run spi up \
 bash scripts/wait_for_flux_ready.sh --timeout 13800
 uv run spi status --json | jq .ready   # true when converged
 ```
+
+This recipe is provision-only: the fresh environment holds `maintenance`
+(ADR-029) until the `env-refresh` workflow, or its manual dispatch, runs the
+probes and clears it.
 
 Check why the environment is not ready:
 

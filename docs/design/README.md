@@ -44,6 +44,7 @@ When writing a new design doc, copy the shape of an existing one and replace the
 - The filename stem matches the doc stem. Multiple diagrams for one doc use a suffix.
 - Markdown references the `.png` so it renders inline on GitHub.
 - The `.excalidraw` source is the editable truth. When you update a diagram, edit the source in [Excalidraw](https://excalidraw.com/), re-export the PNG, and commit both.
+- Posters are the exception: an HTML-authored infographic keeps its `.html` file as the editable source next to the exported `.png` (for example `environment-lifecycle.html`). Edit the HTML and re-render it to PNG rather than recreating it in Excalidraw.
 
 ## Contribution guide
 

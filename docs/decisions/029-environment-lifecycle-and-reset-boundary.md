@@ -29,10 +29,17 @@ PaaS state.
 | reset | `spi down`, poll until the RG is gone, `spi up --tag <pin>` | 3 to 6 h | Saturday cron |
 | teardown | `spi down` | 15 to 45 min | protected manual dispatch |
 
-- **Upgrade is the provision path re-run.** Each phase of `deploy_azure()` is
-  idempotent (RG create-when-absent, ARM incremental deployments, seed-secret
-  reuse, re-suspend per ADR-014), so a re-run with a new tag is the in-place
+- **Upgrade is the provision path re-run**, executed from the tag's own
+  checkout (ADR-028). Each phase of `deploy_azure()` is idempotent (RG
+  create-when-absent, ARM incremental deployments, seed-secret reuse,
+  re-suspend per ADR-014), so a re-run with a new tag is the in-place
   upgrade and there is no second code path to trust separately.
+- **The source rollover is revision-verified.** The environment's
+  GitRepository sits suspended (ADR-014), and a `Ready=True` wait can pass
+  on the stale cached artifact after `repositoryRef` changes. The upgrade
+  sequence is fixed: resume the source, request reconciliation, verify
+  `status.artifact.revision` names the tag's commit, converge, write the
+  deploy record, suspend again.
 - **No partial reset exists.** The weekly teardown-and-rebuild at the pinned
   tag sheds accreted state in both layers and keeps the rebuild path
   continuously proven at the `core` profile, which the nightly smoke (default
@@ -55,6 +62,16 @@ PaaS state.
   workflow waits until every ephemeral pin's owning run (recorded in the pin,
   ADR-031) has finished, bounded by a drain window sized to the fork
   deploy-plus-test budget, and only then mutates the environment.
+- **The drain closes its own race.** The flag and the lock are separate
+  objects, so a pin can read a clear flag while the workflow sets it and
+  sees an empty pin set. Two halves close the window: a pin re-reads the
+  flag after writing and rolls its own write back if the flag appeared
+  (ADR-031), and the workflow holds a quiescence interval longer than that
+  write-and-recheck path after the pin set empties before mutating. A drain
+  that exhausts its window aborts with the flag still set; it never proceeds
+  into mutation. `spi up` preserves the recorded `maintenance` value when it
+  rewrites the deploy record, so an upgrade cannot reopen the environment
+  before its probes pass.
 - **Test identities belong to the lifecycle.** Acceptance-tester service
   principals are Entra objects and outlive the RG. The Key Vault returns
   through the soft-delete recovery in `spi up` because the declaration file

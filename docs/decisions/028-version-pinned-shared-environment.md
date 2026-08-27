@@ -25,6 +25,11 @@ whole declaration lives in one reviewed file.
   `{ tag: repoTag }` when the parameter is non-empty and `{ branch: repoBranch }`
   otherwise. `spi up --tag vX.Y.Z` carries it, mutually exclusive with a
   non-default `--branch`. Dev and smoke environments keep branch tracking.
+- The tag pins the execution path, not only the Flux source. Lifecycle
+  workflows read the declaration from `main`, then check out `stackVersion`
+  and run that commit's CLI and Bicep, so the substrate deployment and the
+  Flux `repositoryRef` name the same commit; without this, an upgrade would
+  run `main`'s provisioning code while Flux reports the tag.
 - A `vX.Y.Z` tag from release-please snapshots the full tree, `software/`
   included, so the release process is unchanged. A release is certified by
   the shared environment itself: the bump merge upgrades it, the probes
@@ -60,11 +65,14 @@ is one file plus workflows that live here anyway.
 
 ## Consequences
 
-- Freshness costs a full cycle: a fix the fork CI needs reaches the shared
-  environment only through a tagged release plus a merged bump PR. A hotfix
-  path shorter than that does not exist by design.
-- Which version the environment runs is a `git log` of one file; incident
-  causality starts there instead of in Flux status archaeology.
+- Freshness costs a full cycle: a stack fix the fork CI needs reaches the
+  shared environment only through a tagged release plus a merged bump PR. A
+  hotfix path shorter than that does not exist by design. Service images are
+  not held back by it; they move on their own axes.
+- Which stack definition the environment runs is a `git log` of one file;
+  the image axes are read from the lock and the deploy record. Incident
+  causality for platform changes starts there instead of in Flux status
+  archaeology.
 - `infra/flux.bicep` carries two ref shapes, and the CLI must reject the
   ambiguous combination of `--tag` with an explicit `--branch`.
 - Tag protection is load-bearing: without the ruleset, a moved `v*` tag would

@@ -266,11 +266,11 @@
           <div class="flow-arrow"><svg class="icon"><use href="#arrow-right"/></svg></div>
           <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#refresh"/></svg></div><div class="fs-title">Restore</div><div class="fs-sub">ownership-checked reset</div></div>
         </div>
-        <div class="note a-green"><svg class="icon"><use href="#idea"/></svg><span><span class="b">Merges roll forward:</span> a push to main re-resolves the canonical instead of pinning. A weekday backstop sweeps pins whose owning run has ended; a colliding deploy fails fast, naming the collider.</span></div>
+        <div class="note a-green"><svg class="icon"><use href="#idea"/></svg><span><span class="b">Pushes pin too:</span> a merge to main deploys the same ephemeral pin with no restore; the weekday refresh converges the canonical and sweeps pins whose owning run has ended. A colliding deploy fails fast, naming the collider.</span></div>
         <div class="chips">
           <span class="chip"><svg class="icon"><use href="#check"/></svg> Survives GitOps reconciles</span>
           <span class="chip"><svg class="icon"><use href="#check"/></svg> Siblings keep serving</span>
-          <span class="chip"><svg class="icon"><use href="#check"/></svg> Broken image never takes traffic</span>
+          <span class="chip"><svg class="icon"><use href="#check"/></svg> Failed rollouts self-revert</span>
         </div>
       </div>
     </div>
@@ -297,7 +297,7 @@
           <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#bolt"/></svg></div><div class="fs-title">Per PR · minutes</div><div class="fs-sub">pin, prove, restore; only that service moves</div></div>
           <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#clock"/></svg></div><div class="fs-title">Weekdays 05:00</div><div class="fs-sub">refresh: sweep, converge, probe before the first fork job</div></div>
           <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#tag"/></svg></div><div class="fs-title">On release</div><div class="fs-sub">bump PR, merge, spi up at the new tag</div></div>
-          <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#refresh"/></svg></div><div class="fs-title">Saturday 06:00</div><div class="fs-sub">full rebuild at the pin, 2.5-4 h; sheds all accreted state</div></div>
+          <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#refresh"/></svg></div><div class="fs-title">Saturday 06:00</div><div class="fs-sub">full rebuild at the pin, 3-6 h; sheds all accreted state</div></div>
         </div>
         <div class="note a-purple"><svg class="icon"><use href="#info"/></svg><span><span class="b">The reset boundary:</span> refresh touches runtime state, upgrade may change substrate in place, only the full RG rebuild clears both cluster and PaaS state.</span></div>
       </div>

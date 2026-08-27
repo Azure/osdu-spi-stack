@@ -13,7 +13,7 @@ ADR-004 (a local Helm chart per service) and ADR-009 (Flux for in-cluster reconc
 
 ## Decision
 
-Resolve OSDU images into a single `osdu-image-lock` ConfigMap in `osdu-flux`, and have each service and schema-load Kustomization consume that ConfigMap via Flux `postBuild.substituteFrom`. The image lock is generated, not committed. A first `spi up` resolves the set; a re-run against a cluster that holds a lock preserves it, pins included, and only an explicit `--refresh-images` (on `up` or `reconcile`) moves images.
+Resolve OSDU images into a single `osdu-image-lock` ConfigMap in `osdu-flux`, and have each service and schema-load Kustomization consume that ConfigMap via Flux `postBuild.substituteFrom`. The image lock is generated, not committed. A first `spi up` resolves the set; a re-run against a cluster that holds a lock preserves it, pins included, and only an explicit `--refresh-images` (on `up` or `reconcile`) moves the canonical entries. Pins move one service's deployed image through their own recorded flow.
 
 Shape:
 
@@ -42,7 +42,7 @@ Rejected:
 ## Consequences
 
 - A `spi up` deploys exactly one resolved image set. The set is reproducible from the ConfigMap; `spi info` surfaces the lock's resolution timestamp and per-service tags.
-- Image refreshes are deliberate, not ambient. `--refresh-images` is the supported path; nothing else moves tags, and a re-run `spi up` without it leaves an existing lock as it stands.
+- Canonical refreshes are deliberate, not ambient. `--refresh-images` is the supported path; nothing else moves the canonical entries (pins move a single service through their own flow), and a re-run `spi up` without it leaves an existing lock as it stands.
 - Adding a new OSDU service to the stack is one entry in `IMAGE_REGISTRY` plus one service YAML that consumes `${SERVICE_IMAGE}`. No template changes.
 - The image lock depends on the configured source registry being reachable from the CLI host. `spi check` covers tool prerequisites; registry reachability surfaces as a hard error during Phase 4.
 - Adding a one-shot image to the live lock requires its Kustomization to tolerate immutable resource updates, for example `force: true` on Jobs whose Pod templates include lock substitutions.

@@ -24,7 +24,12 @@ annotation schema live in `docs/design/fork-deployment.md`.
   source repository, commit, owning workflow run, and the `ephemeral` marker.
   Validation requires an allow-listed GHCR owner and a digest whose manifest
   resolves. The pin refuses while the environment is not deployable
-  (ADR-030).
+  (ADR-030), and after writing it re-reads the `maintenance` flag, rolling
+  its own write back if the flag appeared in the window (ADR-029).
+- **A lock write is the whole deploy.** The lock carries the
+  `reconcile.fluxcd.io/watch: Enabled` label, so Flux reconciles the
+  consuming Kustomizations when the ConfigMap changes; fork CI mutates
+  nothing in Flux and holds no Flux write permission (ADR-032).
 - **Verified, not assumed.** Deploy success is the running pod carrying the
   digest, asserted by the CLI after the pin and re-asserted by the test job
   before it runs, so a deploy overwritten by a colliding pipeline fails fast,
@@ -54,7 +59,9 @@ annotation schema live in `docs/design/fork-deployment.md`.
   of overwriting each other's pin records. Bootstrap dependencies
   (partition, entitlements) need no wider lock: HelmRelease rollout
   semantics keep the old pods serving until new pods pass readiness, and a
-  failed rollout remediates back, so a broken image never takes traffic.
+  failed rollout remediates back, so an image that fails readiness never
+  takes traffic. One that passes readiness and is behaviorally broken can;
+  that residual is the first consequence below.
 
 Rejected: `kubectl set image` on the Deployment. The most direct mechanism,
 and the next HelmRelease reconcile reverts it under ADR-014; it also leaves

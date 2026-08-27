@@ -72,7 +72,7 @@ The pin rides the `spi-stack.osdu.dev/pins` annotation on the
 | `origin` | `gitlab-mr` or `github` |
 | `repository`, `tag`, `digest` | the pinned image |
 | `source_repo`, `source_sha` | what built it |
-| `source_run_url`, `run_id` | the owning workflow run, for humans and for ownership checks |
+| `source_run_url`, `run_id` | the owning workflow run; `run_id` drives ownership checks and the stale-run lookup, `source_run_url` is display-only and never fetched |
 | `ephemeral` | true when CI placed it; the only pins automation may sweep |
 | `applied_at` | pin time |
 | `canonical_*` | the restore target, recorded atomically with the overwrite |
@@ -86,10 +86,12 @@ A cancelled run, an expired token, or a lost runner strands a pin the restore
 job never returns. The weekday refresh workflow runs the backstop:
 
 - `spi service reset --ephemeral --stale-only` (unbuilt) sweeps an ephemeral
-  pin only when its owning workflow run reports a terminal state (queried
-  through the recorded run URL; the fork repos are public) or, when that
-  state is unreachable, when the pin's age exceeds a threshold longer than
-  any deploy-plus-test budget.
+  pin only when its owning workflow run reports a terminal state or, when
+  that state is unreachable, when the pin's age exceeds a threshold longer
+  than any deploy-plus-test budget. The lookup builds a fixed GitHub API URL
+  from the validated `source_repo` (it must match the `Azure/osdu-spi-*`
+  allow-list) and the numeric `run_id`; the fork-written `source_run_url` is
+  display-only and never fetched, since a fork identity controls its value.
 - `spi service refresh` per GitHub-origin service then re-asserts each
   canonical, which doubles as the retention keep-alive (ADR-033).
 

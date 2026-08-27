@@ -18,8 +18,10 @@ A service's canonical source flips from community GitLab to its fork's GHCR
 
 - The flip is one reviewable line: setting `github_repo` on the service's
   `IMAGE_REGISTRY` entry in `src/spi/images.py`. From then on each canonical
-  resolution path (`spi up`, `--refresh-images`, pin reset, roll-forward)
-  reads the fork's GHCR image; unset, community GitLab stays canonical.
+  resolution path (a first `spi up`, `--refresh-images`, `spi service
+  refresh`) reads the fork's GHCR image; unset, community GitLab stays
+  canonical. A pin's reset is not a resolution path: it restores the target
+  captured when the pin was written (below).
 - The flip lands after the fork's deploy and test gates are active, so the
   image line the environment runs is the one those gates certify.
 - The weekday refresh re-resolves GitHub-origin canonicals (ADR-029), and
