@@ -29,8 +29,8 @@ PaaS state.
 | reset | `spi down`, poll until the RG is gone, `spi up --tag <pin>` | 3 to 6 h | Saturday cron |
 | teardown | `spi down` | 15 to 45 min | protected manual dispatch |
 
-- **Upgrade is the provision path re-run**, executed from the tag's own
-  checkout (ADR-028). Each phase of `deploy_azure()` is idempotent (RG
+- **Upgrade is the provision path re-run**, executed with the tag's release
+  wheel (ADR-028). Each phase of `deploy_azure()` is idempotent (RG
   create-when-absent, ARM incremental deployments, seed-secret reuse,
   re-suspend per ADR-014), so a re-run with a new tag is the in-place
   upgrade and there is no second code path to trust separately.

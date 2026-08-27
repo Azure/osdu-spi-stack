@@ -18,7 +18,10 @@ marks as the phases land.
 ## The sequence
 
 Each job authenticates fresh (the OIDC JWT lives ~5 minutes; one
-`azure/login` per job, the smoke pipeline's discipline).
+`azure/login` per job, the smoke pipeline's discipline) and installs the
+`spi` wheel matching the environment's declared `stackVersion`, read from
+`ops/environments/shared.yaml` on the stack's `main`, so the client never
+skews ahead of the cluster contract (ADR-031).
 
 1. **Authenticate.** The deploy and test jobs run in the fork's protected
    `spi-stack` GitHub environment, the subject of the UAMI's federated

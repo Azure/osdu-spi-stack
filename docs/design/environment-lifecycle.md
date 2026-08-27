@@ -60,14 +60,15 @@ pin file starts the upgrade. Nothing else moves the stack-definition version
 | Verb | Workflow | Trigger | Budget |
 |---|---|---|---|
 | refresh | `env-refresh` | weekday cron 05:00 UTC, dispatch | 90 min |
-| upgrade | `env-upgrade` | push to `main` touching the pin file, dispatch | 4 h |
+| upgrade | `env-upgrade` | push to `main` touching the pin file, dispatch | 6 h |
 | reset | `env-reset` | Saturday cron 06:00 UTC, confirm-dispatch | 7 h |
 | teardown | `env-teardown` | protected dispatch | 1 h |
 
 The budgets contain their worst cases: a reset spends up to 45 minutes on
 deletion, 75 minutes provisioning, and 230 minutes in the cold-cluster
 schema-load converge before probes; an upgrade whose `--refresh-images` pass
-moves the schema image reruns the loader on the same budget.
+moves the schema image spends up to 60 minutes in `spi up` plus the same
+230-minute converge, hence its 6-hour budget.
 
 All four (unbuilt) share concurrency group `env-shared` with
 `cancel-in-progress: false`, so lifecycle operations serialize against each
@@ -98,9 +99,10 @@ with a reason instead of letting them race a sick environment.
 the standing environment, preceded by the `maintenance` flag, the drain, and
 a lock snapshot (`kubectl get cm osdu-image-lock -n osdu-flux -o yaml`
 uploaded as a workflow artifact), and followed by the same wait, probes, and
-flag clear. The workflow reads the declaration from `main`, then checks out
-`stackVersion` and runs that commit's CLI and Bicep, so the executing code
-and the Flux ref name the same commit (ADR-028). The source rollover is
+flag clear. The workflow reads the declaration from `main`, then installs
+and runs the `stackVersion` release wheel, which carries its own Bicep, so
+the executing code and the Flux ref name the same release and the deploy
+record carries the stamped CLI version (ADR-028). The source rollover is
 revision-verified: resume the suspended source, reconcile, check that
 `GitRepository.status.artifact.revision` names the tag's commit, converge,
 write the deploy record, suspend again (ADR-029). The `--refresh-images`
@@ -138,12 +140,15 @@ to deploys only after the probes pass.
 
 ## Recipes
 
-Stand up the shared environment (after the versioning phase lands). Each
-argument comes from the declaration file; nothing is typed twice:
+Stand up the shared environment (after the versioning phase lands). Install
+the release wheel matching `stackVersion` first: the wheel carries the Bicep
+and stamps the CLI version the deploy record audits, where a source checkout
+would record `0.0.0+source`. Each argument comes from the declaration file;
+nothing is typed twice:
 
 ```bash
 decl=ops/environments/shared.yaml
-uv run spi up \
+spi up \
   --env "$(yq .env $decl)" \
   --profile "$(yq .profile $decl)" \
   --location "$(yq .location $decl)" \
@@ -152,7 +157,7 @@ uv run spi up \
   --name-suffix "$(yq .nameSuffix $decl)" \
   --tag "$(yq .stackVersion $decl)"
 bash scripts/wait_for_flux_ready.sh --timeout 13800
-uv run spi status --json | jq .ready   # true when converged
+spi status --json | jq .ready   # true when converged
 ```
 
 This recipe is provision-only: the fresh environment holds `maintenance`

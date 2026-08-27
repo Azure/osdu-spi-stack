@@ -24,6 +24,12 @@ A service's canonical source flips from community GitLab to its fork's GHCR
   captured when the pin was written (below).
 - The flip lands after the fork's deploy and test gates are active, so the
   image line the environment runs is the one those gates certify.
+- `schema` has a flip precondition its siblings lack: schema-load resolves a
+  loader image at the schema service's exact commit (ADR-017), and the fork
+  publishes no loader. Schema keeps its community canonical until its fork
+  publishes a paired `schema-load` image at the same commit; flipping it
+  earlier would leave every refresh unable to resolve the loader and the
+  environment stuck in maintenance.
 - The weekday refresh re-resolves GitHub-origin canonicals (ADR-029), and
   that cadence matters against GHCR retention: continued fork builds move
   `main-snapshot` to newer package versions, and the retention job then

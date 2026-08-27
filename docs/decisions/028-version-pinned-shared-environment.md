@@ -26,10 +26,13 @@ whole declaration lives in one reviewed file.
   otherwise. `spi up --tag vX.Y.Z` carries it, mutually exclusive with a
   non-default `--branch`. Dev and smoke environments keep branch tracking.
 - The tag pins the execution path, not only the Flux source. Lifecycle
-  workflows read the declaration from `main`, then check out `stackVersion`
-  and run that commit's CLI and Bicep, so the substrate deployment and the
-  Flux `repositoryRef` name the same commit; without this, an upgrade would
-  run `main`'s provisioning code while Flux reports the tag.
+  workflows read the declaration from `main`, then install and run the
+  `stackVersion` release wheel: the wheel carries its own Bicep (`infra` is
+  force-included at build), so the executing CLI, its templates, and the
+  Flux `repositoryRef` name the same release; without this, an upgrade would
+  run `main`'s provisioning code while Flux reports the tag. A source
+  checkout is not a substitute: it runs as the `0.0.0+source` placeholder
+  and would record that in the deploy record's CLI-version field (ADR-030).
 - A `vX.Y.Z` tag from release-please snapshots the full tree, `software/`
   included, so the release process is unchanged. A release is certified by
   the shared environment itself: the bump merge upgrades it, the probes

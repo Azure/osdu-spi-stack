@@ -29,7 +29,11 @@ authorization names each identity explicitly.
   Azure provider, so they cannot serve in this environment, and the
   companion template change narrows that matrix to match. Azure role
   assignments: Azure Kubernetes Service Cluster User Role on the cluster,
-  Key Vault Secrets User on the environment vault.
+  Key Vault Secrets User on the environment vault. The UAMIs live outside
+  the environment resource group, in a persistent identity RG, because the
+  weekly reset deletes the cluster and every resource-scoped assignment with
+  it; the reset's ensure step re-applies each onboarded fork's assignments
+  before `maintenance` clears (ADR-029).
 - **Explicit-subject RBAC, reads split from writes.** Two namespace-scoped
   Roles in the stack's platform manifests carry the verbs, and their
   RoleBindings name each UAMI's service-principal object id as a `User`

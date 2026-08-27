@@ -99,5 +99,9 @@ services under the same owner, the mechanism ADR-017 already declined.
 - Chart-contract changes do not ride this seam: a service PR that needs a new
   env var or chart behavior lands a stack PR first, the environment picks it
   up on upgrade, and the fork PR deploys against it.
-- Fork CI becomes a CLI consumer: the deploy job installs the released `spi`
-  wheel, and annotation-schema changes must keep old pins decodable.
+- Fork CI becomes a CLI consumer: the deploy job installs the wheel matching
+  the environment's declared `stackVersion` (read from the declaration file
+  on the stack's `main`), so the client and the cluster contract move
+  together rather than latest-wheel skewing ahead of an unbumped or
+  rolled-back environment. Annotation-schema changes must still keep old
+  pins decodable across the bump window.
