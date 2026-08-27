@@ -146,6 +146,10 @@ class TestReconcileRefreshesClusterConfig:
                 ),
             ),
             patch("spi.cli.create_istio_revision_configmap") as configmap,
+            # Reads the live lock through pins.run_process, which the
+            # spi.cli.run_command patch above does not intercept; without
+            # this the default reconcile path shells out to real kubectl.
+            patch("spi.cli.apply_schema_load_backfill", return_value=False),
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
         assert result.exit_code == 0, result.output
@@ -326,6 +330,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.run_command", side_effect=_run_command),
+            patch("spi.cli.apply_schema_load_backfill", return_value=False),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
 

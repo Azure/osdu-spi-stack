@@ -5,11 +5,19 @@
 """Machine-readable status and deployability contract."""
 
 import json
+import re
 
 from typer.testing import CliRunner
 
 from spi import cli, status
 from spi.deploy_record import DeployRecord
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI styling so assertions survive Rich colorizing under CI."""
+    return _ANSI.sub("", text)
 
 
 def _kustomizations(ready: bool = True) -> dict:
@@ -156,7 +164,7 @@ def test_status_rejects_watch_with_json():
     result = CliRunner().invoke(cli.app, ["status", "--watch", "--json"])
 
     assert result.exit_code == 2
-    assert "--watch cannot be combined" in result.output
+    assert "--watch cannot be combined" in _plain(result.output)
 
 
 def test_watch_status_retries_after_transient_contract_read_error(monkeypatch):
