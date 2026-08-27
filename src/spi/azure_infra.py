@@ -62,6 +62,10 @@ from .shell import run_command
 INFRA_MAIN_BICEP = INFRA_ROOT / "main.bicep"
 INFRA_AKS_BICEP = INFRA_ROOT / "aks.bicep"
 
+# Single source for the system pool size: passed to aks.bicep and used to
+# resolve the zones this exact size can use in the target subscription.
+SYSTEM_POOL_VM_SIZE = "Standard_D4lds_v5"
+
 
 # ─────────────────────────────────────────────────────────────
 # Resource-name helpers (preserve the existing naming contract).
@@ -237,6 +241,82 @@ def detect_legacy_keyvault(resource_group: str, env: str) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def _resolve_system_pool_zones(config: Config) -> "list | None":
+    """Return the availability zones the system pool can actually use.
+
+    Zone availability is per subscription, not just per region: a size can
+    be published in three zones while one of them is restricted for this
+    subscription. Passing a restricted zone fails with
+    AvailabilityZoneNotSupported, and AKS Automatic separately rejects a
+    reduced zone set, so the usable set has to be resolved before deploying.
+
+    Returns None when the SKU catalogue itself cannot be read (throttling,
+    policy); the caller then leaves the template default in place rather
+    than blocking the deployment on an unverifiable answer.
+    """
+    result = run_command(
+        [
+            "az",
+            "vm",
+            "list-skus",
+            "--location",
+            config.location,
+            "--size",
+            SYSTEM_POOL_VM_SIZE,
+            "--resource-type",
+            "virtualMachines",
+            "--output",
+            "json",
+        ],
+        description=f"Resolve system pool zones in {config.location}",
+        display=False,
+        check=False,
+    )
+    if result.returncode != 0:
+        console.print(
+            "  [warning]Could not read the compute SKU catalogue; "
+            "using the template's default availability zones.[/warning]"
+        )
+        return None
+
+    published: list = []
+    restricted: set = set()
+    for sku in json.loads(result.stdout or "[]"):
+        if sku.get("name") != SYSTEM_POOL_VM_SIZE:
+            continue
+        for info in sku.get("locationInfo") or []:
+            published.extend(info.get("zones") or [])
+        for restriction in sku.get("restrictions") or []:
+            if restriction.get("type") == "Zone":
+                restricted.update((restriction.get("restrictionInfo") or {}).get("zones") or [])
+
+    if not published:
+        raise RuntimeError(
+            f"{SYSTEM_POOL_VM_SIZE} is not offered in {config.location}. "
+            "Choose a region that offers it."
+        )
+
+    usable = sorted(set(published) - restricted)
+    if not usable:
+        raise RuntimeError(
+            f"{SYSTEM_POOL_VM_SIZE} has no usable availability zone in {config.location} "
+            "for this subscription."
+        )
+
+    # Automatic validates the system pool against the region's published zone
+    # set and refuses a reduced list, so a restricted zone is fatal.
+    if len(usable) < len(set(published)):
+        raise RuntimeError(
+            f"AKS Automatic requires every availability zone in {config.location}, but "
+            f"zone(s) {', '.join(sorted(restricted))} are restricted for "
+            f"{SYSTEM_POOL_VM_SIZE} in this subscription. Deploy in another region "
+            "or subscription."
+        )
+
+    console.print(f"  [info]System pool availability zones: {', '.join(usable)}[/info]")
+    return usable
+
+
 def create_aks_automatic(
     config: Config,
     deployer_principal_id: str,
@@ -261,12 +341,17 @@ def create_aks_automatic(
     console.print(
         "  [info]Cluster is declared in infra/aks.bicep via the AVM managed-cluster module.[/info]"
     )
+    zones = _resolve_system_pool_zones(config)
+    aks_parameters = {
+        "clusterName": config.cluster_name,
+        "location": config.location,
+        "systemPoolVmSize": SYSTEM_POOL_VM_SIZE,
+    }
+    if zones is not None:
+        aks_parameters["availabilityZones"] = zones
     aks_outputs = run_bicep_deployment(
         template_path=str(INFRA_AKS_BICEP),
-        parameters={
-            "clusterName": config.cluster_name,
-            "location": config.location,
-        },
+        parameters=aks_parameters,
         resource_group=config.resource_group,
         deployment_name=f"spi-aks-{config.env or 'base'}",
         what_if=dry_run,
