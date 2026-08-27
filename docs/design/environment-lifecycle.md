@@ -13,6 +13,8 @@ an incident is how a 20-minute refresh becomes a 4-hour rebuild.
 section marks what is unbuilt; the roadmap at the bottom is the build order.
 Remove the marks as the phases land.
 
+![The backing environment at a glance](../diagrams/environment-lifecycle.png)
+
 ## Three lifetimes
 
 | Layer | Contents | Advances by |
