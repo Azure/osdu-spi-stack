@@ -284,8 +284,9 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
     # deploy at all, which the empty-result branch reports.
     published: list = []
     restricted: set = set()
+    # The catalogue returns canonical SKU names regardless of query casing.
     for sku in json.loads(result.stdout or "[]"):
-        if sku.get("name") != size:
+        if (sku.get("name") or "").lower() != size.lower():
             continue
         for info in sku.get("locationInfo") or []:
             published.extend(info.get("zones") or [])

@@ -118,6 +118,20 @@ def test_env_override_changes_the_queried_size():
     assert override in run_cmd.call_args.args[0]
 
 
+def test_override_casing_matches_canonical_sku_names():
+    cfg = Config.from_env("dev1")
+    canonical = {
+        "name": "Standard_D8lds_v5",
+        "locationInfo": [{"zones": ["1", "2", "3"]}],
+        "restrictions": [],
+    }
+    with (
+        mock.patch.dict(os.environ, {"SPI_SYSTEM_POOL_VM_SIZE": "standard_d8lds_v5"}),
+        mock.patch.object(azure_infra, "run_command", return_value=_result([canonical])),
+    ):
+        assert azure_infra._resolve_system_pool_zones(cfg) == ["1", "2", "3"]
+
+
 def test_env_override_reaches_the_bicep_parameters():
     cfg = Config.from_env("dev1")
     override = "Standard_D8lds_v5"
