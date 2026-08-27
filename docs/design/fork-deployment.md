@@ -95,8 +95,8 @@ job never returns. The weekday refresh workflow runs the backstop:
   from the validated `source_repo` (it must match the `Azure/osdu-spi-*`
   allow-list) and the numeric `run_id`; the fork-written `source_run_url` is
   display-only and never fetched, since a fork identity controls its value.
-- `spi service refresh` per GitHub-origin service then re-asserts each
-  canonical, which doubles as the retention keep-alive (ADR-033).
+- `spi service refresh` per GitHub-origin service then advances the
+  environment to the current retained canonical (ADR-033).
 
 A pin swept mid-run cannot happen silently: the test job's pre-flight verify
 fails with the pin's replacement named, and the re-run is the recovery.
