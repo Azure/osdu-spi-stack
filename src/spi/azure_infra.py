@@ -324,6 +324,7 @@ def create_aks_automatic(
     config: Config,
     deployer_principal_id: str,
     deployer_principal_type: str,
+    system_pool_zones: "list | None" = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Create an AKS Automatic cluster + managed Istio via Bicep.
@@ -335,6 +336,10 @@ def create_aks_automatic(
     Istio CNI chaining (``proxyRedirectionMechanism`` is typed out of
     the AVM IstioComponents schema).
 
+    ``system_pool_zones`` comes from ``_resolve_system_pool_zones``, run by
+    the caller before any resource exists; None means the SKU catalogue was
+    unreadable and the template default applies.
+
     Returns the flattened Bicep output dict (``clusterName``,
     ``clusterResourceId``, ``oidcIssuerUrl``, ``clusterPrincipalId``).
     Returns an empty dict when ``dry_run`` is True.
@@ -344,14 +349,13 @@ def create_aks_automatic(
     console.print(
         "  [info]Cluster is declared in infra/aks.bicep via the AVM managed-cluster module.[/info]"
     )
-    zones = _resolve_system_pool_zones(config)
     aks_parameters = {
         "clusterName": config.cluster_name,
         "location": config.location,
         "systemPoolVmSize": _system_pool_vm_size(),
     }
-    if zones is not None:
-        aks_parameters["availabilityZones"] = zones
+    if system_pool_zones is not None:
+        aks_parameters["availabilityZones"] = system_pool_zones
     aks_outputs = run_bicep_deployment(
         template_path=str(INFRA_AKS_BICEP),
         parameters=aks_parameters,
@@ -921,6 +925,10 @@ def provision_azure_infra(
         deployer_principal = _resolve_deployer_principal(account)
     deployer_principal_id, deployer_principal_type = deployer_principal
 
+    # Preflight before the resource group exists, so an unusable system pool
+    # size or zone set stops the run with nothing created (ADR-027).
+    system_pool_zones = _resolve_system_pool_zones(config)
+
     create_resource_group(config)
 
     # AKS Bicep deploy returns the OIDC issuer URL directly. In dry-run
@@ -931,6 +939,7 @@ def provision_azure_infra(
         config,
         deployer_principal_id,
         deployer_principal_type,
+        system_pool_zones=system_pool_zones,
         dry_run=dry_run,
     )
     oidc_issuer = aks_outputs.get("oidcIssuerUrl", "")

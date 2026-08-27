@@ -19,11 +19,13 @@ exists, as an ARM error rather than an actionable message.
 
 ## Decision
 
-The CLI resolves the usable zones from the target subscription before deploying
-the cluster. `_resolve_system_pool_zones` in `src/spi/azure_infra.py` reads the
-compute SKU catalogue (`az vm list-skus`) for `SYSTEM_POOL_VM_SIZE` in the
-target region, takes the published zones, subtracts the ones this subscription
-restricts, and passes the remainder as the `availabilityZones` parameter. The
+The CLI resolves the usable zones from the target subscription before creating
+any resource, the resource group included. `_resolve_system_pool_zones` in
+`src/spi/azure_infra.py` reads the compute SKU catalogue (`az vm list-skus`)
+for `SYSTEM_POOL_VM_SIZE` in the target region and passes the published zone
+set as the `availabilityZones` parameter only when none of its zones is
+restricted for this subscription; because AKS Automatic refuses a reduced
+list, a restriction stops the deployment rather than shrinking the set. The
 size itself is passed from the same constant, so the CLI and the template
 cannot disagree on which SKU the zones were resolved for. The env var
 `SPI_SYSTEM_POOL_VM_SIZE` overrides the size for both the query and the
@@ -53,7 +55,7 @@ whose zones were, in every observed subscription, the default anyway.
 ## Consequences
 
 - The same template deploys unmodified across subscriptions, and a restricted
-  zone is discovered before any cluster resource is created.
+  zone is discovered before anything, the resource group included, is created.
 - The preflight error names the size and region, so an operator can pick a
   different region without reading ARM traces.
 - Cluster creation depends on one more read that can be throttled or blocked

@@ -123,21 +123,21 @@ def test_env_override_reaches_the_bicep_parameters():
     override = "Standard_D8lds_v5"
     with (
         mock.patch.dict(os.environ, {"SPI_SYSTEM_POOL_VM_SIZE": override}),
-        mock.patch.object(azure_infra, "_resolve_system_pool_zones", return_value=["1", "2", "3"]),
         mock.patch.object(azure_infra, "run_bicep_deployment", return_value={}) as run_bicep,
     ):
-        azure_infra.create_aks_automatic(cfg, "deployer-id", "ServicePrincipal", dry_run=True)
+        azure_infra.create_aks_automatic(
+            cfg, "deployer-id", "ServicePrincipal", system_pool_zones=["1", "2", "3"], dry_run=True
+        )
 
     assert run_bicep.call_args.kwargs["parameters"]["systemPoolVmSize"] == override
 
 
 def test_create_aks_automatic_passes_resolved_zones_to_bicep():
     cfg = Config.from_env("dev1")
-    with (
-        mock.patch.object(azure_infra, "_resolve_system_pool_zones", return_value=["1", "2", "3"]),
-        mock.patch.object(azure_infra, "run_bicep_deployment", return_value={}) as run_bicep,
-    ):
-        azure_infra.create_aks_automatic(cfg, "deployer-id", "ServicePrincipal", dry_run=True)
+    with mock.patch.object(azure_infra, "run_bicep_deployment", return_value={}) as run_bicep:
+        azure_infra.create_aks_automatic(
+            cfg, "deployer-id", "ServicePrincipal", system_pool_zones=["1", "2", "3"], dry_run=True
+        )
 
     parameters = run_bicep.call_args.kwargs["parameters"]
     assert parameters["availabilityZones"] == ["1", "2", "3"]
@@ -146,12 +146,28 @@ def test_create_aks_automatic_passes_resolved_zones_to_bicep():
 
 def test_create_aks_automatic_omits_zones_when_resolver_falls_back():
     cfg = Config.from_env("dev1")
-    with (
-        mock.patch.object(azure_infra, "_resolve_system_pool_zones", return_value=None),
-        mock.patch.object(azure_infra, "run_bicep_deployment", return_value={}) as run_bicep,
-    ):
-        azure_infra.create_aks_automatic(cfg, "deployer-id", "ServicePrincipal", dry_run=True)
+    with mock.patch.object(azure_infra, "run_bicep_deployment", return_value={}) as run_bicep:
+        azure_infra.create_aks_automatic(
+            cfg, "deployer-id", "ServicePrincipal", system_pool_zones=None, dry_run=True
+        )
 
     parameters = run_bicep.call_args.kwargs["parameters"]
     assert "availabilityZones" not in parameters
     assert parameters["systemPoolVmSize"] == azure_infra.SYSTEM_POOL_VM_SIZE
+
+
+def test_zone_preflight_stops_before_the_resource_group_is_created():
+    cfg = Config.from_env("dev1")
+    with (
+        mock.patch.object(
+            azure_infra, "_resolve_system_pool_zones", side_effect=RuntimeError("restricted")
+        ),
+        mock.patch.object(azure_infra, "create_resource_group") as create_rg,
+    ):
+        with pytest.raises(RuntimeError, match="restricted"):
+            azure_infra.provision_azure_infra(
+                cfg,
+                account={"tenantId": "99999999-8888-4777-8666-555555555555", "id": "sub-id"},
+                deployer_principal=("11111111-2222-4333-8444-555555555555", "User"),
+            )
+    create_rg.assert_not_called()
