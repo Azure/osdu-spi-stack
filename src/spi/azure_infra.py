@@ -62,6 +62,17 @@ from .shell import run_command
 INFRA_MAIN_BICEP = INFRA_ROOT / "main.bicep"
 INFRA_AKS_BICEP = INFRA_ROOT / "aks.bicep"
 
+# Default system pool size: passed to aks.bicep and used to resolve the
+# zones this exact size can use in the target subscription.
+SYSTEM_POOL_VM_SIZE = "Standard_D4lds_v5"
+
+
+def _system_pool_vm_size() -> str:
+    """SPI_SYSTEM_POOL_VM_SIZE overrides the default; zone resolution also
+    preflights the size's ephemeral OS disk support.
+    """
+    return os.environ.get("SPI_SYSTEM_POOL_VM_SIZE", "").strip() or SYSTEM_POOL_VM_SIZE
+
 
 # ─────────────────────────────────────────────────────────────
 # Resource-name helpers (preserve the existing naming contract).
@@ -237,10 +248,97 @@ def detect_legacy_keyvault(resource_group: str, env: str) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def _resolve_system_pool_zones(config: Config) -> "list | None":
+    """Return the zones the system pool size can use in this subscription
+    (ADR-027), or None when the SKU catalogue cannot be read and the caller
+    should leave the template default in place.
+    """
+    size = _system_pool_vm_size()
+    result = run_command(
+        [
+            "az",
+            "vm",
+            "list-skus",
+            "--location",
+            config.location,
+            "--size",
+            size,
+            "--resource-type",
+            "virtualMachines",
+            "--output",
+            "json",
+        ],
+        description=f"Resolve system pool zones in {config.location}",
+        display=False,
+        check=False,
+    )
+    if result.returncode != 0:
+        console.print(
+            "  [warning]Could not read the compute SKU catalogue; "
+            "using the template's default availability zones.[/warning]"
+        )
+        return None
+
+    # No --all: the default output keeps partially zone-restricted SKUs with
+    # their restriction payload and hides only sizes the subscription cannot
+    # deploy at all, which the empty-result branch reports.
+    published: list = []
+    restricted: set = set()
+    ephemeral_supported: "bool | None" = None
+    # The catalogue returns canonical SKU names regardless of query casing.
+    for sku in json.loads(result.stdout or "[]"):
+        if (sku.get("name") or "").lower() != size.lower():
+            continue
+        for info in sku.get("locationInfo") or []:
+            published.extend(info.get("zones") or [])
+        for restriction in sku.get("restrictions") or []:
+            if restriction.get("type") == "Zone":
+                restricted.update((restriction.get("restrictionInfo") or {}).get("zones") or [])
+        for capability in sku.get("capabilities") or []:
+            if capability.get("name") == "EphemeralOSDiskSupported":
+                ephemeral_supported = str(capability.get("value")).lower() == "true"
+
+    if not published:
+        raise RuntimeError(
+            f"{size} is not offered in {config.location}, or this subscription is "
+            "not offered the size there. Choose another region, or set "
+            "SPI_SYSTEM_POOL_VM_SIZE to a size the subscription can deploy."
+        )
+
+    # Absent capability means unknown; only an explicit False is fatal, and
+    # local disk capacity remains ARM-validated.
+    if ephemeral_supported is False:
+        raise RuntimeError(
+            f"{size} does not support the ephemeral OS disk the system pool "
+            "requires (osDiskType Ephemeral in infra/aks.bicep). Set "
+            "SPI_SYSTEM_POOL_VM_SIZE to a size with ephemeral OS disk support."
+        )
+
+    usable = sorted(set(published) - restricted)
+    if not usable:
+        raise RuntimeError(
+            f"{size} has no usable availability zone in {config.location} for this subscription."
+        )
+
+    # Automatic validates the system pool against the region's published zone
+    # set and refuses a reduced list, so a restricted zone is fatal.
+    if len(usable) < len(set(published)):
+        raise RuntimeError(
+            f"AKS Automatic requires every availability zone in {config.location}, but "
+            f"zone(s) {', '.join(sorted(restricted))} are restricted for "
+            f"{size} in this subscription. Deploy in another region "
+            "or subscription."
+        )
+
+    console.print(f"  [info]System pool availability zones: {', '.join(usable)}[/info]")
+    return usable
+
+
 def create_aks_automatic(
     config: Config,
     deployer_principal_id: str,
     deployer_principal_type: str,
+    system_pool_zones: "list | None" = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Create an AKS Automatic cluster + managed Istio via Bicep.
@@ -252,6 +350,10 @@ def create_aks_automatic(
     Istio CNI chaining (``proxyRedirectionMechanism`` is typed out of
     the AVM IstioComponents schema).
 
+    ``system_pool_zones`` comes from ``_resolve_system_pool_zones``, run by
+    the caller before any resource exists; None means the SKU catalogue was
+    unreadable and the template default applies.
+
     Returns the flattened Bicep output dict (``clusterName``,
     ``clusterResourceId``, ``oidcIssuerUrl``, ``clusterPrincipalId``).
     Returns an empty dict when ``dry_run`` is True.
@@ -261,12 +363,16 @@ def create_aks_automatic(
     console.print(
         "  [info]Cluster is declared in infra/aks.bicep via the AVM managed-cluster module.[/info]"
     )
+    aks_parameters = {
+        "clusterName": config.cluster_name,
+        "location": config.location,
+        "systemPoolVmSize": _system_pool_vm_size(),
+    }
+    if system_pool_zones is not None:
+        aks_parameters["availabilityZones"] = system_pool_zones
     aks_outputs = run_bicep_deployment(
         template_path=str(INFRA_AKS_BICEP),
-        parameters={
-            "clusterName": config.cluster_name,
-            "location": config.location,
-        },
+        parameters=aks_parameters,
         resource_group=config.resource_group,
         deployment_name=f"spi-aks-{config.env or 'base'}",
         what_if=dry_run,
@@ -809,13 +915,17 @@ def provision_azure_infra(
     """Provision all Azure PaaS resources. Returns infra_outputs for K8s bootstrap.
 
     Order:
-      1. Verify Azure login; capture tenant/subscription IDs.
-      2. Create resource group (imperative; required by ``az deployment
+      1. Verify Azure login; capture tenant/subscription IDs and resolve
+         the deployer principal.
+      2. Resolve system pool availability zones (read-only preflight; an
+         unusable size or zone set stops the run before anything is
+         created, ADR-027).
+      3. Create resource group (imperative; required by ``az deployment
          group what-if`` too, so always runs).
-      3. Deploy AKS Automatic via ``infra/aks.bicep`` (what-if in dry-run;
+      4. Deploy AKS Automatic via ``infra/aks.bicep`` (what-if in dry-run;
          returns ``oidcIssuerUrl`` for main.bicep).
-      4. Recover soft-deleted Key Vault if present (skipped in dry-run).
-      5. Deploy the main Bicep template (or run what-if preview if
+      5. Recover soft-deleted Key Vault if present (skipped in dry-run).
+      6. Deploy the main Bicep template (or run what-if preview if
          ``dry_run`` is True). This deploys all PaaS resources AND
          populates Key Vault metadata secrets (tenant-id, endpoints,
          ``DISABLED`` key/connection placeholders) declaratively.
@@ -833,6 +943,10 @@ def provision_azure_infra(
         deployer_principal = _resolve_deployer_principal(account)
     deployer_principal_id, deployer_principal_type = deployer_principal
 
+    # Preflight before the resource group exists, so an unusable system pool
+    # size or zone set stops the run with nothing created (ADR-027).
+    system_pool_zones = _resolve_system_pool_zones(config)
+
     create_resource_group(config)
 
     # AKS Bicep deploy returns the OIDC issuer URL directly. In dry-run
@@ -843,6 +957,7 @@ def provision_azure_infra(
         config,
         deployer_principal_id,
         deployer_principal_type,
+        system_pool_zones=system_pool_zones,
         dry_run=dry_run,
     )
     oidc_issuer = aks_outputs.get("oidcIssuerUrl", "")

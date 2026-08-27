@@ -22,7 +22,7 @@ param kubernetesVersion string = '1.36'
 @description('VM SKU for the system pool; its cache must accommodate the ephemeral OS disk.')
 param systemPoolVmSize string = 'Standard_D4lds_v5'
 
-@description('Availability zones for the system pool; each must support the selected VM SKU and regional quota.')
+@description('Availability zones for the system pool; the CLI supplies the subscription-resolved usable set, and the default applies to direct template deploys and to CLI runs where the SKU catalogue read fails.')
 param availabilityZones array = [
   '1'
   '2'
