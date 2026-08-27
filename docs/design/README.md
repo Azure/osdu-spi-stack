@@ -22,6 +22,7 @@ Design docs reference ADRs for decision rationale. They do not re-justify decisi
 | [Workload Identity](workload-identity.md) | One UAMI, one ServiceAccount, the token federation chain, what the JWT projection in ADR-016 does after the bearer arrives |
 | [Gateway and ingress](gateway-ingress.md) | The three ingress modes (`azure`, `dns`, `ip`) concretely, what each provisions, how to switch, how to debug a 404 |
 | [Secret lifecycle](secret-lifecycle.md) | The three secret stores, what Bicep writes vs what the CLI writes post-handoff, how trust-manager mirrors CAs into `osdu` |
+| [Environment lifecycle](environment-lifecycle.md) | How the shared backing environment for fork CI is versioned, refreshed, upgraded, and reset, and which surfaces fork pipelines consume |
 
 ## Doc template
 

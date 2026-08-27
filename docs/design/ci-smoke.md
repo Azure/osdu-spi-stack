@@ -33,6 +33,8 @@ The split-job design catches normal failure paths but not full-workflow cancella
 
 The provision job's "Pre-create RG with sweeper tags" step is what makes the backstop work even for runs that die before `spi up` finishes: the tags are written before any other Azure work begins. So a workflow that gets killed in the first 30 seconds still leaves a sweep-eligible RG behind.
 
+The standing shared environment ([environment-lifecycle.md](environment-lifecycle.md)) is outside the sweeper's reach on both criteria: its RG matches neither the `spi-stack-ci-*` name pattern nor the sweep-eligibility tag. Smoke environments are ephemeral by contract; the shared environment is torn down only by its own reset and teardown workflows.
+
 ## Observed timings (`centralus`)
 
 - `provision`: ~45 min (~30 min AKS Automatic Bicep + ~3 min PaaS Bicep + ~30s K8s bootstrap + ~10-15 min Flux extension Bicep)
