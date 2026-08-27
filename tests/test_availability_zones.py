@@ -108,3 +108,29 @@ def test_failed_sku_query_falls_back_to_template_default():
     failed = subprocess.CompletedProcess(args=["az"], returncode=1, stdout="", stderr="throttled")
     with mock.patch.object(azure_infra, "run_command", return_value=failed):
         assert azure_infra._resolve_system_pool_zones(cfg) is None
+
+
+def test_create_aks_automatic_passes_resolved_zones_to_bicep():
+    cfg = Config.from_env("dev1")
+    with (
+        mock.patch.object(azure_infra, "_resolve_system_pool_zones", return_value=["1", "2", "3"]),
+        mock.patch.object(azure_infra, "run_bicep_deployment", return_value={}) as run_bicep,
+    ):
+        azure_infra.create_aks_automatic(cfg, "deployer-id", "ServicePrincipal", dry_run=True)
+
+    parameters = run_bicep.call_args.kwargs["parameters"]
+    assert parameters["availabilityZones"] == ["1", "2", "3"]
+    assert parameters["systemPoolVmSize"] == azure_infra.SYSTEM_POOL_VM_SIZE
+
+
+def test_create_aks_automatic_omits_zones_when_resolver_falls_back():
+    cfg = Config.from_env("dev1")
+    with (
+        mock.patch.object(azure_infra, "_resolve_system_pool_zones", return_value=None),
+        mock.patch.object(azure_infra, "run_bicep_deployment", return_value={}) as run_bicep,
+    ):
+        azure_infra.create_aks_automatic(cfg, "deployer-id", "ServicePrincipal", dry_run=True)
+
+    parameters = run_bicep.call_args.kwargs["parameters"]
+    assert "availabilityZones" not in parameters
+    assert parameters["systemPoolVmSize"] == azure_infra.SYSTEM_POOL_VM_SIZE
