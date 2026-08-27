@@ -242,17 +242,9 @@ def detect_legacy_keyvault(resource_group: str, env: str) -> bool:
 
 
 def _resolve_system_pool_zones(config: Config) -> "list | None":
-    """Return the availability zones the system pool can actually use.
-
-    Zone availability is per subscription, not just per region: a size can
-    be published in three zones while one of them is restricted for this
-    subscription. Passing a restricted zone fails with
-    AvailabilityZoneNotSupported, and AKS Automatic separately rejects a
-    reduced zone set, so the usable set has to be resolved before deploying.
-
-    Returns None when the SKU catalogue itself cannot be read (throttling,
-    policy); the caller then leaves the template default in place rather
-    than blocking the deployment on an unverifiable answer.
+    """Return the zones the system pool size can use in this subscription
+    (ADR-027), or None when the SKU catalogue cannot be read and the caller
+    should leave the template default in place.
     """
     result = run_command(
         [

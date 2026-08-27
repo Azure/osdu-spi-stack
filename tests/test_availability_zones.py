@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for subscription-resolved system pool availability zones.
-
-Zone availability for a VM size is scoped to the subscription, so the CLI
-resolves the usable set before deploying and fails preflight with an
-actionable error instead of a mid-deployment ARM rejection.
-"""
+"""Tests for subscription-resolved system pool availability zones (ADR-027)."""
 
 import json
 import subprocess
