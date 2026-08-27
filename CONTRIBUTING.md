@@ -93,16 +93,16 @@ refactor(providers): extract shared cluster validation
 ```
 
 The recognized prefixes (`feat`, `fix`, `docs`, `refactor`, `test`, `ci`,
-`style`, `chore`) are auto-extracted into release notes by the release
-workflow. Commits that do not match a recognized prefix are silently omitted
-from the auto-categorized notes; this is benign (cleanups and merges do not
-need to appear).
+`style`, `chore`) are parsed by release-please from the squashed commit
+subject. `feat` bumps minor, a breaking `!` bumps major (minor while
+pre-1.0), everything else bumps patch; each type gets its own changelog
+section.
 
 ### PR Titles
 
-PR titles must follow Conventional Commits because GitHub squash-merge uses
-the PR title as the commit subject. A non-conforming title would silently
-disappear from auto-generated release notes.
+PR titles must follow Conventional Commits: squash-merge makes the title the
+commit subject, and release-please computes versions and changelogs from it.
+The `pr-title` required check enforces this; editing the title re-runs it.
 
 ### PR Descriptions
 
@@ -145,18 +145,24 @@ blocked by branch protection.
 6. Resolve all review threads. Unresolved threads block merge.
 7. Obtain approval from a code owner listed in
    [`.github/CODEOWNERS`](.github/CODEOWNERS).
-8. Squash-merge via `gh pr merge` or the GitHub UI. Squash on merge keeps
-   `main` linear and ensures the PR title becomes the commit subject (used
-   by release notes generation).
+8. Squash-merge via `gh pr merge` or the GitHub UI. Squash is the only
+   enabled merge method; it keeps `main` linear and makes the PR title the
+   commit subject that release-please versions from.
 
 ## Cutting a Release
 
-Releases are label-driven and automated on merge to `main`. To cut one, apply
-`release:patch`, `release:minor`, or `release:major` to your pull request
-before merging. The release workflow computes the next semver from the latest
-git tag, generates release notes from conventional commits since that tag,
-pushes the tag, builds the wheel via `uv build`, and creates a GitHub Release
-with the wheel attached as an asset.
+Releases are driven by [release-please](https://github.com/googleapis/release-please).
+Every merge to `main` opens or updates a standing pull request titled
+`chore: release X.Y.Z` that carries the changelog and the computed version.
+To cut a release, merge that PR: release-please tags `vX.Y.Z` and creates a
+draft GitHub Release; the assets job builds the wheel and sdist via
+`uv build`, uploads them, and publishes.
+
+To cut a specific version instead of the computed one (for example the jump
+to `1.0.0`), open a PR adding `"release-as": "X.Y.Z"` to the `"."` package
+block of `.release-please-config.json`, then remove it in a follow-up PR
+after the release ships; leaving it in place pins every future release to
+that version.
 
 End users install via:
 

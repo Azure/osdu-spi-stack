@@ -42,7 +42,9 @@ corrected files. Run it before every PR; run individual tools from
 
 - **Commits and PR titles** follow [Conventional Commits](https://www.conventionalcommits.org/)
   (`feat`, `fix`, `docs`, `refactor`, `test`, `ci`, `style`, `chore`).
-  Squash-merge uses the PR title as the release-note subject, so it must conform.
+  Squash-merge uses the PR title as the commit subject release-please
+  versions from (`feat` minor, breaking `!` major, anything else patch);
+  the `pr-title` check enforces it.
   PR descriptions follow the shape in `CONTRIBUTING.md`: why first, then what
   changed, then honest validation results.
 - **Branches** are named `<type>/<short-name>`, for example `feat/add-redis-component`.
