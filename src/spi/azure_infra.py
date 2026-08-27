@@ -902,13 +902,17 @@ def provision_azure_infra(
     """Provision all Azure PaaS resources. Returns infra_outputs for K8s bootstrap.
 
     Order:
-      1. Verify Azure login; capture tenant/subscription IDs.
-      2. Create resource group (imperative; required by ``az deployment
+      1. Verify Azure login; capture tenant/subscription IDs and resolve
+         the deployer principal.
+      2. Resolve system pool availability zones (read-only preflight; an
+         unusable size or zone set stops the run before anything is
+         created, ADR-027).
+      3. Create resource group (imperative; required by ``az deployment
          group what-if`` too, so always runs).
-      3. Deploy AKS Automatic via ``infra/aks.bicep`` (what-if in dry-run;
+      4. Deploy AKS Automatic via ``infra/aks.bicep`` (what-if in dry-run;
          returns ``oidcIssuerUrl`` for main.bicep).
-      4. Recover soft-deleted Key Vault if present (skipped in dry-run).
-      5. Deploy the main Bicep template (or run what-if preview if
+      5. Recover soft-deleted Key Vault if present (skipped in dry-run).
+      6. Deploy the main Bicep template (or run what-if preview if
          ``dry_run`` is True). This deploys all PaaS resources AND
          populates Key Vault metadata secrets (tenant-id, endpoints,
          ``DISABLED`` key/connection placeholders) declaratively.
