@@ -115,6 +115,12 @@ class TestExactWheelDiscipline:
                 # not merely installed and trusted.
                 assert "spi --version" in run_text
                 assert "STACK_VERSION" in run_text or "$STACK_VERSION" in run_text
+                # Exact equality, not a substring: `spi 10.6.00` contains
+                # `0.6.0` and would otherwise satisfy the declared version.
+                assert '[[ "$INSTALLED" == "spi $VERSION" ]]' in run_text, (
+                    f"{path.name}:{name} must compare the full `spi --version` output"
+                )
+                assert '*"$VERSION"*' not in run_text
 
     def test_declare_job_parses_with_source_python_not_the_cli(self):
         for path in (ENV_UPGRADE, ENV_REFRESH):

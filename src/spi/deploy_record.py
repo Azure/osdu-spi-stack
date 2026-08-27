@@ -115,11 +115,23 @@ def read_deploy_record(required: bool = False) -> DeployRecord | None:
     return _decode_record(obj) if obj is not None else None
 
 
+# A JSON Patch `test` mismatch is reported with several wordings depending on
+# the server path taken; missing one turns a retryable race into a hard error
+# that drops the winner's maintenance value. Same set as pins.mutate_lock.
+_CONFLICT_MARKERS = (
+    "the object has been modified",
+    "object has been modified",
+    "test operation",
+    "testing value",
+    "test failed",
+    "unprocessable entity",
+    "conflict",
+)
+
+
 def _is_conflict(output: str) -> bool:
     lowered = output.lower()
-    return (
-        "conflict" in lowered or "test failed" in lowered or "object has been modified" in lowered
-    )
+    return any(marker in lowered for marker in _CONFLICT_MARKERS)
 
 
 def _patch_record(obj: dict, record: DeployRecord) -> bool:

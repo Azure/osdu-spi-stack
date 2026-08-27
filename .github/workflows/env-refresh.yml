@@ -172,7 +172,7 @@ jobs:
           pipx install "release-wheel/$WHEEL"
           INSTALLED=$(spi --version)
           echo "Installed: $INSTALLED"
-          [[ "$INSTALLED" == *"$VERSION"* ]] || {
+          [[ "$INSTALLED" == "spi $VERSION" ]] || {
             echo "::error::installed CLI ($INSTALLED) does not match declared stackVersion ($STACK_VERSION)"
             exit 1
           }

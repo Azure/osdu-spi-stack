@@ -118,6 +118,43 @@ def test_create_record_raises_on_non_conflict_failure(monkeypatch):
         deploy_record._create_record(record)
 
 
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "Internal error occurred: jsonpatch test operation does not apply",
+        'testing value /metadata/resourceVersion failed: expected "7"',
+        "the object has been modified; please apply your changes",
+        "Operation cannot be fulfilled: the object has been modified",
+        "Error from server (Conflict): etcdserver: conflict",
+        "the server rejected our request: Unprocessable Entity",
+    ],
+)
+def test_patch_record_treats_json_patch_test_failures_as_retryable(monkeypatch, stderr):
+    """A `test` mismatch has several server wordings; missing one turns a
+    retryable race into a terminal error that drops the winner's maintenance."""
+
+    monkeypatch.setattr(
+        deploy_record,
+        "run_command",
+        lambda *args, **kwargs: _completed(returncode=1, stderr=stderr),
+    )
+    record = deploy_record._decode_record(_object())
+
+    assert deploy_record._patch_record(_object(resource_version="7"), record) is False
+
+
+def test_patch_record_still_raises_on_a_genuine_failure(monkeypatch):
+    monkeypatch.setattr(
+        deploy_record,
+        "run_command",
+        lambda *args, **kwargs: _completed(returncode=1, stderr="Forbidden: not authorized"),
+    )
+    record = deploy_record._decode_record(_object())
+
+    with pytest.raises(DeployRecordError, match="Forbidden"):
+        deploy_record._patch_record(_object(resource_version="7"), record)
+
+
 def test_set_maintenance_retries_conflict(monkeypatch):
     objects = iter([_object(resource_version="7"), _object(resource_version="8")])
     monkeypatch.setattr(

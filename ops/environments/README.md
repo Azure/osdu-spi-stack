@@ -2,8 +2,9 @@
 
 Each file here is a reviewed pin naming exactly which stack release, profile,
 and Azure placement a lifecycle workflow deploys onto one standing backing
-environment. `src/spi/environment.py` owns the schema; `env-upgrade.yml` and
-`env-refresh.yml` are the only readers.
+environment. `src/spi/environment.py` owns the schema. `env-upgrade.yml` and
+`env-refresh.yml` read it to drive a deployment; `release.yml`'s bump job
+reads and validates it to open the version-bump PR, and is the only writer.
 
 There is one declaration today, `shared.yaml`, deliberately not checked in by
 the implementation that introduces this schema: activation is a separate,
