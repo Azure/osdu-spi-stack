@@ -383,6 +383,45 @@ class TestVerifyReleaseAsset:
         assert job["needs"] == "declare"
 
 
+class TestRevisionGatedConvergence:
+    """An upgrade re-points the source while every Kustomization is still
+    Ready for the revision being replaced, so a bare Ready wait can pass
+    before any of the new revision is applied (ADR-029)."""
+
+    def test_wait_script_supports_an_expected_revision(self):
+        script = (REPO_ROOT / "scripts" / "wait_for_flux_ready.sh").read_text(encoding="utf-8")
+        assert "--expect-revision" in script
+        assert "lastAppliedRevision" in script
+
+    def test_verify_resolves_the_revision_before_waiting_on_it(self):
+        verify_steps = _workflow(ENV_UPGRADE)["jobs"]["verify"]["steps"]
+        names = [s["name"] for s in verify_steps if "name" in s]
+        assert names.index("Resolve the upgraded source revision") < names.index(
+            "Wait for Flux Kustomizations to be Ready"
+        )
+
+        steps = _steps(_workflow(ENV_UPGRADE)["jobs"]["verify"])
+        resolve = steps["Resolve the upgraded source revision"]
+        assert resolve["id"] == "revision"
+        assert ".stack.resolvedCommit" in resolve["run"]
+        # An absent commit must fail the job, never wait on an empty string,
+        # which the script treats as "no revision expected".
+        assert "exit 1" in resolve["run"]
+
+        wait = steps["Wait for Flux Kustomizations to be Ready"]
+        assert wait["env"]["EXPECT_REVISION"] == "${{ steps.revision.outputs.revision }}"
+        assert '--expect-revision "$EXPECT_REVISION"' in wait["run"]
+
+
+class TestBareProfileProvisioning:
+    def test_spi_up_omits_ingress_mode_for_a_bare_declaration(self):
+        # ingressMode is a required declaration key, but `spi up` rejects
+        # --ingress-mode with `bare`, which deploys no ingress substrate.
+        up_step = _steps(_workflow(ENV_UPGRADE)["jobs"]["provision"])["spi up"]["run"]
+        assert '[ "$PROFILE" != "bare" ]' in up_step
+        assert "ARGS+=(--ingress-mode" in up_step
+
+
 class TestWaitScriptExactVersionUse:
     def test_wait_for_flux_ready_prefers_installed_spi(self):
         script = (REPO_ROOT / "scripts" / "wait_for_flux_ready.sh").read_text(encoding="utf-8")

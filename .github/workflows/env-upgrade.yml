@@ -373,15 +373,22 @@ jobs:
         env:
           SPI_DEPLOYER_OID: ${{ steps.prelogin.outputs.oid }}
         run: |
-          spi up \
-            --env "$ENV_NAME" \
-            --profile "$PROFILE" \
-            --location "$LOCATION" \
-            --ingress-mode "$INGRESS_MODE" \
-            --image-branch "$IMAGE_BRANCH" \
-            --name-suffix "$NAME_SUFFIX" \
-            --tag "$STACK_VERSION" \
+          set -euo pipefail
+          ARGS=(
+            --env "$ENV_NAME"
+            --profile "$PROFILE"
+            --location "$LOCATION"
+            --image-branch "$IMAGE_BRANCH"
+            --name-suffix "$NAME_SUFFIX"
+            --tag "$STACK_VERSION"
             --refresh-images
+          )
+          # The declaration always carries an ingressMode, but 'bare' deploys
+          # no ingress substrate and spi up rejects the option (ADR-012).
+          if [ "$PROFILE" != "bare" ]; then
+            ARGS+=(--ingress-mode "$INGRESS_MODE")
+          fi
+          spi up "${ARGS[@]}"
 
       - name: Capture diagnostics on failure
         if: failure()
@@ -464,8 +471,35 @@ jobs:
       - name: spi connect
         run: spi connect --resource-group "spi-stack-${ENV_NAME}" --cluster "spi-stack-${ENV_NAME}"
 
+      - name: Resolve the upgraded source revision
+        id: revision
+        # Every Kustomization still reports Ready for the previous revision
+        # the moment spi up returns, so the wait below needs the commit it
+        # must see applied before convergence counts (ADR-029).
+        run: |
+          set -euo pipefail
+          set +e
+          STATUS_JSON=$(spi status --json)
+          STATUS_EXIT=$?
+          set -e
+          if [ "$STATUS_EXIT" -eq 1 ]; then
+            echo "$STATUS_JSON"
+            echo "::error::spi status --json failed (exit 1); see the contract-read error above"
+            exit 1
+          fi
+          RESOLVED=$(echo "$STATUS_JSON" | jq -r '.stack.resolvedCommit // ""')
+          if [ -z "$RESOLVED" ] || [ "$RESOLVED" = "null" ]; then
+            echo "::error::deploy record has no resolvedCommit; cannot gate convergence on the upgraded revision"
+            exit 1
+          fi
+          echo "revision=$RESOLVED" >> "$GITHUB_OUTPUT"
+
       - name: Wait for Flux Kustomizations to be Ready
-        run: bash scripts/wait_for_flux_ready.sh --timeout 13800
+        env:
+          EXPECT_REVISION: ${{ steps.revision.outputs.revision }}
+        run: |
+          bash scripts/wait_for_flux_ready.sh --timeout 13800 \
+            --expect-revision "$EXPECT_REVISION"
 
       - name: Acceptance probe (gateway reachable)
         if: needs.declare.outputs.profile != 'bare'

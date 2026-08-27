@@ -108,6 +108,21 @@ def _canonical_data(*services):
     return data
 
 
+def _pinned_data(service: str, pin: ServicePin) -> dict:
+    """The lock entry a pin write leaves behind, alongside its annotation."""
+    key = service.upper().replace("-", "_")
+    return {
+        f"{key}_IMAGE": f"{pin.repository}:{pin.tag}",
+        f"{key}_IMAGE_REPOSITORY": pin.repository,
+        f"{key}_IMAGE_TAG": pin.tag,
+        f"{key}_IMAGE_CREATED_AT": pin.created_at,
+        f"{key}_IMAGE_DIGEST": pin.digest,
+        f"{key}_IMAGE_REF": (
+            f"{pin.repository}@{pin.digest}" if pin.digest else f"{pin.repository}:{pin.tag}"
+        ),
+    }
+
+
 def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     """Wire pins.read_lock/run_command to an in-memory ConfigMap so the real
     ``mutate_lock`` compare-and-retry loop runs against a controllable fake
@@ -556,6 +571,115 @@ class TestPinServicePostWriteRecheck:
 
         final_pins = decode_pins(calls["box"][0])
         assert final_pins["storage"].mr == "99"
+        assert calls["reconciled"] is None
+
+    def test_restores_the_replaced_pin_rather_than_canonical(self, monkeypatch):
+        """Re-pinning a pinned service and then losing the maintenance race
+        must put the earlier pin back, not strip the service to canonical:
+        the rollback undoes this call, not the experiment it interrupted."""
+        earlier = _pin(
+            mr="7",
+            repository="repo/storage-fix-earlier",
+            tag="e" * 40,
+            created_at="earlier",
+            digest="sha256:earlier",
+        )
+        lock = _lock(
+            data=_pinned_data("storage", earlier),
+            pins_annotation=encode_pins({"storage": earlier}),
+        )
+        calls = self._wire(monkeypatch, lock, {"storage"})
+        records = iter([_deploy_record(), _deploy_record(maintenance=True)])
+        monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
+
+        with pytest.raises(PinError, match="maintenance"):
+            pin_service("storage", "42")
+
+        data, saved = calls["patch"]
+        assert saved["storage"] == earlier
+        assert data == _pinned_data("storage", earlier)
+        assert calls["reconciled"] is None
+
+    def test_restoring_a_legacy_pin_keeps_its_live_digest(self, monkeypatch):
+        """A pin encoded before `created_at` and `digest` joined the schema
+        decodes with those fields empty while the lock still carries them.
+        Re-deriving the entry from the annotation would blank the digest keys
+        ADR-017 makes load-bearing, so the rollback replays the lock data."""
+        legacy = _pin(mr="7", repository="repo/storage-fix-earlier", tag="e" * 40)
+        assert (legacy.created_at, legacy.digest) == ("", "")
+        live = _pinned_data("storage", legacy)
+        live["STORAGE_IMAGE_DIGEST"] = "sha256:live"
+        live["STORAGE_IMAGE_CREATED_AT"] = "then"
+        live["STORAGE_IMAGE_REF"] = "repo/storage-fix-earlier@sha256:live"
+        lock = _lock(data=live, pins_annotation=encode_pins({"storage": legacy}))
+        calls = self._wire(monkeypatch, lock, {"storage"})
+        records = iter([_deploy_record(), _deploy_record(maintenance=True)])
+        monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
+
+        with pytest.raises(PinError, match="maintenance"):
+            pin_service("storage", "42")
+
+        data, _ = calls["patch"]
+        assert data["STORAGE_IMAGE_DIGEST"] == "sha256:live"
+        assert data["STORAGE_IMAGE_CREATED_AT"] == "then"
+        assert data["STORAGE_IMAGE_REF"] == "repo/storage-fix-earlier@sha256:live"
+
+    def test_reinstates_a_loader_pin_released_by_the_same_write(self, monkeypatch):
+        """Pinning schema from an MR that never rebuilt the loader releases a
+        stale loader pin; the rollback owes that release an undo too."""
+        loader = _pin(mr="7", repository="repo/schema-load-fix-earlier", tag="e" * 40)
+        lock = _lock(
+            data={**_canonical_data("schema"), **_pinned_data("schema-load", loader)},
+            pins_annotation=encode_pins({"schema-load": loader}),
+        )
+        calls = self._wire(monkeypatch, lock, {"schema"})
+        records = iter([_deploy_record(), _deploy_record(maintenance=True)])
+        monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
+
+        with pytest.raises(PinError, match="maintenance"):
+            pin_service("schema", "42")
+
+        data, saved = calls["patch"]
+        assert saved["schema-load"] == loader
+        assert data["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "repo/schema-load-fix-earlier"
+        assert "schema" not in saved
+        assert data["SCHEMA_IMAGE_REPOSITORY"] == "repo/schema-master"
+        assert calls["reconciled"] is None
+
+    def test_leaves_the_released_loader_alone_when_the_schema_pin_moved_on(self, monkeypatch):
+        """The release is only undone together with the pin it accompanied.
+        Reinstating the loader on its own evidence, after another call has
+        taken over the schema pin, would pair that newer pin with a stale
+        loader: the exact mismatch releasing the loader exists to prevent."""
+        loader = _pin(mr="7", repository="repo/schema-load-fix-earlier", tag="e" * 40)
+        lock = _lock(
+            data={**_canonical_data("schema"), **_pinned_data("schema-load", loader)},
+            pins_annotation=encode_pins({"schema-load": loader}),
+        )
+        calls = self._wire(monkeypatch, lock, {"schema"})
+
+        def fake_read_deploy_record(required=False):
+            if calls["patch"] is None:
+                return _deploy_record()
+            current = calls["box"][0]
+            newer = _pin(mr="99", applied_at="2026-08-25T01:00:00Z")
+            calls["box"][0] = {
+                "metadata": {
+                    "resourceVersion": str(int(current["metadata"]["resourceVersion"]) + 1),
+                    "annotations": {pins.PINS_ANNOTATION: encode_pins({"schema": newer})},
+                },
+                "data": dict(current["data"]),
+            }
+            return _deploy_record(maintenance=True)
+
+        monkeypatch.setattr(pins, "read_deploy_record", fake_read_deploy_record)
+
+        with pytest.raises(PinError, match="nothing was reverted"):
+            pin_service("schema", "42")
+
+        final_pins = decode_pins(calls["box"][0])
+        assert final_pins["schema"].mr == "99"
+        assert "schema-load" not in final_pins
         assert calls["reconciled"] is None
 
     def test_reports_pin_still_live_when_revert_fails(self, monkeypatch):

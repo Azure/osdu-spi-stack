@@ -255,6 +255,12 @@ def _lock_entry_patch(service: str, repository: str, tag: str, created_at: str, 
     }
 
 
+def _lock_entry_keys(service: str) -> tuple[str, ...]:
+    """The lock keys one service entry owns, read off the patch itself."""
+
+    return tuple(_lock_entry_patch(service, "", "", "", ""))
+
+
 def _resource_version(lock: dict) -> str:
     return str((lock.get("metadata") or {}).get("resourceVersion", ""))
 
@@ -486,14 +492,42 @@ def _post_write_maintenance_check() -> str | None:
     return None
 
 
-def _revert_pin(written: dict[str, ServicePin], description: str) -> list[str]:
-    """Undo exactly the pins ``written`` still holds live, restoring canonical.
+@dataclass(frozen=True)
+class _LockMutation:
+    """One lock write's outcome and the state it replaced, per service.
 
-    Mirrors `reset_service`'s canonical restore, scoped to the pins this
-    call wrote: a name is reverted only when its live pin still matches
-    (``mr``, ``applied_at``) what this call recorded, so a pin a concurrent
-    `spi service pin` has since replaced is left standing rather than
-    reverting someone else's write. Returns the names actually reverted.
+    ``written`` maps each mutated service to the pin the write left there,
+    or ``None`` for one it released. ``prior_pins`` and ``prior_entries``
+    hold the annotation and data-key state those same names carried
+    beforehand, captured rather than re-derived so a rollback replays what
+    was actually there.
+    """
+
+    written: dict[str, ServicePin | None]
+    prior_pins: dict[str, ServicePin | None]
+    prior_entries: dict[str, dict[str, str]]
+
+
+class _MutationSuperseded(Exception):
+    """A rollback found its write already replaced; never leaves `_revert_pin`."""
+
+
+def _revert_pin(mutation: _LockMutation, description: str) -> list[str]:
+    """Undo this call's lock write, restoring exactly the state it replaced.
+
+    All or nothing: if any mutated name's live pin no longer holds what this
+    call left there, a concurrent `spi service pin` owns the entry now, and
+    the whole mutation is left standing. Reverting only part of a schema and
+    loader pair would produce the very mismatch the pair exists to prevent.
+    Restoring replays the captured annotation and data keys verbatim, which
+    a pin encoded before `created_at` and `digest` existed cannot survive
+    being re-derived from: ADR-017's digest keys are load-bearing and a
+    restore must not blank them. Returns the names reverted, empty when the
+    mutation no longer stands.
+
+    Residual: a predecessor pin restored here may itself belong to a
+    concurrent call that also failed, which the lock cannot distinguish from
+    one that succeeded. ADR-031's recorded owning run is what closes that.
     """
 
     reverted: list[str] = []
@@ -508,20 +542,31 @@ def _revert_pin(written: dict[str, ServicePin], description: str) -> list[str]:
         pins = decode_pins(lock)
         data = dict(lock.get("data") or {})
         reverted = []
-        for name, pin in written.items():
+
+        for name, pin in mutation.written.items():
             live = pins.get(name)
-            if live is None or live.mr != pin.mr or live.applied_at != pin.applied_at:
-                continue
-            pins.pop(name)
-            data.update(
-                _lock_entry_patch(
-                    name,
-                    pin.canonical_repository,
-                    pin.canonical_tag,
-                    pin.canonical_created_at,
-                    pin.canonical_digest,
+            if pin is None:
+                stands = live is None
+            else:
+                stands = live is not None and (live.mr, live.applied_at) == (
+                    pin.mr,
+                    pin.applied_at,
                 )
-            )
+            if not stands:
+                raise _MutationSuperseded
+
+        for name in mutation.written:
+            prior = mutation.prior_pins.get(name)
+            if prior is None:
+                pins.pop(name, None)
+            else:
+                pins[name] = prior
+            entry = mutation.prior_entries.get(name, {})
+            for key in _lock_entry_keys(name):
+                if key in entry:
+                    data[key] = entry[key]
+                else:
+                    data.pop(key, None)
             reverted.append(name)
 
         annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
@@ -531,7 +576,10 @@ def _revert_pin(written: dict[str, ServicePin], description: str) -> list[str]:
             annotations.pop(PINS_ANNOTATION, None)
         return {"data": data, "metadata": {"annotations": annotations}}
 
-    mutate_lock(compute, description)
+    try:
+        mutate_lock(compute, description)
+    except _MutationSuperseded:
+        return []
     return reverted
 
 
@@ -575,6 +623,8 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     results: list[tuple[str, ServicePin]] = []
     released: list[str] = []
+    prior_pins: dict[str, ServicePin | None] = {}
+    prior_entries: dict[str, dict[str, str]] = {}
 
     def compute(lock: dict | None) -> dict:
         if lock is None:
@@ -582,17 +632,25 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
                 f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
                 "is this a core-profile cluster?"
             )
-        nonlocal results, released
+        nonlocal results, released, prior_pins, prior_entries
         lock_data = lock.get("data") or {}
         pins = decode_pins(lock)
         data = dict(lock_data)
         results = []
         released_now: dict[str, ServicePin] = {}
+        prior_pins = {}
+        prior_entries = {}
+
+        def capture(name: str) -> None:
+            prior_pins[name] = pins.get(name)
+            prior_entries[name] = {
+                key: lock_data[key] for key in _lock_entry_keys(name) if key in lock_data
+            }
 
         if loader_missing:
             # A loader still pinned by an earlier MR must not survive as a
             # mismatched pair with the newly pinned schema image; release it.
-            stale = pins.pop(SCHEMA_LOAD_SERVICE_NAME, None)
+            stale = pins.get(SCHEMA_LOAD_SERVICE_NAME)
             if stale:
                 if not stale.canonical_repository or not stale.canonical_tag:
                     raise PinError(
@@ -600,11 +658,14 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
                         "canonical image recorded; run 'spi service reset schema' to remove "
                         "the invalid pin, then 'spi reconcile --refresh-images' before re-pinning."
                     )
+                capture(SCHEMA_LOAD_SERVICE_NAME)
+                pins.pop(SCHEMA_LOAD_SERVICE_NAME)
                 released_now[SCHEMA_LOAD_SERVICE_NAME] = stale
 
         for name, image, mr in resolved:
             key = image_lock_key(name)
             existing = pins.get(name)
+            capture(name)
             canonical_repository = (
                 existing.canonical_repository
                 if existing
@@ -668,12 +729,14 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     description = f"Pin {', '.join(targets)} to MR !{mr_iid} image"
     mutate_lock(compute, description)
 
-    written = dict(results)
+    written: dict[str, ServicePin | None] = dict(results)
+    written.update({name: None for name in released})
+    mutation = _LockMutation(written=written, prior_pins=prior_pins, prior_entries=prior_entries)
     blocker = _post_write_maintenance_check()
     if blocker:
         names = ", ".join(sorted(written))
         try:
-            reverted = _revert_pin(written, f"Revert pin for {names} ({blocker})")
+            reverted = _revert_pin(mutation, f"Revert pin for {names} ({blocker})")
         except PinError as exc:
             raise PinError(
                 f"{blocker} while pinning {names}, and reverting the pin failed: {exc}. "
@@ -681,7 +744,7 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
                 "and clear it."
             ) from exc
         outcome = (
-            f"reverted {', '.join(sorted(reverted))} to its canonical image"
+            f"restored {', '.join(sorted(reverted))} to its pre-pin image"
             if reverted
             else "a newer pin had already replaced it, so nothing was reverted"
         )

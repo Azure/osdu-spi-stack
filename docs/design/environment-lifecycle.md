@@ -179,9 +179,15 @@ spi up \
   --image-branch "$(yq .imageBranch $decl)" \
   --name-suffix "$(yq .nameSuffix $decl)" \
   --tag "$(yq .stackVersion $decl)"
-bash scripts/wait_for_flux_ready.sh --timeout 13800
+bash scripts/wait_for_flux_ready.sh --timeout 13800 \
+  --expect-revision "$(spi status --json | jq -r .stack.resolvedCommit)"
 spi status --json | jq .ready   # true when converged
 ```
+
+Drop `--ingress-mode` when the declaration's profile is `bare`: that profile
+deploys no ingress substrate and `spi up` rejects the option (ADR-012).
+`--expect-revision` is what makes the wait mean anything on an upgrade,
+where every Kustomization is still Ready for the revision being replaced.
 
 This recipe is provision-only: the fresh environment holds `maintenance`
 (ADR-029) until the `env-refresh` workflow, or its manual dispatch, runs the
