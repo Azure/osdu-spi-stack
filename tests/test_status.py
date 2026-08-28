@@ -7,6 +7,7 @@
 import json
 import re
 
+import pytest
 from typer.testing import CliRunner
 
 from spi import cli, status
@@ -65,6 +66,18 @@ def _wire(monkeypatch, *, ready=True, record=_record(), lock=None, suspended=Tru
         lambda name, namespace: lock,
     )
     monkeypatch.setattr("spi.info.collect_info", lambda: {"base_url": "https://example.test"})
+
+
+def _wire_kustomization_error(monkeypatch, detail: str):
+    _wire(monkeypatch)
+
+    def required(args, description):
+        if "kustomizations" in args:
+            raise status.StatusError(f"Could not {description}: {detail}")
+        return {"spec": {"suspend": False}}
+
+    monkeypatch.setattr(status, "_required_kubectl_json", required)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
 
 
 def test_deployable_status_contract(monkeypatch):
@@ -158,6 +171,48 @@ def test_status_json_uses_contract_exit_code(monkeypatch):
 
     assert result.exit_code == 2
     assert json.loads(result.output)["reason"]["code"] == "maintenance"
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        'Error from server (NotFound): kustomizations "osdu-flux" not found',
+        'error: no matches for kind "Kustomization"',
+        'error: the server doesn\'t have a resource type "kustomizations"',
+    ],
+)
+def test_status_json_treats_absent_kustomization_crd_as_not_deployable(monkeypatch, detail):
+    _wire_kustomization_error(monkeypatch, detail)
+
+    result = CliRunner().invoke(cli.app, ["status", "--json"])
+
+    payload = json.loads(result.output)
+    assert result.exit_code == 2
+    assert payload["ready"] is False
+    assert payload["deployable"] is False
+    assert payload["reason"]["code"] == "no_kustomizations"
+    assert payload["kustomizations"]["total"] == 0
+
+
+def test_status_human_renders_absent_kustomization_crd_as_empty(monkeypatch):
+    _wire_kustomization_error(
+        monkeypatch, 'error: the server doesn\'t have a resource type "kustomizations"'
+    )
+    monkeypatch.setattr(status, "kubectl_json", lambda _args: None)
+
+    result = CliRunner().invoke(cli.app, ["status"])
+
+    assert result.exit_code == 0
+    assert "No kustomizations found" in _plain(result.output)
+
+
+def test_status_json_keeps_other_kustomization_read_failures_fatal(monkeypatch):
+    _wire_kustomization_error(monkeypatch, "error: connection refused")
+
+    result = CliRunner().invoke(cli.app, ["status", "--json"])
+
+    assert result.exit_code == 1
+    assert "connection refused" in result.output
 
 
 def test_status_rejects_watch_with_json():

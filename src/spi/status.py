@@ -224,10 +224,19 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
     re-deriving `ready` from `kubectl get kustomizations`.
     """
 
-    kustomization_data = _required_kubectl_json(
-        ["get", "kustomizations", "-n", "osdu-flux"],
-        "read Flux Kustomizations",
-    )
+    try:
+        kustomization_data = _required_kubectl_json(
+            ["get", "kustomizations", "-n", "osdu-flux"],
+            "read Flux Kustomizations",
+        )
+    except StatusError as exc:
+        detail = str(exc).lower()
+        if not any(
+            marker in detail
+            for marker in ("not found", "no matches for kind", "doesn't have a resource type")
+        ):
+            raise
+        kustomization_data = {"items": []}
     raw_items = kustomization_data.get("items")
     if not isinstance(raw_items, list):
         raise StatusError("Flux Kustomization response has no items list")
