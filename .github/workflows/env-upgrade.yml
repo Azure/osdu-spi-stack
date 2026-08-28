@@ -100,10 +100,16 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
+      # First release with --tag, --name-suffix, spi connect, spi maintenance, and spi status --json.
+      LIFECYCLE_CLI_MIN_VERSION: v0.6.0
     steps:
       - name: Verify the release and wheel asset exist
         run: |
           set -euo pipefail
+          if [ "$(printf '%s\n' "$LIFECYCLE_CLI_MIN_VERSION" "$STACK_VERSION" | sort -V | head -n1)" != "$LIFECYCLE_CLI_MIN_VERSION" ]; then
+            echo "::error::stackVersion $STACK_VERSION predates the lifecycle CLI (minimum $LIFECYCLE_CLI_MIN_VERSION)"
+            exit 1
+          fi
           WHEEL="spi-${STACK_VERSION#v}-py3-none-any.whl"
           ASSETS=$(gh release view "$STACK_VERSION" --repo "${{ github.repository }}" --json assets --jq '.assets[].name')
           if ! grep -qx "$WHEEL" <<<"$ASSETS"; then
@@ -114,7 +120,7 @@ jobs:
 
   detect:
     name: detect-existing-environment
-    needs: declare
+    needs: [declare, verify-release]
     if: needs.declare.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     environment: azure-shared
