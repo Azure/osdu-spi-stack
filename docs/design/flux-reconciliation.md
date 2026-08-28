@@ -143,7 +143,7 @@ independent gate on top of `suspend`: `spi status --json`'s `deployable`
 field is `false` while maintenance is set, even once every Kustomization is
 `Ready`. An existing record keeps its current maintenance value instead.
 The lifecycle workflows (`env-upgrade`, `env-refresh`) quiesce a standing
-environment with an explicit `spi maintenance set` before provisioning, not
+environment with an explicit `spi maintenance set` before mutation, not
 as a side effect of `spi up --tag`. Once maintenance is set, only a lifecycle
 workflow clears it, and only after its own Flux-readiness wait and gateway
 probes pass. A hand-run `spi up --tag` against a standing healthy environment
