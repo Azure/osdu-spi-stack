@@ -726,7 +726,8 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
             annotations.pop(PINS_ANNOTATION, None)
         return {"data": data, "metadata": {"annotations": annotations}}
 
-    description = f"Pin {', '.join(targets)} to MR !{mr_iid} image"
+    description_targets = [name for name, _, _ in resolved] if loader_missing else targets
+    description = f"Pin {', '.join(description_targets)} to MR !{mr_iid} image"
     mutate_lock(compute, description)
 
     written: dict[str, ServicePin | None] = dict(results)
