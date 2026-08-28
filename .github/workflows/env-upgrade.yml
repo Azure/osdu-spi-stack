@@ -120,7 +120,7 @@ jobs:
 
   detect:
     name: detect-existing-environment
-    needs: declare
+    needs: [declare, verify-release]
     if: needs.declare.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     environment: azure-shared
