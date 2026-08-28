@@ -38,6 +38,7 @@ jobs:
       env: ${{ steps.export.outputs.env }}
       stack_version: ${{ steps.export.outputs.stack_version }}
       profile: ${{ steps.export.outputs.profile }}
+      image_branch: ${{ steps.export.outputs.image_branch }}
     steps:
       - uses: actions/checkout@v7
 
@@ -124,6 +125,7 @@ jobs:
     timeout-minutes: 270
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
+      IMAGE_BRANCH: ${{ needs.declare.outputs.image_branch }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
     steps:
       - uses: actions/checkout@v7
@@ -206,7 +208,7 @@ jobs:
         # current image lock. Canonical images do not advance on this
         # schedule during the pre-onboarding phase; see
         # docs/design/environment-lifecycle.md.
-        run: spi reconcile
+        run: spi reconcile --image-branch "$IMAGE_BRANCH"
 
       - name: Wait for Flux Kustomizations to be Ready
         run: bash scripts/wait_for_flux_ready.sh --timeout 13800
