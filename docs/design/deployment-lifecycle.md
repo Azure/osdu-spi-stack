@@ -35,7 +35,7 @@ The sequence inside `deploy.deploy_azure()` is:
 9. **K8s bootstrap.** `kubectl apply` for namespaces, StorageClasses, the middleware secret seed (`spi-secrets`) plus the `platform`/`osdu` credential Secrets, `workload-identity-sa` (in `platform` and `osdu`), the `osdu-config` ConfigMap, the `spi-ingress-config` ConfigMap, the `spi-init-values` ConfigMap, and the Istio JWT projection resources from [ADR-016](../decisions/016-istio-jwt-projection.md). The `core` profile also creates the `osdu-image-lock` ConfigMap, resolved live from the OSDU community registry per [ADR-017](../decisions/017-osdu-image-lock.md); `minimal` and `bare` skip image resolution and this ConfigMap.
 10. **`infra/flux.bicep` deploy.** Activates the AKS Flux extension and creates the `fluxConfigurations` resource with two top-level Kustomizations: `stack` (pointing at `./software/stacks/osdu/profiles/<profile>`) and `ingress` (pointing at `./software/stacks/osdu/ingress/<mode>`).
 11. **Runtime Key Vault secrets.** The CLI writes the in-cluster middleware secrets to Key Vault (per-partition Elasticsearch credentials, Redis hostname/password) directly from the generated seed passwords, with no wait for middleware Ready, since the values are known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md).
-12. **Suspend pin.** `_pin_gitops_source()` waits up to 120s for `gitrepository/osdu-spi-stack-system` to reach `Ready=True`, then `kubectl patch spec.suspend: true`. See [ADR-014](../decisions/014-suspend-gitops-after-deploy.md).
+12. **Suspend pin.** `_finalize_gitops_source()` waits up to 10 minutes for `gitrepository/osdu-spi-stack-system` to appear, resumes and reconciles it with a 10-minute timeout, verifies `Ready=True` and the requested artifact revision, then `_set_source_suspended()` patches `spec.suspend: true`. See [ADR-014](../decisions/014-suspend-gitops-after-deploy.md).
 13. **Next-steps panel.** The CLI prints `spi status --watch`, `spi info`, and the matching `spi down` command with flags pre-filled.
 
 At this point the CLI exits. You have a cluster with Flux installed, a suspended `GitRepository`, all `Kustomization` definitions queued, and the runtime KV secrets in place. The OSDU services have not finished starting yet.
@@ -167,7 +167,7 @@ returns the gateway hostname / IP and (with `--show-secrets`) the Workload Ident
 ## Source files
 
 - `src/spi/cli.py` -- `up`, `down`, `reconcile`, `status`, `info`, `check`, `update` commands
-- `src/spi/deploy.py` -- Phase 1 orchestrator (`deploy_azure`); `osdu-config` ConfigMap, workload-identity ServiceAccounts, Istio JWT projection, runtime KV writes, `_pin_gitops_source()`
+- `src/spi/deploy.py` -- Phase 1 orchestrator (`deploy_azure`); `osdu-config` ConfigMap, workload-identity ServiceAccounts, Istio JWT projection, runtime KV writes, `_finalize_gitops_source()`, `_set_source_suspended()`
 - `src/spi/azure_infra.py` -- Azure infra provisioning (`provision_azure_infra`: RG, AKS, `main.bicep`, KV recovery)
 - `src/spi/bicep.py` -- `az deployment group create` wrapper
 - `src/spi/bootstrap.py` -- K8s bootstrap (namespaces, StorageClasses, Gateway API CRDs)
