@@ -280,6 +280,22 @@ def test_empty_name_suffix_requires_environment():
         cli._resolve_name_suffix("", True, requested_suffix="")
 
 
+def test_empty_name_suffix_with_environment_preserves_legacy_marker(monkeypatch):
+    monkeypatch.setattr("spi.azure_infra.read_rg_suffix_tag", lambda _rg: None)
+    monkeypatch.setattr("spi.azure_infra.detect_legacy_keyvault", lambda _rg, _env: False)
+    monkeypatch.setattr(
+        "spi.config.generate_name_suffix",
+        lambda: pytest.fail("explicit empty suffix must not generate a random suffix"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_command",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="false", stderr=""),
+    )
+
+    assert cli._resolve_name_suffix("shared", True, requested_suffix="") == ""
+
+
 def test_connect_cluster_reuses_hardened_kubeconfig_sequence(monkeypatch):
     commands = []
 
