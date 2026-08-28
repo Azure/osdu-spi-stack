@@ -136,13 +136,19 @@ The substitution is not marked `optional`. A missing ConfigMap fails `spi-namesp
 instead of a branch (`infra/flux.bicep`'s `repositoryRef` emits `{tag:
 ...}` rather than `{branch: ...}`); the CLI verifies
 `status.artifact.revision` names that tag's resolved commit before suspending,
-so the deploy record's `resolvedCommit` never names a different ref. A tag
-deployment also writes `maintenance: true` to the `spi-deploy-record`
-ConfigMap (`src/spi/deploy_record.py`), a second, independent gate on top of
-`suspend`: `spi status --json`'s `deployable` field is `false` while
-maintenance is set, even once every Kustomization is `Ready`. Only a
-lifecycle workflow (`env-upgrade`, `env-refresh`) clears it, and only after
-its own Flux-readiness wait and gateway probes pass; see
+so the deploy record's `resolvedCommit` never names a different ref. When a
+tag deployment creates the `spi-deploy-record` ConfigMap
+(`src/spi/deploy_record.py`), it writes `maintenance: true`, a second,
+independent gate on top of `suspend`: `spi status --json`'s `deployable`
+field is `false` while maintenance is set, even once every Kustomization is
+`Ready`. An existing record keeps its current maintenance value instead.
+The lifecycle workflows (`env-upgrade`, `env-refresh`) quiesce a standing
+environment with an explicit `spi maintenance set` before provisioning, not
+as a side effect of `spi up --tag`. Once maintenance is set, only a lifecycle
+workflow clears it, and only after its own Flux-readiness wait and gateway
+probes pass. A hand-run `spi up --tag` against a standing healthy environment
+therefore mutates it without a readiness wait or gateway probes while leaving
+`maintenance: false` and `deployable: true`; see
 [environment-lifecycle.md](environment-lifecycle.md) for the full contract
 and [ADR-029](../decisions/029-environment-lifecycle-and-reset-boundary.md).
 
