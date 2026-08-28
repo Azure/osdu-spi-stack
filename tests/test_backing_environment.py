@@ -275,6 +275,11 @@ def test_name_suffix_override_must_match_existing(monkeypatch):
         cli._resolve_name_suffix("shared", True, requested_suffix="other")
 
 
+def test_empty_name_suffix_requires_environment():
+    with pytest.raises(typer.BadParameter, match="--name-suffix requires --env"):
+        cli._resolve_name_suffix("", True, requested_suffix="")
+
+
 def test_connect_cluster_reuses_hardened_kubeconfig_sequence(monkeypatch):
     commands = []
 

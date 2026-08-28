@@ -252,7 +252,7 @@ def _resolve_name_suffix(
     from .config import generate_name_suffix
 
     if not env:
-        if requested_suffix:
+        if requested_suffix is not None:
             raise typer.BadParameter("--name-suffix requires --env", param_hint="--name-suffix")
         return ""
     if requested_suffix is not None:
