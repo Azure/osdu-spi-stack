@@ -202,7 +202,7 @@ jobs:
           git config user.email "osdu-spi-automation[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
 
-          MATCHES=$(grep -c '^stackVersion:' "$DECL")
+          MATCHES=$(grep -c '^stackVersion:' "$DECL" || true)
           if [ "$MATCHES" != "1" ]; then
             echo "::error::expected exactly one stackVersion line in $DECL, found $MATCHES"
             exit 1
