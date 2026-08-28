@@ -141,7 +141,13 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     box = [lock]
     attempts = 0
     conflicts_left = conflicts
-    calls: dict = {"patch": None, "reconciled": None, "attempts": 0, "box": box}
+    calls: dict = {
+        "patch": None,
+        "reconciled": None,
+        "attempts": 0,
+        "description": None,
+        "box": box,
+    }
 
     def fake_read_lock(required=True):
         return box[0]
@@ -149,6 +155,7 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     def fake_run_command(cmd, description=None, check=True, **kwargs):
         nonlocal attempts, conflicts_left
         assert cmd[:3] == ["kubectl", "patch", "configmap"]
+        calls["description"] = description
         attempts += 1
         patch_ops = json.loads(cmd[cmd.index("-p") + 1])
         test_op, data_op, annotations_op = patch_ops
@@ -460,6 +467,7 @@ class TestPinService:
         calls = self._wire(monkeypatch, lock, {"schema", "schema-load"})
         results = pin_service("schema", "847")
         assert [name for name, _ in results] == ["schema", "schema-load"]
+        assert calls["description"] == "Pin schema, schema-load to MR !847 image"
         assert calls["fetches"] == 1
         assert calls["reconciled"] == ["schema", "schema-load"]
 
@@ -467,6 +475,7 @@ class TestPinService:
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("schema")), {"schema"})
         results = pin_service("schema", "847")
         assert [name for name, _ in results] == ["schema"]
+        assert calls["description"] == "Pin schema to MR !847 image"
         assert calls["reconciled"] == ["schema"]
 
     def test_schema_pin_propagates_loader_lookup_failure(self, monkeypatch):
