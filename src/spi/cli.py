@@ -252,10 +252,10 @@ def _resolve_name_suffix(
     from .config import generate_name_suffix
 
     if not env:
-        if requested_suffix:
+        if requested_suffix is not None:
             raise typer.BadParameter("--name-suffix requires --env", param_hint="--name-suffix")
         return ""
-    if requested_suffix is not None:
+    if requested_suffix is not None and requested_suffix != "":
         if not re.fullmatch(r"[a-z0-9]{5}", requested_suffix):
             raise typer.BadParameter(
                 "must be exactly five lowercase alphanumeric characters",
@@ -285,7 +285,7 @@ def _resolve_name_suffix(
             write_rg_suffix_tag(rg, "")
         return ""
 
-    suffix = requested_suffix or generate_name_suffix()
+    suffix = requested_suffix if requested_suffix is not None else generate_name_suffix()
     if for_up:
         # Brand-new RGs get tagged by create_resource_group via --tags.
         # If the RG already exists (resumed/failed deploy with no legacy KV),
