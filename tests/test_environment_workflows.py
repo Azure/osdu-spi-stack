@@ -264,7 +264,14 @@ class TestMaintenanceOrdering:
         )
 
     def test_env_refresh_quiesce_precedes_plain_reconcile(self):
-        refresh_steps = _workflow(ENV_REFRESH)["jobs"]["refresh"]["steps"]
+        workflow = _workflow(ENV_REFRESH)
+        assert workflow["jobs"]["declare"]["outputs"]["image_branch"] == (
+            "${{ steps.export.outputs.image_branch }}"
+        )
+        refresh = workflow["jobs"]["refresh"]
+        assert refresh["env"]["IMAGE_BRANCH"] == "${{ needs.declare.outputs.image_branch }}"
+
+        refresh_steps = refresh["steps"]
         names = [s["name"] for s in refresh_steps if "name" in s]
 
         quiesce_idx = names.index("Quiesce (set maintenance)")
@@ -278,7 +285,7 @@ class TestMaintenanceOrdering:
 
         reconcile_step = next(s for s in refresh_steps if s.get("name") == "spi reconcile")
         # Plain reconcile: no image refresh on this schedule.
-        assert reconcile_step["run"].strip() == "spi reconcile"
+        assert reconcile_step["run"].strip() == 'spi reconcile --image-branch "$IMAGE_BRANCH"'
 
         clear_step = next(s for s in refresh_steps if s.get("name") == "Clear maintenance")
         assert "if" not in clear_step, (
