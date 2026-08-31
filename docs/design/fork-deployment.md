@@ -54,7 +54,9 @@ skews ahead of the cluster contract (ADR-031).
    asserts the Deployment's pod template and a running pod's `imageID` carry
    the digest and the rollout is complete. Deployment and container names
    default to `osdu-<service>`, the Flux Helm release name;
-   `K8S_DEPLOYMENT_NAME` and `K8S_CONTAINER_NAME` cover deviants.
+   `K8S_DEPLOYMENT_NAME` and `K8S_CONTAINER_NAME` cover deviants. With
+   `--json` the last stdout line is a `{outcome, code, detail}` envelope;
+   exit 2 carries the typed code, exit 1 means the cluster was unreachable.
 6. **Test.** The integration-test job re-runs the verify as a pre-flight
    (the cross-pipeline guard: a colliding deploy fails fast, naming the
    colliding run from the pin annotation), resolves endpoints from
@@ -63,7 +65,11 @@ skews ahead of the cluster contract (ADR-031).
 7. **Restore.** An always-run job on PR pipelines:
    `spi service reset "$SERVICE" --if-run "$GITHUB_RUN_ID"`. The reset is
    conditional on ownership: it acts only while the live pin's `run_id` still
-   matches, so a newer run's pin is left standing.
+   matches, so a newer run's pin is left standing. Exit 0 means restored;
+   exit 2 is the typed no-op refusal (`run_mismatch` when another pin owns
+   the slot, `not_pinned` when nothing remains), which the restore job
+   treats as success; exit 1 is a real failure. `--json` emits the same
+   final-line `{outcome, code, detail}` envelope.
 
 ## Pin annotation schema
 

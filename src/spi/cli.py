@@ -71,6 +71,25 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _emit_outcome(outcome: str, code: Optional[str], detail: str, **extra) -> None:
+    """Print the machine-readable envelope for a `--json` service command.
+
+    One compact line, printed last on stdout: unlike `spi status --json`,
+    these commands show Rich command panels while they work, so consumers
+    parse the final stdout line rather than the whole stream.
+    """
+    from .status import STATUS_API_VERSION
+
+    payload: Dict[str, Any] = {
+        "apiVersion": STATUS_API_VERSION,
+        "outcome": outcome,
+        "code": code,
+        "detail": detail,
+    }
+    payload.update(extra)
+    print(json.dumps(payload))
+
+
 @app.callback()
 def main(
     version: Optional[bool] = typer.Option(
@@ -963,6 +982,9 @@ def service_verify(
         envvar="K8S_CONTAINER_NAME",
         help="Container name; defaults to the deployment name.",
     ),
+    output_json: bool = typer.Option(
+        False, "--json", help="Emit the outcome as a final machine-readable JSON line."
+    ),
 ):
     """Assert the Deployment pod template and a running pod carry the digest.
 
@@ -970,21 +992,37 @@ def service_verify(
     provably run the digest, 1 when the cluster is unreachable.
     """
     ctx = verify_spi_cluster()
-    console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+    if not output_json:
+        console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
     try:
         result = verify_service_image(service, image, deployment=deployment, container=container)
     except VerifyError as exc:
-        console.print(f"[error]verify failed ({exc.code}): {exc}[/error]")
+        if output_json:
+            _emit_outcome("failed", exc.code, str(exc))
+        else:
+            console.print(f"[error]verify failed ({exc.code}): {exc}[/error]")
         raise typer.Exit(code=2)
     except (PinError, ImageResolutionError) as exc:
-        console.print(f"[error]{exc}[/error]")
+        if output_json:
+            typer.echo(str(exc), err=True)
+        else:
+            console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
 
-    console.print(
-        f"  [success]{service}[/success] verified: {result.deployment} "
-        f"pod {result.pod} runs {result.image_id}"
-    )
+    detail = f"{result.deployment} pod {result.pod} runs {result.image_id}"
+    if output_json:
+        _emit_outcome(
+            "verified",
+            None,
+            detail,
+            deployment=result.deployment,
+            container=result.container,
+            pod=result.pod,
+            imageId=result.image_id,
+        )
+        return
+    console.print(f"  [success]{service}[/success] verified: {detail}")
 
 
 @service_app.command("reset")
@@ -1004,6 +1042,9 @@ def service_reset(
         "--stale-only",
         help="With --ephemeral: sweep only pins whose owning run ended or that aged out.",
     ),
+    output_json: bool = typer.Option(
+        False, "--json", help="Emit the outcome as a final machine-readable JSON line."
+    ),
 ):
     """Release a service pin and restore its recorded canonical image."""
     sweep = ephemeral or stale_only
@@ -1020,14 +1061,29 @@ def service_reset(
         raise typer.Exit(code=1)
 
     ctx = verify_spi_cluster()
-    console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+    if not output_json:
+        console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
     if sweep:
         try:
             outcome = sweep_stale_ephemeral_pins()
         except (PinError, ImageResolutionError) as exc:
-            console.print(f"[error]{exc}[/error]")
+            if output_json:
+                typer.echo(str(exc), err=True)
+            else:
+                console.print(f"[error]{exc}[/error]")
             raise typer.Exit(code=1)
+        if output_json:
+            _emit_outcome(
+                "swept",
+                None,
+                f"swept {len(outcome.swept)}, kept {len(outcome.kept)}, "
+                f"refresh required {len(outcome.refresh_required)}",
+                swept=list(outcome.swept),
+                kept=[{"service": name, "reason": why} for name, why in outcome.kept],
+                refreshRequired=list(outcome.refresh_required),
+            )
+            return
         for name in outcome.swept:
             console.print(f"  [success]{name}[/success] stale pin swept; canonical image restored")
         for name, why in outcome.kept:
@@ -1050,11 +1106,35 @@ def service_reset(
     try:
         result = reset_service(service, if_run=if_run)
     except ResetRefusedError as exc:
-        console.print(f"[warning]reset refused ({exc.code}): {exc}[/warning]")
+        if output_json:
+            _emit_outcome("refused", exc.code, str(exc))
+        else:
+            console.print(f"[warning]reset refused ({exc.code}): {exc}[/warning]")
         raise typer.Exit(code=2)
     except (PinError, ImageResolutionError) as exc:
-        console.print(f"[error]{exc}[/error]")
+        if output_json:
+            typer.echo(str(exc), err=True)
+        else:
+            console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
+
+    if output_json:
+        parts = []
+        if result.restored:
+            parts.append(f"restored {', '.join(result.restored)} to canonical")
+        if result.refresh_required:
+            parts.append(
+                f"removed {', '.join(result.refresh_required)} without a recorded "
+                "canonical; run 'spi reconcile --refresh-images'"
+            )
+        _emit_outcome(
+            "reset",
+            None,
+            "; ".join(parts),
+            restored=list(result.restored),
+            refreshRequired=list(result.refresh_required),
+        )
+        return
 
     for name in result.restored:
         console.print(f"  [success]{name}[/success] restored to canonical image")

@@ -1828,6 +1828,49 @@ class TestServiceVerifyCli:
         assert result.exit_code == 0
         assert "osdu-storage-abc12" in result.output
 
+    def test_json_outcome_is_the_final_stdout_line(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(
+            cli,
+            "verify_service_image",
+            lambda service, image, deployment=None, container=None: pins.VerifyResult(
+                deployment="osdu-storage",
+                container="osdu-storage",
+                pod="osdu-storage-abc12",
+                image_id=_GHCR_IMAGE,
+            ),
+        )
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "verify", "storage", "--image", _GHCR_IMAGE, "--json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["outcome"] == "verified"
+        assert payload["code"] is None
+        assert payload["pod"] == "osdu-storage-abc12"
+        assert payload["imageId"] == _GHCR_IMAGE
+        assert payload["apiVersion"] == "spi.osdu.dev/v1"
+
+    def test_json_failure_carries_the_typed_code(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+
+        def raise_verify(service, image, deployment=None, container=None):
+            raise VerifyError("template_mismatch", "template runs another digest")
+
+        monkeypatch.setattr(cli, "verify_service_image", raise_verify)
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "verify", "storage", "--image", _GHCR_IMAGE, "--json"]
+        )
+
+        assert result.exit_code == 2
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["outcome"] == "failed"
+        assert payload["code"] == "template_mismatch"
+        assert "another digest" in payload["detail"]
+
 
 class TestServiceResetCliConditional:
     def test_refusal_exits_two(self, monkeypatch):
@@ -1881,6 +1924,66 @@ class TestServiceResetCliConditional:
         assert "storage" in result.output
         assert "search kept" in result.output
         assert "spi reconcile --refresh-images" in result.output
+
+    def test_json_refusal_carries_the_typed_code(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+
+        def raise_refused(service, if_run=""):
+            raise ResetRefusedError("run_mismatch", "storage is pinned by run 9999")
+
+        monkeypatch.setattr(cli, "reset_service", raise_refused)
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "reset", "storage", "--if-run", "1234", "--json"]
+        )
+
+        assert result.exit_code == 2
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["outcome"] == "refused"
+        assert payload["code"] == "run_mismatch"
+        assert "run 9999" in payload["detail"]
+
+    def test_json_reset_reports_restored_services(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(
+            cli,
+            "reset_service",
+            lambda service, if_run="": ResetResult(restored=("storage",), refresh_required=()),
+        )
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "reset", "storage", "--if-run", "1234", "--json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["outcome"] == "reset"
+        assert payload["code"] is None
+        assert payload["restored"] == ["storage"]
+        assert payload["refreshRequired"] == []
+
+    def test_json_sweep_reports_each_bucket(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(
+            cli,
+            "sweep_stale_ephemeral_pins",
+            lambda: SweepResult(
+                swept=("storage",),
+                kept=(("search", "run 7 is in_progress"),),
+                refresh_required=("legal",),
+            ),
+        )
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "reset", "--ephemeral", "--stale-only", "--json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["outcome"] == "swept"
+        assert payload["swept"] == ["storage"]
+        assert payload["kept"] == [{"service": "search", "reason": "run 7 is in_progress"}]
+        assert payload["refreshRequired"] == ["legal"]
 
 
 class TestPinCodecProvenance:
