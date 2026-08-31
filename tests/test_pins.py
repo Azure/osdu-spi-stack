@@ -2082,6 +2082,16 @@ class TestServiceResetCliConditional:
         assert result.exit_code == 1
         assert "--stale-only" in result.output
 
+    def test_json_usage_error_ends_with_error_envelope(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+
+        result = CliRunner().invoke(cli.app, ["service", "reset", "--ephemeral", "--json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["outcome"] == "error"
+        assert "--stale-only" in payload["detail"]
+
     def test_sweep_takes_no_service_argument(self, monkeypatch):
         monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
         result = CliRunner().invoke(

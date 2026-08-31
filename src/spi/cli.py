@@ -1061,18 +1061,21 @@ def service_reset(
     ),
 ):
     """Release a service pin and restore its recorded canonical image."""
+
+    def usage_error(message: str) -> typer.Exit:
+        if output_json:
+            _emit_outcome("error", None, message)
+        else:
+            console.print(f"[error]{message}[/error]")
+        return typer.Exit(code=1)
+
     sweep = ephemeral or stale_only
     if sweep and not (ephemeral and stale_only):
-        console.print("[error]--ephemeral and --stale-only must be used together.[/error]")
-        raise typer.Exit(code=1)
+        raise usage_error("--ephemeral and --stale-only must be used together.")
     if sweep and (service is not None or if_run):
-        console.print("[error]The stale sweep takes no service argument or --if-run.[/error]")
-        raise typer.Exit(code=1)
+        raise usage_error("The stale sweep takes no service argument or --if-run.")
     if not sweep and service is None:
-        console.print(
-            "[error]Provide a service name, or --ephemeral --stale-only to sweep.[/error]"
-        )
-        raise typer.Exit(code=1)
+        raise usage_error("Provide a service name, or --ephemeral --stale-only to sweep.")
 
     ctx = _guarded_context(output_json)
     if not output_json:

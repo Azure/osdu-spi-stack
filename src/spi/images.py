@@ -504,12 +504,13 @@ def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> No
                     f"manifest {digest} not found in {repository}; confirm the run "
                     "pushed this digest and the package is public"
                 ) from exc
-            if exc.code < 500:
+            # 429 is anonymous-pull rate limiting: transient, retried like a 5xx.
+            if exc.code < 500 and exc.code != 429:
                 raise ImageResolutionError(
                     f"GHCR refused the manifest check for {repository}@{digest}: HTTP {exc.code}"
                 ) from exc
             last_error = exc
-        except (TimeoutError, urllib.error.URLError, ConnectionError) as exc:
+        except (TimeoutError, urllib.error.URLError, ConnectionError, json.JSONDecodeError) as exc:
             last_error = exc
         if attempt < attempts:
             time.sleep(5 * attempt)

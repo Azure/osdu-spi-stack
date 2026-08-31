@@ -655,3 +655,53 @@ class TestGhcrIndexChildDigests:
             )
             == ()
         )
+
+
+class TestResolveGhcrManifest:
+    class _Response:
+        def __init__(self, body=b'{"token": "t"}'):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self._body
+
+    def test_rate_limit_is_retried_as_transient(self, monkeypatch):
+        from spi import images
+
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=15):
+            calls["n"] += 1
+            # Per attempt: a token fetch then the manifest HEAD. Rate-limit
+            # the first attempt's HEAD, succeed on the second.
+            if calls["n"] == 2:
+                raise urllib.error.HTTPError(
+                    req.full_url, 429, "Too Many Requests", Message(), None
+                )
+            return self._Response()
+
+        monkeypatch.setattr(images.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(images.time, "sleep", lambda s: None)
+
+        images.resolve_ghcr_manifest("ghcr.io/azure/storage", "sha256:" + "f" * 64)
+
+        assert calls["n"] == 4
+
+    def test_malformed_token_response_fails_closed(self, monkeypatch):
+        from spi import images
+
+        monkeypatch.setattr(
+            images.urllib.request,
+            "urlopen",
+            lambda req, timeout=15: self._Response(body=b"not json"),
+        )
+        monkeypatch.setattr(images.time, "sleep", lambda s: None)
+
+        with pytest.raises(images.ImageResolutionError, match="unreachable after 2 attempts"):
+            images.resolve_ghcr_manifest("ghcr.io/azure/storage", "sha256:" + "f" * 64, attempts=2)
