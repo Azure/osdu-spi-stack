@@ -90,6 +90,20 @@ def _emit_outcome(outcome: str, code: Optional[str], detail: str, **extra) -> No
     print(json.dumps(payload))
 
 
+def _guarded_context(output_json: bool) -> str:
+    """Run the cluster guard, keeping the `--json` final-line contract.
+
+    The guard prints its diagnosis and exits 1; a `--json` caller still needs
+    the envelope as the last stdout line to classify the failure.
+    """
+    try:
+        return verify_spi_cluster()
+    except typer.Exit:
+        if output_json:
+            _emit_outcome("error", None, "cluster guard failed; see the log above")
+        raise
+
+
 @app.callback()
 def main(
     version: Optional[bool] = typer.Option(
@@ -991,7 +1005,7 @@ def service_verify(
     Exit 0 when verified, 2 with a typed reason when the workload does not
     provably run the digest, 1 when the cluster is unreachable.
     """
-    ctx = verify_spi_cluster()
+    ctx = _guarded_context(output_json)
     if not output_json:
         console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
@@ -1005,7 +1019,7 @@ def service_verify(
         raise typer.Exit(code=2)
     except (PinError, ImageResolutionError) as exc:
         if output_json:
-            typer.echo(str(exc), err=True)
+            _emit_outcome("error", None, str(exc))
         else:
             console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
@@ -1060,7 +1074,7 @@ def service_reset(
         )
         raise typer.Exit(code=1)
 
-    ctx = verify_spi_cluster()
+    ctx = _guarded_context(output_json)
     if not output_json:
         console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
@@ -1069,7 +1083,7 @@ def service_reset(
             outcome = sweep_stale_ephemeral_pins()
         except (PinError, ImageResolutionError) as exc:
             if output_json:
-                typer.echo(str(exc), err=True)
+                _emit_outcome("error", None, str(exc))
             else:
                 console.print(f"[error]{exc}[/error]")
             raise typer.Exit(code=1)
@@ -1113,7 +1127,7 @@ def service_reset(
         raise typer.Exit(code=2)
     except (PinError, ImageResolutionError) as exc:
         if output_json:
-            typer.echo(str(exc), err=True)
+            _emit_outcome("error", None, str(exc))
         else:
             console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)

@@ -21,6 +21,7 @@ import urllib.error
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from spi import cli, pins, status
@@ -2010,6 +2011,38 @@ class TestServiceVerifyCli:
         assert payload["code"] == "template_mismatch"
         assert "another digest" in payload["detail"]
 
+    def test_json_exit_one_ends_with_error_envelope(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+
+        def raise_pin_error(service, image, deployment=None, container=None):
+            raise PinError("Could not read Deployment osdu-storage: connection refused")
+
+        monkeypatch.setattr(cli, "verify_service_image", raise_pin_error)
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "verify", "storage", "--image", _GHCR_IMAGE, "--json"]
+        )
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["outcome"] == "error"
+        assert payload["code"] is None
+        assert "connection refused" in payload["detail"]
+
+    def test_json_guard_failure_still_ends_with_envelope(self, monkeypatch):
+        def guard_exit():
+            raise typer.Exit(code=1)
+
+        monkeypatch.setattr(cli, "verify_spi_cluster", guard_exit)
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "verify", "storage", "--image", _GHCR_IMAGE, "--json"]
+        )
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["outcome"] == "error"
+
 
 class TestServiceResetCliConditional:
     def test_refusal_exits_two(self, monkeypatch):
@@ -2024,6 +2057,24 @@ class TestServiceResetCliConditional:
 
         assert result.exit_code == 2
         assert "run_mismatch" in result.output
+
+    def test_json_exit_one_ends_with_error_envelope(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+
+        def raise_pin_error(service, if_run=""):
+            raise PinError("Could not read ConfigMap osdu-image-lock: connection refused")
+
+        monkeypatch.setattr(cli, "reset_service", raise_pin_error)
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "reset", "storage", "--if-run", "1234", "--json"]
+        )
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["outcome"] == "error"
+        assert payload["code"] is None
+        assert "connection refused" in payload["detail"]
 
     def test_sweep_flags_must_pair(self, monkeypatch):
         monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
