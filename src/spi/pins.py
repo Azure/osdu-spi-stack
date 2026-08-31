@@ -82,8 +82,7 @@ GITHUB_API_HOST = "https://api.github.com"
 STALE_EPHEMERAL_PIN_AGE_HOURS = 6
 
 _RUN_ID_RE = re.compile(r"^[0-9]+$")
-_SOURCE_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
-# Only these repositories may be consulted for a pin's owning-run state; the
+# Only these repositories may record or answer a pin's owning-run state; the
 # fork-written source_run_url is display-only and never fetched.
 _FORK_SOURCE_REPO_RE = re.compile(r"^azure/osdu-spi-[a-z0-9._-]+$", re.IGNORECASE)
 
@@ -871,15 +870,18 @@ def pin_service_image(
     except ImageResolutionError as exc:
         raise PinError(str(exc)) from exc
 
-    if ephemeral and not run_id:
+    if ephemeral and not (run_id and source_repo and source_sha):
         raise PinError(
-            "--ephemeral requires --run-id: the owning workflow run is what "
-            "'reset --if-run' and the stale sweep key on."
+            "--ephemeral requires --run-id, --source-repo, and --source-sha: the "
+            "sweep proves a pin stale from its owning run, which these identify."
         )
     if run_id and not _RUN_ID_RE.match(run_id):
         raise PinError(f"--run-id must be a numeric GitHub Actions run id, got {run_id!r}.")
-    if source_repo and not _SOURCE_REPO_RE.match(source_repo):
-        raise PinError(f"--source-repo must be <org>/<repo>, got {source_repo!r}.")
+    if source_repo and not _FORK_SOURCE_REPO_RE.match(source_repo):
+        raise PinError(
+            f"--source-repo {source_repo!r} is not an allow-listed fork repository "
+            "(Azure/osdu-spi-*); the sweep could never query this pin's owning run."
+        )
 
     _refuse_unless_deployable()
     try:
@@ -1131,12 +1133,15 @@ def verify_service_image(
     updated = dep_status.get("updatedReplicas", 0)
     available = dep_status.get("availableReplicas", 0)
     total = dep_status.get("replicas", 0)
-    if observed < generation or updated < replicas or total > updated or available < updated:
+    # Kubernetes' Deployment-complete predicate: every status count equals the
+    # desired count exactly, so a scale-down still draining old pods (counts
+    # above desired) cannot read as complete.
+    if observed < generation or updated != replicas or total != replicas or available != replicas:
         raise VerifyError(
             "rollout_incomplete",
             f"Deployment {deployment} rollout is not complete ({updated}/{replicas} "
-            f"updated, {available} available, generation {observed}/{generation}); "
-            "retry once the rollout settles.",
+            f"updated, {total} total, {available} available, generation "
+            f"{observed}/{generation}); retry once the rollout settles.",
         )
 
     selector = (spec.get("selector") or {}).get("matchLabels") or {}

@@ -1203,23 +1203,46 @@ class TestPinServiceImage:
             pin_service_image("storage", f"ghcr.io/evil/storage@{_GHCR_DIGEST}")
         assert calls["patch"] is None
 
-    def test_ephemeral_requires_run_id(self, monkeypatch):
+    def test_ephemeral_requires_full_provenance(self, monkeypatch):
+        """An ephemeral pin without run/source provenance could never be
+        proven stale from its owning run; it is refused before any write."""
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
-        with pytest.raises(PinError, match="requires --run-id"):
+        with pytest.raises(PinError, match="requires --run-id, --source-repo"):
             pin_service_image("storage", _GHCR_IMAGE, ephemeral=True)
+        with pytest.raises(PinError, match="requires --run-id, --source-repo"):
+            pin_service_image(
+                "storage",
+                _GHCR_IMAGE,
+                ephemeral=True,
+                run_id="1",
+                source_repo="Azure/osdu-spi-storage",
+            )
         assert calls["patch"] is None
 
     def test_run_id_must_be_numeric(self, monkeypatch):
         self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
         with pytest.raises(PinError, match="numeric"):
-            pin_service_image("storage", _GHCR_IMAGE, ephemeral=True, run_id="abc")
-
-    def test_source_repo_shape_enforced(self, monkeypatch):
-        self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
-        with pytest.raises(PinError, match="org.*repo"):
             pin_service_image(
-                "storage", _GHCR_IMAGE, ephemeral=True, run_id="1", source_repo="not a repo"
+                "storage",
+                _GHCR_IMAGE,
+                ephemeral=True,
+                run_id="abc",
+                source_repo="Azure/osdu-spi-storage",
+                source_sha="b" * 40,
             )
+
+    def test_source_repo_must_be_an_allow_listed_fork(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        with pytest.raises(PinError, match="allow-listed fork repository"):
+            pin_service_image(
+                "storage",
+                _GHCR_IMAGE,
+                ephemeral=True,
+                run_id="1",
+                source_repo="evil/osdu-spi-storage",
+                source_sha="b" * 40,
+            )
+        assert calls["patch"] is None
 
     def test_pin_writes_digest_entry_and_provenance(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
@@ -1435,6 +1458,17 @@ class TestVerifyServiceImage:
             deployment=_deployment_json(_GHCR_IMAGE, replicas=2, updated=1, available=1, total=2),
         )
         with pytest.raises(VerifyError, match="rollout") as excinfo:
+            verify_service_image("storage", _GHCR_IMAGE)
+        assert excinfo.value.code == "rollout_incomplete"
+
+    def test_scale_down_still_draining_is_not_complete(self, monkeypatch):
+        """Kubernetes' completeness predicate is exact equality: three pods
+        still serving a spec scaled to one must not verify as rolled out."""
+        self._wire(
+            monkeypatch,
+            deployment=_deployment_json(_GHCR_IMAGE, replicas=1, updated=3, available=3, total=3),
+        )
+        with pytest.raises(VerifyError) as excinfo:
             verify_service_image("storage", _GHCR_IMAGE)
         assert excinfo.value.code == "rollout_incomplete"
 

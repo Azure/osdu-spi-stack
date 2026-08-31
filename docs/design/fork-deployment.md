@@ -101,6 +101,8 @@ job never returns. The weekday refresh workflow runs the backstop:
   from the validated `source_repo` (it must match the `Azure/osdu-spi-*`
   allow-list) and the numeric `run_id`; the fork-written `source_run_url` is
   display-only and never fetched, since a fork identity controls its value.
+  An ephemeral pin cannot be written without an allow-listed `source_repo`,
+  a commit, and a numeric `run_id`, so the lookup inputs always exist.
 - `spi service refresh` per GitHub-origin service then advances the
   environment to the current retained canonical (ADR-033).
 
