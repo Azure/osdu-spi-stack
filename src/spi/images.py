@@ -27,6 +27,9 @@ from datetime import datetime, timezone
 from typing import Iterable, Mapping
 
 GITLAB_HOST = "https://community.opengroup.org"
+GHCR_HOST = "ghcr.io"
+# ADR-031: fork deploys may pin only images published under these GHCR owners.
+GHCR_ALLOWED_OWNERS = ("azure",)
 DEFAULT_IMAGE_BRANCH = "master"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"
@@ -34,6 +37,15 @@ SCHEMA_SERVICE_NAME = "schema"
 SCHEMA_LOAD_SERVICE_NAME = "schema-load"
 
 _SHA_TAG_RE = re.compile(r"^[0-9a-f]{40}$")
+_MANIFEST_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_MANIFEST_ACCEPT = ", ".join(
+    (
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    )
+)
 
 
 class ImageResolutionError(RuntimeError):
@@ -372,6 +384,99 @@ def resolve_image_lock(branch: str = DEFAULT_IMAGE_BRANCH) -> dict[str, Resolved
     return resolve_images(branch=branch, names=image_lock_names())
 
 
+def parse_image_digest_ref(ref: str) -> tuple[str, str]:
+    """Split an image reference into (repository, digest), digest required.
+
+    Tags are rejected outright: a fork deploy's identity is the manifest
+    digest (ADR-031), and GHCR's ``sha-*`` tags are pruned after 30 days, so
+    a tag reference would go stale under a live pin.
+    """
+
+    ref = ref.strip()
+    if "@" not in ref:
+        raise ImageResolutionError(
+            f"image reference {ref!r} carries no digest; use "
+            "<repository>@sha256:<digest> (tags are not accepted)"
+        )
+    repository, _, digest = ref.rpartition("@")
+    if not _MANIFEST_DIGEST_RE.match(digest):
+        raise ImageResolutionError(
+            f"image reference {ref!r}: {digest!r} is not a sha256 manifest digest"
+        )
+    if not repository or "/" not in repository:
+        raise ImageResolutionError(f"image reference {ref!r}: missing repository path")
+    if ":" in repository.rsplit("/", 1)[-1]:
+        raise ImageResolutionError(
+            f"image reference {ref!r} carries a tag alongside the digest; "
+            "pin by digest alone as <repository>@sha256:<digest>"
+        )
+    return repository, digest
+
+
+def require_ghcr_repository(repository: str) -> None:
+    """Enforce the ADR-031 GHCR owner allow-list on a pin's repository."""
+
+    parts = repository.lower().split("/")
+    if len(parts) < 3 or parts[0] != GHCR_HOST or parts[1] not in GHCR_ALLOWED_OWNERS:
+        allowed = ", ".join(f"{GHCR_HOST}/{owner}" for owner in GHCR_ALLOWED_OWNERS)
+        raise ImageResolutionError(
+            f"repository {repository!r} is not an allow-listed fork image source; "
+            f"expected an image under {allowed}"
+        )
+
+
+def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> None:
+    """Assert the digest's manifest exists in GHCR before it is pinned.
+
+    Uses the anonymous pull-token flow (fork packages are public). A missing
+    manifest raises ImageNotFoundError; transient failures retry like
+    ``gitlab_get`` and then raise ImageResolutionError, fail-closed.
+    """
+
+    path = repository[len(GHCR_HOST) + 1 :]
+    token_url = f"https://{GHCR_HOST}/token?service={GHCR_HOST}&scope=" + urllib.parse.quote(
+        f"repository:{path}:pull", safe=":"
+    )
+    manifest_url = f"https://{GHCR_HOST}/v2/{path}/manifests/{digest}"
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            token_req = urllib.request.Request(
+                token_url, headers={"User-Agent": "spi-stack-resolver"}
+            )
+            with urllib.request.urlopen(token_req, timeout=15) as resp:  # nosec B310
+                token = json.loads(resp.read()).get("token", "")
+            manifest_req = urllib.request.Request(
+                manifest_url,
+                method="HEAD",
+                headers={
+                    "User-Agent": "spi-stack-resolver",
+                    "Accept": _MANIFEST_ACCEPT,
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+            with urllib.request.urlopen(manifest_req, timeout=15):  # nosec B310
+                return
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise ImageNotFoundError(
+                    f"manifest {digest} not found in {repository}; confirm the run "
+                    "pushed this digest and the package is public"
+                ) from exc
+            if exc.code < 500:
+                raise ImageResolutionError(
+                    f"GHCR refused the manifest check for {repository}@{digest}: HTTP {exc.code}"
+                ) from exc
+            last_error = exc
+        except (TimeoutError, urllib.error.URLError, ConnectionError) as exc:
+            last_error = exc
+        if attempt < attempts:
+            time.sleep(5 * attempt)
+    raise ImageResolutionError(
+        f"GHCR unreachable after {attempts} attempts checking {repository}@{digest}: {last_error}"
+    )
+
+
 def image_lock_missing_schema_load(lock_data: Mapping[str, str]) -> bool:
     """Report whether an existing lock predates schema-load's inclusion.
 
@@ -473,7 +578,11 @@ def build_lock_data(
     for name in image_lock_names():
         image = resolved[name]
         key = image_lock_key(name)
-        data[f"{key}_IMAGE"] = image.image
+        # A digest pin carries no tag; fall back to the digest ref so the
+        # informational _IMAGE key never renders a dangling "repository:".
+        data[f"{key}_IMAGE"] = (
+            image.image if image.tag else image_ref(image.repository, image.tag, image.digest)
+        )
         data[f"{key}_IMAGE_REPOSITORY"] = image.repository
         data[f"{key}_IMAGE_TAG"] = image.tag
         data[f"{key}_IMAGE_CREATED_AT"] = image.created_at

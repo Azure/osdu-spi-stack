@@ -37,11 +37,16 @@ from .images import (
 from .ingress import resolve_acme_email, resolve_ingress_mode
 from .pins import (
     PinError,
+    ResetRefusedError,
+    VerifyError,
     apply_image_lock,
     apply_schema_load_backfill,
     live_pins,
     pin_service,
+    pin_service_image,
     reset_service,
+    sweep_stale_ephemeral_pins,
+    verify_service_image,
 )
 from .shell import run_command
 
@@ -52,7 +57,7 @@ app = typer.Typer(
 )
 
 service_app = typer.Typer(
-    help="Pin individual services to merge-request pipeline images for validation."
+    help="Pin individual services to merge-request or fork-built images for validation."
 )
 app.add_typer(service_app, name="service")
 
@@ -864,16 +869,69 @@ def reconcile(
 @service_app.command("pin")
 def service_pin(
     service: str = typer.Argument(help="Service name, e.g. schema (see 'spi service list')."),
-    mr: str = typer.Option(
-        ...,
+    mr: Optional[str] = typer.Option(
+        None,
         "--mr",
         help="Merge request IID in the service's OSDU GitLab repository.",
     ),
+    image: Optional[str] = typer.Option(
+        None,
+        "--image",
+        help="Fork-built GHCR image as <repository>@sha256:<digest>; tags are rejected.",
+    ),
+    ephemeral: bool = typer.Option(
+        False,
+        "--ephemeral",
+        help="Mark the pin CI-owned so the stale sweep may reclaim it (requires --run-id).",
+    ),
+    run_id: str = typer.Option(
+        "", "--run-id", help="Owning GitHub Actions run id; required with --ephemeral."
+    ),
+    source_repo: str = typer.Option(
+        "", "--source-repo", help="Repository that built the image, as <org>/<repo>."
+    ),
+    source_sha: str = typer.Option("", "--source-sha", help="Commit the image was built from."),
+    source_run_url: str = typer.Option(
+        "", "--source-run-url", help="Workflow run URL, recorded for display only."
+    ),
 ):
-    """Pin a service to the image built by its merge-request pipeline."""
+    """Pin a service to an MR pipeline image or a fork-built GHCR digest."""
+    if (mr is None) == (image is None):
+        console.print("[error]Provide exactly one of --mr or --image.[/error]")
+        raise typer.Exit(code=1)
+    provenance = run_id or source_repo or source_sha or source_run_url
+    if image is None and (ephemeral or provenance):
+        console.print(
+            "[error]--ephemeral and --run-id/--source-* apply only to --image pins.[/error]"
+        )
+        raise typer.Exit(code=1)
+    if not ephemeral and provenance:
+        console.print("[error]--run-id and --source-* require --ephemeral.[/error]")
+        raise typer.Exit(code=1)
+
     ctx = verify_spi_cluster()
     console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
+    if image is not None:
+        try:
+            pin = pin_service_image(
+                service,
+                image,
+                ephemeral=ephemeral,
+                run_id=run_id,
+                source_repo=source_repo,
+                source_sha=source_sha,
+                source_run_url=source_run_url,
+            )
+        except (PinError, ImageResolutionError) as exc:
+            console.print(f"[error]{exc}[/error]")
+            raise typer.Exit(code=1)
+        marker = f" (ephemeral, run {pin.run_id})" if pin.ephemeral else ""
+        console.print(f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker}")
+        console.print(f"[dim]Release with: spi service reset {service}[/dim]")
+        return
+
+    assert mr is not None
     try:
         results = pin_service(service, mr)
     except (PinError, ImageResolutionError) as exc:
@@ -887,16 +945,113 @@ def service_pin(
     console.print(f"[dim]Release with: spi service reset {service}[/dim]")
 
 
-@service_app.command("reset")
-def service_reset(
-    service: str = typer.Argument(help="Pinned service name to release."),
+@service_app.command("verify")
+def service_verify(
+    service: str = typer.Argument(help="Service whose Deployment must run the digest."),
+    image: str = typer.Option(
+        ..., "--image", help="Expected image as <repository>@sha256:<digest>."
+    ),
+    deployment: Optional[str] = typer.Option(
+        None,
+        "--deployment",
+        envvar="K8S_DEPLOYMENT_NAME",
+        help="Deployment name; defaults to osdu-<service>.",
+    ),
+    container: Optional[str] = typer.Option(
+        None,
+        "--container",
+        envvar="K8S_CONTAINER_NAME",
+        help="Container name; defaults to the deployment name.",
+    ),
 ):
-    """Release a service pin and restore its recorded canonical image."""
+    """Assert the Deployment pod template and a running pod carry the digest.
+
+    Exit 0 when verified, 2 with a typed reason when the workload does not
+    provably run the digest, 1 when the cluster is unreachable.
+    """
     ctx = verify_spi_cluster()
     console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
     try:
-        result = reset_service(service)
+        result = verify_service_image(service, image, deployment=deployment, container=container)
+    except VerifyError as exc:
+        console.print(f"[error]verify failed ({exc.code}): {exc}[/error]")
+        raise typer.Exit(code=2)
+    except (PinError, ImageResolutionError) as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"  [success]{service}[/success] verified: {result.deployment} "
+        f"pod {result.pod} runs {result.image_id}"
+    )
+
+
+@service_app.command("reset")
+def service_reset(
+    service: Optional[str] = typer.Argument(None, help="Pinned service name to release."),
+    if_run: str = typer.Option(
+        "",
+        "--if-run",
+        help="Only reset while the live pin belongs to this workflow run; "
+        "a non-matching pin is left standing (exit 2).",
+    ),
+    ephemeral: bool = typer.Option(
+        False, "--ephemeral", help="With --stale-only: sweep abandoned ephemeral pins."
+    ),
+    stale_only: bool = typer.Option(
+        False,
+        "--stale-only",
+        help="With --ephemeral: sweep only pins whose owning run ended or that aged out.",
+    ),
+):
+    """Release a service pin and restore its recorded canonical image."""
+    sweep = ephemeral or stale_only
+    if sweep and not (ephemeral and stale_only):
+        console.print("[error]--ephemeral and --stale-only must be used together.[/error]")
+        raise typer.Exit(code=1)
+    if sweep and (service is not None or if_run):
+        console.print("[error]The stale sweep takes no service argument or --if-run.[/error]")
+        raise typer.Exit(code=1)
+    if not sweep and service is None:
+        console.print(
+            "[error]Provide a service name, or --ephemeral --stale-only to sweep.[/error]"
+        )
+        raise typer.Exit(code=1)
+
+    ctx = verify_spi_cluster()
+    console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+
+    if sweep:
+        try:
+            outcome = sweep_stale_ephemeral_pins()
+        except (PinError, ImageResolutionError) as exc:
+            console.print(f"[error]{exc}[/error]")
+            raise typer.Exit(code=1)
+        for name in outcome.swept:
+            console.print(f"  [success]{name}[/success] stale pin swept; canonical image restored")
+        for name, why in outcome.kept:
+            console.print(f"  [dim]{name} kept: {why}[/dim]")
+        for name in outcome.refresh_required:
+            console.print(
+                f"  [warning]{name} stale pin removed, but no canonical image was "
+                "recorded[/warning]"
+            )
+        if outcome.refresh_required:
+            console.print(
+                "[warning]Run 'spi reconcile --refresh-images' now to resolve and apply "
+                "canonical images.[/warning]"
+            )
+        if not (outcome.swept or outcome.kept or outcome.refresh_required):
+            console.print("No ephemeral pins to sweep.")
+        return
+
+    assert service is not None
+    try:
+        result = reset_service(service, if_run=if_run)
+    except ResetRefusedError as exc:
+        console.print(f"[warning]reset refused ({exc.code}): {exc}[/warning]")
+        raise typer.Exit(code=2)
     except (PinError, ImageResolutionError) as exc:
         console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
@@ -916,7 +1071,7 @@ def service_reset(
 
 @service_app.command("list")
 def service_list():
-    """Show services currently pinned to merge-request images."""
+    """Show services currently pinned away from their canonical images."""
     ctx = verify_spi_cluster()
     console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
@@ -931,12 +1086,20 @@ def service_list():
 
     table = Table(title="Pinned services")
     table.add_column("Service")
-    table.add_column("MR")
-    table.add_column("Branch")
-    table.add_column("Tag")
+    table.add_column("Source")
+    table.add_column("Image")
+    table.add_column("Ephemeral")
     table.add_column("Pinned at")
     for name, pin in sorted(pins.items()):
-        table.add_row(name, f"!{pin.mr}", pin.branch, pin.tag[:12], pin.applied_at)
+        if pin.mr:
+            source = f"MR !{pin.mr} ({pin.branch})"
+            image_short = pin.tag[:12]
+        else:
+            source = pin.source_repo or "github"
+            if pin.run_id:
+                source += f" run {pin.run_id}"
+            image_short = pin.digest[:19]
+        table.add_row(name, source, image_short, "yes" if pin.ephemeral else "", pin.applied_at)
     console.print(table)
 
 

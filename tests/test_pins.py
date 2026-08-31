@@ -12,35 +12,49 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Per-service MR image pins: resolution, lock mutation, and refresh survival."""
+"""Per-service image pins: resolution, lock mutation, verification, and sweep."""
 
 import json
 import subprocess
+import urllib.error
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from typer.testing import CliRunner
 
 from spi import cli, pins, status
 from spi.deploy_record import DeployRecord, DeployRecordError
-from spi.images import ImageNotFoundError, ImageResolutionError, ResolvedImage
+from spi.images import (
+    ImageNotFoundError,
+    ImageResolutionError,
+    ResolvedImage,
+    parse_image_digest_ref,
+    require_ghcr_repository,
+)
 from spi.pins import (
     LOCK_MUTATION_MAX_ATTEMPTS,
     LockConflictError,
     MissingPipelineImageError,
     PinError,
+    ResetRefusedError,
     ResetResult,
     ServicePin,
+    SweepResult,
+    VerifyError,
     decode_pins,
     encode_pins,
     pin_service,
+    pin_service_image,
     ref_slug,
     reset_service,
+    sweep_stale_ephemeral_pins,
+    verify_service_image,
 )
 from spi.status import KustomizationReadiness, StatusError, StatusReason
 
 
 def _pin(**overrides) -> ServicePin:
-    fields = dict(
+    fields: dict = dict(
         mr="847",
         branch="fix/upgrade-core-lib",
         repository="registry/schema-service-fix-upgrade-core-lib",
@@ -50,6 +64,35 @@ def _pin(**overrides) -> ServicePin:
         canonical_created_at="2026-08-20T00:00:00Z",
         canonical_digest="sha256:abc",
         applied_at="2026-08-25T00:00:00Z",
+    )
+    fields.update(overrides)
+    return ServicePin(**fields)
+
+
+_GHCR_DIGEST = "sha256:" + "f" * 64
+_GHCR_IMAGE = f"ghcr.io/azure/storage@{_GHCR_DIGEST}"
+
+
+def _image_pin(**overrides) -> ServicePin:
+    """An ephemeral fork-deploy pin as `spi service pin --image` records it."""
+
+    fields: dict = dict(
+        mr="",
+        branch="",
+        repository="ghcr.io/azure/storage",
+        tag="",
+        canonical_repository="repo/storage-master",
+        canonical_tag="c" * 40,
+        canonical_created_at="2026-08-20T00:00:00Z",
+        canonical_digest="sha256:old",
+        applied_at="2026-08-25T00:00:00Z",
+        digest=_GHCR_DIGEST,
+        origin="github",
+        ephemeral=True,
+        run_id="1234",
+        source_repo="Azure/osdu-spi-storage",
+        source_sha="b" * 40,
+        source_run_url="https://github.com/Azure/osdu-spi-storage/actions/runs/1234",
     )
     fields.update(overrides)
     return ServicePin(**fields)
@@ -802,7 +845,9 @@ class TestServiceResetCli:
         monkeypatch.setattr(
             cli,
             "reset_service",
-            lambda service: ResetResult(restored=("schema",), refresh_required=("schema-load",)),
+            lambda service, if_run="": ResetResult(
+                restored=("schema",), refresh_required=("schema-load",)
+            ),
         )
 
         result = CliRunner().invoke(cli.app, ["service", "reset", "schema"])
@@ -1093,3 +1138,795 @@ class TestLockMutationConflicts:
         )
         pins.reconcile_consumers(["storage"])
         assert reconciled == ["spi-osdu-services"]
+
+
+class TestParseImageDigestRef:
+    def test_splits_repository_and_digest(self):
+        assert parse_image_digest_ref(_GHCR_IMAGE) == ("ghcr.io/azure/storage", _GHCR_DIGEST)
+
+    def test_tag_reference_rejected_with_digest_guidance(self):
+        with pytest.raises(ImageResolutionError, match="carries no digest"):
+            parse_image_digest_ref("ghcr.io/azure/storage:sha-abc1234")
+
+    def test_tag_alongside_digest_rejected(self):
+        with pytest.raises(ImageResolutionError, match="alongside the digest"):
+            parse_image_digest_ref(f"ghcr.io/azure/storage:v1@{_GHCR_DIGEST}")
+
+    def test_malformed_digest_rejected(self):
+        with pytest.raises(ImageResolutionError, match="not a sha256 manifest digest"):
+            parse_image_digest_ref("ghcr.io/azure/storage@sha256:short")
+
+    def test_missing_repository_path_rejected(self):
+        with pytest.raises(ImageResolutionError, match="missing repository path"):
+            parse_image_digest_ref(f"storage@{_GHCR_DIGEST}")
+
+    def test_ghcr_owner_allow_list(self):
+        require_ghcr_repository("ghcr.io/azure/storage")
+        require_ghcr_repository("ghcr.io/Azure/storage")
+        with pytest.raises(ImageResolutionError, match="allow-listed"):
+            require_ghcr_repository("ghcr.io/evil/storage")
+        with pytest.raises(ImageResolutionError, match="allow-listed"):
+            require_ghcr_repository("docker.io/azure/storage")
+
+
+class TestPinServiceImage:
+    def _wire(self, monkeypatch, lock, conflicts=0, manifest_ok=True):
+        calls = _wire_lock(monkeypatch, lock, conflicts=conflicts)
+        calls["manifest_checks"] = []
+
+        def fake_manifest(repository, digest):
+            calls["manifest_checks"].append((repository, digest))
+            if not manifest_ok:
+                raise ImageResolutionError("manifest missing")
+
+        monkeypatch.setattr(pins, "resolve_ghcr_manifest", fake_manifest)
+        return calls
+
+    def test_unknown_service_rejected(self):
+        with pytest.raises(PinError, match="Unknown service"):
+            pin_service_image("nope", _GHCR_IMAGE)
+
+    def test_schema_load_direct_pin_rejected(self):
+        with pytest.raises(PinError, match="cannot be pinned directly"):
+            pin_service_image("schema-load", _GHCR_IMAGE)
+
+    def test_tag_reference_rejected(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        with pytest.raises(PinError, match="carries no digest"):
+            pin_service_image("storage", "ghcr.io/azure/storage:sha-abc1234")
+        assert calls["manifest_checks"] == []
+        assert calls["patch"] is None
+
+    def test_disallowed_owner_rejected(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        with pytest.raises(PinError, match="allow-listed"):
+            pin_service_image("storage", f"ghcr.io/evil/storage@{_GHCR_DIGEST}")
+        assert calls["patch"] is None
+
+    def test_ephemeral_requires_run_id(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        with pytest.raises(PinError, match="requires --run-id"):
+            pin_service_image("storage", _GHCR_IMAGE, ephemeral=True)
+        assert calls["patch"] is None
+
+    def test_run_id_must_be_numeric(self, monkeypatch):
+        self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        with pytest.raises(PinError, match="numeric"):
+            pin_service_image("storage", _GHCR_IMAGE, ephemeral=True, run_id="abc")
+
+    def test_source_repo_shape_enforced(self, monkeypatch):
+        self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        with pytest.raises(PinError, match="org.*repo"):
+            pin_service_image(
+                "storage", _GHCR_IMAGE, ephemeral=True, run_id="1", source_repo="not a repo"
+            )
+
+    def test_pin_writes_digest_entry_and_provenance(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+
+        pin = pin_service_image(
+            "storage",
+            _GHCR_IMAGE,
+            ephemeral=True,
+            run_id="1234",
+            source_repo="Azure/osdu-spi-storage",
+            source_sha="b" * 40,
+            source_run_url="https://github.com/Azure/osdu-spi-storage/actions/runs/1234",
+        )
+
+        assert calls["manifest_checks"] == [("ghcr.io/azure/storage", _GHCR_DIGEST)]
+        data, saved = calls["patch"]
+        assert data["STORAGE_IMAGE_TAG"] == ""
+        assert data["STORAGE_IMAGE_DIGEST"] == _GHCR_DIGEST
+        assert data["STORAGE_IMAGE_REF"] == _GHCR_IMAGE
+        assert data["STORAGE_IMAGE"] == _GHCR_IMAGE
+        assert saved["storage"] == pin
+        assert pin.origin == "github"
+        assert pin.ephemeral is True
+        assert pin.run_id == "1234"
+        assert pin.source_repo == "Azure/osdu-spi-storage"
+        assert pin.canonical_repository == "repo/storage-master"
+        assert pin.canonical_tag == "c" * 40
+        assert calls["reconciled"] == ["storage"]
+
+    def test_operator_pin_carries_no_ephemeral_marker(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        pin = pin_service_image("storage", _GHCR_IMAGE)
+        _, saved = calls["patch"]
+        assert saved["storage"] == pin
+        assert pin.ephemeral is False
+        assert pin.run_id == ""
+
+    def test_repin_keeps_original_canonical(self, monkeypatch):
+        existing = _pin(mr="1", canonical_repository="repo/storage-master")
+        lock = _lock(
+            data={"STORAGE_IMAGE_REPOSITORY": "repo/storage-fix-x"},
+            pins_annotation=encode_pins({"storage": existing}),
+        )
+        calls = self._wire(monkeypatch, lock)
+        pin_service_image("storage", _GHCR_IMAGE)
+
+        _, saved = calls["patch"]
+        assert saved["storage"].canonical_repository == "repo/storage-master"
+        assert saved["storage"].digest == _GHCR_DIGEST
+
+    def test_first_pin_rejects_missing_canonical_lock_data(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock())
+        with pytest.raises(PinError, match="refresh-images"):
+            pin_service_image("storage", _GHCR_IMAGE)
+        assert calls["patch"] is None
+
+    def test_refused_while_maintenance_set_before_manifest_check(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        monkeypatch.setattr(
+            pins,
+            "read_deploy_record",
+            lambda required=False: _deploy_record(maintenance=True),
+        )
+
+        with pytest.raises(PinError, match="maintenance"):
+            pin_service_image("storage", _GHCR_IMAGE)
+
+        assert calls["manifest_checks"] == []
+        assert calls["patch"] is None
+
+    def test_manifest_failure_aborts_before_lock_write(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), manifest_ok=False)
+        with pytest.raises(PinError, match="manifest missing"):
+            pin_service_image("storage", _GHCR_IMAGE)
+        assert calls["patch"] is None
+
+    def test_post_write_maintenance_reverts_the_pin(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        records = iter([_deploy_record(), _deploy_record(maintenance=True)])
+        monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
+
+        with pytest.raises(PinError, match="maintenance"):
+            pin_service_image("storage", _GHCR_IMAGE)
+
+        data, saved = calls["patch"]
+        assert data["STORAGE_IMAGE_TAG"] == "c" * 40
+        assert data["STORAGE_IMAGE_REPOSITORY"] == "repo/storage-master"
+        assert "storage" not in saved
+        assert calls["reconciled"] is None
+
+    def test_retries_through_a_concurrent_pin(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), conflicts=1)
+
+        pin_service_image("storage", _GHCR_IMAGE)
+
+        assert calls["attempts"] == 2
+        _, saved = calls["patch"]
+        assert set(saved) == {"storage", "_concurrent"}
+
+
+def _deployment_json(
+    image,
+    name="osdu-storage",
+    container=None,
+    generation=1,
+    observed=1,
+    replicas=1,
+    updated=1,
+    available=1,
+    total=1,
+):
+    return {
+        "metadata": {"name": name, "generation": generation},
+        "spec": {
+            "replicas": replicas,
+            "selector": {"matchLabels": {"app.kubernetes.io/name": name}},
+            "template": {"spec": {"containers": [{"name": container or name, "image": image}]}},
+        },
+        "status": {
+            "observedGeneration": observed,
+            "updatedReplicas": updated,
+            "availableReplicas": available,
+            "replicas": total,
+        },
+    }
+
+
+def _pod_json(image_id, name="osdu-storage-abc12", container="osdu-storage", phase="Running"):
+    return {
+        "metadata": {"name": name},
+        "status": {
+            "phase": phase,
+            "containerStatuses": [{"name": container, "imageID": image_id}],
+        },
+    }
+
+
+class TestVerifyServiceImage:
+    def _wire(self, monkeypatch, deployment=None, pods=(), lock=None):
+        calls = {"reads": []}
+
+        def fake_run_process(cmd, **kwargs):
+            assert cmd[0] == "kubectl"
+            calls["reads"].append(cmd)
+            if cmd[1:3] == ["get", "deployment"]:
+                out = json.dumps(deployment) if deployment is not None else ""
+                return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+            if cmd[1:3] == ["get", "pods"]:
+                out = json.dumps({"items": list(pods)})
+                return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+            raise AssertionError(f"unexpected kubectl read: {cmd}")
+
+        monkeypatch.setattr(pins, "run_process", fake_run_process)
+        monkeypatch.setattr(pins, "read_lock", lambda required=True: lock or _lock())
+        return calls
+
+    def test_verified_when_template_and_pod_carry_digest(self, monkeypatch):
+        calls = self._wire(
+            monkeypatch,
+            deployment=_deployment_json(_GHCR_IMAGE),
+            pods=[_pod_json(_GHCR_IMAGE)],
+        )
+
+        result = verify_service_image("storage", _GHCR_IMAGE)
+
+        assert result.deployment == "osdu-storage"
+        assert result.container == "osdu-storage"
+        assert result.pod == "osdu-storage-abc12"
+        assert _GHCR_DIGEST in result.image_id
+        # Default names follow the Flux release convention osdu-<service>.
+        assert calls["reads"][0][1:6] == ["get", "deployment", "osdu-storage", "-n", "osdu"]
+
+    def test_deployment_and_container_overrides(self, monkeypatch):
+        calls = self._wire(
+            monkeypatch,
+            deployment=_deployment_json(_GHCR_IMAGE, name="storage-svc", container="app"),
+            pods=[_pod_json(_GHCR_IMAGE, container="app")],
+        )
+
+        result = verify_service_image(
+            "storage", _GHCR_IMAGE, deployment="storage-svc", container="app"
+        )
+
+        assert result.deployment == "storage-svc"
+        assert result.container == "app"
+        assert calls["reads"][0][3] == "storage-svc"
+
+    def test_missing_deployment_is_typed(self, monkeypatch):
+        self._wire(monkeypatch, deployment=None)
+        with pytest.raises(VerifyError, match="not found") as excinfo:
+            verify_service_image("storage", _GHCR_IMAGE)
+        assert excinfo.value.code == "deployment_not_found"
+
+    def test_template_mismatch_names_the_colliding_run(self, monkeypatch):
+        other = _image_pin(
+            digest="sha256:" + "e" * 64,
+            run_id="9999",
+            source_run_url="https://github.com/Azure/osdu-spi-storage/actions/runs/9999",
+        )
+        self._wire(
+            monkeypatch,
+            deployment=_deployment_json("ghcr.io/azure/storage@sha256:" + "e" * 64),
+            lock=_lock(pins_annotation=encode_pins({"storage": other})),
+        )
+
+        with pytest.raises(VerifyError, match="run 9999") as excinfo:
+            verify_service_image("storage", _GHCR_IMAGE)
+        assert excinfo.value.code == "template_mismatch"
+
+    def test_rollout_incomplete_is_typed(self, monkeypatch):
+        self._wire(
+            monkeypatch,
+            deployment=_deployment_json(_GHCR_IMAGE, replicas=2, updated=1, available=1, total=2),
+        )
+        with pytest.raises(VerifyError, match="rollout") as excinfo:
+            verify_service_image("storage", _GHCR_IMAGE)
+        assert excinfo.value.code == "rollout_incomplete"
+
+    def test_no_running_pod_is_typed(self, monkeypatch):
+        self._wire(
+            monkeypatch,
+            deployment=_deployment_json(_GHCR_IMAGE),
+            pods=[_pod_json(_GHCR_IMAGE, phase="Pending")],
+        )
+        with pytest.raises(VerifyError, match="No running pods") as excinfo:
+            verify_service_image("storage", _GHCR_IMAGE)
+        assert excinfo.value.code == "pod_not_running"
+
+    def test_pod_digest_mismatch_is_typed(self, monkeypatch):
+        stale = "ghcr.io/azure/storage@sha256:" + "e" * 64
+        self._wire(
+            monkeypatch,
+            deployment=_deployment_json(_GHCR_IMAGE),
+            pods=[_pod_json(stale)],
+        )
+        with pytest.raises(VerifyError, match="imageID") as excinfo:
+            verify_service_image("storage", _GHCR_IMAGE)
+        assert excinfo.value.code == "pod_mismatch"
+
+    def test_tag_reference_rejected(self, monkeypatch):
+        self._wire(monkeypatch)
+        with pytest.raises(PinError, match="carries no digest"):
+            verify_service_image("storage", "ghcr.io/azure/storage:sha-abc1234")
+
+    def test_unreachable_cluster_is_not_a_typed_failure(self, monkeypatch):
+        def fake_run_process(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="connection refused")
+
+        monkeypatch.setattr(pins, "run_process", fake_run_process)
+        with pytest.raises(PinError, match="connection refused") as excinfo:
+            verify_service_image("storage", _GHCR_IMAGE)
+        assert not isinstance(excinfo.value, VerifyError)
+
+
+class TestResetIfRun:
+    def test_matching_run_restores_canonical(self, monkeypatch):
+        lock = _lock(pins_annotation=encode_pins({"storage": _image_pin(run_id="1234")}))
+        calls = _wire_lock(monkeypatch, lock)
+
+        result = reset_service("storage", if_run="1234")
+
+        assert result == ResetResult(restored=("storage",), refresh_required=())
+        data, saved = calls["patch"]
+        assert data["STORAGE_IMAGE_TAG"] == "c" * 40
+        assert data["STORAGE_IMAGE_REPOSITORY"] == "repo/storage-master"
+        assert saved == {}
+
+    def test_non_matching_run_is_a_typed_no_op(self, monkeypatch):
+        lock = _lock(pins_annotation=encode_pins({"storage": _image_pin(run_id="9999")}))
+        calls = _wire_lock(monkeypatch, lock)
+
+        with pytest.raises(ResetRefusedError, match="run 9999") as excinfo:
+            reset_service("storage", if_run="1234")
+
+        assert excinfo.value.code == "run_mismatch"
+        assert calls["patch"] is None
+        assert decode_pins(calls["box"][0])["storage"].run_id == "9999"
+
+    def test_operator_pin_is_refused_by_name(self, monkeypatch):
+        lock = _lock(pins_annotation=encode_pins({"storage": _pin()}))
+        calls = _wire_lock(monkeypatch, lock)
+
+        with pytest.raises(ResetRefusedError, match="MR !847") as excinfo:
+            reset_service("storage", if_run="1234")
+
+        assert excinfo.value.code == "run_mismatch"
+        assert calls["patch"] is None
+
+    def test_unpinned_service_is_a_typed_no_op(self, monkeypatch):
+        calls = _wire_lock(monkeypatch, _lock())
+
+        with pytest.raises(ResetRefusedError, match="not pinned") as excinfo:
+            reset_service("storage", if_run="1234")
+
+        assert excinfo.value.code == "not_pinned"
+        assert calls["patch"] is None
+
+    def test_schema_if_run_reset_leaves_the_loader_alone(self, monkeypatch):
+        loader = _pin()
+        lock = _lock(
+            pins_annotation=encode_pins(
+                {
+                    "schema": _image_pin(repository="ghcr.io/azure/schema", run_id="55"),
+                    "schema-load": loader,
+                }
+            )
+        )
+        calls = _wire_lock(monkeypatch, lock)
+
+        result = reset_service("schema", if_run="55")
+
+        assert result == ResetResult(restored=("schema",), refresh_required=())
+        _, saved = calls["patch"]
+        assert saved == {"schema-load": loader}
+
+
+class _FakeHttpResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return json.dumps(self._payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class TestGithubRunStatus:
+    def test_disallowed_source_repo_is_never_fetched(self, monkeypatch):
+        def fail_urlopen(*args, **kwargs):
+            pytest.fail("a repository outside the allow-list must not be fetched")
+
+        monkeypatch.setattr(pins.urllib.request, "urlopen", fail_urlopen)
+        assert pins._github_run_status("evil/osdu-spi-storage", "123") is None
+        assert pins._github_run_status("Azure/other-repo", "123") is None
+        assert pins._github_run_status("Azure/osdu-spi-storage", "not-a-number") is None
+
+    def test_gone_run_reads_as_completed(self, monkeypatch):
+        from email.message import Message
+
+        def raise_404(req, timeout=15):
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", Message(), None)
+
+        monkeypatch.setattr(pins.urllib.request, "urlopen", raise_404)
+        assert pins._github_run_status("Azure/osdu-spi-storage", "123") == "completed"
+
+    def test_reports_the_run_state(self, monkeypatch):
+        monkeypatch.setattr(
+            pins.urllib.request,
+            "urlopen",
+            lambda req, timeout=15: _FakeHttpResponse({"status": "in_progress"}),
+        )
+        assert pins._github_run_status("Azure/osdu-spi-storage", "123") == "in_progress"
+
+    def test_network_failure_reads_as_unreachable(self, monkeypatch):
+        def raise_unreachable(req, timeout=15):
+            raise urllib.error.URLError("no route to host")
+
+        monkeypatch.setattr(pins.urllib.request, "urlopen", raise_unreachable)
+        assert pins._github_run_status("Azure/osdu-spi-storage", "123") is None
+
+
+class TestSweepStaleEphemeralPins:
+    def _wire(self, monkeypatch, lock, run_states=None):
+        calls = _wire_lock(monkeypatch, lock)
+        calls["lookups"] = []
+        states = run_states or {}
+
+        def fake_run_status(source_repo, run_id):
+            calls["lookups"].append((source_repo, run_id))
+            return states.get(run_id)
+
+        monkeypatch.setattr(pins, "_github_run_status", fake_run_status)
+        return calls
+
+    def test_no_ephemeral_pins_is_a_quiet_no_op(self, monkeypatch):
+        lock = _lock(pins_annotation=encode_pins({"storage": _pin()}))
+        calls = self._wire(monkeypatch, lock)
+
+        assert sweep_stale_ephemeral_pins() == SweepResult((), (), ())
+        assert calls["lookups"] == []
+        assert calls["patch"] is None
+
+    def test_terminal_run_is_swept_to_canonical(self, monkeypatch):
+        lock = _lock(pins_annotation=encode_pins({"storage": _image_pin(run_id="1234")}))
+        calls = self._wire(monkeypatch, lock, run_states={"1234": "completed"})
+
+        result = sweep_stale_ephemeral_pins()
+
+        assert result.swept == ("storage",)
+        data, saved = calls["patch"]
+        assert data["STORAGE_IMAGE_TAG"] == "c" * 40
+        assert saved == {}
+        assert calls["reconciled"] == ["storage"]
+
+    def test_running_pin_is_kept(self, monkeypatch):
+        lock = _lock(pins_annotation=encode_pins({"storage": _image_pin(run_id="1234")}))
+        calls = self._wire(monkeypatch, lock, run_states={"1234": "in_progress"})
+
+        result = sweep_stale_ephemeral_pins()
+
+        assert result.swept == ()
+        assert result.kept == (("storage", "run 1234 is in_progress"),)
+        assert calls["patch"] is None
+
+    def test_unreachable_state_defers_to_the_age_threshold(self, monkeypatch):
+        young = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        old = (
+            datetime.now(timezone.utc) - timedelta(hours=pins.STALE_EPHEMERAL_PIN_AGE_HOURS + 1)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lock = _lock(
+            pins_annotation=encode_pins(
+                {
+                    "storage": _image_pin(run_id="1", applied_at=young),
+                    "search": _image_pin(
+                        repository="ghcr.io/azure/search",
+                        run_id="2",
+                        applied_at=old,
+                        canonical_repository="repo/search-master",
+                    ),
+                }
+            )
+        )
+        calls = self._wire(monkeypatch, lock)
+
+        result = sweep_stale_ephemeral_pins()
+
+        assert result.swept == ("search",)
+        assert result.kept == (("storage", "run state unreachable and pin younger than threshold"),)
+        _, saved = calls["patch"]
+        assert set(saved) == {"storage"}
+
+    def test_swept_pin_without_canonical_requires_refresh(self, monkeypatch):
+        stale = _image_pin(run_id="1234", canonical_repository="", canonical_tag="")
+        lock = _lock(pins_annotation=encode_pins({"storage": stale}))
+        calls = self._wire(monkeypatch, lock, run_states={"1234": "completed"})
+        monkeypatch.setattr(
+            pins,
+            "reconcile_consumers",
+            lambda names: pytest.fail("no restored image, nothing to reconcile"),
+        )
+
+        result = sweep_stale_ephemeral_pins()
+
+        assert result == SweepResult(swept=(), kept=(), refresh_required=("storage",))
+        _, saved = calls["patch"]
+        assert saved == {}
+
+    def test_operator_pins_are_never_consulted(self, monkeypatch):
+        lock = _lock(
+            pins_annotation=encode_pins({"storage": _pin(), "search": _image_pin(run_id="7")})
+        )
+        calls = self._wire(monkeypatch, lock, run_states={"7": "in_progress"})
+
+        sweep_stale_ephemeral_pins()
+
+        assert calls["lookups"] == [("Azure/osdu-spi-storage", "7")]
+
+    def test_repinned_service_survives_the_sweep_write(self, monkeypatch):
+        """A pin replaced between the staleness check and the CAS write is a
+        newer run's pin, not the stale one; it must be left standing."""
+        stale = _image_pin(run_id="1234")
+        lock = _lock(pins_annotation=encode_pins({"storage": stale}))
+        calls = self._wire(monkeypatch, lock, run_states={"1234": "completed"})
+
+        newer = _image_pin(run_id="5678", applied_at="2026-08-25T02:00:00Z")
+        swapped = {"done": False}
+
+        def read_then_swap(required=True):
+            current = calls["box"][0]
+            if not swapped["done"]:
+                # After the staleness scan reads the stale pin, a newer run
+                # re-pins the service before the sweep's CAS write.
+                swapped["done"] = True
+                calls["box"][0] = {
+                    "metadata": {
+                        "resourceVersion": str(int(current["metadata"]["resourceVersion"]) + 1),
+                        "annotations": {pins.PINS_ANNOTATION: encode_pins({"storage": newer})},
+                    },
+                    "data": dict(current.get("data") or {}),
+                }
+                return current
+            return calls["box"][0]
+
+        monkeypatch.setattr(pins, "read_lock", read_then_swap)
+
+        result = sweep_stale_ephemeral_pins()
+
+        assert result.swept == ()
+        final_pins = decode_pins(calls["box"][0])
+        assert final_pins["storage"].run_id == "5678"
+
+
+class TestServicePinCli:
+    def test_mr_and_image_are_mutually_exclusive(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        result = CliRunner().invoke(
+            cli.app, ["service", "pin", "storage", "--mr", "1", "--image", _GHCR_IMAGE]
+        )
+        assert result.exit_code == 1
+        assert "exactly one" in result.output
+
+        result = CliRunner().invoke(cli.app, ["service", "pin", "storage"])
+        assert result.exit_code == 1
+        assert "exactly one" in result.output
+
+    def test_provenance_flags_require_image_and_ephemeral(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        result = CliRunner().invoke(
+            cli.app, ["service", "pin", "storage", "--mr", "1", "--ephemeral"]
+        )
+        assert result.exit_code == 1
+        assert "--image" in result.output
+
+        result = CliRunner().invoke(
+            cli.app,
+            ["service", "pin", "storage", "--image", _GHCR_IMAGE, "--run-id", "1"],
+        )
+        assert result.exit_code == 1
+        assert "--ephemeral" in result.output
+
+    def test_image_pin_reports_digest_and_run(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        captured = {}
+
+        def fake_pin(service, image, **kwargs):
+            captured.update(service=service, image=image, **kwargs)
+            return _image_pin()
+
+        monkeypatch.setattr(cli, "pin_service_image", fake_pin)
+
+        result = CliRunner().invoke(
+            cli.app,
+            [
+                "service",
+                "pin",
+                "storage",
+                "--image",
+                _GHCR_IMAGE,
+                "--ephemeral",
+                "--run-id",
+                "1234",
+                "--source-repo",
+                "Azure/osdu-spi-storage",
+                "--source-sha",
+                "b" * 40,
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured["ephemeral"] is True
+        assert captured["run_id"] == "1234"
+        assert "ephemeral, run 1234" in result.output
+
+
+class TestServiceVerifyCli:
+    def test_typed_failure_exits_two(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+
+        def raise_verify(service, image, deployment=None, container=None):
+            raise VerifyError("pod_mismatch", "no pod carries the digest")
+
+        monkeypatch.setattr(cli, "verify_service_image", raise_verify)
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "verify", "storage", "--image", _GHCR_IMAGE]
+        )
+
+        assert result.exit_code == 2
+        assert "pod_mismatch" in result.output
+
+    def test_unreachable_exits_one(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+
+        def raise_pin_error(service, image, deployment=None, container=None):
+            raise PinError("Could not read Deployment osdu-storage: connection refused")
+
+        monkeypatch.setattr(cli, "verify_service_image", raise_pin_error)
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "verify", "storage", "--image", _GHCR_IMAGE]
+        )
+
+        assert result.exit_code == 1
+
+    def test_success_reports_the_pod(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(
+            cli,
+            "verify_service_image",
+            lambda service, image, deployment=None, container=None: pins.VerifyResult(
+                deployment="osdu-storage",
+                container="osdu-storage",
+                pod="osdu-storage-abc12",
+                image_id=_GHCR_IMAGE,
+            ),
+        )
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "verify", "storage", "--image", _GHCR_IMAGE]
+        )
+
+        assert result.exit_code == 0
+        assert "osdu-storage-abc12" in result.output
+
+
+class TestServiceResetCliConditional:
+    def test_refusal_exits_two(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+
+        def raise_refused(service, if_run=""):
+            raise ResetRefusedError("run_mismatch", "storage is pinned by run 9999")
+
+        monkeypatch.setattr(cli, "reset_service", raise_refused)
+
+        result = CliRunner().invoke(cli.app, ["service", "reset", "storage", "--if-run", "1234"])
+
+        assert result.exit_code == 2
+        assert "run_mismatch" in result.output
+
+    def test_sweep_flags_must_pair(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        result = CliRunner().invoke(cli.app, ["service", "reset", "--ephemeral"])
+        assert result.exit_code == 1
+        assert "--stale-only" in result.output
+
+    def test_sweep_takes_no_service_argument(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        result = CliRunner().invoke(
+            cli.app, ["service", "reset", "storage", "--ephemeral", "--stale-only"]
+        )
+        assert result.exit_code == 1
+        assert "no service argument" in result.output
+
+    def test_reset_without_service_or_sweep_flags_is_rejected(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        result = CliRunner().invoke(cli.app, ["service", "reset"])
+        assert result.exit_code == 1
+        assert "Provide a service name" in result.output
+
+    def test_sweep_reports_each_outcome(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(
+            cli,
+            "sweep_stale_ephemeral_pins",
+            lambda: SweepResult(
+                swept=("storage",),
+                kept=(("search", "run 7 is in_progress"),),
+                refresh_required=("legal",),
+            ),
+        )
+
+        result = CliRunner().invoke(cli.app, ["service", "reset", "--ephemeral", "--stale-only"])
+
+        assert result.exit_code == 0
+        assert "storage" in result.output
+        assert "search kept" in result.output
+        assert "spi reconcile --refresh-images" in result.output
+
+
+class TestPinCodecProvenance:
+    def test_ephemeral_provenance_round_trips(self):
+        original = {"storage": _image_pin()}
+        decoded = decode_pins(_lock(pins_annotation=encode_pins(original)))
+        assert decoded == original
+        assert decoded["storage"].ephemeral is True
+        assert decoded["storage"].origin == "github"
+
+    def test_annotation_without_provenance_reads_as_operator_pin(self):
+        """A pin encoded before the ADR-031 fields existed decodes with them
+        empty, which every consumer reads as a non-ephemeral operator pin."""
+        fields = dict(
+            mr="847",
+            branch="fix/x",
+            repository="registry/schema-service-fix-x",
+            tag="a" * 40,
+            canonical_repository="registry/schema-service-master",
+            canonical_tag="c" * 40,
+            canonical_created_at="then",
+            canonical_digest="sha256:old",
+            applied_at="2026-08-20T00:00:00Z",
+            created_at="now",
+            digest="sha256:new",
+        )
+        decoded = decode_pins(_lock(pins_annotation=json.dumps({"schema": fields})))
+        assert decoded["schema"].ephemeral is False
+        assert decoded["schema"].run_id == ""
+        assert decoded["schema"].origin == ""
+
+    def test_mr_pins_now_record_their_origin(self, monkeypatch):
+        calls = _wire_lock(monkeypatch, _lock(data=_canonical_data("storage")))
+        mr = {"source_branch": "fix/x", "sha": "b" * 40}
+        monkeypatch.setattr(pins, "fetch_merge_request", lambda project_id, mr_iid: mr)
+        monkeypatch.setattr(
+            pins,
+            "resolve_mr_image",
+            lambda service, mr_iid, mr_snapshot=None: (
+                ResolvedImage(service, f"repo/{service}-fix-x", "b" * 40, "now", "sha256:new"),
+                mr_snapshot,
+            ),
+        )
+
+        pin_service("storage", "42")
+
+        _, saved = calls["patch"]
+        assert saved["storage"].origin == "gitlab-mr"
+        assert saved["storage"].ephemeral is False
