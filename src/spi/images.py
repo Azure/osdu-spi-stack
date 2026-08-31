@@ -413,6 +413,54 @@ def parse_image_digest_ref(ref: str) -> tuple[str, str]:
     return repository, digest
 
 
+def _ghcr_pull_token(path: str) -> str:
+    """Fetch GHCR's anonymous pull token for one repository path."""
+
+    token_url = f"https://{GHCR_HOST}/token?service={GHCR_HOST}&scope=" + urllib.parse.quote(
+        f"repository:{path}:pull", safe=":"
+    )
+    token_req = urllib.request.Request(token_url, headers={"User-Agent": "spi-stack-resolver"})
+    with urllib.request.urlopen(token_req, timeout=15) as resp:  # nosec B310
+        return json.loads(resp.read()).get("token", "")
+
+
+def ghcr_index_child_digests(repository: str, digest: str) -> tuple[str, ...]:
+    """Return the platform manifest digests inside an OCI index, or () for a
+    single manifest, a non-GHCR repository, or any fetch failure.
+
+    A container runtime can record the platform manifest it selected from a
+    pinned index, not the index digest the pod was pulled by, in a pod's
+    imageID; verification accepts either. A failure here only narrows
+    matching back to the index digest itself.
+    """
+
+    if not repository.startswith(f"{GHCR_HOST}/"):
+        return ()
+    path = repository[len(GHCR_HOST) + 1 :]
+    manifest_url = f"https://{GHCR_HOST}/v2/{path}/manifests/{digest}"
+    try:
+        manifest_req = urllib.request.Request(
+            manifest_url,
+            headers={
+                "User-Agent": "spi-stack-resolver",
+                "Accept": _MANIFEST_ACCEPT,
+                "Authorization": f"Bearer {_ghcr_pull_token(path)}",
+            },
+        )
+        with urllib.request.urlopen(manifest_req, timeout=15) as resp:  # nosec B310
+            payload = json.loads(resp.read())
+    except (TimeoutError, urllib.error.URLError, ConnectionError, json.JSONDecodeError):
+        return ()
+    entries = payload.get("manifests") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return ()
+    return tuple(
+        entry["digest"]
+        for entry in entries
+        if isinstance(entry, dict) and isinstance(entry.get("digest"), str)
+    )
+
+
 def require_ghcr_repository(repository: str) -> None:
     """Enforce the ADR-031 GHCR owner allow-list on a pin's repository."""
 
@@ -434,18 +482,11 @@ def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> No
     """
 
     path = repository[len(GHCR_HOST) + 1 :]
-    token_url = f"https://{GHCR_HOST}/token?service={GHCR_HOST}&scope=" + urllib.parse.quote(
-        f"repository:{path}:pull", safe=":"
-    )
     manifest_url = f"https://{GHCR_HOST}/v2/{path}/manifests/{digest}"
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            token_req = urllib.request.Request(
-                token_url, headers={"User-Agent": "spi-stack-resolver"}
-            )
-            with urllib.request.urlopen(token_req, timeout=15) as resp:  # nosec B310
-                token = json.loads(resp.read()).get("token", "")
+            token = _ghcr_pull_token(path)
             manifest_req = urllib.request.Request(
                 manifest_url,
                 method="HEAD",

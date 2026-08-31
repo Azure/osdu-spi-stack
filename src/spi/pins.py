@@ -51,6 +51,7 @@ from .images import (
     ResolvedImage,
     build_lock_annotations,
     build_lock_data,
+    ghcr_index_child_digests,
     gitlab_get,
     image_lock_key,
     image_lock_missing_schema_load,
@@ -1146,7 +1147,7 @@ def verify_service_image(
         known = ", ".join(sorted(IMAGE_REGISTRY))
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
     try:
-        _repository, digest = parse_image_digest_ref(image)
+        repository, digest = parse_image_digest_ref(image)
     except ImageResolutionError as exc:
         raise PinError(str(exc)) from exc
 
@@ -1223,20 +1224,26 @@ def verify_service_image(
             f"No running pods matched {label_arg} in namespace {WORKLOAD_NAMESPACE}.",
         )
 
-    seen: list[str] = []
+    statuses: list[tuple[dict, str]] = []
     for pod in running:
         for entry in (pod.get("status") or {}).get("containerStatuses") or []:
-            if entry.get("name") != container:
-                continue
-            image_id = entry.get("imageID", "")
-            if digest in image_id:
-                return VerifyResult(
-                    deployment=deployment,
-                    container=container,
-                    pod=(pod.get("metadata") or {}).get("name", ""),
-                    image_id=image_id,
-                )
-            seen.append(image_id or "<no imageID>")
+            if entry.get("name") == container:
+                statuses.append((pod, entry.get("imageID", "")))
+
+    # The runtime can report the platform manifest it selected from a pinned
+    # OCI index instead of the index digest itself; accept its children too.
+    accepted: tuple[str, ...] = (digest,)
+    if statuses and not any(digest in image_id for _, image_id in statuses):
+        accepted += ghcr_index_child_digests(repository, digest)
+    for pod, image_id in statuses:
+        if any(candidate in image_id for candidate in accepted):
+            return VerifyResult(
+                deployment=deployment,
+                container=container,
+                pod=(pod.get("metadata") or {}).get("name", ""),
+                image_id=image_id,
+            )
+    seen = [image_id or "<no imageID>" for _, image_id in statuses]
     detail = "; ".join(sorted(set(seen))) if seen else f"no status for container {container!r}"
     raise VerifyError(
         "pod_mismatch",

@@ -1448,8 +1448,14 @@ def _pod_json(image_id, name="osdu-storage-abc12", container="osdu-storage", pha
 
 
 class TestVerifyServiceImage:
-    def _wire(self, monkeypatch, deployment=None, pods=(), lock=None):
-        calls = {"reads": []}
+    def _wire(self, monkeypatch, deployment=None, pods=(), lock=None, index_children=()):
+        calls = {"reads": [], "index_lookups": []}
+
+        def fake_children(repository, digest):
+            calls["index_lookups"].append((repository, digest))
+            return tuple(index_children)
+
+        monkeypatch.setattr(pins, "ghcr_index_child_digests", fake_children)
 
         def fake_run_process(cmd, **kwargs):
             assert cmd[0] == "kubectl"
@@ -1496,6 +1502,33 @@ class TestVerifyServiceImage:
         assert result.deployment == "storage-svc"
         assert result.container == "app"
         assert calls["reads"][0][3] == "storage-svc"
+
+    def test_platform_manifest_digest_accepted_for_index_pin(self, monkeypatch):
+        """The runtime can report the index's selected platform manifest in
+        imageID; verify resolves the index children and accepts them."""
+        child = "sha256:" + "a" * 64
+        calls = self._wire(
+            monkeypatch,
+            deployment=_deployment_json(_GHCR_IMAGE),
+            pods=[_pod_json(f"ghcr.io/azure/storage@{child}")],
+            index_children=(child,),
+        )
+
+        result = verify_service_image("storage", _GHCR_IMAGE)
+
+        assert result.image_id.endswith(child)
+        assert calls["index_lookups"] == [("ghcr.io/azure/storage", _GHCR_DIGEST)]
+
+    def test_direct_digest_match_skips_index_lookup(self, monkeypatch):
+        calls = self._wire(
+            monkeypatch,
+            deployment=_deployment_json(_GHCR_IMAGE),
+            pods=[_pod_json(_GHCR_IMAGE)],
+        )
+
+        verify_service_image("storage", _GHCR_IMAGE)
+
+        assert calls["index_lookups"] == []
 
     def test_missing_deployment_is_typed(self, monkeypatch):
         self._wire(monkeypatch, deployment=None)

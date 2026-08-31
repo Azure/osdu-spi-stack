@@ -572,3 +572,86 @@ class TestLockDataRefRendering:
             f'PARTITION_IMAGE_REF: "community.opengroup.org:5555/example/partition:{"1" * 40}"'
             in yaml
         )
+
+
+class TestGhcrIndexChildDigests:
+    class _Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            import json
+
+            return json.dumps(self._payload).encode()
+
+    def test_returns_the_index_children(self, monkeypatch):
+        from spi import images
+
+        responses = iter(
+            [
+                self._Response({"token": "t"}),
+                self._Response(
+                    {
+                        "mediaType": "application/vnd.oci.image.index.v1+json",
+                        "manifests": [
+                            {"digest": "sha256:" + "1" * 64},
+                            {"digest": "sha256:" + "2" * 64},
+                            {"annotations": {"vnd.docker.reference.type": "attestation-manifest"}},
+                        ],
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setattr(
+            images.urllib.request, "urlopen", lambda req, timeout=15: next(responses)
+        )
+
+        digests = images.ghcr_index_child_digests("ghcr.io/azure/storage", "sha256:" + "f" * 64)
+
+        assert digests == ("sha256:" + "1" * 64, "sha256:" + "2" * 64)
+
+    def test_single_manifest_has_no_children(self, monkeypatch):
+        from spi import images
+
+        responses = iter(
+            [
+                self._Response({"token": "t"}),
+                self._Response({"config": {"digest": "sha256:" + "3" * 64}}),
+            ]
+        )
+        monkeypatch.setattr(
+            images.urllib.request, "urlopen", lambda req, timeout=15: next(responses)
+        )
+
+        assert images.ghcr_index_child_digests("ghcr.io/azure/storage", "sha256:" + "f" * 64) == ()
+
+    def test_fetch_failure_narrows_to_index_matching(self, monkeypatch):
+        from spi import images
+
+        def always_timeout(req, timeout=15):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(images.urllib.request, "urlopen", always_timeout)
+
+        assert images.ghcr_index_child_digests("ghcr.io/azure/storage", "sha256:" + "f" * 64) == ()
+
+    def test_non_ghcr_repository_is_never_fetched(self, monkeypatch):
+        from spi import images
+
+        def fail_urlopen(*args, **kwargs):
+            pytest.fail("a non-GHCR repository must not be fetched")
+
+        monkeypatch.setattr(images.urllib.request, "urlopen", fail_urlopen)
+
+        assert (
+            images.ghcr_index_child_digests(
+                "community.opengroup.org:5555/example/storage", "sha256:" + "f" * 64
+            )
+            == ()
+        )
