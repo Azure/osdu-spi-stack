@@ -81,10 +81,13 @@ data:
     import urllib.request
 
 
-    def wait_for_status(url: str, expected: set, attempts: int, delay: float) -> bool:
+    def wait_for_status(
+        url: str, expected: set, attempts: int, delay: float, headers: dict = None
+    ) -> bool:
+        req = urllib.request.Request(url, headers=headers or {})
         for i in range(1, attempts + 1):
             try:
-                code = urllib.request.urlopen(url, timeout=5).getcode()
+                code = urllib.request.urlopen(req, timeout=5).getcode()
             except urllib.error.HTTPError as e:
                 code = e.code
             except Exception:
@@ -270,38 +273,35 @@ data:
          property path every service uses.
       3. PUT Legal_COO.json into the legal configuration container
          (overwrite; the upload is idempotent).
-      4. POST the default legal tag: 201 (created) and 409 (already
+      4. Wait until an authenticated GET on /legaltags returns 200: legal
+         authorizes against the groups entitlements-init provisions, and
+         that Job runs in parallel with this one.
+      5. POST the default legal tag: 201 (created) and 409 (already
          exists) are both success, anything else fails the Job.
 
-    Every exit prints "legal-init outcome: <code>" so failures are typed
-    in the Job log. The Job is not a Helm hook, so a failure never blocks
-    platform readiness: "ready" and "seeded" stay separate signals.
+    Every exit prints "legal-init outcome: <code>", one of: created,
+    already_exists, config_missing, service_timeout,
+    partition_record_timeout, kv_resolve_failed, blob_upload_failed,
+    legal_authz_timeout, legal_tag_rejected, auth_failed, unexpected_error.
+    The Job is not a Helm hook, so a failure never blocks platform
+    readiness: "ready" and "seeded" stay separate signals.
     """
     import json
     import os
     import sys
     import urllib.request
+    from email.utils import formatdate
 
     sys.path.insert(0, "/scripts")
     from auth import get_token
     from wait import wait_for_status
-
-    PARTITION = os.environ["PARTITION"]
-    LEGAL_TAG = os.environ["LEGAL_TAG"]
-    KEYVAULT_NAME = os.environ["KEYVAULT_NAME"]
-    LEGAL_HOST = os.environ.get("LEGAL_HOST", "http://legal.osdu.svc.cluster.local")
-    PARTITION_HOST = os.environ.get(
-        "PARTITION_HOST", "http://partition.osdu.svc.cluster.local"
-    )
 
     # Must match the legal service's AZURE_STORAGE_CONTAINER_NAME env
     # (services/legal.yaml); the container itself is created per partition by
     # infra/modules/partition.bicep.
     CONFIG_CONTAINER = "legal-service-azure-configuration"
 
-    INFO_URL = f"{LEGAL_HOST}/api/legal/v1/info"
-    PARTITION_GET_URL = f"{PARTITION_HOST}/api/partition/v1/partitions/{PARTITION}"
-    LEGALTAGS_URL = f"{LEGAL_HOST}/api/legal/v1/legaltags"
+    REQUIRED_ENV = ("PARTITION", "LEGAL_TAG", "KEYVAULT_NAME")
 
     COO_CATALOG = [
         {
@@ -312,31 +312,33 @@ data:
         }
     ]
 
-    TAG_BODY = {
-        "name": LEGAL_TAG,
-        "description": "Default legal tag for sample data",
-        "properties": {
-            "countryOfOrigin": ["US"],
-            "contractId": "No Contract Related",
-            "expirationDate": "2099-01-01",
-            "dataType": "Public Domain Data",
-            "originator": "OSDU",
-            "securityClassification": "Public",
-            "exportClassification": "EAR99",
-            "personalData": "No Personal Data",
-        },
-    }
-
 
     def outcome(code: str) -> None:
         print(f"legal-init outcome: {code}")
 
 
-    def resolve_blob_endpoint() -> str:
+    def tag_body(legal_tag: str) -> dict:
+        return {
+            "name": legal_tag,
+            "description": "Default legal tag for sample data",
+            "properties": {
+                "countryOfOrigin": ["US"],
+                "contractId": "No Contract Related",
+                "expirationDate": "2099-01-01",
+                "dataType": "Public Domain Data",
+                "originator": "OSDU",
+                "securityClassification": "Public",
+                "exportClassification": "EAR99",
+                "personalData": "No Personal Data",
+            },
+        }
+
+
+    def resolve_blob_endpoint(keyvault_name: str, partition: str) -> str:
         token = get_token(resource="https://vault.azure.net")
         url = (
-            f"https://{KEYVAULT_NAME}.vault.azure.net/secrets/"
-            f"{PARTITION}-storage-account-blob-endpoint?api-version=7.4"
+            f"https://{keyvault_name}.vault.azure.net/secrets/"
+            f"{partition}-storage-account-blob-endpoint?api-version=7.4"
         )
         req = urllib.request.Request(
             url, headers={"Authorization": f"Bearer {token}"}
@@ -353,6 +355,9 @@ data:
             method="PUT",
             headers={
                 "Authorization": f"Bearer {token}",
+                # Storage rejects a bearer-authorized request that carries no
+                # request date, and urllib sends none of its own.
+                "x-ms-date": formatdate(usegmt=True),
                 "x-ms-version": "2021-08-06",
                 "x-ms-blob-type": "BlockBlob",
                 "Content-Type": "application/json",
@@ -363,20 +368,37 @@ data:
 
 
     def main() -> int:
-        print(f"Legal bootstrap for '{PARTITION}' (tag: {LEGAL_TAG})")
+        missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
+        if missing:
+            print(f"ERROR: missing environment: {', '.join(missing)}")
+            outcome("config_missing")
+            return 1
 
-        if not wait_for_status(INFO_URL, {200}, attempts=600, delay=2.0):
+        partition = os.environ["PARTITION"]
+        legal_tag = os.environ["LEGAL_TAG"]
+        keyvault_name = os.environ["KEYVAULT_NAME"]
+        legal_host = os.environ.get("LEGAL_HOST", "http://legal.osdu.svc.cluster.local")
+        partition_host = os.environ.get(
+            "PARTITION_HOST", "http://partition.osdu.svc.cluster.local"
+        )
+        info_url = f"{legal_host}/api/legal/v1/info"
+        partition_get_url = f"{partition_host}/api/partition/v1/partitions/{partition}"
+        legaltags_url = f"{legal_host}/api/legal/v1/legaltags"
+
+        print(f"Legal bootstrap for '{partition}' (tag: {legal_tag})")
+
+        if not wait_for_status(info_url, {200}, attempts=600, delay=2.0):
             outcome("service_timeout")
             return 1
         if not wait_for_status(
-            PARTITION_GET_URL, {200, 401, 403}, attempts=300, delay=2.0
+            partition_get_url, {200, 401, 403}, attempts=300, delay=2.0
         ):
             outcome("partition_record_timeout")
             return 1
 
         print("  Resolving the partition blob endpoint from Key Vault...")
         try:
-            blob_endpoint = resolve_blob_endpoint()
+            blob_endpoint = resolve_blob_endpoint(keyvault_name, partition)
         except urllib.error.HTTPError as e:
             print(f"  Key Vault -> {e.code}: {e.read().decode(errors='replace')}")
             outcome("kv_resolve_failed")
@@ -393,29 +415,39 @@ data:
 
         print("  Acquiring bearer token via Workload Identity...")
         token = get_token()
+        auth_headers = {
+            "Authorization": f"Bearer {token}",
+            "data-partition-id": partition,
+        }
+
+        print("  Waiting for legal to authorize the bootstrap identity...")
+        if not wait_for_status(
+            legaltags_url, {200}, attempts=150, delay=2.0, headers=auth_headers
+        ):
+            outcome("legal_authz_timeout")
+            return 1
 
         req = urllib.request.Request(
-            LEGALTAGS_URL,
-            data=json.dumps(TAG_BODY).encode(),
+            legaltags_url,
+            data=json.dumps(tag_body(legal_tag)).encode(),
             method="POST",
             headers={
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "Authorization": f"Bearer {token}",
-                "data-partition-id": PARTITION,
+                **auth_headers,
             },
         )
         try:
             resp = urllib.request.urlopen(req, timeout=60)
             code = resp.getcode()
-            print(f"  POST {LEGALTAGS_URL} -> {code}")
+            print(f"  POST {legaltags_url} -> {code}")
             print(resp.read().decode(errors="replace"))
         except urllib.error.HTTPError as e:
             code = e.code
-            print(f"  POST {LEGALTAGS_URL} -> {code}")
+            print(f"  POST {legaltags_url} -> {code}")
             print(e.read().decode(errors="replace"))
             if code == 409:
-                print(f"  Legal tag '{LEGAL_TAG}' already exists; treating as success.")
+                print(f"  Legal tag '{legal_tag}' already exists; treating as success.")
                 outcome("already_exists")
                 return 0
             outcome("legal_tag_rejected")
@@ -428,4 +460,15 @@ data:
 
 
     if __name__ == "__main__":
-        sys.exit(main())
+        try:
+            rc = main()
+        except SystemExit as e:
+            # get_token() raises SystemExit on token-endpoint failures.
+            print(f"ERROR: {e}")
+            outcome("auth_failed")
+            rc = 1
+        except Exception as e:
+            print(f"ERROR: {type(e).__name__}: {e}")
+            outcome("unexpected_error")
+            rc = 1
+        sys.exit(rc)

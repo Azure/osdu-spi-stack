@@ -196,7 +196,7 @@ Pods roll one at a time as each `HelmRelease` reconciles. `spi status --watch` s
 - [ADR-009](../decisions/009-flux-cd-for-gitops.md) -- Flux CD + AKS GitOps Extension
 - [ADR-013](../decisions/013-schema-load-flux-job.md) -- Schema Load via a Flux-Managed Job
 - [ADR-014](../decisions/014-suspend-gitops-after-deploy.md) -- Suspend GitOps After Deploy
-- [ADR-015](../decisions/015-partition-entitlements-bootstrap.md) -- Partition + Entitlements Bootstrap
+- [ADR-015](../decisions/015-partition-entitlements-bootstrap.md) -- Partition, Entitlements, and Legal Bootstrap
 - [ADR-017](../decisions/017-osdu-image-lock.md) -- Per-Deploy Image Lock
 - [ADR-018](../decisions/018-karpenter-nodepool-authoring.md) -- Karpenter NodePool Authoring
 - [ADR-028](../decisions/028-version-pinned-shared-environment.md) -- Version-Pinned Shared Backing Environment

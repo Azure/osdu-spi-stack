@@ -20,7 +20,7 @@ The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines a set
 | 4a | `spi-osdu-config` | 0a |
 | 4b | `spi-bootstrap` (trust-manager Bundles + Redis DestinationRule, ADR-011) | trust-manager, ES, Redis, osdu-config |
 | 5 | `spi-osdu-services` (core services) | 4b, 0b |
-| 5a | `spi-osdu-init` (partition + entitlements bootstrap, ADR-015) | `spi-osdu-services` |
+| 5a | `spi-osdu-init` (partition, entitlements, and legal bootstrap, ADR-015) | `spi-osdu-services` |
 | 5b | `spi-osdu-schema-load` (one-shot Job, ADR-013) | `spi-osdu-init` |
 | 6 | `spi-osdu-reference` (reference services) | 5, 5b |
 

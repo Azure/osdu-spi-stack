@@ -64,7 +64,7 @@ L0a  spi-namespaces
                             |
                             +--> L5   spi-osdu-services   (10 services)
                                        |
-                                       +--> L5a  spi-osdu-init       (partition + entitlements, ADR-015)
+                                       +--> L5a  spi-osdu-init       (partition, entitlements, legal, ADR-015)
                                                   |
                                                   +--> L5b  spi-osdu-schema-load    (ADR-013)
                                                              |
