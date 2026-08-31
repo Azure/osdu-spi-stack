@@ -17,6 +17,10 @@ permissions:
 jobs:
   analyze:
     name: CodeQL
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, python]
     runs-on: ubuntu-latest
     permissions:
       security-events: write # upload findings to the code-scanning dashboard
@@ -27,8 +31,8 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: python
+          languages: ${{ matrix.language }}
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
-          category: "/language:python"
+          category: "/language:${{ matrix.language }}"
