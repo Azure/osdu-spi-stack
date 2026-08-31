@@ -1944,6 +1944,34 @@ class TestSweepStaleEphemeralPins:
         assert result.kept == (("storage", "pin replaced by run 5678 during the sweep"),)
         assert decode_pins(calls["box"][0])["storage"].run_id == "5678"
 
+    def test_replacement_sharing_run_digest_and_applied_at_is_not_swept(self, monkeypatch):
+        """The CAS re-check compares the full pin: a replacement sharing the
+        run id, digest, and timestamp but differing in provenance is not the
+        stale pin and must be left standing."""
+        original = _image_pin(run_id="1234")
+        lock = _lock(pins_annotation=encode_pins({"storage": original}))
+        calls = self._wire(monkeypatch, lock, run_states={"1234": "completed"})
+
+        replacement = _image_pin(run_id="1234", source_repo="Azure/osdu-spi-other")
+        reads = {"n": 0}
+
+        def read_and_swap(required=True):
+            reads["n"] += 1
+            if reads["n"] == 2:
+                calls["box"][0] = _lock(
+                    pins_annotation=encode_pins({"storage": replacement}),
+                    resource_version="2",
+                )
+            return calls["box"][0]
+
+        monkeypatch.setattr(pins, "read_lock", read_and_swap)
+
+        result = sweep_stale_ephemeral_pins()
+
+        assert result.swept == ()
+        assert result.kept == (("storage", "pin replaced by run 1234 during the sweep"),)
+        assert decode_pins(calls["box"][0])["storage"].source_repo == "Azure/osdu-spi-other"
+
     def test_swept_pin_without_canonical_requires_refresh(self, monkeypatch):
         stale = _image_pin(run_id="1234", canonical_repository="", canonical_tag="")
         lock = _lock(pins_annotation=encode_pins({"storage": stale}))

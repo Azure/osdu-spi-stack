@@ -1385,11 +1385,7 @@ def sweep_stale_ephemeral_pins() -> SweepResult:
             if live is None:
                 replaced.append((name, "pin was already released when the sweep wrote"))
                 continue
-            if (live.run_id, live.digest, live.applied_at) != (
-                expected.run_id,
-                expected.digest,
-                expected.applied_at,
-            ):
+            if live != expected:
                 owner = f"run {live.run_id}" if live.run_id else "another pin"
                 replaced.append((name, f"pin replaced by {owner} during the sweep"))
                 continue
