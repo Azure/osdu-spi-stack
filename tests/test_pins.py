@@ -1308,6 +1308,46 @@ class TestPinServiceImage:
             pin_service_image("storage", _GHCR_IMAGE)
         assert calls["patch"] is None
 
+    def test_schema_pin_releases_stale_loader_pin(self, monkeypatch):
+        """A loader left MR-pinned must not survive as a mismatched pair with
+        the fork-pinned schema image; it is restored to its canonical entry."""
+        loader = _pin(
+            repository="registry/schema-load-fix-upgrade-core-lib",
+            canonical_repository="repo/schema-load-master",
+        )
+        lock = _lock(
+            pins_annotation=encode_pins({"schema": _pin(), "schema-load": loader}),
+        )
+        calls = self._wire(monkeypatch, lock)
+
+        schema_image = f"ghcr.io/azure/schema@{_GHCR_DIGEST}"
+        pin_service_image(
+            "schema",
+            schema_image,
+            ephemeral=True,
+            run_id="1234",
+            source_repo="Azure/osdu-spi-schema",
+            source_sha="b" * 40,
+        )
+
+        data, saved = calls["patch"]
+        assert data["SCHEMA_IMAGE_DIGEST"] == _GHCR_DIGEST
+        assert data["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "repo/schema-load-master"
+        assert data["SCHEMA_LOAD_IMAGE_TAG"] == "c" * 40
+        assert set(saved) == {"schema"}
+        assert calls["reconciled"] == ["schema", "schema-load"]
+
+    def test_schema_pin_refuses_stale_loader_without_canonical(self, monkeypatch):
+        loader = _pin(canonical_repository="", canonical_tag="")
+        lock = _lock(
+            pins_annotation=encode_pins({"schema": _pin(), "schema-load": loader}),
+        )
+        calls = self._wire(monkeypatch, lock)
+
+        with pytest.raises(PinError, match="no\\s+canonical image recorded"):
+            pin_service_image("schema", f"ghcr.io/azure/schema@{_GHCR_DIGEST}")
+        assert calls["patch"] is None
+
     def test_refused_while_maintenance_set_before_manifest_check(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
         monkeypatch.setattr(
@@ -1603,14 +1643,16 @@ class TestGithubRunStatus:
         assert pins._github_run_status("Azure/other-repo", "123") is None
         assert pins._github_run_status("Azure/osdu-spi-storage", "not-a-number") is None
 
-    def test_gone_run_reads_as_completed(self, monkeypatch):
+    def test_missing_run_reads_as_unreachable(self, monkeypatch):
+        """A 404 may be a deleted run or a repository this caller cannot read;
+        it must defer to the age threshold, never prove the run terminal."""
         from email.message import Message
 
         def raise_404(req, timeout=15):
             raise urllib.error.HTTPError(req.full_url, 404, "Not Found", Message(), None)
 
         monkeypatch.setattr(pins.urllib.request, "urlopen", raise_404)
-        assert pins._github_run_status("Azure/osdu-spi-storage", "123") == "completed"
+        assert pins._github_run_status("Azure/osdu-spi-storage", "123") is None
 
     def test_reports_the_run_state(self, monkeypatch):
         monkeypatch.setattr(

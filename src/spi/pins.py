@@ -851,8 +851,9 @@ def pin_service_image(
     """Pin a service to a fork-built GHCR image by manifest digest (ADR-031).
 
     Unlike an MR pin the target is exactly the named service: a fork build
-    ships one image, so a schema pin never drags the loader. Returns the
-    applied pin.
+    ships one image, so a schema pin never pins the loader, and a loader
+    left pinned by an earlier MR is released to its canonical image so no
+    mismatched pair survives. Returns the applied pin.
     """
 
     if service not in IMAGE_REGISTRY:
@@ -891,6 +892,7 @@ def pin_service_image(
 
     applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     applied: ServicePin | None = None
+    released: list[str] = []
     prior_pins: dict[str, ServicePin | None] = {}
     prior_entries: dict[str, dict[str, str]] = {}
 
@@ -900,7 +902,7 @@ def pin_service_image(
                 f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
                 "is this a core-profile cluster?"
             )
-        nonlocal applied, prior_pins, prior_entries
+        nonlocal applied, released, prior_pins, prior_entries
         lock_data = lock.get("data") or {}
         pins = decode_pins(lock)
         data = dict(lock_data)
@@ -909,6 +911,28 @@ def pin_service_image(
         prior_entries = {
             service: {key: lock_data[key] for key in _lock_entry_keys(service) if key in lock_data}
         }
+
+        released_now: dict[str, ServicePin] = {}
+        if service == SCHEMA_SERVICE_NAME:
+            # A loader still pinned by an earlier MR must not survive as a
+            # mismatched pair with the fork-pinned schema image; release it.
+            stale = pins.get(SCHEMA_LOAD_SERVICE_NAME)
+            if stale:
+                if not stale.canonical_repository or not stale.canonical_tag:
+                    raise PinError(
+                        f"{SCHEMA_LOAD_SERVICE_NAME} is pinned to MR !{stale.mr} with no "
+                        "canonical image recorded; run 'spi service reset schema' to remove "
+                        "the invalid pin, then 'spi reconcile --refresh-images' before re-pinning."
+                    )
+                prior_pins[SCHEMA_LOAD_SERVICE_NAME] = stale
+                prior_entries[SCHEMA_LOAD_SERVICE_NAME] = {
+                    key: lock_data[key]
+                    for key in _lock_entry_keys(SCHEMA_LOAD_SERVICE_NAME)
+                    if key in lock_data
+                }
+                pins.pop(SCHEMA_LOAD_SERVICE_NAME)
+                released_now[SCHEMA_LOAD_SERVICE_NAME] = stale
+
         canonical = _captured_canonical(service, existing, lock_data)
         applied = ServicePin(
             mr="",
@@ -930,6 +954,17 @@ def pin_service_image(
         )
         pins[service] = applied
         data.update(_lock_entry_patch(service, repository, "", "", digest))
+        for name, stale in released_now.items():
+            data.update(
+                _lock_entry_patch(
+                    name,
+                    stale.canonical_repository,
+                    stale.canonical_tag,
+                    stale.canonical_created_at,
+                    stale.canonical_digest,
+                )
+            )
+        released = sorted(released_now)
 
         annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
         annotations[PINS_ANNOTATION] = encode_pins(pins)
@@ -937,12 +972,12 @@ def pin_service_image(
 
     mutate_lock(compute, f"Pin {service} to {digest[:19]}")
     assert applied is not None
-    mutation = _LockMutation(
-        written={service: applied}, prior_pins=prior_pins, prior_entries=prior_entries
-    )
+    written: dict[str, ServicePin | None] = {service: applied}
+    written.update({name: None for name in released})
+    mutation = _LockMutation(written=written, prior_pins=prior_pins, prior_entries=prior_entries)
     _abort_if_maintenance_intervened(mutation, service)
 
-    reconcile_consumers([service])
+    reconcile_consumers([service] + released)
     return applied
 
 
@@ -1208,10 +1243,9 @@ def _github_run_status(source_repo: str, run_id: str) -> str | None:
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
             payload = json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            # The run is gone (expired or deleted); it cannot still be running.
-            return "completed"
+    except urllib.error.HTTPError:
+        # A 404 may be a deleted run, but also a repository this caller cannot
+        # read; neither proves the run terminal, so the age threshold decides.
         return None
     except (TimeoutError, urllib.error.URLError, ConnectionError, json.JSONDecodeError):
         return None
