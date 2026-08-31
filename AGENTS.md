@@ -54,8 +54,9 @@ corrected files. Run it before every PR; run individual tools from
 - **Comments** only where they add something the code cannot say: cross-file
   coupling, an external contract, or why the obvious approach was not taken.
   Keep them to a line or two; delete comments that restate the code.
-- **Transparency**: every `az` and `kubectl` command the CLI runs is shown to the
-  user via a Rich panel before execution.
+- **Transparency**: every `az` and `kubectl` command that changes Azure or
+  cluster state is shown to the user via a Rich panel before execution.
+  Read-only queries backing `status`, `verify`, and lock reads run silently.
 
 ## Scope notes
 

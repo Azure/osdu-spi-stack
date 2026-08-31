@@ -1326,6 +1326,7 @@ def sweep_stale_ephemeral_pins() -> SweepResult:
 
     restored: list[str] = []
     refresh_required: list[str] = []
+    replaced: list[tuple[str, str]] = []
 
     def compute(lock: dict | None) -> dict:
         if lock is None:
@@ -1333,20 +1334,27 @@ def sweep_stale_ephemeral_pins() -> SweepResult:
                 f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
                 "is this a core-profile cluster?"
             )
-        nonlocal restored, refresh_required
+        nonlocal restored, refresh_required, replaced
         pins = decode_pins(lock)
         data = dict(lock.get("data") or {})
         restored = []
         refresh_required = []
+        replaced = []
         for name, expected in stale.items():
             live = pins.get(name)
             # A pin re-placed since the staleness check is not the pin found
-            # stale; leave it standing.
-            if live is None or (live.run_id, live.digest, live.applied_at) != (
+            # stale; leave it standing but report it, so the sweep's outcome
+            # never reads as "nothing to do" while a pin is still live.
+            if live is None:
+                replaced.append((name, "pin was already released when the sweep wrote"))
+                continue
+            if (live.run_id, live.digest, live.applied_at) != (
                 expected.run_id,
                 expected.digest,
                 expected.applied_at,
             ):
+                owner = f"run {live.run_id}" if live.run_id else "another pin"
+                replaced.append((name, f"pin replaced by {owner} during the sweep"))
                 continue
             pins.pop(name)
             if not live.canonical_repository or not live.canonical_tag:
@@ -1373,7 +1381,11 @@ def sweep_stale_ephemeral_pins() -> SweepResult:
     mutate_lock(compute, f"Sweep stale ephemeral pins ({', '.join(sorted(stale))})")
     if restored:
         reconcile_consumers(restored)
-    return SweepResult(tuple(sorted(restored)), tuple(kept), tuple(sorted(refresh_required)))
+    return SweepResult(
+        tuple(sorted(restored)),
+        tuple(kept) + tuple(sorted(replaced)),
+        tuple(sorted(refresh_required)),
+    )
 
 
 def live_pins() -> dict[str, ServicePin]:

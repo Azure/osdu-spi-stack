@@ -705,3 +705,14 @@ class TestResolveGhcrManifest:
 
         with pytest.raises(images.ImageResolutionError, match="unreachable after 2 attempts"):
             images.resolve_ghcr_manifest("ghcr.io/azure/storage", "sha256:" + "f" * 64, attempts=2)
+
+    def test_non_object_token_payload_reads_as_no_token(self, monkeypatch):
+        from spi import images
+
+        monkeypatch.setattr(
+            images.urllib.request,
+            "urlopen",
+            lambda req, timeout=15: self._Response(body=b"[]"),
+        )
+
+        assert images._ghcr_pull_token("azure/storage") == ""

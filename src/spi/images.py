@@ -421,7 +421,11 @@ def _ghcr_pull_token(path: str) -> str:
     )
     token_req = urllib.request.Request(token_url, headers={"User-Agent": "spi-stack-resolver"})
     with urllib.request.urlopen(token_req, timeout=15) as resp:  # nosec B310
-        return json.loads(resp.read()).get("token", "")
+        payload = json.loads(resp.read())
+    # A non-object payload reads as no token; the registry's 401 on the
+    # follow-up request then fails closed through the caller's error path.
+    token = payload.get("token", "") if isinstance(payload, dict) else ""
+    return token if isinstance(token, str) else ""
 
 
 def ghcr_index_child_digests(repository: str, digest: str) -> tuple[str, ...]:

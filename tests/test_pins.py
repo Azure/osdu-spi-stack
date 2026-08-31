@@ -1795,6 +1795,34 @@ class TestSweepStaleEphemeralPins:
         _, saved = calls["patch"]
         assert set(saved) == {"storage"}
 
+    def test_replaced_pin_during_sweep_is_reported_kept(self, monkeypatch):
+        """A pin re-placed between the staleness check and the lock write is
+        left standing, and the sweep result must say so instead of reporting
+        an empty outcome while a pin is still live."""
+        original = _image_pin(run_id="1234")
+        lock = _lock(pins_annotation=encode_pins({"storage": original}))
+        calls = self._wire(monkeypatch, lock, run_states={"1234": "completed"})
+
+        replacement = _image_pin(run_id="5678", applied_at="2026-08-26T00:00:00Z")
+        reads = {"n": 0}
+
+        def read_and_swap(required=True):
+            reads["n"] += 1
+            if reads["n"] == 2:
+                calls["box"][0] = _lock(
+                    pins_annotation=encode_pins({"storage": replacement}),
+                    resource_version="2",
+                )
+            return calls["box"][0]
+
+        monkeypatch.setattr(pins, "read_lock", read_and_swap)
+
+        result = sweep_stale_ephemeral_pins()
+
+        assert result.swept == ()
+        assert result.kept == (("storage", "pin replaced by run 5678 during the sweep"),)
+        assert decode_pins(calls["box"][0])["storage"].run_id == "5678"
+
     def test_swept_pin_without_canonical_requires_refresh(self, monkeypatch):
         stale = _image_pin(run_id="1234", canonical_repository="", canonical_tag="")
         lock = _lock(pins_annotation=encode_pins({"storage": stale}))
