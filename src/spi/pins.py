@@ -78,7 +78,7 @@ WORKLOAD_NAMESPACE = "osdu"
 GITHUB_API_HOST = "https://api.github.com"
 
 # The stale sweep may reclaim an ephemeral pin on age alone only past this
-# threshold; it must exceed any deploy-plus-test budget (ADR-031).
+# threshold; it must exceed any deploy-plus-test budget.
 STALE_EPHEMERAL_PIN_AGE_HOURS = 6
 
 _RUN_ID_RE = re.compile(r"^[0-9]+$")
@@ -151,7 +151,7 @@ class ServicePin:
     # Optional so a pin encoded before these fields existed keeps decoding.
     created_at: str = ""
     digest: str = ""
-    # ADR-031 fork-deploy provenance; the empty defaults read an older
+    # Fork-deploy provenance; the empty defaults read an older
     # annotation as a non-ephemeral operator pin.
     origin: str = ""
     ephemeral: bool = False

@@ -28,7 +28,7 @@ from typing import Iterable, Mapping
 
 GITLAB_HOST = "https://community.opengroup.org"
 GHCR_HOST = "ghcr.io"
-# ADR-031: fork deploys may pin only images published under these GHCR owners.
+# Fork deploys may pin only images published under these GHCR owners.
 GHCR_ALLOWED_OWNERS = ("azure",)
 DEFAULT_IMAGE_BRANCH = "master"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
