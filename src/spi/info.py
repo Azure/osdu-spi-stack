@@ -33,6 +33,7 @@ from .config import BASE_NAME
 from .console import console
 from .ingress import get_ingress_ip
 from .shell import kubectl_json
+from .templates import LEGAL_TAG_BASE
 
 # OSDU API services exposed via HTTPRoutes. Order preserved for display.
 _OSDU_API_PATHS = [
@@ -105,6 +106,23 @@ def _read_partitions_list() -> list:
         return []
     values_yaml = (data.get("data") or {}).get("values.yaml", "")
     return _parse_partitions_from_values_yaml(values_yaml)
+
+
+def _read_legal_tag_base() -> str:
+    """Return the legal-tag base name the init Jobs rendered from.
+
+    Read back from the same spi-init-values ConfigMap the osdu-spi-init chart
+    consumes, so the reported tag is the one legal-init actually created. A
+    ConfigMap written before the key existed falls back to the constant the
+    chart's values default carries, which is what those Jobs used.
+    """
+    data = kubectl_json(["get", "configmap", "spi-init-values", "-n", "osdu-flux"])
+    values_yaml = ((data or {}).get("data") or {}).get("values.yaml", "")
+    for raw in values_yaml.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("legalTag:"):
+            return stripped.split(":", 1)[1].strip()
+    return LEGAL_TAG_BASE
 
 
 def _parse_partitions_from_values_yaml(text: str) -> list:
@@ -297,6 +315,8 @@ def _collect_info(show_secret_refs: bool = False) -> tuple[dict, list]:
     env = _env_from_resource_group(rg)
     partitions = _read_partitions_list()
     partition_rows = _build_partitions_rows(partitions, env)
+    legal_tag_base = _read_legal_tag_base()
+    tenant_id = osdu.get("AZURE_TENANT_ID", "")
 
     info = {
         "apiVersion": "spi.osdu.dev/v1",
@@ -314,8 +334,13 @@ def _collect_info(show_secret_refs: bool = False) -> tuple[dict, list]:
             "cosmos_endpoint": osdu.get("PRIMARY_COSMOSDB_ENDPOINT", ""),
             "storage_account": osdu.get("PRIMARY_STORAGE_ACCOUNT_NAME", ""),
             "servicebus": osdu.get("PRIMARY_SERVICEBUS_NAMESPACE", ""),
-            "tenant_id": osdu.get("AZURE_TENANT_ID", ""),
+            "tenant_id": tenant_id,
             "data_plane_application_id": osdu.get("AAD_CLIENT_ID", ""),
+            # Published explicitly so consumers never derive the issuer URL
+            # themselves; empty until the cluster reports its tenant.
+            "openid_issuer": (
+                f"https://login.microsoftonline.com/{tenant_id}/v2.0" if tenant_id else ""
+            ),
         },
         "partitions": [
             {
@@ -324,6 +349,8 @@ def _collect_info(show_secret_refs: bool = False) -> tuple[dict, list]:
                 "cosmos_account": cosmos,
                 "servicebus_namespace": sb,
                 "storage_account": storage,
+                # The default tag legal-init creates for this partition.
+                "legal_tag": f"{partitions[i]}-{legal_tag_base}",
             }
             for i, (_label, cosmos, sb, storage) in enumerate(partition_rows)
         ],
@@ -363,6 +390,7 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
             item["cosmos_account"],
             item["servicebus_namespace"],
             item["storage_account"],
+            item["legal_tag"],
         )
         for item in info["partitions"]
     ]
@@ -447,8 +475,9 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
         ptable.add_column("Cosmos Account", style="cyan")
         ptable.add_column("Service Bus Namespace", style="cyan")
         ptable.add_column("Storage Account", style="cyan")
-        for label, cosmos, sb, storage in partition_rows:
-            ptable.add_row(label, cosmos, sb, storage)
+        ptable.add_column("Legal Tag", style="cyan")
+        for label, cosmos, sb, storage, legal_tag in partition_rows:
+            ptable.add_row(label, cosmos, sb, storage, legal_tag)
         console.print(ptable)
         console.print()
 

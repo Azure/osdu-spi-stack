@@ -1,0 +1,63 @@
+{{/*
+Copyright 2026, Microsoft
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+*/}}
+
+# One legal-init Job per partition, rendered from .Values.partitions. Each Job
+# stages the legal COO catalog into the partition's configuration container and
+# POSTs the default legal tag "{partition}-{legalTag}". Re-runs are safe: the
+# blob upload overwrites and a 409 on the tag is treated as success.
+{{- range $partition := .Values.partitions }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: legal-init-{{ $partition }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "osdu-spi-init.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: legal-init
+    osdu.spi/partition: {{ $partition }}
+spec:
+  backoffLimit: {{ $.Values.backoffLimit }}
+  activeDeadlineSeconds: {{ $.Values.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "osdu-spi-init.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: legal-init
+        osdu.spi/partition: {{ $partition }}
+        azure.workload.identity/use: "true"
+    spec:
+      {{- include "osdu-spi-init.podSpec" $ | nindent 6 }}
+      containers:
+        - name: init
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command:
+            - python
+            - /scripts/init_legal.py
+          env:
+            - name: PARTITION
+              value: {{ $partition | quote }}
+            - name: LEGAL_TAG
+              value: {{ printf "%s-%s" $partition $.Values.legalTag | quote }}
+            - name: KEYVAULT_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: osdu-config
+                  key: KEYVAULT_NAME
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsUser: 1000
+            capabilities:
+              drop: [ALL]
+{{- end }}

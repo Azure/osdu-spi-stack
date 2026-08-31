@@ -9,6 +9,12 @@
 partitions:
   - opendes
 
+# -- Base name of the default legal tag legal-init creates per partition as
+#    "{partition}-{legalTag}". The CLI pins the same value into the
+#    spi-init-values ConfigMap (templates.LEGAL_TAG_BASE) so `spi info` reports
+#    the tag consumers should use; keep the two defaults identical.
+legalTag: demo-legaltag
+
 # -- Azure Entra tenant ID the Workload Identity SA is federated against. The
 #    MSAL exchange needs this to build the authority URL. Injected at runtime
 #    by the AKS Workload Identity webhook as AZURE_TENANT_ID, so we pull it
