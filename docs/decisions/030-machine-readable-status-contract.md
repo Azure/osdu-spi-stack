@@ -43,6 +43,12 @@ record written at the end of `spi up` supplies the version fields.
 - Endpoints, partitions, and secret references stay in `spi info --json`,
   which gains the same `apiVersion` field plus `azure.tenant_id` and the
   data-plane application id that acceptance suites need to mint tokens.
+  (Amendment: the envelope later gained `azure.openid_issuer`, the OIDC v2.0
+  issuer URL, published explicitly rather than derived by consumers; it is an
+  empty string until the cluster reports its tenant, so consumers must treat
+  present-but-empty as not yet available. `partitions[].legal_tag`, the
+  default tag the legal bootstrap creates per partition, joined at the same
+  time.)
 
 Rejected: a separate `spi facts` command. A clean consumer-facing name, but a
 third overlapping surface next to `status` and `info` with no content of its
