@@ -343,3 +343,17 @@ def test_legal_init_fails_on_missing_config(legal_init):
     assert result.exit_code == 1
     assert "legal-init outcome: config_missing" in result.stdout
     assert result.calls == []
+
+
+def test_legal_init_times_out_waiting_for_legal(legal_init):
+    result = legal_init({"legal_info": _responds(503)})
+    assert result.exit_code == 1
+    assert "legal-init outcome: service_timeout" in result.stdout
+    assert result.routed("keyvault") == []
+
+
+def test_legal_init_times_out_waiting_for_partition_record(legal_init):
+    result = legal_init({"partition_record": _responds(404)})
+    assert result.exit_code == 1
+    assert "legal-init outcome: partition_record_timeout" in result.stdout
+    assert result.routed("keyvault") == []
