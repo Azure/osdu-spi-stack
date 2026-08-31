@@ -410,7 +410,10 @@ def parse_image_digest_ref(ref: str) -> tuple[str, str]:
             f"image reference {ref!r} carries a tag alongside the digest; "
             "pin by digest alone as <repository>@sha256:<digest>"
         )
-    return repository, digest
+    # OCI repository paths are case-insensitive on the registry but must be
+    # lowercase on the wire; a mixed-case ref would resolve but then fail
+    # the containerd pull once written to a Deployment.
+    return repository.lower(), digest
 
 
 def _ghcr_pull_token(path: str) -> str:

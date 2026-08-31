@@ -167,6 +167,20 @@ class ServicePin:
     source_run_url: str = ""
 
 
+def describe_pin(pin: ServicePin) -> str:
+    """Render one pin's provenance for operator-facing messages.
+
+    Mirrors the identity `spi service list` shows, so a digest pin never
+    renders with empty MR fields (e.g. "MR ! ()").
+    """
+
+    if pin.mr:
+        return f"MR !{pin.mr} ({pin.branch} @ {pin.tag[:12]})"
+    if pin.run_id:
+        return f"run {pin.run_id} ({pin.digest[:19]} digest)"
+    return f"operator digest pin ({pin.digest[:19]})"
+
+
 @dataclass(frozen=True)
 class ResetResult:
     """Services restored immediately and those needing a canonical image refresh."""
@@ -631,15 +645,9 @@ def _revert_pin(mutation: _LockMutation, description: str) -> list[str]:
 
         for name, pin in mutation.written.items():
             live = pins.get(name)
-            if pin is None:
-                stands = live is None
-            else:
-                stands = live is not None and (
-                    live.mr,
-                    live.run_id,
-                    live.digest,
-                    live.applied_at,
-                ) == (pin.mr, pin.run_id, pin.digest, pin.applied_at)
+            # Full dataclass equality: a concurrent replacement sharing only
+            # the run, digest, and applied_at must not read as this mutation.
+            stands = live is None if pin is None else live == pin
             if not stands:
                 raise _MutationSuperseded
 
@@ -1128,6 +1136,31 @@ def _collision_note(service: str, digest: str) -> str:
     return " The image lock now records a different pin."
 
 
+def _require_live_lock_digest(service: str, digest: str) -> None:
+    """Fail fast when the live lock no longer records this digest.
+
+    A pin swept or replaced by a concurrent run leaves the prior Deployment
+    and pod carrying the requested digest until Flux reconciles the
+    replacement, so checking those alone would pass over a rollout already
+    superseded. A missing lock ConfigMap raises the same plain ``PinError``
+    as any other unreadable cluster state.
+    """
+
+    lock = read_lock(required=True)
+    assert lock is not None  # required=True raises PinError instead of returning None
+    pin = decode_pins(lock).get(service)
+    if pin is not None and pin.digest == digest:
+        return
+    key = image_lock_key(service)
+    data = lock.get("data") or {}
+    if digest == data.get(f"{key}_IMAGE_DIGEST", "") or digest in data.get(f"{key}_IMAGE_REF", ""):
+        return
+    raise VerifyError(
+        "lock_mismatch",
+        f"Image lock no longer records {digest} for {service}." + _collision_note(service, digest),
+    )
+
+
 def verify_service_image(
     service: str,
     image: str,
@@ -1136,11 +1169,13 @@ def verify_service_image(
 ) -> VerifyResult:
     """Assert the service's Deployment and a running pod carry the digest.
 
-    Deploy success is the running pod carrying the digest (ADR-031), not the
-    lock write having landed: a deploy overwritten by a colliding pipeline
-    fails here, naming the colliding run, instead of producing a silently
-    wrong test result. Typed failures raise ``VerifyError``; an unreachable
-    cluster raises plain ``PinError``.
+    Deploy success is the running pod carrying the digest, and the live lock
+    still recording it: a deploy overwritten by a colliding pipeline fails
+    here, naming the colliding run, instead of producing a silently wrong
+    test result, and a pin swept or replaced before Flux has reconciled
+    fails the same way even while the old Deployment and pod still match.
+    Typed failures raise ``VerifyError``; an unreachable cluster raises
+    plain ``PinError``.
     """
 
     if service not in IMAGE_REGISTRY:
@@ -1150,6 +1185,8 @@ def verify_service_image(
         repository, digest = parse_image_digest_ref(image)
     except ImageResolutionError as exc:
         raise PinError(str(exc)) from exc
+
+    _require_live_lock_digest(service, digest)
 
     deployment = deployment or f"{WORKLOAD_NAMESPACE}-{service}"
     container = container or deployment

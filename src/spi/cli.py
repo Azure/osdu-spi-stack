@@ -41,6 +41,7 @@ from .pins import (
     VerifyError,
     apply_image_lock,
     apply_schema_load_backfill,
+    describe_pin,
     live_pins,
     pin_service,
     pin_service_image,
@@ -835,7 +836,7 @@ def reconcile(
         display_result("osdu-image-lock ConfigMap updated")
         for name, pin in sorted(pins.items()):
             console.print(
-                f"  [warning]{name} stays pinned to MR !{pin.mr} ({pin.tag[:12]}); "
+                f"  [warning]{name} stays pinned to {describe_pin(pin)}; "
                 f"release with 'spi service reset {name}'[/warning]"
             )
 
@@ -961,7 +962,12 @@ def service_pin(
             raise typer.Exit(code=1)
         marker = f" (ephemeral, run {pin.run_id})" if pin.ephemeral else ""
         console.print(f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker}")
-        console.print(f"[dim]Release with: spi service reset {service}[/dim]")
+        if pin.ephemeral:
+            console.print(
+                f"[dim]Release with: spi service reset {service} --if-run {pin.run_id}[/dim]"
+            )
+        else:
+            console.print(f"[dim]Release with: spi service reset {service}[/dim]")
         return
 
     assert mr is not None
@@ -1042,8 +1048,8 @@ def service_verify(
 @service_app.command("reset")
 def service_reset(
     service: Optional[str] = typer.Argument(None, help="Pinned service name to release."),
-    if_run: str = typer.Option(
-        "",
+    if_run: Optional[str] = typer.Option(
+        None,
         "--if-run",
         help="Only reset while the live pin belongs to this workflow run; "
         "a non-matching pin is left standing (exit 2).",
@@ -1068,6 +1074,9 @@ def service_reset(
         else:
             console.print(f"[error]{message}[/error]")
         return typer.Exit(code=1)
+
+    if if_run is not None and not if_run.strip():
+        raise usage_error("--if-run requires a workflow run id; got an empty value.")
 
     sweep = ephemeral or stale_only
     if sweep and not (ephemeral and stale_only):
@@ -1121,7 +1130,7 @@ def service_reset(
 
     assert service is not None
     try:
-        result = reset_service(service, if_run=if_run)
+        result = reset_service(service, if_run=if_run or "")
     except ResetRefusedError as exc:
         if output_json:
             _emit_outcome("refused", exc.code, str(exc))

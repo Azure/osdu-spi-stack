@@ -54,7 +54,7 @@ from .ingress import (
     resolve_post_deploy_inputs,
 )
 from .paths import INFRA_ROOT
-from .pins import ServicePin, apply_image_lock, apply_schema_load_backfill, read_lock
+from .pins import ServicePin, apply_image_lock, apply_schema_load_backfill, describe_pin, read_lock
 from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, prune_kube_context, run_command, run_process
 from .templates import (
@@ -197,7 +197,7 @@ def _ensure_image_lock(
     if pins:
         console.print(
             "[warning]Active service pins preserved: "
-            + ", ".join(f"{name} (MR !{pin.mr})" for name, pin in sorted(pins.items()))
+            + ", ".join(f"{name} ({describe_pin(pin)})" for name, pin in sorted(pins.items()))
             + "; release with 'spi service reset <service>'.[/warning]"
         )
     return pins
