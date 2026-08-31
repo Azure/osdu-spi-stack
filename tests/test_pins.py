@@ -194,6 +194,7 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     conflicts_left = conflicts
     calls: dict = {
         "patch": None,
+        "labels": None,
         "reconciled": None,
         "attempts": 0,
         "description": None,
@@ -209,7 +210,7 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
         calls["description"] = description
         attempts += 1
         patch_ops = json.loads(cmd[cmd.index("-p") + 1])
-        test_op, data_op, annotations_op = patch_ops
+        test_op, data_op, annotations_op, labels_op = patch_ops
         current_rv = (box[0].get("metadata") or {}).get("resourceVersion", "0")
 
         if conflicts_left > 0:
@@ -239,11 +240,13 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
             "metadata": {
                 "resourceVersion": str(int(current_rv) + 1),
                 "annotations": dict(annotations_op["value"]),
+                "labels": dict(labels_op["value"]),
             },
             "data": dict(data_op["value"]),
         }
         box[0] = new_lock
         calls["patch"] = (dict(data_op["value"]), decode_pins(new_lock))
+        calls["labels"] = dict(labels_op["value"])
         calls["attempts"] = attempts
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(new_lock), stderr="")
 
@@ -975,6 +978,17 @@ class TestApplyImageLock:
         assert active_pins == {}
         assert created["document"]["data"]["PARTITION_IMAGE_TAG"] == "e" * 40
         assert created["document"]["metadata"]["name"] == "osdu-image-lock"
+        labels = created["document"]["metadata"]["labels"]
+        assert labels["reconcile.fluxcd.io/watch"] == "Enabled"
+
+    def test_lock_write_heals_missing_watch_label(self, monkeypatch):
+        """A lock created before the watch label existed regains it on the
+        next write, restoring label-driven reconciliation for fork pins."""
+        calls = _wire_lock(monkeypatch, _lock())
+
+        pins.apply_image_lock(self._resolved(), "master")
+
+        assert calls["labels"]["reconcile.fluxcd.io/watch"] == "Enabled"
 
     def test_preserves_active_pin_on_refresh(self, monkeypatch):
         lock = _lock(pins_annotation=encode_pins({"storage": _pin()}))
@@ -1279,7 +1293,9 @@ class TestPinServiceImage:
         assert pin.source_repo == "Azure/osdu-spi-storage"
         assert pin.canonical_repository == "repo/storage-master"
         assert pin.canonical_tag == "c" * 40
-        assert calls["reconciled"] == ["storage"]
+        # The fork deploy role cannot patch Kustomizations; the watch label
+        # and the verify gate replace an explicit reconciliation.
+        assert calls["reconciled"] is None
 
     def test_operator_pin_carries_no_ephemeral_marker(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
@@ -1288,6 +1304,8 @@ class TestPinServiceImage:
         assert saved["storage"] == pin
         assert pin.ephemeral is False
         assert pin.run_id == ""
+        # An operator pin keeps the blocking reconciliation an MR pin gets.
+        assert calls["reconciled"] == ["storage"]
 
     def test_repin_keeps_original_canonical(self, monkeypatch):
         existing = _pin(mr="1", canonical_repository="repo/storage-master")
@@ -1335,7 +1353,7 @@ class TestPinServiceImage:
         assert data["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "repo/schema-load-master"
         assert data["SCHEMA_LOAD_IMAGE_TAG"] == "c" * 40
         assert set(saved) == {"schema"}
-        assert calls["reconciled"] == ["schema", "schema-load"]
+        assert calls["reconciled"] is None
 
     def test_schema_pin_refuses_stale_loader_without_canonical(self, monkeypatch):
         loader = _pin(canonical_repository="", canonical_tag="")
@@ -1569,6 +1587,9 @@ class TestResetIfRun:
         assert data["STORAGE_IMAGE_TAG"] == "c" * 40
         assert data["STORAGE_IMAGE_REPOSITORY"] == "repo/storage-master"
         assert saved == {}
+        # The always-run restore job holds no Flux write; the watch label
+        # converges the restored canonical.
+        assert calls["reconciled"] is None
 
     def test_non_matching_run_is_a_typed_no_op(self, monkeypatch):
         lock = _lock(pins_annotation=encode_pins({"storage": _image_pin(run_id="9999")}))

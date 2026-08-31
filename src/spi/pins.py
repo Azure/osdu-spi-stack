@@ -77,6 +77,11 @@ WORKLOAD_NAMESPACE = "osdu"
 
 GITHUB_API_HOST = "https://api.github.com"
 
+# kustomize-controller re-reconciles the lock's substituteFrom consumers when
+# an object carrying this label changes; without it a lock write waits for the
+# next periodic reconciliation.
+_FLUX_WATCH_LABEL = "reconcile.fluxcd.io/watch"
+
 # The stale sweep may reclaim an ephemeral pin on age alone only past this
 # threshold; it must exceed any deploy-plus-test budget.
 STALE_EPHEMERAL_PIN_AGE_HOURS = 6
@@ -358,9 +363,9 @@ def mutate_lock(
     A missing lock is created; losing the create race to another writer
     rereads and falls into the update path. An existing lock is updated
     with a JSON Patch carrying a ``test`` precondition on
-    ``metadata.resourceVersion`` ahead of the ``data``/``annotations``
-    replacement, so the patch verb stays compatible with future patch-only
-    RBAC. Only a resourceVersion test failure or a losing create race is
+    ``metadata.resourceVersion`` ahead of the ``data``/``annotations``/
+    ``labels`` replacement, so the patch verb stays compatible with future
+    patch-only RBAC. Only a resourceVersion test failure or a losing create race is
     retried, with bounded exponential backoff; any other failure raises a
     clear terminal error immediately.
     """
@@ -379,7 +384,10 @@ def mutate_lock(
                 "metadata": {
                     "name": IMAGE_LOCK_CONFIGMAP,
                     "namespace": IMAGE_LOCK_NAMESPACE,
-                    "labels": {"app.kubernetes.io/managed-by": "osdu-spi-stack"},
+                    "labels": {
+                        "app.kubernetes.io/managed-by": "osdu-spi-stack",
+                        _FLUX_WATCH_LABEL: "Enabled",
+                    },
                     "annotations": annotations,
                 },
                 "data": data,
@@ -407,6 +415,10 @@ def mutate_lock(
                 )
             raise PinError(f"{description}: could not create {IMAGE_LOCK_CONFIGMAP}: {stderr}")
 
+        # Re-asserting the labels heals a lock created before the watch label
+        # existed, so the first pin write restores label-driven reconciliation.
+        labels = dict(((lock.get("metadata") or {}).get("labels")) or {})
+        labels[_FLUX_WATCH_LABEL] = "Enabled"
         patch = json.dumps(
             [
                 {
@@ -416,6 +428,7 @@ def mutate_lock(
                 },
                 {"op": "add", "path": "/data", "value": data},
                 {"op": "add", "path": "/metadata/annotations", "value": annotations},
+                {"op": "add", "path": "/metadata/labels", "value": labels},
             ]
         )
         result = run_command(
@@ -853,7 +866,9 @@ def pin_service_image(
     Unlike an MR pin the target is exactly the named service: a fork build
     ships one image, so a schema pin never pins the loader, and a loader
     left pinned by an earlier MR is released to its canonical image so no
-    mismatched pair survives. Returns the applied pin.
+    mismatched pair survives. An ephemeral pin returns right after the lock
+    write: reconciliation follows the lock's watch label, and ``verify`` is
+    the deploy gate. Returns the applied pin.
     """
 
     if service not in IMAGE_REGISTRY:
@@ -977,7 +992,10 @@ def pin_service_image(
     mutation = _LockMutation(written=written, prior_pins=prior_pins, prior_entries=prior_entries)
     _abort_if_maintenance_intervened(mutation, service)
 
-    reconcile_consumers([service] + released)
+    # A run-owned pin converges through the lock's watch label: the fork
+    # deploy role cannot patch Kustomizations, and verify gates the deploy.
+    if not ephemeral:
+        reconcile_consumers([service] + released)
     return applied
 
 
@@ -988,7 +1006,9 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
     only while the live pin still records that owning run, so a crashed
     run's always-run restore job cannot clobber a newer sibling's pin. A
     refusal is a typed ``ResetRefusedError`` and mutates nothing. Run-owned
-    pins are single-service, so ``if_run`` never pairs the schema loader.
+    pins are single-service, so ``if_run`` never pairs the schema loader,
+    and the restore converges through the lock's watch label rather than an
+    explicit reconciliation.
     """
 
     if service not in IMAGE_REGISTRY:
@@ -1058,7 +1078,9 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
         return {"data": data, "metadata": {"annotations": annotations}}
 
     mutate_lock(compute, f"Reset {service}")
-    if restored:
+    # The run-conditional restore runs under the fork deploy role, which
+    # cannot patch Kustomizations; the lock's watch label converges it.
+    if restored and not if_run:
         reconcile_consumers(restored)
     return ResetResult(tuple(restored), tuple(refresh_required))
 
