@@ -12,24 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Per-service MR image pins on the live osdu-image-lock ConfigMap.
+"""Per-service image pins on the live osdu-image-lock ConfigMap.
 
-A pin points one service at the container image built by an OSDU GitLab
-merge-request pipeline, resolved from the MR's source branch at its head
-commit. Pins live in the lock itself: the service's data keys are
-overwritten and provenance (MR iid, branch, canonical image, timestamps)
-is recorded in one JSON annotation, so `spi reconcile --refresh-images`
-and `spi up` can re-render the lock without silently reverting a pin.
+A pin points one service at a container image other than its canonical:
+either the image built by an OSDU GitLab merge-request pipeline, resolved
+from the MR's source branch at its head commit, or a fork-built GHCR image
+identified by manifest digest (ADR-031). Pins live in the lock itself: the
+service's data keys are overwritten and provenance (origin, canonical
+image, owning workflow run, timestamps) is recorded in one JSON
+annotation, so `spi reconcile --refresh-images` and `spi up` can re-render
+the lock without silently reverting a pin.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from .console import console, display_yaml
@@ -47,17 +51,46 @@ from .images import (
     ResolvedImage,
     build_lock_annotations,
     build_lock_data,
+    ghcr_index_child_digests,
     gitlab_get,
     image_lock_key,
     image_lock_missing_schema_load,
     image_ref,
+    parse_image_digest_ref,
     render_image_lock_configmap,
+    require_ghcr_repository,
+    resolve_ghcr_manifest,
     resolve_image_commit,
     schema_load_lock_patch,
 )
 from .shell import run_command, run_process
 
 PINS_ANNOTATION = "spi-stack.osdu.dev/pins"
+
+# Pin origins recorded in the annotation (fork-deployment.md schema).
+GITLAB_MR_ORIGIN = "gitlab-mr"
+GITHUB_ORIGIN = "github"
+
+# OSDU workloads land in this namespace; Flux names each Helm release
+# <targetNamespace>-<name>, so the Deployment and container for a service
+# default to "osdu-<service>".
+WORKLOAD_NAMESPACE = "osdu"
+
+GITHUB_API_HOST = "https://api.github.com"
+
+# kustomize-controller re-reconciles the lock's substituteFrom consumers when
+# an object carrying this label changes; without it a lock write waits for the
+# next periodic reconciliation.
+_FLUX_WATCH_LABEL = "reconcile.fluxcd.io/watch"
+
+# The stale sweep may reclaim an ephemeral pin on age alone only past this
+# threshold; it must exceed any deploy-plus-test budget.
+STALE_EPHEMERAL_PIN_AGE_HOURS = 6
+
+_RUN_ID_RE = re.compile(r"^[0-9]+$")
+# Only these repositories may record or answer a pin's owning-run state; the
+# fork-written source_run_url is display-only and never fetched.
+_FORK_SOURCE_REPO_RE = re.compile(r"^azure/osdu-spi-[a-z0-9._-]+$", re.IGNORECASE)
 
 # entry.file prefix -> the Flux Kustomization that substitutes those keys.
 _FILE_KUSTOMIZATIONS = {
@@ -92,6 +125,22 @@ class LockConflictError(PinError):
     repeated concurrent-write conflicts."""
 
 
+class VerifyError(PinError):
+    """Typed verification failure: the workload does not provably run the digest."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class ResetRefusedError(PinError):
+    """Typed no-op refusal: the live pin is not the caller's to reset."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 @dataclass(frozen=True)
 class ServicePin:
     """Provenance for one pinned service image."""
@@ -108,6 +157,28 @@ class ServicePin:
     # Optional so a pin encoded before these fields existed keeps decoding.
     created_at: str = ""
     digest: str = ""
+    # Fork-deploy provenance; the empty defaults read an older
+    # annotation as a non-ephemeral operator pin.
+    origin: str = ""
+    ephemeral: bool = False
+    run_id: str = ""
+    source_repo: str = ""
+    source_sha: str = ""
+    source_run_url: str = ""
+
+
+def describe_pin(pin: ServicePin) -> str:
+    """Render one pin's provenance for operator-facing messages.
+
+    Mirrors the identity `spi service list` shows, so a digest pin never
+    renders with empty MR fields (e.g. "MR ! ()").
+    """
+
+    if pin.mr:
+        return f"MR !{pin.mr} ({pin.branch} @ {pin.tag[:12]})"
+    if pin.run_id:
+        return f"run {pin.run_id} ({pin.digest[:19]} digest)"
+    return f"operator digest pin ({pin.digest[:19]})"
 
 
 @dataclass(frozen=True)
@@ -115,6 +186,25 @@ class ResetResult:
     """Services restored immediately and those needing a canonical image refresh."""
 
     restored: tuple[str, ...]
+    refresh_required: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class VerifyResult:
+    """The workload state that proved the expected digest is running."""
+
+    deployment: str
+    container: str
+    pod: str
+    image_id: str
+
+
+@dataclass(frozen=True)
+class SweepResult:
+    """Stale ephemeral pins swept, pins kept with the reason, and refresh debts."""
+
+    swept: tuple[str, ...]
+    kept: tuple[tuple[str, str], ...]
     refresh_required: tuple[str, ...]
 
 
@@ -246,7 +336,9 @@ def encode_pins(pins: dict[str, ServicePin]) -> str:
 def _lock_entry_patch(service: str, repository: str, tag: str, created_at: str, digest: str):
     key = image_lock_key(service)
     return {
-        f"{key}_IMAGE": f"{repository}:{tag}",
+        # A digest pin carries no tag; the informational _IMAGE key falls
+        # back to the digest ref rather than a dangling "repository:".
+        f"{key}_IMAGE": f"{repository}:{tag}" if tag else image_ref(repository, tag, digest),
         f"{key}_IMAGE_REPOSITORY": repository,
         f"{key}_IMAGE_TAG": tag,
         f"{key}_IMAGE_CREATED_AT": created_at,
@@ -286,9 +378,9 @@ def mutate_lock(
     A missing lock is created; losing the create race to another writer
     rereads and falls into the update path. An existing lock is updated
     with a JSON Patch carrying a ``test`` precondition on
-    ``metadata.resourceVersion`` ahead of the ``data``/``annotations``
-    replacement, so the patch verb stays compatible with future patch-only
-    RBAC. Only a resourceVersion test failure or a losing create race is
+    ``metadata.resourceVersion`` ahead of the ``data``/``annotations``/
+    ``labels`` replacement, so the patch verb stays compatible with future
+    patch-only RBAC. Only a resourceVersion test failure or a losing create race is
     retried, with bounded exponential backoff; any other failure raises a
     clear terminal error immediately.
     """
@@ -307,7 +399,10 @@ def mutate_lock(
                 "metadata": {
                     "name": IMAGE_LOCK_CONFIGMAP,
                     "namespace": IMAGE_LOCK_NAMESPACE,
-                    "labels": {"app.kubernetes.io/managed-by": "osdu-spi-stack"},
+                    "labels": {
+                        "app.kubernetes.io/managed-by": "osdu-spi-stack",
+                        _FLUX_WATCH_LABEL: "Enabled",
+                    },
                     "annotations": annotations,
                 },
                 "data": data,
@@ -335,6 +430,10 @@ def mutate_lock(
                 )
             raise PinError(f"{description}: could not create {IMAGE_LOCK_CONFIGMAP}: {stderr}")
 
+        # Re-asserting the labels heals a lock created before the watch label
+        # existed, so the first pin write restores label-driven reconciliation.
+        labels = dict(((lock.get("metadata") or {}).get("labels")) or {})
+        labels[_FLUX_WATCH_LABEL] = "Enabled"
         patch = json.dumps(
             [
                 {
@@ -344,6 +443,7 @@ def mutate_lock(
                 },
                 {"op": "add", "path": "/data", "value": data},
                 {"op": "add", "path": "/metadata/annotations", "value": annotations},
+                {"op": "add", "path": "/metadata/labels", "value": labels},
             ]
         )
         result = run_command(
@@ -545,13 +645,9 @@ def _revert_pin(mutation: _LockMutation, description: str) -> list[str]:
 
         for name, pin in mutation.written.items():
             live = pins.get(name)
-            if pin is None:
-                stands = live is None
-            else:
-                stands = live is not None and (live.mr, live.applied_at) == (
-                    pin.mr,
-                    pin.applied_at,
-                )
+            # Full dataclass equality: a concurrent replacement sharing only
+            # the run, digest, and applied_at must not read as this mutation.
+            stands = live is None if pin is None else live == pin
             if not stands:
                 raise _MutationSuperseded
 
@@ -581,6 +677,52 @@ def _revert_pin(mutation: _LockMutation, description: str) -> list[str]:
     except _MutationSuperseded:
         return []
     return reverted
+
+
+def _captured_canonical(
+    service: str, existing: ServicePin | None, lock_data: dict
+) -> tuple[str, str, str, str]:
+    """The restore target a pin must record: captured on the first pin from
+    the lock's live entry, kept verbatim on a re-pin."""
+
+    key = image_lock_key(service)
+    repository = (
+        existing.canonical_repository if existing else lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
+    )
+    tag = existing.canonical_tag if existing else lock_data.get(f"{key}_IMAGE_TAG", "")
+    if not repository or not tag:
+        raise PinError(
+            f"{service}: image lock records no canonical repository or tag; "
+            "run 'spi reconcile --refresh-images' to backfill the lock before pinning."
+        )
+    created_at = (
+        existing.canonical_created_at if existing else lock_data.get(f"{key}_IMAGE_CREATED_AT", "")
+    )
+    digest = existing.canonical_digest if existing else lock_data.get(f"{key}_IMAGE_DIGEST", "")
+    return repository, tag, created_at, digest
+
+
+def _abort_if_maintenance_intervened(mutation: _LockMutation, service: str) -> None:
+    """Roll this call's lock write back if a lifecycle run intervened (ADR-029)."""
+
+    blocker = _post_write_maintenance_check()
+    if not blocker:
+        return
+    names = ", ".join(sorted(mutation.written))
+    try:
+        reverted = _revert_pin(mutation, f"Revert pin for {names} ({blocker})")
+    except PinError as exc:
+        raise PinError(
+            f"{blocker} while pinning {names}, and reverting the pin failed: {exc}. "
+            f"The pin may still be live; run 'spi service reset {service}' to confirm "
+            "and clear it."
+        ) from exc
+    outcome = (
+        f"restored {', '.join(sorted(reverted))} to its pre-pin image"
+        if reverted
+        else "a newer pin had already replaced it, so nothing was reverted"
+    )
+    raise PinError(f"{blocker} while pinning {names}; {outcome}.")
 
 
 def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
@@ -663,43 +805,22 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
                 released_now[SCHEMA_LOAD_SERVICE_NAME] = stale
 
         for name, image, mr in resolved:
-            key = image_lock_key(name)
             existing = pins.get(name)
             capture(name)
-            canonical_repository = (
-                existing.canonical_repository
-                if existing
-                else lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
-            )
-            canonical_tag = (
-                existing.canonical_tag if existing else lock_data.get(f"{key}_IMAGE_TAG", "")
-            )
-            if not canonical_repository or not canonical_tag:
-                raise PinError(
-                    f"{name}: image lock records no canonical repository or tag; "
-                    "run 'spi reconcile --refresh-images' to backfill the lock before pinning."
-                )
+            canonical = _captured_canonical(name, existing, lock_data)
             pin = ServicePin(
                 mr=str(mr_iid),
                 branch=mr.get("source_branch", ""),
                 repository=image.repository,
                 tag=image.tag,
-                # First pin captures the canonical image; re-pinning keeps it.
-                canonical_repository=canonical_repository,
-                canonical_tag=canonical_tag,
-                canonical_created_at=(
-                    existing.canonical_created_at
-                    if existing
-                    else lock_data.get(f"{key}_IMAGE_CREATED_AT", "")
-                ),
-                canonical_digest=(
-                    existing.canonical_digest
-                    if existing
-                    else lock_data.get(f"{key}_IMAGE_DIGEST", "")
-                ),
+                canonical_repository=canonical[0],
+                canonical_tag=canonical[1],
+                canonical_created_at=canonical[2],
+                canonical_digest=canonical[3],
                 applied_at=applied_at,
                 created_at=image.created_at,
                 digest=image.digest,
+                origin=GITLAB_MR_ORIGIN,
             )
             pins[name] = pin
             data.update(
@@ -733,37 +854,178 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     written: dict[str, ServicePin | None] = dict(results)
     written.update({name: None for name in released})
     mutation = _LockMutation(written=written, prior_pins=prior_pins, prior_entries=prior_entries)
-    blocker = _post_write_maintenance_check()
-    if blocker:
-        names = ", ".join(sorted(written))
-        try:
-            reverted = _revert_pin(mutation, f"Revert pin for {names} ({blocker})")
-        except PinError as exc:
-            raise PinError(
-                f"{blocker} while pinning {names}, and reverting the pin failed: {exc}. "
-                f"The pin may still be live; run 'spi service reset {service}' to confirm "
-                "and clear it."
-            ) from exc
-        outcome = (
-            f"restored {', '.join(sorted(reverted))} to its pre-pin image"
-            if reverted
-            else "a newer pin had already replaced it, so nothing was reverted"
-        )
-        raise PinError(f"{blocker} while pinning {names}; {outcome}.")
+    _abort_if_maintenance_intervened(mutation, service)
 
     reconcile_consumers([name for name, _ in results] + released)
     return results
 
 
-def reset_service(service: str) -> ResetResult:
-    """Release a service pin, restoring its canonical image when one was recorded."""
+def pin_service_image(
+    service: str,
+    image: str,
+    *,
+    ephemeral: bool = False,
+    run_id: str = "",
+    source_repo: str = "",
+    source_sha: str = "",
+    source_run_url: str = "",
+) -> ServicePin:
+    """Pin a service to a fork-built GHCR image by manifest digest (ADR-031).
+
+    Unlike an MR pin the target is exactly the named service: a fork build
+    ships one image, so a schema pin never pins the loader, and a loader
+    left pinned by an earlier MR is released to its canonical image so no
+    mismatched pair survives. An ephemeral pin returns right after the lock
+    write: reconciliation follows the lock's watch label, and ``verify`` is
+    the deploy gate. Returns the applied pin.
+    """
+
+    if service not in IMAGE_REGISTRY:
+        known = ", ".join(sorted(IMAGE_REGISTRY))
+        raise PinError(f"Unknown service {service!r}. Known services: {known}")
+    if service == SCHEMA_LOAD_SERVICE_NAME:
+        raise PinError(
+            f"{SCHEMA_LOAD_SERVICE_NAME} cannot be pinned directly; fork builds "
+            "ship the schema service image, and the loader stays canonical."
+        )
+
+    try:
+        repository, digest = parse_image_digest_ref(image)
+        require_ghcr_repository(repository)
+    except ImageResolutionError as exc:
+        raise PinError(str(exc)) from exc
+
+    if ephemeral and not (run_id and source_repo and source_sha):
+        raise PinError(
+            "--ephemeral requires --run-id, --source-repo, and --source-sha: the "
+            "sweep proves a pin stale from its owning run, which these identify."
+        )
+    if run_id and not _RUN_ID_RE.match(run_id):
+        raise PinError(f"--run-id must be a numeric GitHub Actions run id, got {run_id!r}.")
+    if source_repo and not _FORK_SOURCE_REPO_RE.match(source_repo):
+        raise PinError(
+            f"--source-repo {source_repo!r} is not an allow-listed fork repository "
+            "(Azure/osdu-spi-*); the sweep could never query this pin's owning run."
+        )
+
+    _refuse_unless_deployable()
+    try:
+        resolve_ghcr_manifest(repository, digest)
+    except ImageResolutionError as exc:
+        raise PinError(str(exc)) from exc
+
+    applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    applied: ServicePin | None = None
+    released: list[str] = []
+    prior_pins: dict[str, ServicePin | None] = {}
+    prior_entries: dict[str, dict[str, str]] = {}
+
+    def compute(lock: dict | None) -> dict:
+        if lock is None:
+            raise PinError(
+                f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
+                "is this a core-profile cluster?"
+            )
+        nonlocal applied, released, prior_pins, prior_entries
+        lock_data = lock.get("data") or {}
+        pins = decode_pins(lock)
+        data = dict(lock_data)
+        existing = pins.get(service)
+        prior_pins = {service: existing}
+        prior_entries = {
+            service: {key: lock_data[key] for key in _lock_entry_keys(service) if key in lock_data}
+        }
+
+        released_now: dict[str, ServicePin] = {}
+        if service == SCHEMA_SERVICE_NAME:
+            # A loader still pinned by an earlier MR must not survive as a
+            # mismatched pair with the fork-pinned schema image; release it.
+            stale = pins.get(SCHEMA_LOAD_SERVICE_NAME)
+            if stale:
+                if not stale.canonical_repository or not stale.canonical_tag:
+                    raise PinError(
+                        f"{SCHEMA_LOAD_SERVICE_NAME} is pinned to MR !{stale.mr} with no "
+                        "canonical image recorded; run 'spi service reset schema' to remove "
+                        "the invalid pin, then 'spi reconcile --refresh-images' before re-pinning."
+                    )
+                prior_pins[SCHEMA_LOAD_SERVICE_NAME] = stale
+                prior_entries[SCHEMA_LOAD_SERVICE_NAME] = {
+                    key: lock_data[key]
+                    for key in _lock_entry_keys(SCHEMA_LOAD_SERVICE_NAME)
+                    if key in lock_data
+                }
+                pins.pop(SCHEMA_LOAD_SERVICE_NAME)
+                released_now[SCHEMA_LOAD_SERVICE_NAME] = stale
+
+        canonical = _captured_canonical(service, existing, lock_data)
+        applied = ServicePin(
+            mr="",
+            branch="",
+            repository=repository,
+            tag="",
+            canonical_repository=canonical[0],
+            canonical_tag=canonical[1],
+            canonical_created_at=canonical[2],
+            canonical_digest=canonical[3],
+            applied_at=applied_at,
+            digest=digest,
+            origin=GITHUB_ORIGIN,
+            ephemeral=ephemeral,
+            run_id=run_id,
+            source_repo=source_repo,
+            source_sha=source_sha,
+            source_run_url=source_run_url,
+        )
+        pins[service] = applied
+        data.update(_lock_entry_patch(service, repository, "", "", digest))
+        for name, stale in released_now.items():
+            data.update(
+                _lock_entry_patch(
+                    name,
+                    stale.canonical_repository,
+                    stale.canonical_tag,
+                    stale.canonical_created_at,
+                    stale.canonical_digest,
+                )
+            )
+        released = sorted(released_now)
+
+        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+        annotations[PINS_ANNOTATION] = encode_pins(pins)
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    mutate_lock(compute, f"Pin {service} to {digest[:19]}")
+    assert applied is not None
+    written: dict[str, ServicePin | None] = {service: applied}
+    written.update({name: None for name in released})
+    mutation = _LockMutation(written=written, prior_pins=prior_pins, prior_entries=prior_entries)
+    _abort_if_maintenance_intervened(mutation, service)
+
+    # A run-owned pin converges through the lock's watch label: the fork
+    # deploy role cannot patch Kustomizations, and verify gates the deploy.
+    if not ephemeral:
+        reconcile_consumers([service] + released)
+    return applied
+
+
+def reset_service(service: str, if_run: str = "") -> ResetResult:
+    """Release a service pin, restoring its canonical image when one was recorded.
+
+    With ``if_run`` the reset is ownership-conditional (ADR-031): it acts
+    only while the live pin still records that owning run, so a crashed
+    run's always-run restore job cannot clobber a newer sibling's pin. A
+    refusal is a typed ``ResetRefusedError`` and mutates nothing. Run-owned
+    pins are single-service, so ``if_run`` never pairs the schema loader,
+    and the restore converges through the lock's watch label rather than an
+    explicit reconciliation.
+    """
 
     if service not in IMAGE_REGISTRY:
         known = ", ".join(sorted(IMAGE_REGISTRY))
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
 
     targets_all = [service]
-    if service == SCHEMA_SERVICE_NAME:
+    if service == SCHEMA_SERVICE_NAME and not if_run:
         targets_all.append(SCHEMA_LOAD_SERVICE_NAME)
 
     restored: list[str] = []
@@ -779,7 +1041,24 @@ def reset_service(service: str) -> ResetResult:
         pins = decode_pins(lock)
         targets = [name for name in targets_all if name in pins]
         if not targets:
+            if if_run:
+                raise ResetRefusedError(
+                    "not_pinned",
+                    f"{service} is not pinned; nothing to restore for run {if_run}.",
+                )
             raise PinError(f"{service} is not pinned.")
+        if if_run:
+            live = pins[service]
+            if live.run_id != if_run:
+                owner = (
+                    f"run {live.run_id}"
+                    if live.run_id
+                    else (f"MR !{live.mr}" if live.mr else "an operator pin")
+                )
+                raise ResetRefusedError(
+                    "run_mismatch",
+                    f"{service} is pinned by {owner}, not run {if_run}; leaving the pin standing.",
+                )
 
         data = dict(lock.get("data") or {})
         restored = []
@@ -808,9 +1087,338 @@ def reset_service(service: str) -> ResetResult:
         return {"data": data, "metadata": {"annotations": annotations}}
 
     mutate_lock(compute, f"Reset {service}")
-    if restored:
+    # The run-conditional restore runs under the fork deploy role, which
+    # cannot patch Kustomizations; the lock's watch label converges it.
+    if restored and not if_run:
         reconcile_consumers(restored)
     return ResetResult(tuple(restored), tuple(refresh_required))
+
+
+def _kubectl_read_json(args: list[str], describe: str) -> dict | None:
+    """Silent kubectl read that distinguishes absent (None) from unreachable
+    (raise), so a verify failure can never be mistaken for a missing object."""
+
+    result = run_process(
+        ["kubectl", *args, "--ignore-not-found", "-o", "json"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or "kubectl failed"
+        raise PinError(f"Could not read {describe}: {detail}")
+    if not result.stdout.strip():
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise PinError(f"Could not parse {describe}: {exc}") from exc
+
+
+def _collision_note(service: str, digest: str) -> str:
+    """Name the pin now holding the lock when it is not ours: the
+    cross-pipeline guard's fail-fast diagnostic (ADR-031)."""
+
+    try:
+        pin = live_pins().get(service)
+    except PinError:
+        return ""
+    if pin is None:
+        return " The image lock records no pin for this service."
+    if pin.digest == digest:
+        return ""
+    if pin.run_id:
+        source = pin.source_run_url or pin.source_repo or "unknown source"
+        return f" The image lock is now pinned by run {pin.run_id} ({source})."
+    if pin.mr:
+        return f" The image lock is now pinned to MR !{pin.mr}."
+    return " The image lock now records a different pin."
+
+
+def _require_live_lock_digest(service: str, digest: str) -> None:
+    """Fail fast when the live lock no longer records this digest.
+
+    A pin swept or replaced by a concurrent run leaves the prior Deployment
+    and pod carrying the requested digest until Flux reconciles the
+    replacement, so checking those alone would pass over a rollout already
+    superseded. A missing lock ConfigMap raises the same plain ``PinError``
+    as any other unreadable cluster state.
+    """
+
+    lock = read_lock(required=True)
+    assert lock is not None  # required=True raises PinError instead of returning None
+    pin = decode_pins(lock).get(service)
+    if pin is not None and pin.digest == digest:
+        return
+    key = image_lock_key(service)
+    data = lock.get("data") or {}
+    if digest == data.get(f"{key}_IMAGE_DIGEST", "") or digest in data.get(f"{key}_IMAGE_REF", ""):
+        return
+    raise VerifyError(
+        "lock_mismatch",
+        f"Image lock no longer records {digest} for {service}." + _collision_note(service, digest),
+    )
+
+
+def verify_service_image(
+    service: str,
+    image: str,
+    deployment: str | None = None,
+    container: str | None = None,
+) -> VerifyResult:
+    """Assert the service's Deployment and a running pod carry the digest.
+
+    Deploy success is the running pod carrying the digest, and the live lock
+    still recording it: a deploy overwritten by a colliding pipeline fails
+    here, naming the colliding run, instead of producing a silently wrong
+    test result, and a pin swept or replaced before Flux has reconciled
+    fails the same way even while the old Deployment and pod still match.
+    Typed failures raise ``VerifyError``; an unreachable cluster raises
+    plain ``PinError``.
+    """
+
+    if service not in IMAGE_REGISTRY:
+        known = ", ".join(sorted(IMAGE_REGISTRY))
+        raise PinError(f"Unknown service {service!r}. Known services: {known}")
+    try:
+        repository, digest = parse_image_digest_ref(image)
+    except ImageResolutionError as exc:
+        raise PinError(str(exc)) from exc
+
+    _require_live_lock_digest(service, digest)
+
+    deployment = deployment or f"{WORKLOAD_NAMESPACE}-{service}"
+    container = container or deployment
+
+    dep = _kubectl_read_json(
+        ["get", "deployment", deployment, "-n", WORKLOAD_NAMESPACE],
+        f"Deployment {deployment}",
+    )
+    if dep is None:
+        raise VerifyError(
+            "deployment_not_found",
+            f"Deployment {deployment} not found in namespace {WORKLOAD_NAMESPACE}; "
+            "set K8S_DEPLOYMENT_NAME if this service deviates.",
+        )
+
+    spec = dep.get("spec") or {}
+    containers = ((spec.get("template") or {}).get("spec") or {}).get("containers") or []
+    template_image = next(
+        (entry.get("image", "") for entry in containers if entry.get("name") == container),
+        None,
+    )
+    if template_image is None:
+        raise VerifyError(
+            "container_not_found",
+            f"Deployment {deployment} has no container named {container!r}; "
+            "set K8S_CONTAINER_NAME if this service deviates.",
+        )
+    if digest not in template_image:
+        raise VerifyError(
+            "template_mismatch",
+            f"Deployment {deployment} pod template runs {template_image!r}, "
+            f"not {digest}." + _collision_note(service, digest),
+        )
+
+    generation = (dep.get("metadata") or {}).get("generation", 0)
+    dep_status = dep.get("status") or {}
+    replicas = spec.get("replicas", 1)
+    observed = dep_status.get("observedGeneration", 0)
+    updated = dep_status.get("updatedReplicas", 0)
+    available = dep_status.get("availableReplicas", 0)
+    total = dep_status.get("replicas", 0)
+    # Kubernetes' Deployment-complete predicate: every status count equals the
+    # desired count exactly, so a scale-down still draining old pods (counts
+    # above desired) cannot read as complete.
+    if observed < generation or updated != replicas or total != replicas or available != replicas:
+        raise VerifyError(
+            "rollout_incomplete",
+            f"Deployment {deployment} rollout is not complete ({updated}/{replicas} "
+            f"updated, {total} total, {available} available, generation "
+            f"{observed}/{generation}); retry once the rollout settles.",
+        )
+
+    selector = (spec.get("selector") or {}).get("matchLabels") or {}
+    if not selector:
+        raise PinError(f"Deployment {deployment} has no matchLabels selector to find its pods.")
+    label_arg = ",".join(f"{key}={value}" for key, value in sorted(selector.items()))
+    pod_list = (
+        _kubectl_read_json(
+            ["get", "pods", "-n", WORKLOAD_NAMESPACE, "-l", label_arg],
+            f"pods for Deployment {deployment}",
+        )
+        or {}
+    )
+    running = [
+        pod
+        for pod in pod_list.get("items", [])
+        if (pod.get("status") or {}).get("phase") == "Running"
+    ]
+    if not running:
+        raise VerifyError(
+            "pod_not_running",
+            f"No running pods matched {label_arg} in namespace {WORKLOAD_NAMESPACE}.",
+        )
+
+    statuses: list[tuple[dict, str]] = []
+    for pod in running:
+        for entry in (pod.get("status") or {}).get("containerStatuses") or []:
+            if entry.get("name") == container:
+                statuses.append((pod, entry.get("imageID", "")))
+
+    # The runtime can report the platform manifest it selected from a pinned
+    # OCI index instead of the index digest itself; accept its children too.
+    accepted: tuple[str, ...] = (digest,)
+    if statuses and not any(digest in image_id for _, image_id in statuses):
+        accepted += ghcr_index_child_digests(repository, digest)
+    for pod, image_id in statuses:
+        if any(candidate in image_id for candidate in accepted):
+            return VerifyResult(
+                deployment=deployment,
+                container=container,
+                pod=(pod.get("metadata") or {}).get("name", ""),
+                image_id=image_id,
+            )
+    seen = [image_id or "<no imageID>" for _, image_id in statuses]
+    detail = "; ".join(sorted(set(seen))) if seen else f"no status for container {container!r}"
+    raise VerifyError(
+        "pod_mismatch",
+        f"No running pod's {container!r} imageID carries {digest} (saw: {detail})."
+        + _collision_note(service, digest),
+    )
+
+
+def _github_run_status(source_repo: str, run_id: str) -> str | None:
+    """Return the owning workflow run's status, or None when unreachable.
+
+    The URL is built only from the allow-listed ``source_repo`` and numeric
+    ``run_id``; a repository outside the allow-list is never fetched and
+    reads as unreachable, leaving the age threshold to decide.
+    """
+
+    if not _FORK_SOURCE_REPO_RE.match(source_repo) or not _RUN_ID_RE.match(run_id):
+        return None
+    headers = {"User-Agent": "spi-stack-resolver", "Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(
+        f"{GITHUB_API_HOST}/repos/{source_repo}/actions/runs/{run_id}", headers=headers
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
+            payload = json.loads(resp.read())
+    except urllib.error.HTTPError:
+        # A 404 may be a deleted run, but also a repository this caller cannot
+        # read; neither proves the run terminal, so the age threshold decides.
+        return None
+    except (TimeoutError, urllib.error.URLError, ConnectionError, json.JSONDecodeError):
+        return None
+    status = payload.get("status", "") if isinstance(payload, dict) else ""
+    return status or None
+
+
+def _pin_age_exceeds_threshold(pin: ServicePin, now: datetime) -> bool:
+    try:
+        applied = datetime.fromisoformat(pin.applied_at.replace("Z", "+00:00"))
+    except ValueError:
+        # An undecodable timestamp cannot prove the pin young; sweep it.
+        return True
+    if applied.tzinfo is None:
+        applied = applied.replace(tzinfo=timezone.utc)
+    return now - applied > timedelta(hours=STALE_EPHEMERAL_PIN_AGE_HOURS)
+
+
+def sweep_stale_ephemeral_pins() -> SweepResult:
+    """Sweep abandoned ephemeral pins: ADR-031's weekday backstop.
+
+    A pin is stale when its owning workflow run reports a terminal state or,
+    when that state is unreachable, when its age exceeds
+    ``STALE_EPHEMERAL_PIN_AGE_HOURS``. Operator pins never carry the marker
+    and are never considered.
+    """
+
+    candidates = {name: pin for name, pin in live_pins().items() if pin.ephemeral}
+    if not candidates:
+        return SweepResult((), (), ())
+
+    now = datetime.now(timezone.utc)
+    stale: dict[str, ServicePin] = {}
+    kept: list[tuple[str, str]] = []
+    for name, pin in sorted(candidates.items()):
+        run_state = _github_run_status(pin.source_repo, pin.run_id)
+        if run_state == "completed":
+            stale[name] = pin
+        elif run_state is None:
+            if _pin_age_exceeds_threshold(pin, now):
+                stale[name] = pin
+            else:
+                kept.append((name, "run state unreachable and pin younger than threshold"))
+        else:
+            kept.append((name, f"run {pin.run_id} is {run_state}"))
+
+    if not stale:
+        return SweepResult((), tuple(kept), ())
+
+    restored: list[str] = []
+    refresh_required: list[str] = []
+    replaced: list[tuple[str, str]] = []
+
+    def compute(lock: dict | None) -> dict:
+        if lock is None:
+            raise PinError(
+                f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
+                "is this a core-profile cluster?"
+            )
+        nonlocal restored, refresh_required, replaced
+        pins = decode_pins(lock)
+        data = dict(lock.get("data") or {})
+        restored = []
+        refresh_required = []
+        replaced = []
+        for name, expected in stale.items():
+            live = pins.get(name)
+            # A pin re-placed since the staleness check is not the pin found
+            # stale; leave it standing but report it, so the sweep's outcome
+            # never reads as "nothing to do" while a pin is still live.
+            if live is None:
+                replaced.append((name, "pin was already released when the sweep wrote"))
+                continue
+            if live != expected:
+                owner = f"run {live.run_id}" if live.run_id else "another pin"
+                replaced.append((name, f"pin replaced by {owner} during the sweep"))
+                continue
+            pins.pop(name)
+            if not live.canonical_repository or not live.canonical_tag:
+                refresh_required.append(name)
+                continue
+            data.update(
+                _lock_entry_patch(
+                    name,
+                    live.canonical_repository,
+                    live.canonical_tag,
+                    live.canonical_created_at,
+                    live.canonical_digest,
+                )
+            )
+            restored.append(name)
+
+        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+        if pins:
+            annotations[PINS_ANNOTATION] = encode_pins(pins)
+        else:
+            annotations.pop(PINS_ANNOTATION, None)
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    mutate_lock(compute, f"Sweep stale ephemeral pins ({', '.join(sorted(stale))})")
+    if restored:
+        reconcile_consumers(restored)
+    return SweepResult(
+        tuple(sorted(restored)),
+        tuple(kept) + tuple(sorted(replaced)),
+        tuple(sorted(refresh_required)),
+    )
 
 
 def live_pins() -> dict[str, ServicePin]:

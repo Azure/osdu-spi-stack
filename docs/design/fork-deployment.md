@@ -50,11 +50,13 @@ skews ahead of the cluster contract (ADR-031).
    Push events skip the restore job; the weekday refresh converges the
    canonical afterward, forward to the fork's `main` once the service has
    flipped (ADR-031, ADR-033).
-5. **Verify.** `spi service verify "$SERVICE" --image <ref>` (unbuilt)
+5. **Verify.** `spi service verify "$SERVICE" --image <ref>`
    asserts the Deployment's pod template and a running pod's `imageID` carry
    the digest and the rollout is complete. Deployment and container names
-   default to the service name; `K8S_DEPLOYMENT_NAME` and
-   `K8S_CONTAINER_NAME` cover deviants.
+   default to `osdu-<service>`, the Flux Helm release name;
+   `K8S_DEPLOYMENT_NAME` and `K8S_CONTAINER_NAME` cover deviants. With
+   `--json` the last stdout line is a `{outcome, code, detail}` envelope;
+   exit 2 carries the typed code, exit 1 means the cluster was unreachable.
 6. **Test.** The integration-test job re-runs the verify as a pre-flight
    (the cross-pipeline guard: a colliding deploy fails fast, naming the
    colliding run from the pin annotation), resolves endpoints from
@@ -63,7 +65,11 @@ skews ahead of the cluster contract (ADR-031).
 7. **Restore.** An always-run job on PR pipelines:
    `spi service reset "$SERVICE" --if-run "$GITHUB_RUN_ID"`. The reset is
    conditional on ownership: it acts only while the live pin's `run_id` still
-   matches, so a newer run's pin is left standing.
+   matches, so a newer run's pin is left standing. Exit 0 means restored;
+   exit 2 is the typed no-op refusal (`run_mismatch` when another pin owns
+   the slot, `not_pinned` when nothing remains), which the restore job
+   treats as success; exit 1 is a real failure. `--json` emits the same
+   final-line `{outcome, code, detail}` envelope.
 
 ## Pin annotation schema
 
@@ -88,13 +94,15 @@ default empty, which reads as a non-ephemeral operator pin.
 A cancelled run, an expired token, or a lost runner strands a pin the restore
 job never returns. The weekday refresh workflow runs the backstop:
 
-- `spi service reset --ephemeral --stale-only` (unbuilt) sweeps an ephemeral
+- `spi service reset --ephemeral --stale-only` sweeps an ephemeral
   pin only when its owning workflow run reports a terminal state or, when
   that state is unreachable, when the pin's age exceeds a threshold longer
   than any deploy-plus-test budget. The lookup builds a fixed GitHub API URL
   from the validated `source_repo` (it must match the `Azure/osdu-spi-*`
   allow-list) and the numeric `run_id`; the fork-written `source_run_url` is
   display-only and never fetched, since a fork identity controls its value.
+  An ephemeral pin cannot be written without an allow-listed `source_repo`,
+  a commit, and a numeric `run_id`, so the lookup inputs always exist.
 - `spi service refresh` per GitHub-origin service then advances the
   environment to the current retained canonical (ADR-033).
 
@@ -109,7 +117,7 @@ refresh resolves the same or a newer `main` image, so nothing regresses.
 |---|---|---|
 | `AZURE_CLIENT_ID` (secret), `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | `spi onboard` | the fork's UAMI and its home |
 | `SPI_STACK_RESOURCE_GROUP`, `SPI_STACK_CLUSTER` | `spi onboard` | environment coordinates for `spi connect` |
-| `K8S_DEPLOYMENT_NAME`, `K8S_CONTAINER_NAME` | `spi onboard` | verify targets; default to the service name |
+| `K8S_DEPLOYMENT_NAME`, `K8S_CONTAINER_NAME` | `spi onboard` | verify targets; default to `osdu-<service>` |
 | `ACCEPTANCE_TEST_DIR` | operator | Maven module path of the suite |
 | `ACCEPTANCE_TEST_SECRET_MAP` | operator | `ENV_VAR=keyvault-secret-name` pairs; an unknown or unresolvable entry fails the job before Maven starts |
 | `ACCEPTANCE_TEST_DEPENDENCIES` | operator | services whose health endpoints gate the suite; also absorbs a sibling's rolling restart |
