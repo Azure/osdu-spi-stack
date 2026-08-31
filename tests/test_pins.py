@@ -15,6 +15,7 @@
 """Per-service image pins: resolution, lock mutation, verification, and sweep."""
 
 import json
+import re
 import subprocess
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -51,6 +52,13 @@ from spi.pins import (
     verify_service_image,
 )
 from spi.status import KustomizationReadiness, StatusError, StatusReason
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI styling so assertions survive Rich colorizing under CI."""
+    return _ANSI.sub("", text)
 
 
 def _pin(**overrides) -> ServicePin:
@@ -851,11 +859,12 @@ class TestServiceResetCli:
         )
 
         result = CliRunner().invoke(cli.app, ["service", "reset", "schema"])
+        output = _plain(result.output)
 
         assert result.exit_code == 0
-        assert "schema restored to canonical image" in result.output
-        assert "schema-load pin removed" in result.output
-        assert "spi reconcile --refresh-images" in result.output
+        assert "schema restored to canonical image" in output
+        assert "schema-load pin removed" in output
+        assert "spi reconcile --refresh-images" in output
 
 
 class TestRefreshSurvival:
