@@ -27,11 +27,11 @@ The sequence inside `deploy.deploy_azure()` is:
 1. **Config resolution.** `Config.from_env()` takes `--env`, `--profile`, `--partition`, `--ingress-mode`, and applies defaults (region, derived cluster name, profile-driven layer wiring). Pure Python, no external calls.
 2. **Prerequisite check.** `check_prerequisites()` runs each tool in the registry (`az`, `bicep`, `kubectl`, `kubelogin`, `flux`) and fails fast if anything is missing.
 3. **Resource group.** `az group create --name spi-stack-<env> --location <region>`. The one thing Bicep cannot do itself.
-4. **Key Vault soft-delete recovery.** If a prior `spi down` left a soft-deleted Key Vault with the same name, `az keyvault recover` brings it back so the upcoming Bicep deploy does not collide.
-5. **`infra/aks.bicep` deploy.** AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio, declared as a raw `Microsoft.ContainerService/managedClusters` resource. This is the slowest single step (~30 min).
-6. **`az aks get-credentials`** merges the kubeconfig.
-7. **`az aks mesh enable-istio-cni`.** The resource provider rejects `proxyRedirectionMechanism` at cluster creation, so the CLI enables CNI chaining afterwards and skips the call when the cluster already reports `CNIChaining`. See [ADR-008](../decisions/008-bicep-for-azure-provisioning.md).
-8. **Deployer cluster-admin grant.** `az role assignment create --role "Azure Kubernetes Service RBAC Cluster Admin"` on the cluster for the signed-in principal, then a wait until the assignment propagates (minutes). Local accounts are disabled, so bootstrap `kubectl` has no other path.
+4. **`infra/aks.bicep` deploy.** AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio, declared as a raw `Microsoft.ContainerService/managedClusters` resource. This is the slowest single step (~30 min).
+5. **`az aks get-credentials`** merges the kubeconfig.
+6. **`az aks mesh enable-istio-cni`.** The resource provider rejects `proxyRedirectionMechanism` at cluster creation, so the CLI enables CNI chaining afterwards and skips the call when the cluster already reports `CNIChaining`. See [ADR-008](../decisions/008-bicep-for-azure-provisioning.md).
+7. **Deployer cluster-admin grant.** `az role assignment create --role "Azure Kubernetes Service RBAC Cluster Admin"` on the cluster for the signed-in principal, then a wait until the assignment propagates (minutes). Local accounts are disabled, so bootstrap `kubectl` has no other path.
+8. **Key Vault soft-delete recovery.** If a prior `spi down` left a soft-deleted Key Vault with the same name, `az keyvault recover` brings it back so the upcoming Bicep deploy does not collide.
 9. **`infra/main.bicep` deploy.** Identity, RBAC, Key Vault (with Bicep-resolved secrets), ACR, Cosmos DB Gremlin, per-partition (Cosmos SQL + Service Bus + Storage), common Storage, optional `external-dns-*` for `dns` ingress. (The VNet is provisioned by `aks.bicep`, not here.)
 10. **K8s bootstrap.** `kubectl apply` for namespaces, StorageClasses, the middleware secret seed (`spi-secrets`) plus the `platform`/`osdu` credential Secrets, `workload-identity-sa` (in `platform` and `osdu`), the `osdu-config` ConfigMap, the `spi-ingress-config` ConfigMap, the `spi-init-values` ConfigMap, and the Istio JWT projection resources from [ADR-016](../decisions/016-istio-jwt-projection.md). The `core` profile also creates the `osdu-image-lock` ConfigMap, resolved live from the OSDU community registry per [ADR-017](../decisions/017-osdu-image-lock.md); `minimal` and `bare` skip image resolution and this ConfigMap.
 11. **`infra/flux.bicep` deploy.** Activates the AKS Flux extension and creates the `fluxConfigurations` resource with two top-level Kustomizations: `stack` (pointing at `./software/stacks/osdu/profiles/<profile>`) and `ingress` (pointing at `./software/stacks/osdu/ingress/<mode>`).
@@ -127,7 +127,7 @@ spi reconcile --refresh-images # re-resolve osdu-image-lock and reconcile servic
 spi down --env <env>
 ```
 
-This deletes the resource group, which removes the AKS cluster, every PaaS resource it provisioned, and the role assignments scoped at the resource group. The Key Vault enters soft-delete; the next `spi up --env <env>` recovers it in Phase 1 step 4.
+This deletes the resource group, which removes the AKS cluster, every PaaS resource it provisioned, and the role assignments scoped at the resource group. The Key Vault enters soft-delete; the next `spi up --env <env>` recovers it in Phase 1 step 8.
 
 Once Azure reports the resource group gone, `spi down` prunes the kubeconfig entries the Phase 1 `az aks get-credentials` merged in. `az group delete --no-wait` returns on acceptance rather than completion, and an accepted delete can still fail, so acceptance alone is not enough to strip a cluster's credentials. Deletion that outruns the 60-second acknowledgement window leaves the context in place and says so.
 
@@ -144,7 +144,7 @@ $ uv run spi up --env dev1
 Milestones to watch for in the CLI output:
 
 1. **"Resource group spi-stack-dev1 ready"** -- Phase 1 step 3.
-2. **"AKS deployment complete"** -- Phase 1 step 5. The cluster exists.
+2. **"AKS deployment complete"** -- Phase 1 step 4. The cluster exists.
 3. **"PaaS deployment complete"** -- Phase 1 step 9. Cosmos, Service Bus, Storage, Key Vault, ACR are live.
 4. **"Flux extension activated"** -- Phase 1 step 11. Flux is running in `flux-system`; SPI GitOps objects reconcile in `osdu-flux`.
 5. **"Writing OSDU bootstrap secrets to Key Vault..."** -- Phase 1 step 12. Redis/Elasticsearch credentials and `tbl-storage-endpoint` are written from the seed passwords, fixed in-cluster hostnames, and the common Storage account name.
