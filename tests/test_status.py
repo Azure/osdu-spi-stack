@@ -97,7 +97,7 @@ def test_deployable_status_contract(monkeypatch):
 def test_non_gating_kustomization_never_blocks_ready(monkeypatch):
     """A failed seeding Kustomization (spi-stack.gating: "false") stays
     visible with its typed reason but must not flip ready or deployable:
-    ready and seeded are separate signals (ADR-030)."""
+    ready and seeded are separate signals."""
     _wire(monkeypatch)
     ready_items = _kustomizations(ready=True)["items"]
     failed_legal = {

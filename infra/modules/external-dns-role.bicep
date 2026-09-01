@@ -1,8 +1,8 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// Assigns DNS Zone Contributor at zone scope. The caller must deploy this
-// module at the zone's resource group in the current subscription.
+// DNS Zone Contributor at zone scope; the caller deploys this module at the
+// zone's resource group.
 
 targetScope = 'resourceGroup'
 
@@ -12,7 +12,6 @@ param dnsZoneName string
 @description('Principal ID of the ExternalDNS managed identity receiving zone access.')
 param principalId string
 
-// Azure built-in DNS Zone Contributor role.
 var dnsZoneContributorRoleId = 'befefa01-2a29-4197-83a8-272ff33ce314'
 
 resource zone 'Microsoft.Network/dnsZones@2018-05-01' existing = {

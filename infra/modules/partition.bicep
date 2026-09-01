@@ -1,10 +1,8 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// Per-partition data plane: CosmosDB SQL account with osdu-db (and
-// optionally osdu-system-db on the primary partition), Service Bus
-// namespace with topics and subscriptions, storage account with blob
-// containers.
+// Per-partition data plane: Cosmos SQL (osdu-db, plus osdu-system-db on the
+// primary partition), Service Bus topics and subscriptions, blob storage.
 
 @description('OSDU data partition identifier used in resource and secret names.')
 param partition string
@@ -82,8 +80,8 @@ var serviceBusTopicDefs = [
   { name: 'replaytopic', maxSizeInMegabytes: 1024 }
 ]
 
-// Bicep cannot flatten nested for-expressions in a variable, so topic and
-// subscription pairs are explicit. entitlements-changed intentionally has none.
+// Bicep cannot nest for-expressions in a variable, so the pairs are explicit.
+// entitlements-changed has no subscription.
 var serviceBusSubscriptionDefs = [
   { topicName: 'indexing-progress', subName: 'indexing-progresssubscription', maxDeliveryCount: 5, lockDuration: 'PT5M' }
   { topicName: 'legaltags', subName: 'legaltagssubscription', maxDeliveryCount: 5, lockDuration: 'PT5M' }
@@ -115,7 +113,6 @@ resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2023-11-15' = {
   kind: 'GlobalDocumentDB'
   properties: {
     databaseAccountOfferType: 'Standard'
-    // Data-plane access uses Entra-backed Cosmos RBAC.
     disableLocalAuth: true
     consistencyPolicy: {
       defaultConsistencyLevel: 'Session'
@@ -192,9 +189,8 @@ resource osduSystemDbContainerResources 'Microsoft.DocumentDB/databaseAccounts/s
   }
 }]
 
-// Cosmos SQL data-plane RBAC is separate from Azure RBAC and is invisible to
-// `az role assignment`. Without this role, OSDU data calls fail with 403
-// "does not have required RBAC permissions".
+// Cosmos SQL data-plane RBAC is separate from Azure RBAC and invisible to
+// `az role assignment`; without it OSDU data calls fail with 403.
 var sqlDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
 
 resource osduIdentitySqlDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2023-11-15' = {
@@ -214,8 +210,8 @@ resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview
     name: 'Standard'
     tier: 'Standard'
   }
-  // Local SAS authentication is disabled. Runtime access uses Workload Identity
-  // through the Data Sender and Receiver assignments in rbac.bicep.
+  // Runtime access is Workload Identity through the Data Sender and Receiver
+  // assignments in rbac.bicep.
   properties: {
     disableLocalAuth: true
     minimumTlsVersion: '1.2'
@@ -251,7 +247,6 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   properties: {
     accessTier: 'Hot'
     minimumTlsVersion: 'TLS1_2'
-    // Public blob and shared-key access are disabled; workloads use Entra RBAC.
     allowBlobPublicAccess: false
     allowSharedKeyAccess: false
     defaultToOAuthAuthentication: true
@@ -264,17 +259,15 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01'
   name: 'default'
 }
 
-// Record blobs use a container named after the partition ID. The provider does
-// not create it, so record ingestion returns 404 unless it exists.
+// Record ingestion writes to a container named after the partition and returns
+// 404 unless it exists.
 resource storageContainerResources 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = [for containerName in union(partitionStorageContainerNames, [partition]): {
   parent: blobService
   name: containerName
 }]
 
-// Keeping these secrets in this module gives resource property references an
-// implicit deployment dependency. A parent-scope ``existing`` reference would
-// not depend on this module and could fail with ResourceNotFound.
-
+// The secrets live in this module so their property references carry an
+// implicit dependency; a parent-scope reference could hit ResourceNotFound.
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = if (!empty(keyVaultName)) {
   name: keyVaultName
 }
@@ -287,8 +280,7 @@ resource cosmosPrimaryKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' =
   }
 }
 
-// Blob endpoint is needed by partition-init so the partition record can point
-// services at the partition's blob storage without every service recomputing it.
+// partition-init publishes the blob endpoint in the partition record.
 resource storageAccountBlobEndpointSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName)) {
   name: '${partition}-storage-account-blob-endpoint'
   parent: keyVault
@@ -297,9 +289,8 @@ resource storageAccountBlobEndpointSecret 'Microsoft.KeyVault/vaults/secrets@202
   }
 }
 
-// Local authentication is disabled, so key and connection secrets contain the
-// literal "DISABLED" only to satisfy the partition-record schema. Services that
-// read these placeholders fail and must use Workload Identity instead.
+// The key and connection secrets hold the literal "DISABLED" only to satisfy
+// the partition-record schema; a service that reads one fails.
 resource cosmosConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName)) {
   name: '${partition}-cosmos-connection'
   parent: keyVault
@@ -324,9 +315,8 @@ resource storageAccountKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' 
   }
 }
 
-// System services resolve the shared catalog from ``system-*`` secrets. The
-// system database belongs to the primary partition, so only that partition
-// creates these secrets; without them, system services fail during startup.
+// System services read the system-* secrets at startup; the system database
+// belongs to the primary partition, so only it writes them.
 resource systemCosmosEndpointSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName) && isPrimaryPartition) {
   name: 'system-cosmos-endpoint'
   parent: keyVault

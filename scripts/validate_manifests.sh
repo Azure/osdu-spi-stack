@@ -13,16 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Validate every kustomization.yaml under software/ by building it with
-# kustomize and piping the output through kubeconform.
-#
-# Runs locally and in CI. Exits 0 if all kustomizations render and validate,
-# nonzero if any fail. Collects all failures before exiting so PR authors
-# see the full list in one iteration instead of fix-one-push-fix-next.
-#
-# Requires: kustomize, kubeconform (both available as static binaries).
-# Flux postBuild ${VAR} placeholders are replaced with "placeholder" before
-# kubeconform so unresolved variables in string fields do not trip strict mode.
+# Build every kustomization.yaml under software/ with kustomize and validate
+# the output with kubeconform, collecting every failure before exiting.
+# Requires kustomize and kubeconform.
 
 set -euo pipefail
 
@@ -30,9 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SOFTWARE_DIR="$REPO_ROOT/software"
 
-# Optional: vendored CRD schemas under schemas/ take precedence over the
-# datreeio catalog when present. Regenerate via:
-#   kubectl get crd <name> -o json | jq '.spec.versions[0].schema.openAPIV3Schema'
+# Vendored CRD schemas under schemas/ take precedence over the datreeio catalog.
 LOCAL_CRD_SCHEMA_LOCATION="$REPO_ROOT/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
 CRD_SCHEMA_LOCATION='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
 
@@ -43,9 +34,7 @@ for tool in kustomize kubeconform; do
     fi
 done
 
-# Replace unresolved Flux postBuild variables (${VAR}) with a literal
-# placeholder so strict kubeconform does not reject string fields containing
-# raw shell-style references.
+# Unresolved Flux postBuild ${VAR} references trip kubeconform's strict mode.
 sub_vars() {
     sed -E 's/\$\{[A-Z_][A-Z0-9_]*\}/placeholder/g'
 }

@@ -1,8 +1,6 @@
-# Partial Service applied server-side: Flux owns only the annotations
-# listed here; the AKS Istio add-on owns the Service itself. The write
-# must flow through Flux because the aks-managed-protect-system-namespaces
-# admission policy denies aks-istio-ingress writes to every identity
-# except the exempted flux-system controllers.
+# Partial Service applied server-side: Flux owns only these annotations; the
+# AKS Istio add-on owns the Service. Only the flux-system controllers are
+# exempt from the admission policy that denies writes in aks-istio-ingress.
 apiVersion: v1
 kind: Service
 metadata:

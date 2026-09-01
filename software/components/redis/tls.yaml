@@ -1,5 +1,5 @@
-# Self-signed CA and certificate for Redis TLS.
-# Services import this CA into their Java truststore via init container.
+# Self-signed CA and certificate for Redis TLS; services import the CA into
+# their Java truststore.
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
@@ -14,9 +14,8 @@ metadata:
   name: redis-tls-cert
   namespace: platform
 spec:
-  # commonName + isCA required for the cert to be importable into a Java
-  # keystore. Without a non-empty Subject DN, keytool rejects the cert as
-  # "Input not an X.509 certificate" even though openssl parses it fine.
+  # keytool rejects a cert with an empty Subject DN as "Input not an X.509
+  # certificate".
   commonName: redis
   isCA: true
   secretName: redis-tls-secret
@@ -24,15 +23,15 @@ spec:
     name: redis-selfsigned-issuer
     kind: Issuer
   dnsNames:
-    # Flux's default releaseName is {namespace}-{name} so the Bitnami chart
-    # creates services as platform-redis-master / platform-redis-replicas.
+    # Flux's default releaseName prefixes the namespace, so the chart's
+    # Services are platform-redis-*.
     - platform-redis-master.platform.svc.cluster.local
     - platform-redis-master.platform.svc
     - platform-redis-master
     - platform-redis-replicas.platform.svc.cluster.local
     - platform-redis-replicas.platform.svc
     - platform-redis-replicas
-    # Keep the short-name aliases for scripts that may target them.
+    # Short-name aliases for scripts.
     - redis-master.platform.svc.cluster.local
     - redis-master.platform.svc
     - redis-master

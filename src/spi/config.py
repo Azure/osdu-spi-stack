@@ -21,55 +21,41 @@ from typing import List
 
 from pydantic import BaseModel, model_validator
 
-# Partition names must be lowercase alphanumeric. Hyphens and underscores are
-# stripped at Azure-resource-name time (`_storage_name` in azure_infra.py),
-# so allowing them here would silently collide two configured partitions.
+# Hyphens and underscores are stripped from Azure resource names, so allowing
+# them here would silently collide two partitions.
 _PARTITION_NAME_RE = re.compile(r"^[a-z0-9]+$")
 
-# Storage account naming is the binding constraint: `osdu{env}{partition}{suffix}`
-# with hyphens stripped, max 24 chars. The 5-char suffix is randomly generated
-# on the first `spi up` for a given environment and persisted as the
-# `spi-name-suffix` tag on the resource group; subsequent runs read it back.
-# The validator reserves the suffix budget unconditionally so partition
-# choices that would overflow a future deployment fail at config-build time.
-# Cosmos (44) and Service Bus (50) always fit when storage fits.
+# Storage account names (`osdu{env}{partition}{suffix}`, 24 chars) are the
+# binding limit; Cosmos (44) and Service Bus (50) fit whenever storage fits.
 _STORAGE_NAME_PREFIX = "osdu"
 _STORAGE_NAME_MAX_LEN = 24
 _NAME_SUFFIX_LEN = 5
 
-# Tag key on the resource group that carries the per-deployment suffix.
-# An empty value marks a pre-suffix (legacy) deployment whose names must
-# stay unsuffixed to keep matching the resources already in Azure.
+# Resource group tag carrying the per-deployment suffix. An empty value marks
+# a legacy deployment whose names stay unsuffixed.
 RG_SUFFIX_TAG = "spi-name-suffix"
 
 
 def generate_name_suffix() -> str:
     """Mint a fresh random suffix for a new deployment."""
-    # token_hex returns 2 chars per byte; 3 bytes -> 6 hex chars, take 5.
     return secrets.token_hex(3)[:_NAME_SUFFIX_LEN]
 
 
 class Profile(str, Enum):
-    # Infra plus activated GitOps only. Flux reconciles empty stack and ingress
-    # trees. Namespaces, secrets, ConfigMap, and ServiceAccount come from the CLI
-    # bootstrap; no operators, cert/trust-manager, Gateway, middleware, or services.
+    # Infra and the CLI bootstrap only; Flux reconciles empty trees.
     BARE = "bare"
-    # Middleware only: operators, cert/trust-manager, Gateway, Elasticsearch,
-    # Redis, PostgreSQL, Airflow. Stops before layer 5 (no OSDU services).
+    # Operators, Gateway, and middleware; no OSDU services.
     MINIMAL = "minimal"
-    # Middleware plus the OSDU services, bootstrap Jobs, schema load, and
-    # reference services. Default.
+    # Middleware plus OSDU services, bootstrap Jobs, schema load, and reference services.
     CORE = "core"
 
 
 class IngressMode(str, Enum):
-    # Auto-FQDN (<label>.<region>.cloudapp.azure.com) + Let's Encrypt TLS.
-    # Default. Zero prerequisites.
+    # <label>.<region>.cloudapp.azure.com with Let's Encrypt TLS; no prerequisites.
     AZURE = "azure"
-    # Real DNS zone + ExternalDNS + Let's Encrypt TLS. Zone auto-discovered
-    # from the current subscription.
+    # An Azure DNS zone in the subscription, ExternalDNS, Let's Encrypt TLS.
     DNS = "dns"
-    # Bare IP, HTTP only, no TLS. Hidden fallback for air-gapped debug.
+    # Bare IP over HTTP; hidden debug fallback.
     IP = "ip"
 
 
@@ -83,22 +69,15 @@ class Config(BaseModel):
     repo_branch: str = "main"
     repo_tag: str = ""
     cluster_name: str = BASE_NAME
-    # Azure
     resource_group: str = BASE_NAME
     location: str = "eastus2"
-    # Random 5-char suffix used by globally unique resource names (storage,
-    # KV, ACR, Cosmos, Service Bus). Persisted as the `spi-name-suffix` tag
-    # on the resource group; an empty value marks a legacy (pre-suffix)
-    # deployment whose names must stay unsuffixed.
+    # Suffix on globally unique resource names, read back from RG_SUFFIX_TAG.
     name_suffix: str = ""
-    # Data partitions
     data_partitions: List[str] = ["opendes"]
-    # Derived names (set in from_env)
     identity_name: str = ""
     external_dns_identity_name: str = ""
     keyvault_name: str = ""
     acr_name: str = ""
-    # Ingress / DNS
     ingress_mode: IngressMode = IngressMode.AZURE
     dns_zone: str = ""  # dns mode: auto-discovered if empty
     dns_zone_rg: str = ""  # dns mode: derived from zone lookup
@@ -118,7 +97,7 @@ class Config(BaseModel):
         cluster_name = f"{BASE_NAME}-{env}" if env else BASE_NAME
         resource_group = f"{BASE_NAME}-{env}" if env else BASE_NAME
 
-        # Azure naming: alphanumeric only, 3-24 chars for KV, 5-50 for ACR
+        # Key Vault allows 24 alphanumeric characters, ACR 50.
         safe_env = env.replace("-", "").replace("_", "")
         keyvault_name = f"osdu{safe_env}{name_suffix}"[:24] if env else "osduspistack"
         acr_name = f"osdu{safe_env}{name_suffix}"[:50] if env else "osduspistack"
@@ -158,8 +137,7 @@ class Config(BaseModel):
             raise ValueError(f"data_partitions contains duplicate names: {duplicates}")
 
         sanitized_env = self.env.replace("-", "").replace("_", "")
-        # Reserve the suffix budget even when subscription_id is unknown so
-        # validation matches the names produced at deploy time.
+        # Reserve the suffix budget so validation matches deploy-time names.
         suffix_placeholder = "x" * _NAME_SUFFIX_LEN
         for p in partitions:
             if not _PARTITION_NAME_RE.fullmatch(p):

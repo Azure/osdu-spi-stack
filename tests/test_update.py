@@ -14,9 +14,7 @@
 
 """Tests for the self-update logic in src/spi/update.py.
 
-These tests exercise the parsing and URL-construction paths. The
-network calls (urllib.request.urlopen) and subprocess calls (uv tool
-install) are mocked; this is a unit test, not an integration test.
+Parsing and URL construction only; urlopen and `uv tool install` are mocked.
 """
 
 from __future__ import annotations

@@ -1,8 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# DNS-mode overlay: base gateway (HTTP:80 for ACME challenges) plus three
-# HTTPS:443 listeners, one per hostname (osdu / kibana / airflow),
-# terminated with individual Let's Encrypt certs.
+# DNS-mode overlay: the base gateway plus one HTTPS:443 listener per
+# hostname (osdu, kibana, airflow), each with its own Let's Encrypt cert.
 resources:
   - ../../components/gateway
   - certificates.yaml

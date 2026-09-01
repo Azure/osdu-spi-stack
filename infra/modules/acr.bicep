@@ -15,7 +15,6 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
     name: 'Basic'
   }
   properties: {
-    // Registry admin credentials are disabled; image pulls use RBAC identities.
     adminUserEnabled: false
   }
 }

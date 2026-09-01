@@ -56,10 +56,8 @@ class KustomizationState:
     ready: bool
     reason: str
     message: str
-    # Kustomizations labeled spi-stack.gating: "false" (seeding work such as
-    # spi-osdu-legal) stay visible here with their typed reason but are
-    # excluded from the Ready verdict: "ready" and "seeded" are separate
-    # signals.
+    # Kustomizations labeled spi-stack.gating: "false" stay visible with their
+    # reason but are excluded from the Ready verdict.
     gating: bool = True
 
     def to_dict(self) -> dict[str, str | bool]:
@@ -76,7 +74,7 @@ class KustomizationState:
 class KustomizationReadiness:
     """Flux convergence, computed once so nothing can disagree with it.
 
-    `spi status` and the ADR-030/031 pin guard both derive their Ready
+    `spi status` and the pin guard both derive their Ready
     answer from this, rather than each re-reading Kustomizations.
     """
 
@@ -226,7 +224,7 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
     """Read Flux Kustomizations and derive Ready convergence and its blocker.
 
     The single predicate for Flux readiness: `collect_status` and the pin
-    guard in `pins.py` (ADR-030/031) both call this rather than each
+    guard in `pins.py` both call this rather than each
     re-deriving `ready` from `kubectl get kustomizations`.
     """
 
@@ -329,8 +327,8 @@ def collect_status() -> StatusSnapshot:
     maintenance = record.maintenance if record else False
     deployable = ready and record is not None and not maintenance
 
-    # A Kustomization-readiness blocker takes precedence; maintenance and a
-    # missing record only matter once Flux itself has converged.
+    # A readiness blocker takes precedence; maintenance and a missing record
+    # only matter once Flux has converged.
     if reason is None:
         if maintenance:
             reason = StatusReason(
@@ -498,9 +496,7 @@ def get_helmrelease_table() -> Table:
         history = item.get("status", {}).get("history") or []
         last = history[0] if history else {}
         spec_chart = item.get("spec", {}).get("chart", {}).get("spec", {})
-        # Prefer the resolved chart name / version from the most recent Helm
-        # release history entry. Falls back to spec for releases that haven't
-        # completed a first install yet (where history is empty).
+        # History is empty before the first install completes.
         chart = last.get("chartName") or spec_chart.get("chart", "")
         version = last.get("chartVersion") or spec_chart.get("version", "")
 

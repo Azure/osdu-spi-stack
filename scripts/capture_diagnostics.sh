@@ -13,15 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Capture diagnostics from a live cluster into diagnostics/<label>/.
+# Capture cluster state into diagnostics/<label>/ at the end of a CI run.
+# Every command is best-effort, so a missing tool or context never fails the
+# calling job.
 #
-# Used by CI smoke-test jobs to collect state at the end of a run so a
-# human reviewing a failed pipeline can distinguish "real failure" from
-# "slow but fine" from "broken component X". Every command is best-effort
-# and tolerates missing kubectl context or tool absence so this script
-# never fails the calling job.
-#
-# Usage: bash scripts/capture_diagnostics.sh <label>
+# Usage: capture_diagnostics.sh <label>
 
 set -u
 

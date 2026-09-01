@@ -1,9 +1,8 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// AKS-native Flux extension and cluster-scoped GitOps configuration. This
-// deploys after CLI bootstrap so the osdu-flux namespace and inputs exist
-// before reconciliation starts.
+// AKS Flux extension and cluster-scoped GitOps configuration, deployed after
+// the CLI bootstrap so the osdu-flux namespace and its inputs already exist.
 
 targetScope = 'resourceGroup'
 
@@ -38,9 +37,8 @@ param ingressMode string = 'azure'
 @description('Resource name for the cluster Flux configuration.')
 param configurationName string = 'osdu-spi-stack-system'
 
-// The bare profile has no ingress substrate and always selects its empty tree;
-// ingressMode is unused. Minimal omits the OSDU HTTPRoute Kustomization because
-// that dependsOn spi-osdu-services and would otherwise stall on DependencyNotReady.
+// bare has no ingress substrate, so ingressMode is unused; the minimal trees
+// omit the OSDU HTTPRoutes, whose dependsOn spi-osdu-services would never resolve.
 var ingressPath = profile == 'bare'
   ? './software/stacks/osdu/ingress/bare'
   : profile == 'minimal'
@@ -71,9 +69,9 @@ resource fluxExtension 'Microsoft.KubernetesConfiguration/extensions@2024-11-01'
         releaseNamespace: 'flux-system'
       }
     }
-    // Multi-tenancy enforcement injects flux-applier impersonation, which AKS
-    // Automatic admission policy rejects with `dry-run failed (Forbidden)`.
-    // Disabling it lets controllers apply as their exempt flux-system identities.
+    // Multi-tenancy enforcement applies as an impersonated flux-applier, which
+    // the AKS Automatic admission policy rejects; off, the controllers apply as
+    // their exempt flux-system identities.
     configurationSettings: {
       'multiTenancy.enforce': 'false'
     }
@@ -85,8 +83,8 @@ resource gitopsConfig 'Microsoft.KubernetesConfiguration/fluxConfigurations@2024
   scope: aks
   properties: {
     scope: 'cluster'
-    // AKS Automatic denies deployer writes to flux-system. The CLI seeds
-    // SPI-owned inputs into osdu-flux, so reconciliation uses that namespace.
+    // The deployer cannot write to flux-system on AKS Automatic; the CLI seeds
+    // its inputs into osdu-flux instead.
     namespace: 'osdu-flux'
     sourceKind: 'GitRepository'
     gitRepository: {

@@ -16,12 +16,10 @@
 
 from pathlib import Path
 
-# src/spi/paths.py -> three parents up is the repo root.
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# Bicep templates ship inside the wheel via hatchling force-include
-# ("infra" -> "spi/infra"). Fall back to the repo's top-level infra/ when
-# running from a source checkout (where the package dir has no infra/).
+# The wheel bundles infra/ under the package; a source checkout has it at
+# the repo root.
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 INFRA_ROOT = _PACKAGE_ROOT / "infra"
 if not INFRA_ROOT.exists():

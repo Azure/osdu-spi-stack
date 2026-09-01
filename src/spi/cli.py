@@ -274,19 +274,9 @@ def _resolve_name_suffix(
 ) -> str:
     """Resolve the per-deployment name suffix from the resource group tag.
 
-    Lookup order:
-      1. If the RG already carries the `spi-name-suffix` tag, use its value
-         (empty string = legacy pre-suffix deployment, pin to legacy names).
-      2. If the RG exists without the tag but holds a legacy unsuffixed Key
-         Vault, treat as legacy: return "" so names stay unsuffixed. On `up`
-         we also persist the empty marker so future runs short-circuit at
-         step 1.
-      3. Otherwise mint a new random suffix. On `up` for an existing RG
-         (resumed/failed deploy) we persist immediately; create_resource_group
-         writes the tag for a brand-new RG via the --tags flag.
-
-    `for_up=False` (used by `down`) skips persistence — it's read-only so the
-    displayed config table accurately reflects what's in Azure.
+    The tag wins when present; an empty tag or a legacy unsuffixed Key Vault
+    pins the environment to unsuffixed names; otherwise a suffix is minted.
+    Only `up` persists the result, so `down` reads what is in Azure.
     """
     from .config import generate_name_suffix
 
@@ -313,7 +303,7 @@ def _resolve_name_suffix(
             )
         return existing
 
-    # RG missing or RG present without our tag. Distinguish legacy from fresh.
+    # No tag: distinguish a legacy deployment from a fresh one.
     if detect_legacy_keyvault(rg, env):
         if requested_suffix:
             raise typer.BadParameter(
@@ -326,9 +316,8 @@ def _resolve_name_suffix(
 
     suffix = requested_suffix if requested_suffix is not None else generate_name_suffix()
     if for_up:
-        # Brand-new RGs get tagged by create_resource_group via --tags.
-        # If the RG already exists (resumed/failed deploy with no legacy KV),
-        # persist now so subsequent runs are stable.
+        # A new RG is tagged by create_resource_group; an existing untagged
+        # one is tagged now so subsequent runs are stable.
         rg_exists = run_command(
             ["az", "group", "exists", "--name", rg],
             description=f"Check resource group exists: {rg}",
@@ -355,11 +344,6 @@ def _resolve_up_context(
         requested_suffix=requested_suffix,
     )
     return name_suffix, account, deployer_principal
-
-
-# ---------------------------------------------------------------------------
-# Subcommands
-# ---------------------------------------------------------------------------
 
 
 @app.command()
@@ -602,8 +586,7 @@ def down(
     console.print(Panel("[bold]SPI Stack Cleanup[/bold]", border_style="cyan"))
     check_prerequisites(["az"])
 
-    # Read-only lookup so the displayed config table reflects what's in
-    # Azure. cleanup_azure itself only deletes the resource group.
+    # Read-only, so the displayed config reflects what is in Azure.
     name_suffix = _resolve_name_suffix(env, for_up=False)
     config = _build_config(env=env, name_suffix=name_suffix)
     _show_config(config)
@@ -776,12 +759,9 @@ def reconcile(
         console.print("[dim]Run 'spi reconcile --resume' to unfreeze.[/dim]")
         return
 
-    # spi-namespaces substitutes ISTIO_REVISION from spi-cluster-config, and
-    # that Kustomization gates every layer above it. Refresh the ConfigMap
-    # before any commit is applied so a cluster bootstrapped by an older CLI,
-    # or one whose managed Istio revision was upgraded since the last deploy,
-    # reconciles against the live revision instead of stalling on a missing
-    # or stale substitution source.
+    # spi-namespaces substitutes ISTIO_REVISION from spi-cluster-config and
+    # gates every layer above it, so the ConfigMap is refreshed before any
+    # commit is applied; a stale or missing revision stalls the whole tree.
     console.print("\n[bold]Refreshing cluster config for Flux substitution...[/bold]")
     create_istio_revision_configmap()
 
@@ -840,7 +820,6 @@ def reconcile(
                 f"release with 'spi service reset {name}'[/warning]"
             )
 
-    # Default: force reconcile
     if get_suspend_status():
         console.print(
             Panel(
@@ -881,10 +860,8 @@ def reconcile(
     ]
 
     if refresh_images:
-        # A resolved image tag has to reach schema-service before schema-load
-        # is force-recreated against it, and schema-load has to finish before
-        # reference re-seeds. Wait for each stage in order, but only for
-        # profiles that actually declare these Kustomizations.
+        # Schema-service must run the new tag before schema-load is recreated
+        # against it, and schema-load must finish before reference re-seeds.
         console.print(
             "\n[bold]Waiting for image refresh to propagate in dependency order...[/bold]"
         )

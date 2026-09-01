@@ -1,16 +1,11 @@
 name: Orphan RG Sweeper
 
-# Reap Azure resource groups left behind by canceled smoke pipelines.
-# A canceled smoke run kills the teardown job along with every other job
-# (so `if: always()` does not save us); this sweeper is the backstop.
-#
-# Selection rules in scripts/sweep_orphan_rgs.sh: RG name starts with
-# `spi-stack-ci-` AND has tag `spi-ci-sweep-eligible=true` AND has tag
-# `spi-created-utc` older than 3 hours.
+# Reaps resource groups a cancelled smoke run left behind, since cancellation
+# kills the teardown job too. Selection rules live in scripts/sweep_orphan_rgs.sh.
 
 on:
   schedule:
-    # 4 AM UTC daily, 4 hours before the nightly smoke run (8 AM UTC).
+    # Four hours before the 8 AM UTC smoke run.
     - cron: "0 4 * * *"
   workflow_dispatch:
     inputs:
@@ -33,9 +28,7 @@ concurrency:
 
 jobs:
   sweep:
-    # Use the same environment-scoped OIDC identity and subscription as Smoke,
-    # otherwise the backstop would search the old repository-level subscription
-    # and never find orphaned resource groups created by the new smoke target.
+    # Same identity and subscription as smoke.yml, or the sweep looks in the wrong place.
     environment: azure-smoke
     runs-on: ubuntu-latest
     steps:

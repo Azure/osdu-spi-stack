@@ -106,7 +106,6 @@ def run_bicep_deployment(
 
         result_json = json.loads(result.stdout) if result.stdout else {}
         raw_outputs = result_json.get("properties", {}).get("outputs", {})
-        # Flatten {"key": {"type": "string", "value": "x"}} to {"key": "x"}
         return {k: v.get("value") for k, v in raw_outputs.items()}
     finally:
         try:

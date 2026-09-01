@@ -6,13 +6,10 @@ you may not use this file except in compliance with the License.
 */}}
 
 {{- if .Values.coreEnabled }}
-# Shared scripts used by both partition-init and entitlements-init Jobs.
-# Token acquisition mirrors software/stacks/osdu/schema-load/script.yaml:
-# the AKS Workload Identity webhook exports AZURE_TENANT_ID, AZURE_CLIENT_ID,
-# and AZURE_FEDERATED_TOKEN_FILE, which MSAL exchanges for a bearer token
-# whose appid claim matches the OSDU UAMI. That appid is what partition-azure
-# stores in TenantInfo.service-account and what entitlements authorises as
-# bootstrap admin.
+# Scripts shared by the init Jobs. MSAL exchanges the webhook-injected
+# federated token for a bearer whose appid is the OSDU UAMI; partition-azure
+# stores that appid as TenantInfo.service-account and entitlements authorises
+# it as bootstrap admin.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -218,14 +215,11 @@ data:
         if not wait_for_status(INFO_URL, {200}, attempts=600, delay=2.0):
             return 1
 
-        # Gate on partition record existing. partition-init runs in parallel;
-        # this loop waits until partition service reports the record.
+        # partition-init runs in parallel; wait until the record exists. A
+        # 401/403 still means it does; the GET requires auth.
         if not wait_for_status(
             PARTITION_GET_URL, {200, 401, 403}, attempts=300, delay=2.0
         ):
-            # 401/403 can indicate the record exists but the GET endpoint
-            # requires explicit auth; either way, it tells us partition-init
-            # created the record.
             return 1
 
         print("  Acquiring bearer token via Workload Identity...")
@@ -308,17 +302,16 @@ data:
     from auth import get_token
     from wait import wait_for_status
 
-    # Must match the legal service's AZURE_STORAGE_CONTAINER_NAME env
-    # (services/legal.yaml); the container itself is created per partition by
-    # infra/modules/partition.bicep.
+    # Must match AZURE_STORAGE_CONTAINER_NAME in services/legal.yaml; the
+    # container is created per partition by infra/modules/partition.bicep.
     CONFIG_CONTAINER = "legal-service-azure-configuration"
 
     REQUIRED_ENV = ("PARTITION", "LEGAL_TAG", "KEYVAULT_NAME")
 
-    # activeDeadlineSeconds is sized against the worst case below, or the pod
-    # dies before printing an outcome line: every poll attempt costs WAIT_DELAY
-    # plus WAIT_SOCKET_TIMEOUT, and REQUEST_BUDGET covers eight 60 s calls
-    # (the 409 path adds a tag GET and a validate POST).
+    # The Job's activeDeadlineSeconds must cover the worst case of these, or
+    # the pod dies before printing an outcome: each poll attempt costs
+    # WAIT_DELAY plus WAIT_SOCKET_TIMEOUT, and REQUEST_BUDGET covers eight
+    # 60 s calls.
     WAIT_DELAY = 2.0
     WAIT_SOCKET_TIMEOUT = 5.0
     REQUEST_TIMEOUT = 60
@@ -327,11 +320,9 @@ data:
     PARTITION_RECORD_ATTEMPTS = 120
     LEGAL_AUTHZ_ATTEMPTS = 100
 
-    # Overrides entries in legal's DefaultCountryCode.json rather than
-    # replacing the list. Malaysia must stay "Client consent required": the
-    # legal acceptance suite creates MY tags expecting 201 and only stages
-    # this blob itself when the blob is absent, so ours is what those tests
-    # read.
+    # Overrides entries in legal's DefaultCountryCode.json. Malaysia must stay
+    # "Client consent required": the legal acceptance suite creates MY tags
+    # expecting 201 and reads this blob when it is present.
     COO_CATALOG = [
         {
             "name": "United States of America",
@@ -445,8 +436,7 @@ data:
             method="PUT",
             headers={
                 "Authorization": f"Bearer {token}",
-                # Storage rejects a bearer-authorized request that carries no
-                # request date, and urllib sends none of its own.
+                # Storage rejects a bearer-authorized request with no date.
                 "x-ms-date": formatdate(usegmt=True),
                 "x-ms-version": "2021-08-06",
                 "x-ms-blob-type": "BlockBlob",
@@ -506,9 +496,8 @@ data:
             print(f"  Catalog staging -> {e.code}: {e.read().decode(errors='replace')}")
             catalog_staged = False
         except Exception as e:
-            # SystemExit from get_token deliberately escapes: an unusable token
-            # is not staging-local, and the tag POST re-acquires one, so the run
-            # ends on auth_failed rather than a misleading catalog_not_staged.
+            # SystemExit from get_token escapes on purpose: an unusable token
+            # is not staging-local, so the run ends on auth_failed.
             print(f"  Catalog staging -> {type(e).__name__}: {e}")
             catalog_staged = False
         if not catalog_staged:
@@ -578,7 +567,6 @@ data:
         try:
             rc = main()
         except SystemExit as e:
-            # get_token() raises SystemExit on token-endpoint failures.
             print(f"ERROR: {e}")
             outcome("auth_failed")
             rc = 1

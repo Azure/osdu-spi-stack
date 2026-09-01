@@ -4,10 +4,8 @@ metadata:
   name: airflow
   namespace: osdu-flux
 spec:
-  # Pin release name so chart resources are named airflow-* (not
-  # platform-airflow-*, which is the default Flux <targetNamespace>-<name>
-  # concatenation). Routes and ReferenceGrants target airflow-api-server,
-  # so the release name must match or Envoy returns 500.
+  # Routes and ReferenceGrants target airflow-api-server, so the release
+  # name must stay airflow rather than Flux's default platform-airflow.
   releaseName: airflow
   targetNamespace: platform
   interval: 30m
@@ -26,34 +24,28 @@ spec:
         kind: HelmRepository
         name: apache-airflow
   values:
-    # Pin the Airflow version explicitly so a chart bump can never silently
-    # change the Airflow release.
+    # Pinned so a chart bump cannot silently change the Airflow release.
     airflowVersion: "3.2.2"
     defaultAirflowTag: "3.2.2"
 
     executor: KubernetesExecutor
 
-    # Use external PostgreSQL (CNPG)
     postgresql:
       enabled: false
-    # No Celery broker with KubernetesExecutor; also stops the chart
-    # rendering an unused redis-password secret. (The inert broker-url
-    # Secret still renders; its gate is data.brokerUrlSecretName.)
+    # KubernetesExecutor needs no broker; this also stops the chart rendering
+    # an unused redis-password secret.
     redis:
       enabled: false
     data:
       metadataSecretName: airflow-metadata-secret
 
-    # All Airflow signing material comes from the CLI-generated
-    # airflow-api-credentials secret. Left unset, the chart mints random
-    # api-secret/JWT keys on every Helm render (each Flux reconcile would
-    # invalidate sessions and task tokens) and keeps the fernet key in an
-    # untracked pre-install-hook Secret outside the release.
+    # Signing material comes from the CLI-generated secret. Left unset, the
+    # chart mints new api-secret/JWT keys on every render, invalidating
+    # sessions and task tokens on each Flux reconcile.
     apiSecretKeySecretName: airflow-api-credentials
     jwtSecretName: airflow-api-credentials
     fernetKeySecretName: airflow-api-credentials
 
-    # Disable PVC persistence -- use emptyDir to avoid storage bloat
     workers:
       persistence:
         enabled: false
@@ -61,9 +53,8 @@ spec:
       persistence:
         enabled: false
 
-    # Database migration job. useHelmHooks false is per-job (there is no
-    # global switch): without it Flux skips the hook-owned Job and leaves
-    # the schema uninitialized.
+    # useHelmHooks is per-job; without it Flux skips the hook-owned Job and
+    # leaves the schema uninitialized.
     migrateDatabaseJob:
       enabled: true
       useHelmHooks: false
@@ -91,11 +82,9 @@ spec:
             drop:
               - ALL
 
-    # Create default admin user job (valid under the FAB auth manager, the
-    # chart default for Airflow 3). The admin identity lives only in these
-    # args; the chart's defaultUser block is not consulted once args are
-    # overridden. 'airflow users create' skips existing users, so we follow
-    # up with 'reset-password' to ensure the secret's password wins.
+    # The admin identity lives only in these args; the chart's defaultUser
+    # block is ignored once args are overridden. 'users create' skips an
+    # existing user, so 'reset-password' makes the secret's password win.
     createUserJob:
       useHelmHooks: false
       applyCustomEnv: false
@@ -148,7 +137,6 @@ spec:
             drop:
               - ALL
 
-    # API server (serves the UI, REST API, and task execution API)
     apiServer:
       replicas: 1
       resources:
@@ -176,7 +164,6 @@ spec:
             drop:
               - ALL
 
-    # Scheduler
     scheduler:
       replicas: 1
       resources:
@@ -206,7 +193,6 @@ spec:
             drop:
               - ALL
 
-    # DAG processor (standalone in Airflow 3; parses the DAG folder)
     dagProcessor:
       replicas: 1
       resources:
@@ -236,7 +222,7 @@ spec:
             drop:
               - ALL
 
-    # Triggerer (kept enabled so deferrable operators remain available)
+    # Kept so deferrable operators remain available.
     triggerer:
       persistence:
         enabled: false
@@ -268,7 +254,6 @@ spec:
             drop:
               - ALL
 
-    # StatsD sidecar (AKS Deployment Safeguards compliance)
     statsd:
       resources:
         requests:
@@ -294,16 +279,13 @@ spec:
             drop:
               - ALL
 
-    # DAGs via git-sync (disabled; OSDU GitLab requires authentication)
+    # git-sync is off: OSDU GitLab requires authentication.
     dags:
       gitSync:
         enabled: false
 
-    # Config
     config:
       api:
-        # Only the path component matters: it becomes the FastAPI root_path
-        # so the UI/API serve under /airflow behind the gateway without a
-        # URL rewrite, and the chart derives execution_api_server_url from
-        # the same path.
+        # Only the path matters: it becomes the FastAPI root_path, so the UI
+        # and API serve under /airflow behind the gateway without a rewrite.
         base_url: "http://localhost:8080/airflow"

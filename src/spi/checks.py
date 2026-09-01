@@ -24,10 +24,6 @@ import typer
 from .console import console
 from .shell import run_process
 
-# ---------------------------------------------------------------------------
-# Tool registry -- single source of truth for CLI prerequisites
-# ---------------------------------------------------------------------------
-
 
 class ToolInfo(TypedDict, total=False):
     check_args: list[str]
@@ -47,9 +43,7 @@ TOOL_REGISTRY: dict[str, ToolInfo] = {
         },
     },
     "bicep": {
-        # Bicep is bundled with recent az and invoked via `az bicep`.
-        # check_cmd overrides the default [name] + check_args pattern so we
-        # do not require a standalone bicep binary on PATH.
+        # Bicep ships inside az, so no standalone binary is required on PATH.
         "check_cmd": ["az", "bicep", "version"],
         "description": "Bicep compiler (bundled with Azure CLI)",
         "install": {
@@ -93,13 +87,7 @@ TOOL_REGISTRY: dict[str, ToolInfo] = {
 }
 
 
-# All tools are required; Azure is the only target.
 PREREQ_TOOLS: List[str] = list(TOOL_REGISTRY.keys())
-
-
-# ---------------------------------------------------------------------------
-# Platform detection
-# ---------------------------------------------------------------------------
 
 
 def detect_platform() -> str:
@@ -109,15 +97,9 @@ def detect_platform() -> str:
     return "unknown"
 
 
-# ---------------------------------------------------------------------------
-# Tool checking
-# ---------------------------------------------------------------------------
-
-
 def check_tool_status(name: str, check_args: Optional[list] = None) -> tuple:
     """Check if a tool is installed and capture version output."""
     info = TOOL_REGISTRY.get(name, {})
-    # check_cmd (if present) is a full argv; otherwise build [name] + args
     cmd = info.get("check_cmd")
     if cmd is None:
         args = check_args or info.get("check_args", ["--version"])
@@ -145,11 +127,6 @@ def get_install_hint(tool_name: str) -> Optional[str]:
     return install.get(plat) or install.get("*")
 
 
-# ---------------------------------------------------------------------------
-# Pre-flight check used by ``spi up`` / ``spi down``
-# ---------------------------------------------------------------------------
-
-
 def check_prerequisites(tools: List[str]) -> None:
     """Verify that each tool is installed; exit on the first missing one."""
     console.print("\n[bold]Checking prerequisites...[/bold]")
@@ -171,11 +148,6 @@ def check_prerequisites(tools: List[str]) -> None:
         console.print(f"\n[error]Missing required tools: {', '.join(missing)}[/error]")
         console.print("[dim]Run 'spi check' for full details.[/dim]")
         raise typer.Exit(code=1)
-
-
-# ---------------------------------------------------------------------------
-# Full check run (``spi check``)
-# ---------------------------------------------------------------------------
 
 
 def run_checks() -> list:

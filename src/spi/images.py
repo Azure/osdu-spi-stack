@@ -81,11 +81,9 @@ class ResolvedImage:
         return f"{self.repository}:{self.tag}"
 
 
-# Service registry: maps service name to GitLab project ID, image base name,
-# and the stack YAML file that carries the default image reference.
-# Project IDs from community.opengroup.org GitLab.
+# Service name to community GitLab project ID, image base name, and the stack
+# file carrying the default image reference.
 IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
-    # Core services (software/stacks/osdu/services/)
     "partition": ImageRegistryEntry(221, "partition", "services/partition.yaml"),
     "entitlements": ImageRegistryEntry(400, "entitlements", "services/entitlements.yaml"),
     "legal": ImageRegistryEntry(74, "legal", "services/legal.yaml"),
@@ -101,7 +99,6 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
     "indexer-queue": ImageRegistryEntry(73, "indexer-queue", "services/indexer-queue.yaml"),
     "file": ImageRegistryEntry(90, "file", "services/file.yaml"),
     "workflow": ImageRegistryEntry(146, "ingestion-workflow", "services/workflow.yaml"),
-    # Reference services (software/stacks/osdu/services-reference/)
     "crs-conversion": ImageRegistryEntry(
         22,
         "crs-conversion-service",
@@ -143,9 +140,8 @@ def gitlab_get(url: str, attempts: int = 3):
             with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
                 return json.loads(resp.read())
         except (TimeoutError, urllib.error.URLError, ConnectionError) as exc:
-            # HTTP error responses (4xx/5xx) are URLError subclasses but
-            # indicate a server-side answer, not a transient network blip;
-            # retry only non-HTTP failures and 5xx.
+            # HTTPError is a URLError subclass; only network failures and 5xx
+            # are transient.
             if isinstance(exc, urllib.error.HTTPError) and exc.code < 500:
                 raise
             last_error = exc
@@ -388,7 +384,7 @@ def parse_image_digest_ref(ref: str) -> tuple[str, str]:
     """Split an image reference into (repository, digest), digest required.
 
     Tags are rejected outright: a fork deploy's identity is the manifest
-    digest (ADR-031), and GHCR's ``sha-*`` tags are pruned after 30 days, so
+    digest, and GHCR's ``sha-*`` tags are pruned after 30 days, so
     a tag reference would go stale under a live pin.
     """
 
@@ -410,9 +406,8 @@ def parse_image_digest_ref(ref: str) -> tuple[str, str]:
             f"image reference {ref!r} carries a tag alongside the digest; "
             "pin by digest alone as <repository>@sha256:<digest>"
         )
-    # OCI repository paths are case-insensitive on the registry but must be
-    # lowercase on the wire; a mixed-case ref would resolve but then fail
-    # the containerd pull once written to a Deployment.
+    # A mixed-case repository resolves at the registry but fails the
+    # containerd pull once written to a Deployment.
     return repository.lower(), digest
 
 
@@ -425,8 +420,8 @@ def _ghcr_pull_token(path: str) -> str:
     token_req = urllib.request.Request(token_url, headers={"User-Agent": "spi-stack-resolver"})
     with urllib.request.urlopen(token_req, timeout=15) as resp:  # nosec B310
         payload = json.loads(resp.read())
-    # A non-object payload reads as no token; the registry's 401 on the
-    # follow-up request then fails closed through the caller's error path.
+    # A non-object payload reads as no token and fails closed on the 401 that
+    # follows.
     token = payload.get("token", "") if isinstance(payload, dict) else ""
     return token if isinstance(token, str) else ""
 
@@ -469,7 +464,7 @@ def ghcr_index_child_digests(repository: str, digest: str) -> tuple[str, ...]:
 
 
 def require_ghcr_repository(repository: str) -> None:
-    """Enforce the ADR-031 GHCR owner allow-list on a pin's repository."""
+    """Enforce the GHCR owner allow-list on a pin's repository."""
 
     parts = repository.lower().split("/")
     if len(parts) < 3 or parts[0] != GHCR_HOST or parts[1] not in GHCR_ALLOWED_OWNERS:
@@ -511,7 +506,7 @@ def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> No
                     f"manifest {digest} not found in {repository}; confirm the run "
                     "pushed this digest and the package is public"
                 ) from exc
-            # 429 is anonymous-pull rate limiting: transient, retried like a 5xx.
+            # 429 is anonymous-pull rate limiting, retried like a 5xx.
             if exc.code < 500 and exc.code != 429:
                 raise ImageResolutionError(
                     f"GHCR refused the manifest check for {repository}@{digest}: HTTP {exc.code}"
@@ -531,7 +526,7 @@ def image_lock_missing_schema_load(lock_data: Mapping[str, str]) -> bool:
 
     A lock missing the composed ref counts as missing even when it already
     carries repository/tag: the schema-load Job substitutes the single
-    ``_IMAGE_REF`` key (ADR-013), so a lock recorded before that key existed
+    ``_IMAGE_REF`` key, so a lock recorded before that key existed
     still needs backfilling.
     """
 
@@ -556,7 +551,7 @@ def schema_load_lock_patch(
     """Return the loader entries missing from an existing image lock.
 
     Locks generated before schema-load joined the live lock carry a schema pin
-    but no loader keys, and the Job requires them (ADR-013). The loader is
+    but no loader keys, and the Job requires them. The loader is
     resolved from the schema tag the lock already records, so the backfill
     keeps the loader on the running service's commit instead of jumping to the
     newest master build.
@@ -627,8 +622,7 @@ def build_lock_data(
     for name in image_lock_names():
         image = resolved[name]
         key = image_lock_key(name)
-        # A digest pin carries no tag; fall back to the digest ref so the
-        # informational _IMAGE key never renders a dangling "repository:".
+        # A digest pin has no tag; the digest ref avoids a dangling "repository:".
         data[f"{key}_IMAGE"] = (
             image.image if image.tag else image_ref(image.repository, image.tag, image.digest)
         )

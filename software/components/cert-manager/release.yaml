@@ -16,9 +16,8 @@ spec:
   values:
     crds:
       enabled: true
-    # Enable Gateway API support so ClusterIssuers can solve HTTP-01
-    # challenges via gatewayHTTPRoute (required by our Let's Encrypt
-    # ClusterIssuers in software/components/cert-manager-issuers/).
+    # Gateway API support: the Let's Encrypt ClusterIssuers solve HTTP-01 via
+    # gatewayHTTPRoute.
     config:
       apiVersion: controller.config.cert-manager.io/v1alpha1
       kind: ControllerConfiguration
@@ -26,11 +25,11 @@ spec:
     global:
       podSecurityPolicy:
         enabled: false
-      # kube-system is a protected namespace on AKS Automatic; leader
-      # election Leases must live in the release namespace instead.
+      # kube-system is protected on AKS Automatic; Leases live in the
+      # release namespace.
       leaderElection:
         namespace: foundation
-    # AKS Automatic Safeguards compliance
+    # AKS Deployment Safeguards compliance
     securityContext:
       runAsNonRoot: true
       seccompProfile:

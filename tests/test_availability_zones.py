@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for subscription-resolved system pool availability zones (ADR-027)."""
+"""Tests for subscription-resolved system pool availability zones."""
 
 import json
 import os

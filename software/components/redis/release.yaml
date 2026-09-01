@@ -14,7 +14,7 @@ spec:
         kind: HelmRepository
         name: bitnami
   values:
-    # Pin image to bitnamilegacy repo (Bitnami removes old tags from main repo)
+    # Bitnami prunes old tags from its main repo; bitnamilegacy keeps them.
     image:
       registry: docker.io
       repository: bitnamilegacy/redis
@@ -26,9 +26,8 @@ spec:
       existingSecretPasswordKey: password
     tls:
       enabled: true
-      # Clients speak TLS but do not present a client certificate. Without
-      # this flag the Bitnami chart defaults to tls-auth-clients yes which
-      # enforces mutual TLS and rejects Lettuce with "certificate_required".
+      # The chart default enforces mutual TLS, which rejects Lettuce with
+      # "certificate_required"; clients present no certificate.
       authClients: false
       existingSecret: redis-tls-secret
       certFilename: tls.crt
@@ -38,10 +37,8 @@ spec:
       count: 1
       containerPorts:
         redis: 6380
-      # Redis is a cache, not a durable data store. Active PVCs survive pod
-      # restarts and rolling updates; delete claims for scaled-down replicas
-      # and removed StatefulSets (for example minimal/core -> bare) so lifecycle
-      # changes do not leave billable unattached disks behind.
+      # Redis is a cache: claims of scaled-down replicas and removed
+      # StatefulSets are deleted so profile changes leave no orphan disks.
       persistentVolumeClaimRetentionPolicy:
         enabled: true
         whenScaled: Delete

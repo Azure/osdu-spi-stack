@@ -1,5 +1,4 @@
-# Istio Gateway using Gateway API (managed by AKS Automatic).
-# The external ingress gateway is provisioned by AKS managed Istio.
+# Gateway API Gateway bound to the AKS managed Istio ingress.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:

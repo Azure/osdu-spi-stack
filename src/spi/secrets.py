@@ -12,16 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Secret management for SPI Stack.
+"""Seed secrets for the in-cluster middleware.
 
-SPI Stack only needs secrets for the in-cluster middleware:
-  - Elasticsearch (elastic user)
-  - Redis (default user)
-  - PostgreSQL (Airflow metadata database)
-  - Airflow (admin password plus api-secret/JWT/fernet signing keys;
-    the fernet key is format-sensitive: urlsafe-base64, 32 bytes)
-
-Azure PaaS services use Workload Identity (no stored secrets).
+Only Elasticsearch, Redis, PostgreSQL, and Airflow need stored secrets;
+Azure PaaS access goes through Workload Identity.
 """
 
 import base64
@@ -55,7 +49,7 @@ def _generate_password(length: int = 24) -> str:
 
 
 def _generate_fernet_key() -> str:
-    # Fernet requires a urlsafe-base64-encoded 32-byte key, not a password.
+    # Fernet requires a urlsafe-base64 32-byte key, not a password.
     return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
 
 
@@ -127,7 +121,6 @@ def get_or_create_seed() -> dict:
 
 def _create_platform_secrets(s: dict):
     """Create infrastructure secrets in the platform namespace."""
-    # PostgreSQL (Airflow metadata)
     _kubectl_apply_secret(
         "platform",
         "postgresql-superuser-credentials",
@@ -145,7 +138,6 @@ def _create_platform_secrets(s: dict):
         },
     )
 
-    # Elasticsearch
     _kubectl_apply_secret(
         "platform",
         "elasticsearch-es-elastic-user",
@@ -154,7 +146,6 @@ def _create_platform_secrets(s: dict):
         },
     )
 
-    # Redis
     _kubectl_apply_secret(
         "platform",
         "redis-credentials",
@@ -163,22 +154,17 @@ def _create_platform_secrets(s: dict):
         },
     )
 
-    # Airflow metadata connection
     pg_host = "postgresql-rw.platform.svc.cluster.local"
     _kubectl_apply_secret(
         "platform",
         "airflow-metadata-secret",
         {
-            # Bare postgresql:// on purpose: SQLAlchemy already defaults to
-            # psycopg2, and the chart feeds this same string to the built-in
-            # airflow_db Connection, where a +driver suffix is an unknown
-            # conn_type.
+            # Bare postgresql://: the chart feeds this string to the airflow_db
+            # Connection, where a +driver suffix is an unknown conn_type.
             "connection": f"postgresql://airflow:{s['pg_airflow_password']}@{pg_host}:5432/airflow",
         },
     )
-    # Airflow signing material. The key names are fixed by the chart:
-    # api-secret-key (apiSecretKeySecretName), jwt-secret (jwtSecretName),
-    # fernet-key (fernetKeySecretName). 'password' is the admin UI/API user.
+    # Key names are fixed by the Airflow chart; 'password' is the admin user.
     _kubectl_apply_secret(
         "platform",
         "airflow-api-credentials",
@@ -192,13 +178,10 @@ def _create_platform_secrets(s: dict):
 
 
 def _create_osdu_secrets(s: dict):
-    """Create secrets needed by OSDU services in the osdu namespace.
+    """Create the Elasticsearch and Redis credential secrets in osdu.
 
-    Most OSDU services use Workload Identity for Azure PaaS access.
-    Only Elasticsearch and Redis credentials need to be in K8s secrets.
+    The CA certificates arrive separately through trust-manager Bundles.
     """
-    # Elasticsearch CA cert will be copied cross-namespace by the
-    # middleware manifests. Just ensure the credential secrets exist.
     for svc in ["indexer", "search"]:
         _kubectl_apply_secret(
             "osdu",

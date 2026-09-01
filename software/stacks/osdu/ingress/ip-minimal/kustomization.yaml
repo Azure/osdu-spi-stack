@@ -1,12 +1,10 @@
 # SPI Stack - Ingress profile: IP, minimal variant
 #
-# Only the base Gateway. The ip ingress mode attaches no cert issuers,
-# no Kibana, no TLS overlay and no middleware routes, and the minimal
-# stack profile deploys no OSDU services -- so the HTTP:80 listener has
-# nothing routed to it. The Gateway is still rendered here because the
-# ingress tree is its sole Flux owner and it is what gives the
-# cluster its Istio ingress LoadBalancer. Reach middleware UIs with
-# `kubectl port-forward` on this combination.
+# Only the base Gateway. The ip mode attaches no issuers, Kibana, TLS
+# overlay, or middleware routes, and minimal deploys no OSDU services, so
+# the HTTP:80 listener routes nothing. The Gateway is still rendered: the
+# ingress tree is its sole Flux owner and it provides the Istio ingress
+# LoadBalancer. Reach the middleware UIs with `kubectl port-forward`.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

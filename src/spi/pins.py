@@ -17,7 +17,7 @@
 A pin points one service at a container image other than its canonical:
 either the image built by an OSDU GitLab merge-request pipeline, resolved
 from the MR's source branch at its head commit, or a fork-built GHCR image
-identified by manifest digest (ADR-031). Pins live in the lock itself: the
+identified by manifest digest. Pins live in the lock itself: the
 service's data keys are overwritten and provenance (origin, canonical
 image, owning workflow run, timestamps) is recorded in one JSON
 annotation, so `spi reconcile --refresh-images` and `spi up` can re-render
@@ -67,28 +67,26 @@ from .shell import run_command, run_process
 
 PINS_ANNOTATION = "spi-stack.osdu.dev/pins"
 
-# Pin origins recorded in the annotation (fork-deployment.md schema).
+# Pin origins recorded in the annotation.
 GITLAB_MR_ORIGIN = "gitlab-mr"
 GITHUB_ORIGIN = "github"
 
-# OSDU workloads land in this namespace; Flux names each Helm release
-# <targetNamespace>-<name>, so the Deployment and container for a service
-# default to "osdu-<service>".
+# Flux names each Helm release <targetNamespace>-<name>, so a service's
+# Deployment and container default to "osdu-<service>".
 WORKLOAD_NAMESPACE = "osdu"
 
 GITHUB_API_HOST = "https://api.github.com"
 
-# kustomize-controller re-reconciles the lock's substituteFrom consumers when
-# an object carrying this label changes; without it a lock write waits for the
-# next periodic reconciliation.
+# Without this label a lock write waits for the next periodic reconciliation
+# instead of re-reconciling its substituteFrom consumers on change.
 _FLUX_WATCH_LABEL = "reconcile.fluxcd.io/watch"
 
-# The stale sweep may reclaim an ephemeral pin on age alone only past this
-# threshold; it must exceed any deploy-plus-test budget.
+# Age past which the sweep may reclaim an ephemeral pin without a terminal
+# run; must exceed any deploy-plus-test budget.
 STALE_EPHEMERAL_PIN_AGE_HOURS = 6
 
 _RUN_ID_RE = re.compile(r"^[0-9]+$")
-# Only these repositories may record or answer a pin's owning-run state; the
+# Only these repositories may answer a pin's owning-run state; the
 # fork-written source_run_url is display-only and never fetched.
 _FORK_SOURCE_REPO_RE = re.compile(r"^azure/osdu-spi-[a-z0-9._-]+$", re.IGNORECASE)
 
@@ -99,7 +97,6 @@ _FILE_KUSTOMIZATIONS = {
     "schema-load/": "spi-osdu-schema-load",
 }
 
-# Bounded resourceVersion compare-and-retry for the live image lock.
 LOCK_MUTATION_MAX_ATTEMPTS = 5
 _LOCK_MUTATION_BASE_DELAY_SECONDS = 1.0
 _CONFLICT_MARKERS = (
@@ -154,11 +151,9 @@ class ServicePin:
     canonical_created_at: str
     canonical_digest: str
     applied_at: str
-    # Optional so a pin encoded before these fields existed keeps decoding.
+    # Defaults keep older annotations decoding as non-ephemeral operator pins.
     created_at: str = ""
     digest: str = ""
-    # Fork-deploy provenance; the empty defaults read an older
-    # annotation as a non-ephemeral operator pin.
     origin: str = ""
     ephemeral: bool = False
     run_id: str = ""
@@ -252,8 +247,8 @@ def resolve_mr_image(
         raise PinError(f"MR {mr_iid}: missing source branch or head commit in API response")
 
     errors: list[str] = []
-    # GitLab slugs the full ref name, so the trusted copy's slug truncates
-    # after the prefix rather than prefixing an already truncated slug.
+    # GitLab slugs the full ref name, so the trusted copy is slugged whole
+    # rather than prefixed onto an already truncated slug.
     for branch in (ref_slug(source_branch), ref_slug(f"trusted-{source_branch}")):
         try:
             return resolve_image_commit(service, entry, branch, sha), mr
@@ -336,8 +331,7 @@ def encode_pins(pins: dict[str, ServicePin]) -> str:
 def _lock_entry_patch(service: str, repository: str, tag: str, created_at: str, digest: str):
     key = image_lock_key(service)
     return {
-        # A digest pin carries no tag; the informational _IMAGE key falls
-        # back to the digest ref rather than a dangling "repository:".
+        # A digest pin has no tag; the digest ref avoids a dangling "repository:".
         f"{key}_IMAGE": f"{repository}:{tag}" if tag else image_ref(repository, tag, digest),
         f"{key}_IMAGE_REPOSITORY": repository,
         f"{key}_IMAGE_TAG": tag,
@@ -369,20 +363,15 @@ def mutate_lock(
 ) -> dict:
     """Create or update the live image lock with bounded compare-and-retry.
 
-    ``mutator`` is called with the freshly read ConfigMap, or ``None`` when
-    it does not exist yet, and must return the complete desired object
-    (only its ``data`` and ``metadata.annotations`` are used). It runs again
-    on every retry so a concurrent writer's change is recomputed from a
-    fresh read instead of clobbered by a stale patch.
+    ``mutator`` receives the freshly read ConfigMap, or ``None`` when it does
+    not exist, and returns the complete desired object; only ``data`` and
+    ``metadata.annotations`` are used. It runs again on every retry so a
+    concurrent writer's change is recomputed rather than clobbered.
 
-    A missing lock is created; losing the create race to another writer
-    rereads and falls into the update path. An existing lock is updated
-    with a JSON Patch carrying a ``test`` precondition on
-    ``metadata.resourceVersion`` ahead of the ``data``/``annotations``/
-    ``labels`` replacement, so the patch verb stays compatible with future
-    patch-only RBAC. Only a resourceVersion test failure or a losing create race is
-    retried, with bounded exponential backoff; any other failure raises a
-    clear terminal error immediately.
+    Updates go through a JSON Patch with a ``test`` on
+    ``metadata.resourceVersion``, keeping the verb compatible with
+    patch-only RBAC. Only a failed test or a lost create race is retried;
+    any other failure raises immediately.
     """
 
     delay = _LOCK_MUTATION_BASE_DELAY_SECONDS
@@ -430,8 +419,7 @@ def mutate_lock(
                 )
             raise PinError(f"{description}: could not create {IMAGE_LOCK_CONFIGMAP}: {stderr}")
 
-        # Re-asserting the labels heals a lock created before the watch label
-        # existed, so the first pin write restores label-driven reconciliation.
+        # Re-asserting the label heals a lock created before it existed.
         labels = dict(((lock.get("metadata") or {}).get("labels")) or {})
         labels[_FLUX_WATCH_LABEL] = "Enabled"
         patch = json.dumps(
@@ -481,14 +469,12 @@ def mutate_lock(
             )
         raise PinError(f"{description}: could not update {IMAGE_LOCK_CONFIGMAP}: {stderr}")
 
-    # Every iteration above returns or raises; this satisfies static analysis
-    # that the loop cannot fall through without one of the two.
+    # Every iteration returns or raises; this satisfies static analysis.
     raise AssertionError("unreachable: mutate_lock attempt loop exited without result")
 
 
-# Dependency order for pin consumers: a changed schema image has to reach the
-# service before the loader Job is recreated against it, and the loader has to
-# finish before reference re-seeds (same sequence as `spi reconcile`).
+# A changed schema image must reach the service before the loader Job is
+# recreated, and the loader must finish before reference re-seeds.
 _CONSUMER_ORDER = ("spi-osdu-services", "spi-osdu-schema-load", "spi-osdu-reference")
 
 
@@ -523,7 +509,7 @@ def reconcile_consumers(services: list[str]) -> None:
 
 
 def _refuse_unless_deployable() -> None:
-    """Enforce the ADR-030 deployable rule on pin writes, fail-closed.
+    """Enforce the deployable rule on pin writes, fail-closed.
 
     Refuses unless every Kustomization is Ready, the deploy record is
     present, and ``maintenance`` is unset: the same `deployable` rule
@@ -566,19 +552,15 @@ def _refuse_unless_deployable() -> None:
 def _post_write_maintenance_check() -> str | None:
     """Return why a lifecycle run intervened during the write, or None.
 
-    Re-reads the deploy record after the lock write closes the ADR-029
-    window between `_refuse_unless_deployable`'s pre-check and the CAS write:
-    a lifecycle run can set `maintenance` while `pin_service` is doing its
-    GitLab round trips and lock mutation. An unreadable or now-absent record
-    is treated the same as maintenance, since both mean the environment is
-    no longer deployable (ADR-030).
+    A lifecycle run can set `maintenance` between the pre-check and the CAS
+    write, while `pin_service` is on its GitLab round trips. An unreadable or
+    absent record counts as maintenance; both mean the environment is no
+    longer deployable.
 
-    Deliberately does not recheck Kustomization readiness: `reconcile_consumers`
-    runs immediately after this check succeeds and is expected to carry the
-    affected Kustomization through a Ready -> not-Ready -> Ready cycle, so
-    readiness right after the write is not a signal that anything went wrong.
-    Only `maintenance`, which exclusively a concurrent lifecycle run sets,
-    distinguishes that from an ordinary write.
+    Kustomization readiness is not rechecked: `reconcile_consumers` runs
+    next and carries the affected Kustomization through a not-Ready cycle,
+    so readiness right after the write signals nothing. Only `maintenance`,
+    which only a lifecycle run sets, distinguishes an intervention.
     """
 
     try:
@@ -616,18 +598,16 @@ def _revert_pin(mutation: _LockMutation, description: str) -> list[str]:
     """Undo this call's lock write, restoring exactly the state it replaced.
 
     All or nothing: if any mutated name's live pin no longer holds what this
-    call left there, a concurrent `spi service pin` owns the entry now, and
-    the whole mutation is left standing. Reverting only part of a schema and
-    loader pair would produce the very mismatch the pair exists to prevent.
-    Restoring replays the captured annotation and data keys verbatim, which
-    a pin encoded before `created_at` and `digest` existed cannot survive
-    being re-derived from: ADR-017's digest keys are load-bearing and a
-    restore must not blank them. Returns the names reverted, empty when the
-    mutation no longer stands.
+    call wrote, a concurrent `spi service pin` owns it and the whole mutation
+    stands, since reverting half a schema and loader pair would produce the
+    mismatch the pair exists to prevent. The captured annotation and data
+    keys are replayed verbatim; re-deriving them would blank the digest keys
+    of a pin encoded before `created_at` and `digest` existed. Returns the
+    names reverted, empty when the mutation no longer stands.
 
-    Residual: a predecessor pin restored here may itself belong to a
-    concurrent call that also failed, which the lock cannot distinguish from
-    one that succeeded. ADR-031's recorded owning run is what closes that.
+    A predecessor pin restored here may itself belong to a concurrent call
+    that failed; the lock cannot tell, and the recorded owning run is what
+    closes that.
     """
 
     reverted: list[str] = []
@@ -645,8 +625,8 @@ def _revert_pin(mutation: _LockMutation, description: str) -> list[str]:
 
         for name, pin in mutation.written.items():
             live = pins.get(name)
-            # Full dataclass equality: a concurrent replacement sharing only
-            # the run, digest, and applied_at must not read as this mutation.
+            # Full equality: a concurrent replacement sharing run, digest, and
+            # applied_at must not read as this mutation.
             stands = live is None if pin is None else live == pin
             if not stands:
                 raise _MutationSuperseded
@@ -703,7 +683,7 @@ def _captured_canonical(
 
 
 def _abort_if_maintenance_intervened(mutation: _LockMutation, service: str) -> None:
-    """Roll this call's lock write back if a lifecycle run intervened (ADR-029)."""
+    """Roll this call's lock write back if a lifecycle run intervened."""
 
     blocker = _post_write_maintenance_check()
     if not blocker:
@@ -742,8 +722,8 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     if service == SCHEMA_SERVICE_NAME:
         targets.append(SCHEMA_LOAD_SERVICE_NAME)
 
-    # Resolve MR pipeline images once, independent of the lock's state: this
-    # is a network round trip and must not repeat on every CAS retry.
+    # Resolved once, outside the mutator, so the network round trip does not
+    # repeat on every CAS retry.
     resolved: list[tuple[str, ResolvedImage, dict]] = []
     loader_missing = False
     mr_snapshots: dict[int, dict] = {}
@@ -756,8 +736,8 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
         except MissingPipelineImageError:
             if name != SCHEMA_LOAD_SERVICE_NAME:
                 raise
-            # The MR may not rebuild the loader image; the service pin alone
-            # is still a valid experiment.
+            # An MR need not rebuild the loader image; the service pin alone
+            # is still valid.
             loader_missing = True
             continue
         resolved.append((name, image, mr))
@@ -790,8 +770,8 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
             }
 
         if loader_missing:
-            # A loader still pinned by an earlier MR must not survive as a
-            # mismatched pair with the newly pinned schema image; release it.
+            # A loader pinned by an earlier MR must not pair with the new
+            # schema image; release it.
             stale = pins.get(SCHEMA_LOAD_SERVICE_NAME)
             if stale:
                 if not stale.canonical_repository or not stale.canonical_tag:
@@ -870,7 +850,7 @@ def pin_service_image(
     source_sha: str = "",
     source_run_url: str = "",
 ) -> ServicePin:
-    """Pin a service to a fork-built GHCR image by manifest digest (ADR-031).
+    """Pin a service to a fork-built GHCR image by manifest digest.
 
     Unlike an MR pin the target is exactly the named service: a fork build
     ships one image, so a schema pin never pins the loader, and a loader
@@ -938,8 +918,8 @@ def pin_service_image(
 
         released_now: dict[str, ServicePin] = {}
         if service == SCHEMA_SERVICE_NAME:
-            # A loader still pinned by an earlier MR must not survive as a
-            # mismatched pair with the fork-pinned schema image; release it.
+            # A loader pinned by an earlier MR must not pair with the fork
+            # schema image; release it.
             stale = pins.get(SCHEMA_LOAD_SERVICE_NAME)
             if stale:
                 if not stale.canonical_repository or not stale.canonical_tag:
@@ -1001,8 +981,8 @@ def pin_service_image(
     mutation = _LockMutation(written=written, prior_pins=prior_pins, prior_entries=prior_entries)
     _abort_if_maintenance_intervened(mutation, service)
 
-    # A run-owned pin converges through the lock's watch label: the fork
-    # deploy role cannot patch Kustomizations, and verify gates the deploy.
+    # The fork deploy role cannot patch Kustomizations; a run-owned pin
+    # converges through the lock's watch label and verify gates the deploy.
     if not ephemeral:
         reconcile_consumers([service] + released)
     return applied
@@ -1011,7 +991,7 @@ def pin_service_image(
 def reset_service(service: str, if_run: str = "") -> ResetResult:
     """Release a service pin, restoring its canonical image when one was recorded.
 
-    With ``if_run`` the reset is ownership-conditional (ADR-031): it acts
+    With ``if_run`` the reset is ownership-conditional: it acts
     only while the live pin still records that owning run, so a crashed
     run's always-run restore job cannot clobber a newer sibling's pin. A
     refusal is a typed ``ResetRefusedError`` and mutates nothing. Run-owned
@@ -1088,7 +1068,7 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
 
     mutate_lock(compute, f"Reset {service}")
     # The run-conditional restore runs under the fork deploy role, which
-    # cannot patch Kustomizations; the lock's watch label converges it.
+    # cannot patch Kustomizations; the watch label converges it.
     if restored and not if_run:
         reconcile_consumers(restored)
     return ResetResult(tuple(restored), tuple(refresh_required))
@@ -1118,7 +1098,7 @@ def _kubectl_read_json(args: list[str], describe: str) -> dict | None:
 
 def _collision_note(service: str, digest: str) -> str:
     """Name the pin now holding the lock when it is not ours: the
-    cross-pipeline guard's fail-fast diagnostic (ADR-031)."""
+    cross-pipeline guard's fail-fast diagnostic."""
 
     try:
         pin = live_pins().get(service)
@@ -1228,9 +1208,8 @@ def verify_service_image(
     updated = dep_status.get("updatedReplicas", 0)
     available = dep_status.get("availableReplicas", 0)
     total = dep_status.get("replicas", 0)
-    # Kubernetes' Deployment-complete predicate: every status count equals the
-    # desired count exactly, so a scale-down still draining old pods (counts
-    # above desired) cannot read as complete.
+    # Kubernetes' own complete predicate: exact equality, so a rollout still
+    # draining old pods cannot read as complete.
     if observed < generation or updated != replicas or total != replicas or available != replicas:
         raise VerifyError(
             "rollout_incomplete",
@@ -1267,8 +1246,8 @@ def verify_service_image(
             if entry.get("name") == container:
                 statuses.append((pod, entry.get("imageID", "")))
 
-    # The runtime can report the platform manifest it selected from a pinned
-    # OCI index instead of the index digest itself; accept its children too.
+    # The runtime may report the platform manifest it selected from an OCI
+    # index rather than the index digest; accept its children too.
     accepted: tuple[str, ...] = (digest,)
     if statuses and not any(digest in image_id for _, image_id in statuses):
         accepted += ghcr_index_child_digests(repository, digest)
@@ -1310,8 +1289,8 @@ def _github_run_status(source_repo: str, run_id: str) -> str | None:
         with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
             payload = json.loads(resp.read())
     except urllib.error.HTTPError:
-        # A 404 may be a deleted run, but also a repository this caller cannot
-        # read; neither proves the run terminal, so the age threshold decides.
+        # A 404 is a deleted run or an unreadable repository; neither proves
+        # the run terminal, so the age threshold decides.
         return None
     except (TimeoutError, urllib.error.URLError, ConnectionError, json.JSONDecodeError):
         return None
@@ -1323,7 +1302,7 @@ def _pin_age_exceeds_threshold(pin: ServicePin, now: datetime) -> bool:
     try:
         applied = datetime.fromisoformat(pin.applied_at.replace("Z", "+00:00"))
     except ValueError:
-        # An undecodable timestamp cannot prove the pin young; sweep it.
+        # An undecodable timestamp cannot prove the pin young.
         return True
     if applied.tzinfo is None:
         applied = applied.replace(tzinfo=timezone.utc)
@@ -1331,7 +1310,7 @@ def _pin_age_exceeds_threshold(pin: ServicePin, now: datetime) -> bool:
 
 
 def sweep_stale_ephemeral_pins() -> SweepResult:
-    """Sweep abandoned ephemeral pins: ADR-031's weekday backstop.
+    """Sweep abandoned ephemeral pins, the weekday backstop.
 
     A pin is stale when its owning workflow run reports a terminal state or,
     when that state is unreachable, when its age exceeds
@@ -1379,9 +1358,8 @@ def sweep_stale_ephemeral_pins() -> SweepResult:
         replaced = []
         for name, expected in stale.items():
             live = pins.get(name)
-            # A pin re-placed since the staleness check is not the pin found
-            # stale; leave it standing but report it, so the sweep's outcome
-            # never reads as "nothing to do" while a pin is still live.
+            # A pin re-placed since the staleness check stands, but is
+            # reported so the outcome never reads as "nothing to do".
             if live is None:
                 replaced.append((name, "pin was already released when the sweep wrote"))
                 continue

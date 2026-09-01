@@ -1,9 +1,6 @@
-# Helm sources used by more than one component.
-#
-# A HelmRepository consumed by two components cannot ship with either of
-# them: two Flux Kustomizations would render the same object and either
-# inventory could prune it. The bitnami registry serves Redis and
-# ExternalDNS.
+# Helm sources used by more than one component (bitnami serves Redis and
+# ExternalDNS). Shipping one with either consumer would let the other's
+# inventory prune it.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

@@ -13,31 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Reap resource groups that spi-stack CI provisioned and a cancelled pipeline
+# never tore down. A group is reaped only when all three hold: its name starts
+# with SWEEP_NAME_PREFIX, it carries the tag spi-ci-sweep-eligible=true, and its
+# spi-created-utc tag is older than SWEEP_AGE_HOURS. The prefix gate keeps a
+# production group that inherited the tag out of reach. A group with a broken
+# tag is logged and skipped; the exit status is 0 either way.
 #
-# Orphan resource group sweeper.
-#
-# Reaps Azure resource groups that were provisioned by spi-stack CI but
-# outlived their pipeline. A canceled smoke pipeline kills the teardown
-# job along with every other job, so `if: always()` does not save us;
-# this sweeper is the backstop.
-#
-# Selection rules (ALL must hold):
-#   1. Resource group name starts with $SWEEP_NAME_PREFIX (default
-#      "spi-stack-ci-")
-#   2. Resource group carries tag spi-ci-sweep-eligible=true
-#   3. Resource group carries tag spi-created-utc with an ISO-8601
-#      timestamp older than $SWEEP_AGE_HOURS (default 3)
-#
-# The name-prefix gate is a second line of defense so the sweeper cannot
-# reap a production environment that accidentally inherited the tag.
-#
-# Environment variables:
-#   SWEEP_NAME_PREFIX  resource group name prefix to match (default "spi-stack-ci-")
-#   SWEEP_AGE_HOURS    minimum age in hours before a group is eligible (default 3)
+# Env:
+#   SWEEP_NAME_PREFIX  resource group name prefix (default "spi-stack-ci-")
+#   SWEEP_AGE_HOURS    minimum age in hours (default 3)
 #   SWEEPER_DRY_RUN    "true" lists candidates without deleting (default "false")
-#
-# Exits 0 on success regardless of how many groups were reaped. A broken
-# tag on one group logs and continues rather than failing the whole run.
 
 set -euo pipefail
 
@@ -77,7 +63,7 @@ while IFS=$'\t' read -r name created; do
     continue
   fi
 
-  # Parse ISO-8601 under either GNU date or BSD date (local dev on macOS).
+  # GNU date first, then BSD date for macOS.
   if created_epoch=$(date -u -d "${created}" +%s 2>/dev/null); then
     :
   elif created_epoch=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "${created}" +%s 2>/dev/null); then

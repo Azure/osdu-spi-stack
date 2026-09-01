@@ -14,12 +14,11 @@
 
 """End-to-end proof through a real cmd.exe on native Windows.
 
-The contract of issue #49 is that a target behind a ``%*``-forwarding batch
-shim receives its argv exactly as the caller wrote it. These tests assert
-the decoded argv, not any intermediate representation: a real ``.cmd`` shim
-forwards ``%*`` to a real Python process that JSON-dumps ``sys.argv``. The
-shim itself lives in a directory whose name contains ``%VAR%``, ``&``, ``^``,
-``!`` and a space, so the shim-path half of the command line is proven too.
+A target behind a ``%*``-forwarding batch shim must receive its argv exactly
+as the caller wrote it. These tests assert the decoded argv: a real ``.cmd``
+shim forwards ``%*`` to a Python process that JSON-dumps ``sys.argv``. The
+shim lives in a directory whose name contains ``%VAR%``, ``&``, ``^``, ``!``
+and a space, so the shim-path half of the command line is proven too.
 """
 
 import json

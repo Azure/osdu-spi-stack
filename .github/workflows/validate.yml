@@ -5,7 +5,6 @@ on:
   push:
     branches: [main]
 
-# Cancel superseded runs on the same ref so PRs do not stack up CI work.
 concurrency:
   group: validate-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -73,10 +72,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
-      # Fail loudly if the proof would not actually exercise the batch path:
-      # assert on the resolution Python itself performs, not just that some
-      # az.cmd exists somewhere. A skipped proof must never look like a
-      # passing one.
+      # The shim tests prove nothing unless Python itself resolves az to a .cmd.
       - name: Require Python to resolve az to a batch shim
         run: >
           uv run python -c "import shutil,sys; p=shutil.which('az') or '';
@@ -122,10 +118,8 @@ jobs:
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
         run: |
-          # Dependabot PRs (and PRs from forks) do not have access to repo
-          # secrets by default. Without AZURE_CLIENT_ID, the azure/login step
-          # fails outright. Detect that case and skip the rest of the job so
-          # the required status check still reports success.
+          # Dependabot and fork PRs see no repo secrets; skip rather than fail
+          # so the required check still reports.
           if [ -z "$AZURE_CLIENT_ID" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::warning::AZURE_CLIENT_ID not available (Dependabot or fork PR); skipping bicep-whatif"

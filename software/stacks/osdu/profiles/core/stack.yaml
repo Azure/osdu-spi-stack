@@ -1,19 +1,7 @@
 # SPI Stack - Core Profile
-# Layered Flux Kustomizations with explicit dependency ordering.
-#
-# Layer 0a: Namespaces
-# Layer 0b: Karpenter NodePools (platform + osdu)
-# Layer 1: Operators (ECK, CNPG) + cert-manager + trust-manager +
-#          shared Helm sources
-#          (the Gateway is owned by the ingress tree)
-# Layer 2: Middleware (Elasticsearch, Redis, PostgreSQL) -- on platform nodes
-# Layer 3: Airflow (depends on PostgreSQL) -- on platform nodes
-# Layer 4a: OSDU configuration (ConfigMap created by CLI)
-# Layer 4b: Bootstrap (trust-manager Bundles for CA distribution + Redis Istio DR)
-# Layer 5: Core OSDU services (10 services) -- on osdu nodes
-# Layer 5a: OSDU partition + entitlements bootstrap (per-partition Jobs)
-# Layer 5b: OSDU schema loader (post-services one-shot Job)
-# Layer 6: Reference services (unit, crs-conversion, crs-catalog) -- on osdu nodes
+# Middleware, the OSDU services, their bootstrap Jobs, schema load, and the
+# reference services, as layered Flux Kustomizations with explicit dependency
+# ordering. The Gateway is owned by the ingress tree, not this profile.
 
 ---
 # Layer 0a: Namespaces
@@ -82,7 +70,7 @@ spec:
   timeout: 10m
 
 ---
-# Layer 1a2: trust-manager (cross-namespace CA bundle distribution)
+# Layer 1a2: trust-manager
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -145,8 +133,8 @@ spec:
   timeout: 10m
 
 ---
-# Temporary Gateway ownership handoff. This Kustomization must
-# reconcile once with an empty inventory and pruning disabled before removal.
+# Gateway ownership handoff: reconciles an empty inventory with pruning
+# disabled, so a later rollout can remove it without deleting the Gateway.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -168,9 +156,9 @@ spec:
   timeout: 5m
 
 ---
-# Layer 1e: Shared Helm sources (the bitnami HelmRepository used by both
-# Redis and, in the dns ingress modes, ExternalDNS). It has its own owner
-# so neither consumer's inventory can prune a source the other needs.
+# Layer 1e: Shared Helm sources. The bitnami HelmRepository serves Redis and,
+# in the dns ingress modes, ExternalDNS; a single owner keeps either
+# consumer's inventory from pruning it.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -231,8 +219,8 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/redis
-  # Temporary source ownership handoff. Re-enable pruning after
-  # this reconciles once without the bitnami HelmRepository in its inventory.
+  # Source ownership handoff: pruning stays off until this has reconciled
+  # once without the bitnami HelmRepository in its inventory.
   prune: false
   wait: true
   timeout: 10m
@@ -302,11 +290,9 @@ spec:
   timeout: 5m
 
 ---
-# Layer 4b: Bootstrap (trust-manager Bundles + Redis Istio DestinationRule)
-# Declares two trust-manager Bundle CRs that mirror the Redis and
-# Elasticsearch TLS CAs from platform -> osdu, plus the Redis mTLS-disable
-# DestinationRule. Depends on middleware being Ready so the source secrets
-# exist, and on trust-manager so the Bundle CRD is registered.
+# Layer 4b: Bootstrap (trust-manager Bundles + Redis Istio DestinationRule).
+# Waits on middleware so the source CA secrets exist and on trust-manager so
+# the Bundle CRD is registered.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -356,13 +342,9 @@ spec:
   timeout: 30m
 
 ---
-# Layer 5a: OSDU partition + entitlements bootstrap
-# Runs per-partition one-shot Jobs:
-#   partition-init    : POST partition record to partition service
-#   entitlements-init : POST tenant-provisioning so entitlements seeds the
-#                       root groups with the caller's appid as OWNER
-# Both are prerequisites for schema-load; without them schema-load's call to
-# /schemas/system returns 401 because no root groups exist.
+# Layer 5a: OSDU partition + entitlements bootstrap (per-partition Jobs).
+# Schema-load depends on both: without the root groups entitlements seeds,
+# its call to /schemas/system returns 401.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -388,13 +370,9 @@ spec:
       namespace: osdu-flux
 
 ---
-# Layer 5c: legal seeding (per-partition one-shot Jobs, non-gating)
-# Stages the legal COO catalog and creates the default legal tag. Runs the
-# same chart as spi-osdu-init with only the legal component enabled, in its
-# own release so helm's Job wait cannot gate schema-load on it. The
-# spi-stack.gating: "false" label keeps a failure out of the `spi status`
-# Ready verdict (visible with its typed reason instead): "ready" and
-# "seeded" are separate signals. Nothing depends on this Kustomization.
+# Layer 5c: legal seeding (per-partition Jobs, non-gating). Its own release
+# so a legal failure cannot block schema-load; the spi-stack.gating: "false"
+# label keeps it out of the `spi status` Ready verdict. Nothing depends on it.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -413,8 +391,7 @@ spec:
   path: ./software/stacks/osdu/legal
   prune: true
   wait: true
-  # Exceeds the HelmRelease's 65m install timeout, which itself exceeds the
-  # legal Job's 3600s activeDeadlineSeconds.
+  # Outlasts the HelmRelease's 65m install timeout.
   timeout: 70m
   healthChecks:
     - apiVersion: helm.toolkit.fluxcd.io/v2
@@ -423,11 +400,9 @@ spec:
       namespace: osdu-flux
 
 ---
-# Layer 5b: OSDU schema loader (one-shot Job)
-# Runs the community schema-service-schema-load image to POST the ~1,386
-# shared OSDU schemas into the primary partition. The Kustomization's
-# healthCheck on the Job's Complete condition means spi-osdu-reference
-# observes a schema-loaded cluster.
+# Layer 5b: OSDU schema loader (one-shot Job). The healthCheck on the Job's
+# Complete condition is what lets spi-osdu-reference depend on a loaded
+# cluster.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -447,13 +422,11 @@ spec:
     substituteFrom:
       - kind: ConfigMap
         name: osdu-image-lock
-  # A changed image tag updates the Job Pod template, an immutable field.
-  # Force replacement lets the loader run against the resolved schema version.
+  # A changed image updates the Job Pod template, an immutable field.
   force: true
   prune: true
   wait: true
-  # Matches the Job's activeDeadlineSeconds (9000s, including the 1800s
-  # pod-startup allowance) plus headroom for reconcile overhead.
+  # The Job's 9000s activeDeadlineSeconds plus reconcile headroom.
   timeout: 155m
   healthChecks:
     - apiVersion: batch/v1

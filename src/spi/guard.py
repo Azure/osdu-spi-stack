@@ -58,7 +58,7 @@ def _has_spi_fingerprint() -> bool:
     cluster_name = ctx if ctx else ""
     if not cluster_name:
         return False
-    # Resource group matches cluster name for spi-stack deployments
+    # spi-stack names the resource group after the cluster.
     result = run_process(
         [
             "az",
@@ -93,8 +93,7 @@ def verify_spi_cluster() -> str:
     """
     if os.environ.get("SPI_SKIP_GUARD", "") == "1":
         ctx = _get_current_context() or "unknown"
-        # Diagnostic, not command output: keep it off stdout so `--json` callers
-        # (status, info) still get parseable output on a successful bypass.
+        # Off stdout so `--json` callers still get parseable output.
         error_console.print(
             f"  [warning]Cluster guard bypassed (SPI_SKIP_GUARD=1), context: {ctx}[/warning]"
         )

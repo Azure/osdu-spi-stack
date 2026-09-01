@@ -19,7 +19,6 @@ resource gremlinAccount 'Microsoft.DocumentDB/databaseAccounts@2023-11-15' = {
   kind: 'GlobalDocumentDB'
   properties: {
     databaseAccountOfferType: 'Standard'
-    // Entitlements uses Entra-backed Workload Identity for data-plane access.
     disableLocalAuth: true
     consistencyPolicy: {
       defaultConsistencyLevel: 'Session'
@@ -70,8 +69,7 @@ resource entitlementsGraph 'Microsoft.DocumentDB/databaseAccounts/gremlinDatabas
   }
 }
 
-// Cosmos Gremlin RBAC is data-plane native, not an Azure role assignment.
-// This role is required because local authentication is disabled.
+// Gremlin RBAC is data-plane native, not an Azure role assignment.
 resource osduIdentityGremlinDataContributor 'Microsoft.DocumentDB/databaseAccounts/gremlinRoleAssignments@2024-12-01-preview' = {
   parent: gremlinAccount
   name: guid(gremlinAccount.id, principalId, gremlinDataContributorRoleId)

@@ -4,17 +4,11 @@
 
 """Contract tests for the env-upgrade and env-refresh lifecycle workflows.
 
-These pin the properties docs/design/environment-lifecycle.md promises for
-the shared backing environment:
-
-* both workflows share one serializing concurrency group;
-* a lifecycle job never calls `uv run spi`, only the bare `spi` installed
-  from the declared release wheel;
-* an absent declaration, or (for env-upgrade) a declaration created on this
-  very push, is a clean skip rather than an automatic provision;
-* maintenance is set before any mutation and cleared only after readiness,
-  gateway probes, and a ref/suspension assertion have all passed; and
-* every long-lived job captures diagnostics on failure.
+These pin what docs/design/environment-lifecycle.md promises: one serializing
+concurrency group, the bare released `spi` for every operational call, a
+clean skip for an absent or just-created declaration, maintenance set before
+any mutation and cleared only after every check passes, and diagnostics
+captured on failure.
 """
 
 import json
@@ -175,12 +169,10 @@ class TestCleanSkip:
 
 
 class TestEnvRefreshDetectFailsClosed:
-    """declare already gates should_run on the declaration's presence, so by
-    the time detect runs, the declaration is known present. An absent
-    resource group or missing cluster there means the live environment was
-    deleted, not a legitimate first-provision skip.
-
-    env-upgrade's own detect job is intentionally left as a clean skip: see
+    """declare already gates should_run on the declaration's presence, so an
+    absent resource group or cluster at detect time means the live
+    environment was deleted, not a first-provision skip. env-upgrade's detect
+    stays a clean skip: see
     test_env_upgrade_detect_still_treats_absence_as_a_first_provision_skip.
     """
 
@@ -293,10 +285,9 @@ class TestMaintenanceOrdering:
         )
 
     def test_env_refresh_requires_deploy_record_before_setting_maintenance(self):
-        # A prior provision can die after creating AKS but before writing
-        # the deploy record; unlike env-upgrade, refresh has no provision
-        # job to recover with, so it must fail closed rather than let
-        # `spi maintenance set` surface the record's own error uninterpreted.
+        # A provision can die after creating AKS but before writing the deploy
+        # record; refresh has no provision job to recover with, so it must
+        # fail closed before `spi maintenance set` reads the record.
         refresh_steps = _workflow(ENV_REFRESH)["jobs"]["refresh"]["steps"]
         names = [s["name"] for s in refresh_steps if "name" in s]
 
@@ -330,10 +321,9 @@ class TestAssertionsAndDeployability:
 
     def test_env_upgrade_verify_requires_maintenance_as_the_sole_blocker(self):
         # Exit 2 from `spi status --json` covers every deployability blocker
-        # (a non-ready Kustomization, a missing deploy record, or
-        # maintenance itself; ADR-030), so the ref/suspended assertions
-        # alone cannot tell a readiness regression from a clean maintenance
-        # window. Assert the JSON fields directly instead.
+        # (a non-ready Kustomization, a missing deploy record, or maintenance
+        # itself), so only the JSON fields can tell a readiness regression
+        # from a clean maintenance window.
         verify_steps = _steps(_workflow(ENV_UPGRADE)["jobs"]["verify"])
         assertion = verify_steps["Verify deployed stack matches the declaration"]["run"]
         assert ".ready" in assertion
@@ -393,7 +383,7 @@ class TestVerifyReleaseAsset:
 class TestRevisionGatedConvergence:
     """An upgrade re-points the source while every Kustomization is still
     Ready for the revision being replaced, so a bare Ready wait can pass
-    before any of the new revision is applied (ADR-029)."""
+    before any of the new revision is applied."""
 
     def test_wait_script_supports_an_expected_revision(self):
         script = (REPO_ROOT / "scripts" / "wait_for_flux_ready.sh").read_text(encoding="utf-8")

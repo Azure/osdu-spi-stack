@@ -6,21 +6,14 @@ you may not use this file except in compliance with the License.
 */}}
 
 {{- if .Values.coreEnabled }}
-# One ConfigMap with a partition.json key per partition. partition-init mounts
-# this at /partition-records and selects the file matching its $PARTITION env.
+# One partition.json key per partition, mounted by partition-init at
+# /partition-records.
 #
-# Property keys (cosmos-endpoint, sb-namespace, ...) are the semantic names
-# every OSDU service reads from the partition record. Property values for
-# `sensitive: true` properties are bare KV secret suffixes — partition-azure
-# auto-prefixes the partition id at write time, so a value of "cosmos-endpoint"
-# is stored as "{partition}-cosmos-endpoint" and dereferenced from KV under
-# the caller's Workload Identity. Embedding the partition prefix here would
-# double-prefix the lookup ("opendes-opendes-cosmos-endpoint") and break every
-# downstream service that resolves the partition record.
-#
-# The connection-string and storage-key KV secrets hold the literal "DISABLED"
-# because Workload Identity supplies credentials at runtime; they exist only
-# to satisfy the partition record schema.
+# Values of `sensitive: true` properties are bare Key Vault secret suffixes:
+# partition-azure prefixes the partition id at write time, so "cosmos-endpoint"
+# is stored as "{partition}-cosmos-endpoint". A prefix here would double it.
+# The connection-string and storage-key secrets hold the literal "DISABLED";
+# Workload Identity supplies credentials at runtime.
 apiVersion: v1
 kind: ConfigMap
 metadata:

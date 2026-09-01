@@ -14,35 +14,17 @@
 
 """Azure PaaS infrastructure provisioning.
 
-Hybrid model:
-  - Resource Group creation is imperative (``az group create``); Bicep
-    cannot create the RG it deploys into.
-  - AKS Automatic is declared in Bicep at ``infra/aks.bicep`` (AVM
-    ``container-service/managed-cluster``). Two post-deploy imperative
-    steps remain for gaps the AVM module does not cover:
-    ``az aks get-credentials`` (kubeconfig merge; not a resource) and
-    ``az aks mesh enable-istio-cni`` (AVM typed ``proxyRedirectionMechanism``
-    out of the IstioComponents schema).
-  - Key Vault soft-delete recovery is imperative pre-check (ARM cannot
-    branch on a list-deleted query).
-  - Everything else (Managed Identity, federated credentials, Key Vault
-    creation + metadata secrets, ACR, CosmosDB Gremlin + SQL, Service Bus
-    + topics/subs, Storage + containers/tables, RBAC role assignments) is
-    declared in Bicep at ``infra/main.bicep`` and deployed with
-    ``az deployment group create``. Local auth is disabled on the Cosmos
-    and Service Bus accounts (ADR-023), so no key material is resolved;
-    key/connection secrets are ``DISABLED`` placeholders.
-  - Runtime-only Key Vault secrets that depend on in-cluster seed
-    passwords (tbl-storage-endpoint, redis-*, {partition}-elastic-*)
-    are still written by the CLI from ``runtime_bootstrap.py`` after
-    Flux has reconciled the middleware layer.
+Everything Bicep can express lives in ``infra/aks.bicep`` and
+``infra/main.bicep``. The imperative steps are the ones ARM cannot make:
+creating the resource group Bicep deploys into, branching on a soft-deleted
+Key Vault, merging the kubeconfig, and enabling Istio CNI chaining, which
+the AVM module does not type. Key Vault secrets that depend on in-cluster
+passwords are written later by ``deploy.py``.
 
-The function ``provision_azure_infra(config, dry_run=False)`` returns the
-infra_outputs dict consumed by ``_create_osdu_config`` and workload-
-identity ServiceAccount creation. When ``dry_run`` is True, the Azure
-login check, resource group creation, and ``az deployment group what-if``
-against both ``aks.bicep`` and ``main.bicep`` run; all post-deploy steps
-are skipped and an empty outputs dict is returned.
+``provision_azure_infra`` returns the infra_outputs dict the Kubernetes
+bootstrap consumes. With ``dry_run`` the login check and resource group
+creation still run, both templates go through ``what-if``, and the
+post-deploy steps are skipped, returning an empty dict.
 """
 
 import base64
@@ -62,8 +44,7 @@ from .shell import run_command
 INFRA_MAIN_BICEP = INFRA_ROOT / "main.bicep"
 INFRA_AKS_BICEP = INFRA_ROOT / "aks.bicep"
 
-# Default system pool size: passed to aks.bicep and used to resolve the
-# zones this exact size can use in the target subscription.
+# Passed to aks.bicep and used to resolve the zones this exact size can use.
 SYSTEM_POOL_VM_SIZE = "Standard_D4lds_v5"
 
 
@@ -74,25 +55,17 @@ def _system_pool_vm_size() -> str:
     return os.environ.get("SPI_SYSTEM_POOL_VM_SIZE", "").strip() or SYSTEM_POOL_VM_SIZE
 
 
-# ─────────────────────────────────────────────────────────────
-# Resource-name helpers (preserve the existing naming contract).
-# Bicep consumes these via parameters; the template does not
-# re-derive names.
-#
-# Every globally unique resource (storage, Cosmos, Service Bus)
-# carries the per-subscription suffix from config.name_suffix so
-# `spi up --env dev1` in two different subscriptions does not
-# collide. KV and ACR already include the suffix via Config.from_env.
-# ─────────────────────────────────────────────────────────────
+# Bicep takes these names as parameters and never re-derives them. Globally
+# unique resources (storage, Cosmos, Service Bus) carry config.name_suffix so
+# the same env in two subscriptions does not collide; Key Vault and ACR get
+# the suffix in Config.from_env.
 
 
 def _with_suffix(base: str, suffix: str, limit: int) -> str:
     """Append the per-subscription suffix and truncate to the Azure limit.
 
-    Truncates the base first to reserve room for the suffix; a naive
-    f"{base}{suffix}"[:limit] would clip the suffix off for long bases
-    (e.g. env "productiondev" + "common") and reintroduce global-name
-    collisions.
+    The base is truncated first so a long env name cannot clip the suffix
+    off and reintroduce global-name collisions.
     """
     if not suffix:
         return base[:limit]
@@ -123,17 +96,10 @@ def _cosmos_gremlin_name(env: str, suffix: str = "") -> str:
     return _with_suffix(base, f"-{suffix}" if suffix else "", 44)
 
 
-# ─────────────────────────────────────────────────────────────
-# Phase 1: Core infrastructure (imperative; Bicep-incompatible)
-# ─────────────────────────────────────────────────────────────
-
-
 def create_resource_group(config: Config):
     console.print("\n[bold]Creating resource group...[/bold]")
-    # `az group create` on an EXISTING group is an ARM PUT: omitting --tags
-    # CLEARS the tag set (this silently dropped the spi-name-suffix tag and
-    # made every resumed run mint a fresh suffix). Never re-PUT an existing
-    # group — only create when absent, with the tag included.
+    # `az group create` on an existing group is an ARM PUT, and omitting
+    # --tags clears the tag set, so only create when absent.
     exists = (
         run_command(
             ["az", "group", "exists", "--name", config.resource_group],
@@ -195,7 +161,7 @@ def read_rg_suffix_tag(resource_group: str) -> "str | None":
     if result.returncode != 0:
         return None
     value = result.stdout.strip()
-    # `az` prints "None" (literal) when the tag is missing on an existing RG.
+    # `az` prints the literal "None" when the tag is missing.
     if not value or value == "None":
         return None
     return value
@@ -249,9 +215,9 @@ def detect_legacy_keyvault(resource_group: str, env: str) -> bool:
 
 
 def _resolve_system_pool_zones(config: Config) -> "list | None":
-    """Return the zones the system pool size can use in this subscription
-    (ADR-027), or None when the SKU catalogue cannot be read and the caller
-    should leave the template default in place.
+    """Return the zones the system pool size can use in this subscription,
+    or None when the SKU catalogue cannot be read and the template default
+    should stand.
     """
     size = _system_pool_vm_size()
     result = run_command(
@@ -279,9 +245,8 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
         )
         return None
 
-    # No --all: the default output keeps partially zone-restricted SKUs with
-    # their restriction payload and hides only sizes the subscription cannot
-    # deploy at all, which the empty-result branch reports.
+    # Without --all the listing keeps zone-restricted SKUs with their
+    # restriction payload and hides only sizes the subscription cannot deploy.
     published: list = []
     restricted: set = set()
     ephemeral_supported: "bool | None" = None
@@ -305,8 +270,7 @@ def _resolve_system_pool_zones(config: Config) -> "list | None":
             "SPI_SYSTEM_POOL_VM_SIZE to a size the subscription can deploy."
         )
 
-    # Absent capability means unknown; only an explicit False is fatal, and
-    # local disk capacity remains ARM-validated.
+    # An absent capability means unknown; only an explicit False is fatal.
     if ephemeral_supported is False:
         raise RuntimeError(
             f"{size} does not support the ephemeral OS disk the system pool "
@@ -398,22 +362,12 @@ def create_aks_automatic(
     system_pool_zones: "list | None" = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Create an AKS Automatic cluster + managed Istio via Bicep.
+    """Deploy the AKS Automatic cluster from ``infra/aks.bicep``.
 
-    The cluster is declared in ``infra/aks.bicep`` using the AVM
-    ``container-service/managed-cluster`` module. Two imperative post-
-    deploy steps remain for gaps the AVM module does not cover:
-    kubeconfig merge (``az aks get-credentials``, not a resource) and
-    Istio CNI chaining (``proxyRedirectionMechanism`` is typed out of
-    the AVM IstioComponents schema).
-
-    ``system_pool_zones`` comes from ``_resolve_system_pool_zones``, run by
-    the caller before any resource exists; None means the SKU catalogue was
-    unreadable and the template default applies.
-
-    Returns the flattened Bicep output dict (``clusterName``,
-    ``clusterResourceId``, ``oidcIssuerUrl``, ``clusterPrincipalId``).
-    Returns an empty dict when ``dry_run`` is True.
+    ``system_pool_zones`` of None means the SKU catalogue was unreadable and
+    the template default applies. Returns the flattened Bicep outputs
+    (``clusterName``, ``clusterResourceId``, ``oidcIssuerUrl``,
+    ``clusterPrincipalId``), or an empty dict under ``dry_run``.
     """
     header = "Previewing" if dry_run else "Deploying"
     console.print(f"\n[bold]{header} AKS Automatic cluster via Bicep...[/bold]")
@@ -443,17 +397,13 @@ def create_aks_automatic(
 
     connect_cluster(config.resource_group, config.cluster_name)
 
-    # AVM v0.13.0 types proxyRedirectionMechanism out of IstioComponents;
-    # enable CNI chaining imperatively. Idempotent. CNI chaining avoids
-    # the NET_ADMIN capability requirement that the default Istio sidecar
-    # init container needs.
+    # The AVM module does not type proxyRedirectionMechanism. CNI chaining
+    # avoids the NET_ADMIN capability the default sidecar init container needs.
     _ensure_istio_cni_chaining(config)
 
-    # AKS Automatic enforces Azure RBAC for Kubernetes authorization with
-    # local accounts disabled, so the deploying principal needs an
-    # explicit cluster-admin role assignment before kubectl can create
-    # namespaces. Role-assignment propagation to AKS typically takes
-    # 2-3 minutes; this step blocks until the permission becomes active.
+    # Local accounts are disabled, so the deployer needs a cluster-admin role
+    # assignment before kubectl can create namespaces; propagation takes
+    # minutes and this blocks until it is active.
     _grant_deployer_cluster_admin(
         config,
         aks_outputs.get("clusterResourceId", ""),
@@ -461,12 +411,8 @@ def create_aks_automatic(
         deployer_principal_type,
     )
 
-    # Deployment Safeguards are not relaxed here. On the Automatic SKU
-    # they are enforced via a non-bypassable ValidatingAdmissionPolicy
-    # that cannot be tuned via `az aks update --safeguards-level`; the
-    # local Helm chart (software/charts/osdu-spi-service) is written to
-    # satisfy the policy instead.
-
+    # Deployment Safeguards stay enforced: on the Automatic SKU the admission
+    # policy cannot be relaxed, so the local Helm charts satisfy it instead.
     return aks_outputs
 
 
@@ -506,10 +452,8 @@ def _grant_deployer_cluster_admin(
             "none",
         ],
         description=f"Assign cluster-admin to {deployer_principal_id[:8]}...",
-        # Idempotent: on re-deploys the assignment already exists and the
-        # CLI returns non-zero. We tolerate that and fall through to the
-        # ARM-side verification below, which distinguishes a real failure
-        # from a benign "already exists".
+        # On re-deploys the assignment exists and the CLI returns non-zero;
+        # the ARM read below tells that apart from a real failure.
         check=False,
     )
     _verify_role_assignment_recorded(deployer_principal_id, cluster_resource_id)
@@ -568,11 +512,10 @@ def _verify_role_assignment_recorded(user_oid: str, cluster_resource_id: str):
     authorization-plane propagation. ARM listings respond within seconds and
     are independent of AKS-plane caching.
     """
-    # Verify via raw ARM: every `az role assignment` subcommand resolves
-    # principals through Microsoft Graph, which Conditional Access token
-    # protection can block (AADSTS530084) even when ARM access is fine.
-    # b1ff04bb-... is the built-in "Azure Kubernetes Service RBAC Cluster
-    # Admin" role definition ID.
+    # Raw ARM rather than `az role assignment`, which resolves principals
+    # through Graph and can be blocked by Conditional Access (AADSTS530084)
+    # while ARM access is fine. The GUID is the built-in AKS RBAC Cluster
+    # Admin role.
     aks_rbac_cluster_admin_role_id = "b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b"
     result = run_command(
         [
@@ -679,12 +622,6 @@ def _ensure_istio_cni_chaining(config: Config):
     display_result("Istio CNI chaining enabled")
 
 
-# ─────────────────────────────────────────────────────────────
-# Key Vault soft-delete pre-check (imperative; ARM cannot branch on
-# list-deleted queries)
-# ─────────────────────────────────────────────────────────────
-
-
 def _recover_soft_deleted_keyvault(config: Config):
     """If the target Key Vault was previously soft-deleted, recover it.
 
@@ -728,11 +665,6 @@ def _recover_soft_deleted_keyvault(config: Config):
         display_result(f"Key Vault {config.keyvault_name} recovered")
 
 
-# ─────────────────────────────────────────────────────────────
-# Bicep parameter assembly and output reshaping
-# ─────────────────────────────────────────────────────────────
-
-
 def _build_bicep_params(
     config: Config,
     oidc_issuer: str,
@@ -758,13 +690,11 @@ def _build_bicep_params(
             _storage_name("osdu" + config.env + p, "", s) for p in config.data_partitions
         ],
         "oidcIssuerUrl": oidc_issuer,
-        # DNS-mode only; both are empty strings in ip/azure modes and the
-        # conditional modules in main.bicep no-op when dnsZoneName is empty.
+        # Empty outside dns mode; main.bicep's conditional modules then no-op.
         "dnsZoneName": config.dns_zone,
         "dnsZoneResourceGroup": config.dns_zone_rg,
-        # Used by rbac.bicep to grant Key Vault Secrets Officer before the
-        # post-deploy `az keyvault secret set` handoff. Azure RG Owner does not
-        # grant Key Vault data-plane access.
+        # rbac.bicep grants this principal Key Vault Secrets Officer for the
+        # post-deploy secret writes; RG Owner carries no data-plane access.
         "deployerPrincipalId": deployer_principal_id,
         "deployerPrincipalType": deployer_principal_type,
     }
@@ -852,7 +782,7 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
         "graph_account_id": bicep_outputs.get("graphAccountId", ""),
         "common_storage_name": bicep_outputs.get("commonStorageName", ""),
         "common_storage_id": bicep_outputs.get("commonStorageId", ""),
-        # DNS-mode outputs (empty strings when ingress mode != dns).
+        # Empty outside dns mode.
         "external_dns_client_id": bicep_outputs.get("externalDnsClientId", ""),
         "external_dns_principal_id": bicep_outputs.get("externalDnsPrincipalId", ""),
     }
@@ -882,11 +812,6 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-# ─────────────────────────────────────────────────────────────
-# Orchestrator
-# ─────────────────────────────────────────────────────────────
-
-
 def _get_azure_account() -> Dict[str, Any]:
     """Return the active Azure account without mutating Azure state."""
     console.print("\n[bold]Verifying Azure login...[/bold]")
@@ -908,23 +833,10 @@ def provision_azure_infra(
     account: Optional[Dict[str, Any]] = None,
     deployer_principal: Optional[Tuple[str, str]] = None,
 ) -> Dict[str, Any]:
-    """Provision all Azure PaaS resources. Returns infra_outputs for K8s bootstrap.
+    """Provision all Azure PaaS resources and return the infra outputs.
 
-    Order:
-      1. Verify Azure login; capture tenant/subscription IDs and resolve
-         the deployer principal.
-      2. Resolve system pool availability zones (read-only preflight; an
-         unusable size or zone set stops the run before anything is
-         created, ADR-027).
-      3. Create resource group (imperative; required by ``az deployment
-         group what-if`` too, so always runs).
-      4. Deploy AKS Automatic via ``infra/aks.bicep`` (what-if in dry-run;
-         returns ``oidcIssuerUrl`` for main.bicep).
-      5. Recover soft-deleted Key Vault if present (skipped in dry-run).
-      6. Deploy the main Bicep template (or run what-if preview if
-         ``dry_run`` is True). This deploys all PaaS resources AND
-         populates Key Vault metadata secrets (tenant-id, endpoints,
-         ``DISABLED`` key/connection placeholders) declaratively.
+    The resource group is created even under ``dry_run`` because what-if
+    needs a scope to preview into.
     """
     outputs: Dict[str, Any] = {}
 
@@ -933,22 +845,20 @@ def provision_azure_infra(
     outputs["tenant_id"] = account.get("tenantId", "")
     outputs["subscription_id"] = account.get("id", "")
 
-    # Resolve before any Azure mutation. The same identity is used for AKS
+    # Resolved before any Azure mutation; the same identity gets AKS
     # cluster-admin and Key Vault Secrets Officer.
     if deployer_principal is None:
         deployer_principal = _resolve_deployer_principal(account)
     deployer_principal_id, deployer_principal_type = deployer_principal
 
     # Preflight before the resource group exists, so an unusable system pool
-    # size or zone set stops the run with nothing created (ADR-027).
+    # size or zone set stops the run with nothing created.
     system_pool_zones = _resolve_system_pool_zones(config)
 
     create_resource_group(config)
 
-    # AKS Bicep deploy returns the OIDC issuer URL directly. In dry-run
-    # we run what-if on aks.bicep (returning an empty dict) and pass an
-    # empty issuer so identity.bicep omits federated credentials from
-    # the main.bicep preview.
+    # Under dry-run the what-if returns no issuer, and an empty issuer makes
+    # identity.bicep omit federated credentials from the main.bicep preview.
     aks_outputs = create_aks_automatic(
         config,
         deployer_principal_id,

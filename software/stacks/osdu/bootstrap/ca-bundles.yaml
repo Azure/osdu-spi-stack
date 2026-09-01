@@ -1,13 +1,6 @@
-# Cross-namespace CA distribution via trust-manager Bundles.
-#
-# Replaces the previous ca-mirror Job: trust-manager watches the two source
-# TLS Secrets in the platform namespace (configured via app.trust.namespace
-# in the trust-manager HelmRelease) and continuously reconciles matching
-# Secret targets into the osdu namespace. The osdu-spi-service chart's
-# import-ca-certs init container mounts these to build the Java truststore.
-#
-# If the source CAs rotate (cert-manager renews Redis TLS, ECK rotates
-# Elasticsearch HTTP certs), trust-manager re-syncs the targets automatically.
+# trust-manager Bundles that mirror the Redis and Elasticsearch CAs from
+# platform into osdu, where the osdu-spi-service import-ca-certs init
+# container builds the Java truststore. A rotated source CA re-syncs.
 ---
 apiVersion: trust.cert-manager.io/v1alpha1
 kind: Bundle

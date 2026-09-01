@@ -13,30 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Watch Flux Kustomizations across the cluster and exit when all are Ready.
-#
-# Designed for the Azure smoke CI job. After `spi up` returns, the AKS Flux
-# extension has been told to install via `--no-wait`, so CRDs and the
-# GitRepository may not yet exist; reconciliation then proceeds in the
-# background. This script:
-#
-#   1. Polls `kubectl get kustomizations -A` and groups results by the
-#      `spi-stack.layer` label so progress is visible per dependency tier.
-#   2. Emits a compact heartbeat every --heartbeat seconds so a human
-#      tailing the log never sees more than 30s of silence.
-#   3. Prints a checkpoint banner the moment a layer flips to fully Ready.
-#   4. Dumps `spi status` every --status-interval seconds for the rich
-#      table view in the log and one final time on exit (success or fail).
-#
-# An upgrade re-points the source at a new revision while every Kustomization
-# still reports Ready for the previous one, so --expect-revision additionally
-# requires status.lastAppliedRevision to name the given commit (ADR-029).
+# Poll Flux Kustomizations, reporting progress per spi-stack.layer, until every
+# gating one is Ready. The Flux extension installs in the background after
+# `spi up` returns, so the CRDs may not exist yet when this starts. An upgrade
+# leaves every Kustomization Ready for the previous revision, so
+# --expect-revision also requires status.lastAppliedRevision to name the commit.
 #
 # Exit codes:
-#   0  every gating Kustomization Ready=True (spi-stack.gating: "false" ones,
-#      e.g. legal seeding, are excluded from the verdict)
+#   0  every gating Kustomization is Ready
 #   1  --timeout elapsed, or --grace elapsed before any Kustomization appeared
-#   2  prerequisite missing (kubectl/jq)
+#   2  prerequisite missing (kubectl, jq)
 
 set -u
 set -o pipefail
@@ -77,9 +63,7 @@ done
 fmt_mmss() { printf '%02d:%02d' $(( $1 / 60 )) $(( $1 % 60 )); }
 
 dump_status() {
-    # Prefer an installed `spi` (the lifecycle workflows' declared release
-    # wheel); fall back to `uv run spi` only for a source checkout that has
-    # never installed the CLI, e.g. local development or the Smoke job.
+    # The installed release wheel first; `uv run spi` only for a source checkout.
     if command -v spi >/dev/null 2>&1; then
         spi status 2>&1 || true
     elif command -v uv >/dev/null 2>&1; then
@@ -101,12 +85,9 @@ LAST_FED_REFRESH=0
 SEEN_KUSTOMIZATIONS=0
 declare -A LAYER_DONE
 
-# When run inside a GitHub Actions job with id-token:write permission, the
-# OIDC JWT minted by azure/login@v3 lives only 5 minutes. az caches AAD
-# access tokens for 1h, but if kubelogin/az ever needs a refresh past the
-# 5-min JWT window, AADSTS700024 kills kubectl mid-wait. Refresh the
-# assertion file every 60s so the next az exchange (whenever it lands)
-# has a valid JWT to swap in.
+# The GitHub OIDC JWT azure/login writes lives 5 minutes; an az token refresh
+# past that fails with AADSTS700024 and kills kubectl mid-wait. Rewriting the
+# assertion file every 60s keeps a valid JWT ready for the next exchange.
 refresh_federated_assertion() {
     if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] \
        || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] \
@@ -154,9 +135,7 @@ while :; do
         ksts_json='{"items":[]}'
     fi
     if [ -s "$kubectl_err" ] && [ "$SEEN_KUSTOMIZATIONS" -eq 1 ]; then
-        # Only surface kubectl errors once we have a baseline; pre-Flux
-        # bootstrap commonly returns "the server doesn't have a resource
-        # type" while CRDs are still installing.
+        # Before the CRDs install, kubectl errors are expected noise.
         head -3 "$kubectl_err" >&2
     fi
     rm -f "$kubectl_err"
@@ -164,10 +143,8 @@ while :; do
     total=$(jq -r '.items | length' <<<"$ksts_json")
 
     if [ "$total" = "0" ]; then
-        # The grace window only applies before we have *ever* seen a
-        # Kustomization. Once we have, a transient empty response from
-        # kubectl (AAD token refresh, brief API throttling, etc.) must
-        # not be confused with "Flux extension never installed CRDs."
+        # Once a Kustomization has been seen, an empty response is transient
+        # (token refresh, API throttling), not a missing Flux extension.
         if [ "$SEEN_KUSTOMIZATIONS" -eq 0 ] && [ "$elapsed" -ge "$GRACE" ]; then
             echo
             echo "ERROR: no Flux Kustomizations visible after ${GRACE}s grace -- AKS Flux extension never installed CRDs" >&2
@@ -188,9 +165,7 @@ while :; do
                 ((.status.conditions // []) | any(.type == "Ready" and .status == "True"))
                 and ($rev == "" or ((.status.lastAppliedRevision // "") | contains($rev)));
             .items
-            # Non-gating Kustomizations (spi-stack.gating: "false", e.g. legal
-            # seeding) are excluded from the Ready verdict, matching the spi
-            # status contract: ready and seeded are separate signals.
+            # spi-stack.gating: "false" stays out of the verdict, as in spi status.
             | map(select((.metadata.labels["spi-stack.gating"] // "true") != "false"))
             | group_by(.metadata.labels["spi-stack.layer"] // "-")
             | map({

@@ -14,14 +14,9 @@
 
 """Self-update support for the spi CLI.
 
-End users install via:
-    uv tool install <wheel-url-from-github-release>
-
-This module checks GitHub Releases for a newer version and re-runs the
-installer with a wheel URL when that can safely upgrade the active install.
-Native Windows `uv` installs are refused with a manual recovery command instead.
-The canonical install path is a wheel-asset URL so the recorded version metadata
-is correct; `git+...@vX.Y.Z` is documented as a developer fallback only.
+Checks GitHub Releases for a newer version and re-runs the installer with
+the release's wheel URL when that can safely upgrade the active install.
+Native Windows `uv` installs get a manual recovery command instead.
 """
 
 from __future__ import annotations
@@ -80,8 +75,7 @@ def _github_get_json(url: str, token: Optional[str] = None, timeout: int = 10):
     _require_https(url)
     req = urllib.request.Request(url, headers=_github_headers(token))
     try:
-        # URL scheme validated above; URL is a constant or extracted from a
-        # GitHub API JSON response that we control.
+        # Scheme validated above; the URL is a constant or a GitHub API value.
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
             return json.loads(resp.read().decode("utf-8", errors="replace"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
@@ -163,14 +157,11 @@ def _pipx_spi_dir() -> Optional[Path]:
 
 
 def detect_installer() -> Optional[Installer]:
-    """Return the installer that manages the *currently running* spi, if any.
+    """Return the installer that manages the currently running spi, if any.
 
-    Path-based check: we ask each installer for its managed directory and
-    only return a hit when the running `spi/__init__.py` lives under that
-    directory. Guards against the case where a developer runs `uv run spi
-    update` from a source clone on a machine that also has a separate
-    `uv tool install spi` — stdout-based detection would happily upgrade
-    the unrelated global install.
+    Matches on the directory the running `spi/__init__.py` lives under, so
+    `uv run spi update` from a source clone never upgrades an unrelated
+    `uv tool install` on the same machine.
     """
     running = _running_spi_dir()
     if running is None:

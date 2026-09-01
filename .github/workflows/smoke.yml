@@ -1,18 +1,13 @@
 name: Smoke
 
-# Real `spi up` against the Azure subscription. Provisioning takes ~15 minutes,
-# Flux reconciliation another 10-30 minutes, plus teardown. Schedule + manual
-# only -- never on PR.
-#
-# Three jobs: provision -> verify -> teardown. Each job runs its own
-# azure/login@v3, so the teardown job is guaranteed a fresh OIDC JWT even when
-# `spi up` died long after the original 5-minute GitHub OIDC JWT expired.
-# The orphan-RG sweeper (.github/workflows/sweeper.yml) is the backstop for
-# full-workflow cancellations, which kill `if: always()` jobs.
+# Real `spi up` against the Azure subscription, on schedule and by dispatch,
+# never on PR. Each job logs in on its own because the 5-minute GitHub OIDC
+# JWT is long dead by the time teardown runs; sweeper.yml is the backstop for
+# a full-workflow cancellation, which kills `if: always()` jobs too.
 
 on:
   schedule:
-    # 8 AM UTC daily, 4 hours after the sweeper sweep (4 AM UTC).
+    # Four hours after the 4 AM UTC sweeper run.
     - cron: "0 8 * * *"
   workflow_dispatch:
     inputs:
@@ -44,10 +39,8 @@ jobs:
   provision:
     environment: azure-smoke
     runs-on: ubuntu-latest
-    # AKS Automatic Bicep alone takes ~29 min in centralus (observed in runs
-    # 26519683457 and 26521608601). Add PaaS Bicep (~3 min), K8s bootstrap
-    # (~30s), Flux extension Bicep (~10-15 min), tool install + login
-    # overhead, and total spi up is ~45-50 min. 60 gives ~10 min headroom.
+    # AKS Automatic alone takes ~29 min; with PaaS Bicep, the Flux extension
+    # and tooling, spi up runs ~45-50 min. 60 leaves headroom.
     timeout-minutes: 60
     outputs:
       rg: ${{ steps.env.outputs.rg }}
@@ -56,9 +49,7 @@ jobs:
       profile: ${{ steps.env.outputs.profile }}
     env:
       ENV_SUFFIX: ${{ inputs.env_suffix || format('run{0}', github.run_id) }}
-      # Start the scheduled reliability trend at the infra + empty GitOps rung.
-      # Once bare is stable, promote the default to minimal without changing
-      # the provision/verify/teardown workflow shape.
+      # The scheduled run measures the infra and empty-GitOps rung.
       PROFILE: ${{ inputs.profile || 'bare' }}
     steps:
       - uses: actions/checkout@v7
@@ -74,11 +65,8 @@ jobs:
           version: latest
 
       - name: Install kubelogin
-        # AKS Automatic kubeconfigs reference kubelogin as their AAD exec
-        # plugin; without it every kubectl call fails to authenticate.
-        # Inlined rather than using azure/use-kubelogin@v1 because that
-        # action requires GITHUB_TOKEN to resolve "latest" and we keep the
-        # job permissions minimal.
+        # AKS Automatic kubeconfigs exec kubelogin for AAD. Inlined because
+        # azure/use-kubelogin needs GITHUB_TOKEN to resolve "latest".
         env:
           KUBELOGIN_VERSION: v0.1.4
         run: |
@@ -90,9 +78,7 @@ jobs:
           kubelogin --version
 
       - name: Install Helm
-        # GitHub's ubuntu-latest runner sometimes preinstalls helm and
-        # sometimes doesn't; install explicitly so the prereq check is
-        # deterministic.
+        # ubuntu-latest does not reliably preinstall helm.
         uses: azure/setup-helm@v5
         with:
           version: 'v3.16.2'
@@ -109,27 +95,17 @@ jobs:
 
       - name: Pre-cache Azure tokens and resolve deployer OID
         id: prelogin
-        # GitHub OIDC JWTs live 5 min. Pre-fetch both ARM- and Graph-audience
-        # access tokens while the JWT is fresh; az CLI caches them ~1h. Also
-        # resolve the deployer SP's objectId here so spi up can skip the
-        # mid-job Graph call that would otherwise hit AADSTS700024 (token
-        # refresh against a dead JWT). `az ad sp show --id <appId>` is the
-        # application-flow lookup; `az ad signed-in-user show` (the /me
-        # endpoint) is delegated-only and fails for service principals.
+        # The GitHub OIDC JWT lives 5 minutes; az caches each audience's access
+        # token for ~1h. Any audience first exchanged later in the job fails
+        # with AADSTS700024, so every one spi up reaches is warmed here.
         run: |
           set -euo pipefail
-          # Pre-cache every audience spi up calls into, while the GitHub OIDC
-          # JWT is still alive (5-min window). Any audience not cached forces
-          # az to re-do the federated exchange later in the job and fails
-          # with AADSTS700024 once the JWT has expired.
-          #   - management.azure.com: ARM (most az + Bicep calls)
-          #   - graph.microsoft.com:  az ad commands
-          #   - 6dae42f8-...:         AKS AAD Server App (kubelogin azurecli mode)
-          #   - vault.azure.net:      Key Vault (az keyvault secret set)
+          # ARM, az ad, the AKS AAD server app (kubelogin), Key Vault.
           az account get-access-token --resource https://management.azure.com -o none
           az account get-access-token --resource https://graph.microsoft.com -o none
           az account get-access-token --resource 6dae42f8-4368-4678-94ff-3960e28e3630 -o none
           az account get-access-token --resource https://vault.azure.net -o none
+          # `az ad signed-in-user show` is delegated-only and fails for a service principal.
           OID=$(az ad sp show --id "${{ secrets.AZURE_CLIENT_ID }}" --query id -o tsv)
           if [ -z "$OID" ]; then
             echo "::error::Failed to resolve deployer service principal OID"
@@ -141,13 +117,9 @@ jobs:
         id: env
         run: |
           set -euo pipefail
-          # Strip non-alphanumerics from ENV_SUFFIX (Azure RG/cluster name constraints).
           SUFFIX=$(echo "$ENV_SUFFIX" | tr -cd '[:alnum:]')
-          # Cap SUFFIX so that 'osdu' + 'ci' + SUFFIX + 'opendes' + the
-          # 5-char per-deployment name suffix fits the 24-char Azure storage
-          # account name limit (see config.py validator).
-          # Budget: 24 - 4 - 2 - 7 - 5 = 6. Keep the trailing chars so
-          # github.run_id values stay unique.
+          # 24-char storage name limit minus 'osdu', 'ci', 'opendes' and the
+          # 5-char name suffix leaves 6; the trailing run_id digits stay unique.
           SUFFIX="${SUFFIX: -6}"
           RG="spi-stack-ci-${SUFFIX}"
           CREATED_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -193,18 +165,10 @@ jobs:
     needs: provision
     environment: azure-smoke
     runs-on: ubuntu-latest
-    # spi-osdu-schema-load alone can legitimately run for up to 155 min on a
-    # cold cluster (activeDeadlineSeconds: 9000, including a 1800s
-    # pod-startup allowance for node provisioning/scheduling/image pull,
-    # plus Flux headroom, see software/stacks/osdu/schema-load/job.yaml and
-    # profiles/core/stack.yaml), and it only starts once L0a-L5a have
-    # already gone Ready. 270 covers ~30 min for those preceding layers,
-    # schema-load's full 155 min window, ~30 min for spi-osdu-reference
-    # (which depends on schema-load), plus a 30-min margin over the
-    # --timeout value below: this job's own checkout/tool-install/login and
-    # AKS-credential steps run before that wait even starts, and the HTTPS
-    # acceptance probe after it can retry for up to 20 * (15s curl timeout +
-    # 30s sleep) = ~15 min. Keep this above the --timeout value below.
+    # Core-profile budget: ~30 min for layers 0a-5a, schema-load's 155 min
+    # Kustomization timeout, ~30 min for spi-osdu-reference behind it (230
+    # min, the --timeout below), plus setup steps and up to ~15 min of HTTPS
+    # probe retries. tests/test_smoke_workflow.py checks the arithmetic.
     timeout-minutes: 270
     steps:
       - uses: actions/checkout@v7
@@ -238,8 +202,7 @@ jobs:
       - name: Cache Azure tokens and get AKS credentials
         run: |
           set -euo pipefail
-          # Warm the audiences kubectl/Flux reach during the wait, while the
-          # GitHub OIDC JWT is still alive.
+          # Warm the audiences kubectl reaches during the wait while the OIDC JWT is alive.
           az account get-access-token --resource https://management.azure.com -o none
           az account get-access-token --resource 6dae42f8-4368-4678-94ff-3960e28e3630 -o none
           az aks get-credentials \
@@ -250,18 +213,12 @@ jobs:
           kubelogin convert-kubeconfig -l azurecli
 
       - name: Wait for Flux Kustomizations to be Ready
-        # 13800s (230 min): ~30 min for L0a-L5a, spi-osdu-schema-load's full
-        # 155 min cold-cluster window, and ~30 min for spi-osdu-reference,
-        # which depends on schema-load and only starts once it is Ready.
-        # Keep below the job's timeout-minutes above.
+        # 230 min; the job budget above explains the figure.
         run: bash scripts/wait_for_flux_ready.sh --timeout 13800
 
       - name: Acceptance probe (gateway reachable)
         if: ${{ needs.provision.outputs.profile != 'bare' }}
-        # Smoke-level probe: gateway service exists and the Istio gateway has
-        # at least one Ready pod. Service-level checks are out of scope for
-        # the smoke; deeper acceptance lives in osdu-test skill. Shared with
-        # the env-upgrade/env-refresh lifecycle workflows.
+        # Substrate only; service-level acceptance is out of scope for the smoke.
         run: bash scripts/probe_gateway.sh gateway
 
       - name: Acceptance probe (HTTPS terminates)
@@ -282,20 +239,15 @@ jobs:
 
   teardown:
     needs: [provision, verify]
-    # Run even when provision or verify fail or are cancelled. The guard skips
-    # the (currently impossible) case where provision itself was skipped, so a
-    # future precondition job can short-circuit the workflow without spawning
-    # a no-op teardown. Full-workflow cancellation still bypasses this; the
-    # sweeper is the backstop for that.
+    # Runs after a failed or cancelled provision or verify, but not after a
+    # skipped provision, which has nothing to tear down.
     if: ${{ always() && needs.provision.result != 'skipped' }}
     environment: azure-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Azure login (OIDC)
-        # Fresh OIDC JWT at the start of this job is the entire fix for the
-        # orphan-RG problem: the old single-job design ran teardown with a
-        # JWT that had been dead for 25+ minutes.
+        # Logs in again: the provision job's JWT is long dead by now.
         uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}

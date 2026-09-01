@@ -20,16 +20,12 @@ spec:
       sourceRef:
         kind: GitRepository
         name: osdu-spi-stack-system
-  # Partition list is injected by the CLI via the spi-init-values ConfigMap
-  # in osdu-flux (written by src/spi/deploy.py::_create_spi_init_values).
-  # Flipping multi-partition on is a --partition CLI flag change; no edits to
-  # this file are required.
+  # The CLI writes the partition list into spi-init-values; --partition
+  # changes need no edit here.
   valuesFrom:
     - kind: ConfigMap
       name: spi-init-values
       valuesKey: values.yaml
-  # This release gates schema-load (helm-controller waits for its Jobs, the
-  # spi-osdu-init Kustomization health-checks it), so it renders only the
-  # core Jobs; legal seeding runs in the non-gating osdu-spi-legal release.
+  # Core Jobs only; legal seeding runs in the non-gating osdu-spi-legal release.
   values:
     legalEnabled: false

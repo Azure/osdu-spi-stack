@@ -1,11 +1,8 @@
 # SPI Stack - Ingress profile: DNS (custom domain)
 #
-# Uses an existing Azure DNS zone in the current subscription.
-# ExternalDNS syncs A records from HTTPRoute hostnames.
-# gateway-tls-multi-host renders the whole Gateway: HTTP:80 plus three
-# HTTPS:443 listeners, one per hostname (osdu / kibana / airflow).
-# cert-manager issues a Let's Encrypt cert per subdomain via HTTP-01
-# against that same HTTP:80 listener.
+# One subdomain each for osdu, kibana, and airflow in an existing Azure DNS
+# zone. ExternalDNS writes the A records; cert-manager issues a Let's
+# Encrypt cert per hostname via HTTP-01 on the same Gateway.
 #
 # Required variables in spi-ingress-config ConfigMap (osdu-flux):
 #   ACME_EMAIL, TXT_OWNER_ID, DNS_ZONE, DNS_ZONE_RG, AZURE_TENANT_ID,
@@ -13,7 +10,7 @@
 #   INGRESS_HOST_AIRFLOW.
 
 ---
-# Cert issuers (Let's Encrypt staging + prod).
+# Let's Encrypt issuers (staging + prod).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -38,8 +35,8 @@ spec:
         name: spi-ingress-config
 
 ---
-# Temporary ExternalDNS inventory handoff. This Kustomization
-# must reconcile once with an empty inventory and pruning disabled.
+# ExternalDNS ownership handoff: reconciles an empty inventory with pruning
+# disabled, so a later rollout can remove it.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -61,10 +58,8 @@ spec:
   timeout: 5m
 
 ---
-# ExternalDNS, reading HTTPRoute hostnames and syncing A records to
-# the Azure DNS zone via Workload Identity. Its chart comes from the
-# shared bitnami HelmRepository, so it waits on that source's owner and
-# not on Redis, whose runtime health it does not need.
+# ExternalDNS syncs HTTPRoute hostnames to the Azure DNS zone. It waits on
+# the shared bitnami HelmRepository's owner, not on Redis.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -89,7 +84,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# Kibana serving at root on its own subdomain (no server.basePath).
+# Kibana at the root of its own subdomain.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -110,10 +105,9 @@ spec:
   timeout: 10m
 
 ---
-# The Gateway: HTTP:80 for ACME HTTP-01 plus three HTTPS:443 listeners,
-# one per hostname, each with its own cert. The ingress tree is the
-# Gateway's sole Flux owner, so no second Kustomization re-applies the
-# object.
+# The Gateway: HTTP:80 for ACME HTTP-01 plus one HTTPS:443 listener per
+# hostname, each with its own cert. The ingress tree is the Gateway's sole
+# Flux owner.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -138,9 +132,8 @@ spec:
         name: spi-ingress-config
 
 ---
-# HTTPRoutes for the middleware UIs on their own subdomains. Split from
-# spi-osdu-routes so it carries no dependency on spi-osdu-services and
-# stays reconcilable under the minimal profile.
+# HTTPRoutes for the middleware UIs. Separate from spi-osdu-routes so they
+# carry no dependency on spi-osdu-services and reconcile under minimal.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -168,7 +161,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# HTTPRoutes for the OSDU APIs on the osdu subdomain.
+# HTTPRoutes for the OSDU APIs.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

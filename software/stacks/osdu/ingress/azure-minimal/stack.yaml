@@ -1,16 +1,15 @@
 # SPI Stack - Ingress profile: AZURE, minimal variant
 #
-# Identical to ingress/azure/ minus spi-osdu-routes. The minimal stack
-# profile deploys no OSDU services, so a Kustomization that dependsOn
-# spi-osdu-services would stall on DependencyNotReady forever.
+# ingress/azure/ minus spi-osdu-routes: the minimal profile deploys no OSDU
+# services, so a Kustomization depending on spi-osdu-services would never
+# reconcile.
 #
 # Required variables in spi-ingress-config ConfigMap (osdu-flux):
 #   ACME_EMAIL, INGRESS_FQDN, DNS_LABEL
 
 ---
-# Azure DNS label on the add-on's external ingress Service. Applied by
-# Flux because only the flux-system controllers are exempt from the
-# admission policy that denies writes in aks-istio-ingress.
+# DNS label on the add-on's ingress Service. Only the flux-system
+# controllers may write in aks-istio-ingress, so Flux applies it.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -33,7 +32,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# Cert issuers (Let's Encrypt staging + prod).
+# Let's Encrypt issuers (staging + prod).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -58,7 +57,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# Kibana with server.basePath=/kibana so it can serve from a subpath.
+# Kibana served from the /kibana subpath.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -79,9 +78,8 @@ spec:
   timeout: 10m
 
 ---
-# The Gateway: HTTP:80 for ACME HTTP-01 plus the HTTPS:443 listener
-# bound to the auto-FQDN. The ingress tree is the Gateway's sole Flux
-# owner, so no second Kustomization re-applies the object.
+# The Gateway: HTTP:80 for ACME HTTP-01 plus HTTPS:443 on the FQDN. The
+# ingress tree is the Gateway's sole Flux owner.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -107,7 +105,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# HTTPRoutes for the middleware UIs (Kibana /kibana, Airflow /airflow).
+# HTTPRoutes for the middleware UIs.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

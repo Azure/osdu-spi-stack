@@ -13,30 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Acceptance probes for the Istio ingress gateway: the add-on Service has a
-# ready endpoint, then a real HTTPS handshake against the Gateway's listener
-# hostname.
-#
-# Extracted from smoke.yml so smoke, env-upgrade, and env-refresh share one
-# probe implementation instead of three copies drifting apart. A pod-level
-# check alone cannot catch a dead TLS path: cert-manager stalling on
-# issuance leaves every pod Running while :443 refuses connections, so the
-# https probe retries to absorb ACME issuance lag rather than failing fast.
+# Acceptance probes for the Istio ingress gateway. A pod-level check cannot
+# catch a dead TLS path: stalled cert-manager issuance leaves every pod Running
+# while :443 refuses connections, so the https probe retries through ACME lag.
 #
 # Usage: probe_gateway.sh <gateway|https>
+#   gateway  the add-on Service exists and has a ready endpoint
+#   https    a handshake against the Gateway's HTTPS listener; no-op in ip mode
 #
-#   gateway  Confirm the named add-on Service exists and has a ready endpoint.
-#   https    Handshake the Gateway's HTTPS listener; empty in ip mode (no-op).
-#
-# Exit codes:
-#   0  probe passed (or, for https in ip mode, does not apply)
-#   1  probe failed
-#   2  usage error
+# Exit codes: 0 passed or not applicable, 1 failed, 2 usage error.
 
 set -euo pipefail
 
-# Namespace/Service the AKS managed Istio add-on owns (ADR-026); the Gateway
-# binds to this Service by hostname rather than one the stack renders itself.
+# The Service the AKS managed Istio add-on owns; the Gateway binds to it by hostname.
 ISTIO_NAMESPACE="aks-istio-ingress"
 ISTIO_INGRESS_SERVICE="aks-istio-ingressgateway-external"
 
@@ -47,12 +36,9 @@ EOF
 }
 
 probe_gateway() {
-    # `kubectl get endpoints <name>` 404s if the named Service is missing, and
-    # returns an empty address list if it exists with no ready backend pods;
-    # not-ready addresses live in a separate notReadyAddresses array this
-    # jsonpath never reads. stderr goes to its own file, never into
-    # `addresses`, so a Kubernetes 1.33+ deprecated-API warning there can
-    # never itself satisfy the non-empty check below.
+    # The jsonpath reads only ready addresses (notReadyAddresses is a separate
+    # array), and stderr is kept out of `addresses` so the Kubernetes 1.33+
+    # Endpoints deprecation warning cannot satisfy the non-empty check.
     local addresses stderr_file stderr_output
     stderr_file=$(mktemp)
     if ! addresses=$(kubectl get endpoints "$ISTIO_INGRESS_SERVICE" -n "$ISTIO_NAMESPACE" \
