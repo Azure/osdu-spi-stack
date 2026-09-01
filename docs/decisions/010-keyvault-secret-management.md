@@ -22,10 +22,10 @@ Three stores, each with a single job:
 
 Non-sensitive endpoint configuration (partition name, tenant ID, cluster ingress hostname, Redis and Elasticsearch FQDNs) lives in the `osdu-config` ConfigMap in the `osdu` namespace and is mounted into services via `envFrom`.
 
-Key Vault secret values are declared in Bicep (`infra/main.bicep`) where the source is Azure: endpoints, resource identifiers, tenant and subscription. Local auth is disabled on Cosmos and Service Bus (ADR-023), so per-partition key and connection secrets carry the literal `DISABLED` and no `listKeys()` call runs at any scope. The CLI writes only the handful of runtime secrets whose values originate in-cluster and are not available at infra-deploy time:
+Key Vault secret values are declared in Bicep (`infra/main.bicep`) where the source is Azure: endpoints, resource identifiers, tenant and subscription. Local auth is disabled on Cosmos and Service Bus (ADR-023), so per-partition key and connection secrets carry the literal `DISABLED` and no `listKeys()` call runs at any scope. The CLI writes only the handful of runtime secrets Bicep does not own, none of which requires the middleware to be running:
 
-- Per-partition Elasticsearch endpoint, username, password (ECK-issued credentials).
-- Redis hostname and password (Bitnami-chart-issued).
+- Per-partition Elasticsearch endpoint, username, password (the fixed in-cluster service DNS name, the `elastic` user, and the generated seed password).
+- Redis hostname and password (the fixed in-cluster service DNS name and the generated seed password).
 - `tbl-storage-endpoint` (derived from the common Storage account).
 
 These runtime writes happen once infra is up and the CLI's local seed is generated, using the CLI's Azure session; every value is already known, so the write does not wait for Flux to reconcile the middleware layer.

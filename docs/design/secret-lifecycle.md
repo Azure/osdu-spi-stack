@@ -42,14 +42,15 @@ Bicep writes are atomic with the rest of the deploy: the KV secret either lands 
 
 ### Writer B: the CLI (post-handoff)
 
-A small set of KV secrets covers the in-cluster middleware. The CLI knows all of these as soon as infra is up: the values come from the generated seed (`spi-secrets`, see Class 3) and the endpoints are the fixed in-cluster service DNS names.
+A small set of KV secrets covers the in-cluster middleware. The CLI knows all of these as soon as infra is up: the passwords come from the generated seed (`spi-secrets`, see Class 3), the endpoints are the fixed in-cluster service DNS names, and the Table endpoint is derived from the common Storage account name.
 
 | Secret | Source |
 |---|---|
 | `{p}-elastic-endpoint`, `{p}-elastic-username`, `{p}-elastic-password` | Fixed ES service DNS + generated `elastic_password` |
 | `redis-hostname`, `redis-password` | Fixed Redis service DNS + generated `redis_password` |
+| `tbl-storage-endpoint` | `https://<common storage account>.table.core.windows.net/` |
 
-`src/spi/deploy.py` (`_write_keyvault_bootstrap_secrets`) writes these with `az keyvault secret set` at Phase 1 step 11 of `spi up` ([deployment-lifecycle](deployment-lifecycle.md)). Because every value is already known from the seed, there is no wait for middleware to reach `Ready`.
+`src/spi/deploy.py` (`_write_keyvault_bootstrap_secrets`) writes these with `az keyvault secret set` at Phase 1 step 11 of `spi up` ([deployment-lifecycle](deployment-lifecycle.md)). Because every value is generated, fixed, or derived from a name the CLI already holds, there is no wait for middleware to reach `Ready`.
 
 Re-running `spi up` against a live cluster re-runs these writes idempotently; KV is fine with rewrites of the same value.
 
