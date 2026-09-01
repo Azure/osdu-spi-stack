@@ -279,7 +279,8 @@ data:
          ({partition}-storage-account-blob-endpoint), the same sensitive
          property path every service uses.
       3. PUT Legal_COO.json into the legal configuration container
-         (overwrite; the upload is idempotent).
+         (overwrite; the upload is idempotent). A staging failure is
+         recorded and the run continues: the tag is the deliverable.
       4. Wait until an authenticated GET on /legaltags returns 200: legal
          authorizes against the groups entitlements-init provisions, and
          entitlements and legal each cache their view of them.
@@ -287,9 +288,9 @@ data:
          exists) are both success, anything else fails the Job.
 
     Every exit prints "legal-init outcome: <code>", one of: created,
-    already_exists, config_missing, service_timeout,
-    partition_record_timeout, kv_resolve_failed, blob_upload_failed,
-    legal_authz_timeout, legal_tag_rejected, auth_failed, unexpected_error.
+    already_exists, catalog_not_staged, config_missing, service_timeout,
+    partition_record_timeout, legal_authz_timeout, legal_tag_rejected,
+    auth_failed, unexpected_error.
     This Job runs in the non-gating osdu-spi-legal release, never the gating
     osdu-spi-init one (helm-controller waits for every Job in a release), so
     a failure never blocks platform readiness: "ready" and "seeded" stay
@@ -323,8 +324,11 @@ data:
     PARTITION_RECORD_ATTEMPTS = 120
     LEGAL_AUTHZ_ATTEMPTS = 100
 
-    # Legal validates every tag's countryOfOrigin against this catalog, so it
-    # must contain the country the default tag below declares (US).
+    # Overrides entries in legal's DefaultCountryCode.json rather than
+    # replacing the list. Malaysia must stay "Client consent required": the
+    # legal acceptance suite creates MY tags expecting 201 and only stages
+    # this blob itself when the blob is absent, so ours is what those tests
+    # read.
     COO_CATALOG = [
         {
             "name": "United States of America",
@@ -434,22 +438,20 @@ data:
             outcome("partition_record_timeout")
             return 1
 
+        catalog_staged = True
         print("  Resolving the partition blob endpoint from Key Vault...")
         try:
             blob_endpoint = resolve_blob_endpoint(keyvault_name, partition)
+            print(f"  Uploading Legal_COO.json to {CONFIG_CONTAINER}...")
+            print(f"  PUT Legal_COO.json -> {upload_catalog(blob_endpoint)}")
         except urllib.error.HTTPError as e:
-            print(f"  Key Vault -> {e.code}: {e.read().decode(errors='replace')}")
-            outcome("kv_resolve_failed")
-            return 1
-
-        print(f"  Uploading Legal_COO.json to {CONFIG_CONTAINER}...")
-        try:
-            code = upload_catalog(blob_endpoint)
-            print(f"  PUT Legal_COO.json -> {code}")
-        except urllib.error.HTTPError as e:
-            print(f"  PUT Legal_COO.json -> {e.code}: {e.read().decode(errors='replace')}")
-            outcome("blob_upload_failed")
-            return 1
+            print(f"  Catalog staging -> {e.code}: {e.read().decode(errors='replace')}")
+            catalog_staged = False
+        except urllib.error.URLError as e:
+            print(f"  Catalog staging -> {e.reason}")
+            catalog_staged = False
+        if not catalog_staged:
+            print("  Continuing to the tag POST; the tag is the deliverable.")
 
         print("  Acquiring bearer token via Workload Identity...")
         token = get_token()
@@ -480,26 +482,29 @@ data:
                 **auth_headers,
             },
         )
+        tag_outcome = None
         try:
             resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT)
             code = resp.getcode()
             print(f"  POST {legaltags_url} -> {code}")
             print(resp.read().decode(errors="replace"))
+            if code == 201:
+                tag_outcome = "created"
         except urllib.error.HTTPError as e:
-            code = e.code
-            print(f"  POST {legaltags_url} -> {code}")
+            print(f"  POST {legaltags_url} -> {e.code}")
             print(e.read().decode(errors="replace"))
-            if code == 409:
+            if e.code == 409:
                 print(f"  Legal tag '{legal_tag}' already exists; treating as success.")
-                outcome("already_exists")
-                return 0
+                tag_outcome = "already_exists"
+
+        if tag_outcome is None:
             outcome("legal_tag_rejected")
             return 1
-        if code == 201:
-            outcome("created")
-            return 0
-        outcome("legal_tag_rejected")
-        return 1
+        if not catalog_staged:
+            outcome("catalog_not_staged")
+            return 1
+        outcome(tag_outcome)
+        return 0
 
 
     if __name__ == "__main__":

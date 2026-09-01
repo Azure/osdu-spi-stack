@@ -357,9 +357,9 @@ def test_legal_init_creates_tag(legal_init):
     assert put.headers["x-ms-date"].endswith("GMT")
     assert put.headers["x-ms-blob-type"] == "BlockBlob"
 
-    # Legal validates a tag's countryOfOrigin against the staged catalog; a
-    # tag naming a country the catalog omits passes this fake but is rejected
-    # by the real service, so the two payloads must stay consistent.
+    # The staged catalog overrides legal's defaults, so keeping the tag's
+    # country inside it means the tag validates regardless of what those
+    # defaults carry for it.
     catalog_countries = {entry["alpha2"] for entry in json.loads(put.body)}
     post = result.routed("legaltags_post")[0]
     tag_countries = set(json.loads(post.body)["properties"]["countryOfOrigin"])
@@ -390,17 +390,32 @@ def test_legal_init_fails_when_token_acquisition_fails(legal_init):
     assert "legal-init outcome: auth_failed" in result.stdout
 
 
-def test_legal_init_fails_when_keyvault_denies(legal_init):
+def test_legal_init_creates_the_tag_even_when_keyvault_denies(legal_init):
+    """Catalog staging must not be able to cost the tag. The tag is what the
+    Job exists to produce; the catalog only widens which countries validate,
+    and the run still exits non-zero so the gap is visible."""
     result = legal_init({"keyvault": _http_error(403, b"Forbidden")})
     assert result.exit_code == 1
-    assert "legal-init outcome: kv_resolve_failed" in result.stdout
+    assert "legal-init outcome: catalog_not_staged" in result.stdout
     assert result.routed("blob_upload") == []
+    assert len(result.routed("legaltags_post")) == 1
 
 
-def test_legal_init_fails_when_blob_upload_denies(legal_init):
+def test_legal_init_creates_the_tag_even_when_blob_upload_denies(legal_init):
     result = legal_init({"blob_upload": _http_error(403, b"AuthorizationFailure")})
     assert result.exit_code == 1
-    assert "legal-init outcome: blob_upload_failed" in result.stdout
+    assert "legal-init outcome: catalog_not_staged" in result.stdout
+    assert len(result.routed("legaltags_post")) == 1
+
+
+def test_legal_init_catalog_carries_the_country_the_suite_tests(legal_init):
+    """The legal acceptance suite creates MY tags expecting 201, and its own
+    uploader skips a blob that already exists, so our staged catalog is what
+    those tests read. Malaysia has to be present at Client consent required:
+    legal's default entry for MY is "Default", which is rejected."""
+    put = legal_init().routed("blob_upload")[0]
+    catalog = {entry["alpha2"]: entry for entry in json.loads(put.body)}
+    assert catalog["MY"]["residencyRisk"] == "Client consent required"
 
 
 def test_legal_init_fails_when_legal_never_authorizes(legal_init):
