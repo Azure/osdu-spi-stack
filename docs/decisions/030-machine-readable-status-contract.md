@@ -23,8 +23,16 @@ record written at the end of `spi up` supplies the version fields.
   profile), `images` (branch, resolved-at, count, pinned services), and
   `baseUrl`.
 - `ready` and `deployable` answer different questions. `ready` is Flux
-  convergence: each Kustomization reports `Ready=True`, the same predicate
-  `scripts/wait_for_flux_ready.sh` polls. `deployable` is `ready` with
+  convergence: each gating Kustomization reports `Ready=True`, the same
+  predicate `scripts/wait_for_flux_ready.sh` polls. Kustomizations labeled
+  `spi-stack.gating: "false"` (seeding work such as `spi-osdu-legal`) stay
+  visible in `kustomizations.notReady` with their typed reason but never
+  flip `ready`: "ready" and "seeded" are separate signals (ADR-015).
+  `kustomizations.total` and `kustomizations.ready` count every
+  Kustomization, gating or not, so `ready` is not
+  `kustomizations.ready == kustomizations.total`; read the boolean.
+  `ready` is false when no gating Kustomization is visible at all, which
+  reports `no_kustomizations` rather than vacuous success. `deployable` is `ready` with
   `maintenance` unset and a deploy record present; `spi service pin`
   (ADR-031) enforces the same rule itself, refusing while `maintenance` is
   set or the record is absent.
@@ -41,8 +49,21 @@ record written at the end of `spi up` supplies the version fields.
   derives `deployable`; when it is set and cleared, and the fail-closed rules
   around it, are ADR-029's ruling.
 - Endpoints, partitions, and secret references stay in `spi info --json`,
-  which gains the same `apiVersion` field plus `azure.tenant_id` and the
-  data-plane application id that acceptance suites need to mint tokens.
+  which carries the same `apiVersion` field plus `azure.tenant_id`, the
+  data-plane application id that acceptance suites need to mint tokens,
+  `azure.openid_issuer`, and `partitions[].legal_tag`.
+- `azure.openid_issuer` is the OIDC v2.0 issuer URL, published explicitly
+  rather than derived by consumers from the tenant id. It is an empty string
+  until the cluster reports its tenant, so consumers treat present-but-empty
+  as not yet available.
+- `partitions[].legal_tag` is observed state and follows that same
+  present-but-empty idiom: it names the default tag only once that
+  partition's `legal-init` Job has succeeded, and is an empty string while
+  seeding is pending, failed, or was never run. Because legal seeding is
+  non-gating, an environment can be `ready` and `deployable` with the tag
+  absent, so a consumer that needs a compliant tag gates on this field rather
+  than on `deployable`. `partitions[].legal_tag_desired` always carries the
+  configured name (ADR-015), for diagnosing a seed that has not landed.
 
 Rejected: a separate `spi facts` command. A clean consumer-facing name, but a
 third overlapping surface next to `status` and `info` with no content of its

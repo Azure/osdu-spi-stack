@@ -94,6 +94,85 @@ def test_deployable_status_contract(monkeypatch):
     assert payload["baseUrl"] == "https://example.test"
 
 
+def test_non_gating_kustomization_never_blocks_ready(monkeypatch):
+    """A failed seeding Kustomization (spi-stack.gating: "false") stays
+    visible with its typed reason but must not flip ready or deployable:
+    ready and seeded are separate signals (ADR-030)."""
+    _wire(monkeypatch)
+    ready_items = _kustomizations(ready=True)["items"]
+    failed_legal = {
+        "metadata": {
+            "name": "spi-osdu-legal",
+            "labels": {"spi-stack.layer": "5", "spi-stack.gating": "false"},
+        },
+        "status": {
+            "conditions": [
+                {
+                    "type": "Ready",
+                    "status": "False",
+                    "reason": "HealthCheckFailed",
+                    "message": "HelmRelease osdu-spi-legal not ready",
+                }
+            ]
+        },
+    }
+
+    def required(args, description):
+        if "kustomizations" in args:
+            return {"items": ready_items + [failed_legal]}
+        return {"spec": {"suspend": True}}
+
+    monkeypatch.setattr(status, "_required_kubectl_json", required)
+
+    snapshot = status.collect_status()
+    payload = snapshot.to_dict()
+
+    assert snapshot.ready is True
+    assert snapshot.deployable is True
+    assert payload["reason"] is None
+    not_ready = payload["kustomizations"]["notReady"]
+    assert [item["name"] for item in not_ready] == ["spi-osdu-legal"]
+    assert not_ready[0]["gating"] is False
+
+
+def test_only_non_gating_kustomizations_is_not_ready(monkeypatch):
+    """A gating set that is empty is not a passed verdict. all() over no gating
+    Kustomizations is vacuously True, so the guard has to be the gating subset
+    rather than the full list, or a cluster that has surfaced only seeding work
+    reports ready and lets `spi service pin` through."""
+    _wire(monkeypatch)
+    failed_legal = {
+        "metadata": {
+            "name": "spi-osdu-legal",
+            "labels": {"spi-stack.layer": "5", "spi-stack.gating": "false"},
+        },
+        "status": {
+            "conditions": [
+                {
+                    "type": "Ready",
+                    "status": "False",
+                    "reason": "HealthCheckFailed",
+                    "message": "HelmRelease osdu-spi-legal not ready",
+                }
+            ]
+        },
+    }
+
+    def required(args, description):
+        if "kustomizations" in args:
+            return {"items": [failed_legal]}
+        return {"spec": {"suspend": True}}
+
+    monkeypatch.setattr(status, "_required_kubectl_json", required)
+
+    snapshot = status.collect_status()
+    payload = snapshot.to_dict()
+
+    assert snapshot.ready is False
+    assert snapshot.deployable is False
+    assert payload["reason"]["code"] == "no_kustomizations"
+
+
 def test_non_ready_kustomization_precedes_maintenance(monkeypatch):
     _wire(monkeypatch, ready=False, record=_record(maintenance=True))
 

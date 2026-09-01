@@ -5,30 +5,38 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */}}
 
-{{- if .Values.coreEnabled }}
-# One entitlements-init Job per partition. Each Job POSTs tenant-provisioning
-# so entitlements creates users.data.root and sibling root groups with the
-# caller's appid as OWNER. Gates on partition-init having landed the partition
-# record (checks GET /partitions/{p}) before calling tenant-provisioning.
+# One legal-init Job per partition, rendered from .Values.partitions. Each Job
+# stages the legal COO catalog into the partition's configuration container and
+# POSTs the default legal tag "{partition}-{legalTag}". Re-runs are safe: the
+# blob upload overwrites and a 409 succeeds only once the existing tag is
+# verified to match what this Job would have created.
+#
+# Rendered only by the non-gating osdu-spi-legal HelmRelease (legalEnabled);
+# helm-controller waits for every Job in a release, so keeping legal out of
+# the osdu-spi-init release is what stops a legal failure from blocking
+# schema-load. The pods mount the scripts ConfigMap the core release renders;
+# the spi-osdu-legal Kustomization dependsOn spi-osdu-init guarantees it
+# exists first.
+{{- if .Values.legalEnabled }}
 {{- range $partition := .Values.partitions }}
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: entitlements-init-{{ $partition }}
+  name: legal-init-{{ $partition }}
   namespace: {{ $.Values.namespace }}
   labels:
     {{- include "osdu-spi-init.labels" $ | nindent 4 }}
-    app.kubernetes.io/component: entitlements-init
+    app.kubernetes.io/component: legal-init
     osdu.spi/partition: {{ $partition }}
 spec:
   backoffLimit: {{ $.Values.backoffLimit }}
-  activeDeadlineSeconds: {{ $.Values.activeDeadlineSeconds }}
+  activeDeadlineSeconds: {{ $.Values.legalActiveDeadlineSeconds }}
   template:
     metadata:
       labels:
         {{- include "osdu-spi-init.labels" $ | nindent 8 }}
-        app.kubernetes.io/component: entitlements-init
+        app.kubernetes.io/component: legal-init
         osdu.spi/partition: {{ $partition }}
         azure.workload.identity/use: "true"
     spec:
@@ -39,16 +47,20 @@ spec:
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           command:
             - python
-            - /scripts/init_entitlements.py
+            - /scripts/init_legal.py
           env:
             - name: PARTITION
               value: {{ $partition | quote }}
+            - name: LEGAL_TAG
+              value: {{ printf "%s-%s" $partition $.Values.legalTag | quote }}
+            - name: KEYVAULT_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: osdu-config
+                  key: KEYVAULT_NAME
           volumeMounts:
             - name: scripts
               mountPath: /scripts
-              readOnly: true
-            - name: partition-records
-              mountPath: /partition-records
               readOnly: true
           resources:
             {{- toYaml $.Values.resources | nindent 12 }}
