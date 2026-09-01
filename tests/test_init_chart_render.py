@@ -125,6 +125,23 @@ def _script_constants(source: str) -> dict:
     }
 
 
+def test_legal_release_declares_no_volume_it_does_not_own():
+    """The legal release renders no ConfigMaps of its own. It mounts the core
+    release's scripts, which dependsOn guarantees, but must not declare the
+    partition-records volume it never mounts: kubelet fails a pod on any
+    declared volume whose ConfigMap is missing, with no outcome line."""
+    legal = _jobs(_render(["opendes"], {"coreEnabled": "false"}), "legal-init")[0]
+    pod = legal["spec"]["template"]["spec"]
+    assert [volume["name"] for volume in pod["volumes"]] == ["scripts"]
+
+    core = _jobs(_render(["opendes"], {"legalEnabled": "false"}), "partition-init")[0]
+    core_pod = core["spec"]["template"]["spec"]
+    assert [volume["name"] for volume in core_pod["volumes"]] == [
+        "scripts",
+        "partition-records",
+    ]
+
+
 def test_legal_init_deadline_covers_its_wait_budget(init_scripts):
     """The legal Job must outlive init_legal.py's own worst case, recomputed
     here from the script's constants: every gate's attempts at a delay plus a
@@ -387,8 +404,8 @@ def test_legal_init_fails_when_blob_upload_denies(legal_init):
 
 
 def test_legal_init_fails_when_legal_never_authorizes(legal_init):
-    """Entitlements provisioning runs in a parallel Job; if it never grants the
-    bootstrap identity access, the authz gate must time out with its own code."""
+    """If entitlements never grants the bootstrap identity access, the authz
+    gate must time out with its own code rather than POST an unauthorized tag."""
     result = legal_init({"legaltags_get": _http_error(403, b"not authorized")})
     assert result.exit_code == 1
     assert "legal-init outcome: legal_authz_timeout" in result.stdout

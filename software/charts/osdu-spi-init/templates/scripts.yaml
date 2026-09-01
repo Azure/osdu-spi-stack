@@ -273,7 +273,8 @@ data:
 
     Flow:
       1. Wait for legal /info to return 200 and the partition record to
-         exist (partition-init runs in parallel).
+         exist. Both already hold when this Job starts; the gates cover a
+         re-run against a partly torn-down cluster.
       2. Resolve the partition's blob endpoint from Key Vault
          ({partition}-storage-account-blob-endpoint), the same sensitive
          property path every service uses.
@@ -281,7 +282,7 @@ data:
          (overwrite; the upload is idempotent).
       4. Wait until an authenticated GET on /legaltags returns 200: legal
          authorizes against the groups entitlements-init provisions, and
-         that Job runs in parallel with this one.
+         entitlements and legal each cache their view of them.
       5. POST the default legal tag: 201 (created) and 409 (already
          exists) are both success, anything else fails the Job.
 

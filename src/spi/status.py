@@ -270,19 +270,18 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
             )
         )
     states = tuple(states)
-    ready = bool(states) and all(state.ready for state in states if state.gating)
+    gating = tuple(state for state in states if state.gating)
+    ready = bool(gating) and all(state.ready for state in gating)
 
     reason: StatusReason | None = None
-    if not states:
+    if not gating:
         reason = StatusReason(
             code="no_kustomizations",
-            message="No Flux Kustomizations are visible.",
+            message="No gating Flux Kustomizations are visible.",
             resource="kustomizations/osdu-flux",
         )
     else:
-        first_not_ready = next(
-            (state for state in states if state.gating and not state.ready), None
-        )
+        first_not_ready = next((state for state in gating if not state.ready), None)
         if first_not_ready is not None:
             detail = first_not_ready.message or first_not_ready.reason or "not Ready"
             reason = StatusReason(

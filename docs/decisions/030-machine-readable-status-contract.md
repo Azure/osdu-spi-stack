@@ -27,7 +27,12 @@ record written at the end of `spi up` supplies the version fields.
   predicate `scripts/wait_for_flux_ready.sh` polls. Kustomizations labeled
   `spi-stack.gating: "false"` (seeding work such as `spi-osdu-legal`) stay
   visible in `kustomizations.notReady` with their typed reason but never
-  flip `ready`: "ready" and "seeded" are separate signals (ADR-015). `deployable` is `ready` with
+  flip `ready`: "ready" and "seeded" are separate signals (ADR-015).
+  `kustomizations.total` and `kustomizations.ready` count every
+  Kustomization, gating or not, so `ready` is not
+  `kustomizations.ready == kustomizations.total`; read the boolean.
+  `ready` is false when no gating Kustomization is visible at all, which
+  reports `no_kustomizations` rather than vacuous success. `deployable` is `ready` with
   `maintenance` unset and a deploy record present; `spi service pin`
   (ADR-031) enforces the same rule itself, refusing while `maintenance` is
   set or the record is absent.
