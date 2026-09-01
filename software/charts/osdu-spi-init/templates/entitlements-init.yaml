@@ -5,6 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */}}
 
+{{- if .Values.coreEnabled }}
 # One entitlements-init Job per partition. Each Job POSTs tenant-provisioning
 # so entitlements creates users.data.root and sibling root groups with the
 # caller's appid as OWNER. Gates on partition-init having landed the partition
@@ -56,4 +57,5 @@ spec:
             runAsUser: 1000
             capabilities:
               drop: [ALL]
+{{- end }}
 {{- end }}

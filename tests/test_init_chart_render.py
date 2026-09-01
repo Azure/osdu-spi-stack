@@ -47,10 +47,12 @@ CHART_DIR = REPO_ROOT / "software" / "charts" / "osdu-spi-init"
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="Helm not installed")
 
 
-def _render(partitions: list[str]) -> list[dict]:
+def _render(partitions: list[str], extra_sets: dict[str, str] | None = None) -> list[dict]:
     set_args = []
     for i, partition in enumerate(partitions):
         set_args += ["--set", f"partitions[{i}]={partition}"]
+    for key, value in (extra_sets or {}).items():
+        set_args += ["--set", f"{key}={value}"]
     result = run_process(
         ["helm", "template", "osdu-spi-init", str(CHART_DIR), *set_args],
         capture_output=True,
@@ -90,6 +92,35 @@ def test_legal_init_renders_one_job_per_partition():
         "legal-init-opendes",
         "legal-init-second",
     ]
+
+
+def test_component_split_matches_the_two_releases():
+    """The gating osdu-spi-init release must never render a legal Job, and the
+    non-gating osdu-spi-legal release must render nothing but legal Jobs:
+    helm-controller waits for every Job in a release, so this split is what
+    keeps a legal failure from blocking schema-load."""
+    gating = _render(["opendes"], {"legalEnabled": "false"})
+    gating_names = sorted(doc["metadata"]["name"] for doc in gating)
+    assert gating_names == [
+        "entitlements-init-opendes",
+        "osdu-spi-init-partition-records",
+        "osdu-spi-init-scripts",
+        "partition-init-opendes",
+    ]
+
+    legal = _render(["opendes"], {"coreEnabled": "false"})
+    assert [doc["metadata"]["name"] for doc in legal] == ["legal-init-opendes"]
+
+
+def test_legal_init_deadline_covers_its_wait_budget():
+    """The legal script can sleep 2100s across its wait gates, so it must not
+    inherit the core Jobs' 600s deadline: the pod would be killed before a
+    typed outcome is printed."""
+    docs = _render(["opendes"])
+    legal = _jobs(docs, "legal-init")[0]
+    core = _jobs(docs, "partition-init")[0]
+    assert legal["spec"]["activeDeadlineSeconds"] == 3600
+    assert core["spec"]["activeDeadlineSeconds"] == 600
 
 
 def test_legal_init_job_contract():
@@ -283,6 +314,17 @@ def test_legal_init_creates_tag(legal_init):
     # Storage rejects a bearer-authorized request that carries no request date.
     assert put.headers["x-ms-date"].endswith("GMT")
     assert put.headers["x-ms-blob-type"] == "BlockBlob"
+
+    # Legal validates a tag's countryOfOrigin against the staged catalog; a
+    # tag naming a country the catalog omits passes this fake but is rejected
+    # by the real service, so the two payloads must stay consistent.
+    catalog_countries = {entry["alpha2"] for entry in json.loads(put.body)}
+    post = result.routed("legaltags_post")[0]
+    tag_countries = set(json.loads(post.body)["properties"]["countryOfOrigin"])
+    assert tag_countries <= catalog_countries, (
+        f"default tag declares {sorted(tag_countries - catalog_countries)} "
+        "absent from the staged COO catalog"
+    )
 
 
 def test_legal_init_treats_existing_tag_as_success(legal_init):

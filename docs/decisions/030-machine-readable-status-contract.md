@@ -23,8 +23,11 @@ record written at the end of `spi up` supplies the version fields.
   profile), `images` (branch, resolved-at, count, pinned services), and
   `baseUrl`.
 - `ready` and `deployable` answer different questions. `ready` is Flux
-  convergence: each Kustomization reports `Ready=True`, the same predicate
-  `scripts/wait_for_flux_ready.sh` polls. `deployable` is `ready` with
+  convergence: each gating Kustomization reports `Ready=True`, the same
+  predicate `scripts/wait_for_flux_ready.sh` polls. Kustomizations labeled
+  `spi-stack.gating: "false"` (seeding work such as `spi-osdu-legal`) stay
+  visible in `kustomizations.notReady` with their typed reason but never
+  flip `ready`: "ready" and "seeded" are separate signals (ADR-015). `deployable` is `ready` with
   `maintenance` unset and a deploy record present; `spi service pin`
   (ADR-031) enforces the same rule itself, refusing while `maintenance` is
   set or the record is absent.

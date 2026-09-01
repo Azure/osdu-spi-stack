@@ -5,6 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */}}
 
+{{- if .Values.coreEnabled }}
 # Shared scripts used by both partition-init and entitlements-init Jobs.
 # Token acquisition mirrors software/stacks/osdu/schema-load/script.yaml:
 # the AKS Workload Identity webhook exports AZURE_TENANT_ID, AZURE_CLIENT_ID,
@@ -283,8 +284,10 @@ data:
     already_exists, config_missing, service_timeout,
     partition_record_timeout, kv_resolve_failed, blob_upload_failed,
     legal_authz_timeout, legal_tag_rejected, auth_failed, unexpected_error.
-    The Job is not a Helm hook, so a failure never blocks platform
-    readiness: "ready" and "seeded" stay separate signals.
+    This Job runs in the non-gating osdu-spi-legal release, never the gating
+    osdu-spi-init one (helm-controller waits for every Job in a release), so
+    a failure never blocks platform readiness: "ready" and "seeded" stay
+    separate signals.
     """
     import json
     import os
@@ -303,13 +306,21 @@ data:
 
     REQUIRED_ENV = ("PARTITION", "LEGAL_TAG", "KEYVAULT_NAME")
 
+    # Legal validates every tag's countryOfOrigin against this catalog, so it
+    # must contain the country the default tag below declares (US).
     COO_CATALOG = [
+        {
+            "name": "United States of America",
+            "alpha2": "US",
+            "numeric": 840,
+            "residencyRisk": "No restriction",
+        },
         {
             "name": "Malaysia",
             "alpha2": "MY",
             "numeric": 458,
             "residencyRisk": "Client consent required",
-        }
+        },
     ]
 
 
@@ -472,3 +483,4 @@ data:
             outcome("unexpected_error")
             rc = 1
         sys.exit(rc)
+{{- end }}

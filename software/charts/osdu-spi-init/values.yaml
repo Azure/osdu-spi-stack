@@ -15,6 +15,15 @@ partitions:
 #    the tag consumers should use; keep the two defaults identical.
 legalTag: demo-legaltag
 
+# -- Component toggles. The chart is instantiated twice: the gating
+#    osdu-spi-init HelmRelease (schema-load waits on it) renders only the
+#    core Jobs (coreEnabled, legalEnabled: false), while the non-gating
+#    osdu-spi-legal HelmRelease renders only the legal Jobs (coreEnabled:
+#    false), so a legal failure never blocks platform readiness. Both default
+#    on so `helm template` and the render tests see every manifest.
+coreEnabled: true
+legalEnabled: true
+
 # -- Azure Entra tenant ID the Workload Identity SA is federated against. The
 #    MSAL exchange needs this to build the authority URL. Injected at runtime
 #    by the AKS Workload Identity webhook as AZURE_TENANT_ID, so we pull it
@@ -58,9 +67,15 @@ resources:
     cpu: 500m
     memory: 512Mi
 
-# -- activeDeadlineSeconds for the Jobs. 10 min is generous for a few HTTP
-#    POSTs once the services are up.
+# -- activeDeadlineSeconds for the core Jobs. 10 min is generous for a few
+#    HTTP POSTs once the services are up.
 activeDeadlineSeconds: 600
+
+# -- activeDeadlineSeconds for the legal Jobs, which carry their own budget:
+#    the script may sleep up to 2100 s across its three wait gates (600 + 300
+#    + 150 attempts at 2 s) before request time, so the shared 600 s deadline
+#    would kill the pod before a typed outcome is printed.
+legalActiveDeadlineSeconds: 3600
 
 # -- backoffLimit: two retries are enough; the init scripts handle 409
 #    (already-exists) as success, so a failure here is a real error.

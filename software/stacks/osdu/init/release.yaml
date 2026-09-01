@@ -28,3 +28,8 @@ spec:
     - kind: ConfigMap
       name: spi-init-values
       valuesKey: values.yaml
+  # This release gates schema-load (helm-controller waits for its Jobs, the
+  # spi-osdu-init Kustomization health-checks it), so it renders only the
+  # core Jobs; legal seeding runs in the non-gating osdu-spi-legal release.
+  values:
+    legalEnabled: false

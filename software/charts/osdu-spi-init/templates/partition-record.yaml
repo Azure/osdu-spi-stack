@@ -5,6 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */}}
 
+{{- if .Values.coreEnabled }}
 # One ConfigMap with a partition.json key per partition. partition-init mounts
 # this at /partition-records and selects the file matching its $PARTITION env.
 #
@@ -90,4 +91,5 @@ data:
         }
       }
     }
+{{- end }}
 {{- end }}
