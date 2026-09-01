@@ -13,7 +13,7 @@ SPI Stack deploys the OSDU platform on Azure with a hybrid provisioning model: B
 
 SPI Stack has three control planes working together:
 
-1. **The `spi` CLI** bootstraps the environment. It creates the resource group, submits Bicep deployments for the cluster (`infra/aks.bicep`) and the rest of the Azure PaaS surface (`infra/main.bicep`), bootstraps the cluster (namespaces, StorageClasses, ServiceAccount, `osdu-config` ConfigMap), submits a third Bicep deployment (`infra/flux.bicep`) that activates the AKS Flux extension, then writes a small set of runtime Key Vault secrets from the generated middleware seed.
+1. **The `spi` CLI** bootstraps the environment. It creates the resource group, submits Bicep deployments for the cluster (`infra/aks.bicep`) and the rest of the Azure PaaS surface (`infra/main.bicep`), bootstraps the cluster (namespaces, StorageClasses, ServiceAccount, `osdu-config` ConfigMap), submits a third Bicep deployment (`infra/flux.bicep`) that activates the AKS Flux extension, then writes a small set of runtime Key Vault secrets: seed passwords, fixed in-cluster hostnames, and the Table storage endpoint.
 2. **Flux CD** manages desired-state reconciliation. It watches this Git repository and the OCI chart registry, and continuously converges the cluster to match.
 3. **Kubernetes operators** (ECK, CNPG, cert-manager, trust-manager) manage the lifecycle of individual middleware systems beneath the Flux layer.
 
@@ -35,7 +35,7 @@ This project uses a **GitOps + bootstrap** model (see [ADR-008](decisions/008-bi
    - Provision the AKS cluster and all Azure PaaS resources via Bicep.
    - Bootstrap the cluster with namespaces, StorageClasses, ServiceAccount, and the `osdu-config` ConfigMap.
    - Activate the AKS Flux extension (also declared in Bicep).
-   - Write runtime Key Vault secrets from the generated seed passwords, without waiting for middleware.
+   - Write runtime Key Vault secrets (seed passwords, fixed in-cluster hostnames, the Table storage endpoint) without waiting for middleware.
 2. Flux then owns steady-state reconciliation for everything else.
 
 This keeps the in-cluster graph clean, while accepting that Azure infrastructure must land imperatively before Flux can start.

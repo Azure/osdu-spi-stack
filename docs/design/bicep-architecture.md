@@ -59,7 +59,7 @@ Five things Bicep cannot or will not do; the CLI handles them with `az`:
 2. **Soft-delete Key Vault recovery.** `az keyvault list-deleted | jq` + `az keyvault recover`. ARM cannot branch on a live query, so the CLI checks before submitting `main.bicep` and runs `recover` if needed.
 3. **`az aks get-credentials`.** Kubeconfig merge is a client-side operation, not a resource.
 4. **`az aks mesh enable-istio-cni`.** The resource provider rejects `proxyRedirectionMechanism` at cluster creation. The CLI enables CNI chaining after `aks.bicep` lands and skips the call when the cluster already reports `CNIChaining`.
-5. **Runtime Key Vault secrets.** The in-cluster middleware secrets (`redis-*`, `{p}-elastic-*`) are not declarable in Bicep. The CLI writes them with `az keyvault secret set` from the generated seed passwords, with no wait for middleware Ready, since the values are known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md) and the [secret lifecycle](secret-lifecycle.md) doc for the full handoff.
+5. **Runtime Key Vault secrets.** The middleware secrets (`redis-*`, `{p}-elastic-*`) and `tbl-storage-endpoint` are not declared in Bicep. The CLI writes them with `az keyvault secret set` from the generated seed passwords, fixed in-cluster hostnames, and the common Storage account name, with no wait for middleware Ready, since every value is known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md) and the [secret lifecycle](secret-lifecycle.md) doc for the full handoff.
 
 Adding a seam is a smell; confirm first that the resource provider rejects the setting declaratively.
 
