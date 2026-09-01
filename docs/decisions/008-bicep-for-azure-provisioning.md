@@ -8,12 +8,12 @@ Bicep inherits ARM's idempotency and parallel orchestration without a state file
 
 ## Decision
 
-All Azure resources are declared in Bicep. The Python CLI is a thin orchestrator that calls `az deployment group create` twice and handles the seams Bicep cannot cover.
+All Azure resources are declared in Bicep. The Python CLI is a thin orchestrator that calls `az deployment group create` once per template and handles the seams Bicep cannot cover.
 
 Layout:
 
-- `infra/aks.bicep`. AKS Automatic cluster and managed Istio as a raw `Microsoft.ContainerService/managedClusters` resource on a pre-created VNet with NAT gateway outbound; the system-pool VM size, ephemeral OS disk, and Istio `serviceMeshProfile` are declared directly.
-- `infra/main.bicep`. Every other PaaS resource as hand-written Bicep under `infra/modules/` (identity, keyvault, acr, cosmos-gremlin, partition, storage-common, rbac, external-dns-*, vnet).
+- `infra/aks.bicep`. AKS Automatic cluster and managed Istio as a raw `Microsoft.ContainerService/managedClusters` resource on a VNet from `infra/modules/vnet.bicep` with NAT gateway outbound; the system-pool VM size, ephemeral OS disk, and Istio `serviceMeshProfile` are declared directly.
+- `infra/main.bicep`. Every other PaaS resource as hand-written Bicep under `infra/modules/` (identity, keyvault, acr, cosmos-gremlin, partition, storage-common, rbac, external-dns-*).
 - `infra/flux.bicep`. AKS Flux extension and `fluxConfigurations` resource (ADR-009), deployed after K8s bootstrap.
 
 Imperative in the CLI (via `az`), not Bicep:
