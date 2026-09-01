@@ -281,8 +281,8 @@ def spi_init_values_configmap(partitions: list[str]) -> str:
     Lives in osdu-flux (where the HelmRelease is reconciled) and carries the
     full Helm values YAML. The CLI writes it based on --partition flags so that
     enabling a new partition is a CLI argument change, not a git edit.
-    `spi info` reads the same ConfigMap back, so the legal tag it reports is
-    the one the init Jobs actually rendered.
+    `spi info` reads the same ConfigMap back, so the legal tag name it reports
+    is the one the init Jobs rendered from.
     """
     partition_lines = "\n".join(f"    - {p}" for p in partitions)
     return f"""\

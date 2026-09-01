@@ -284,13 +284,15 @@ data:
       4. Wait until an authenticated GET on /legaltags returns 200: legal
          authorizes against the groups entitlements-init provisions, and
          entitlements and legal each cache their view of them.
-      5. POST the default legal tag: 201 (created) and 409 (already
-         exists) are both success, anything else fails the Job.
+      5. POST the default legal tag. 201 is success; on 409 the existing
+         tag's properties and legal's own validity verdict must match what
+         this Job would have created, or the run fails: a taken name is not
+         proof that bootstrap converged. Anything else fails the Job.
 
     Every exit prints "legal-init outcome: <code>", one of: created,
     already_exists, catalog_not_staged, config_missing, service_timeout,
     partition_record_timeout, legal_authz_timeout, legal_tag_rejected,
-    auth_failed, unexpected_error.
+    legal_tag_conflict, auth_failed, unexpected_error.
     This Job runs in the non-gating osdu-spi-legal release, never the gating
     osdu-spi-init one (helm-controller waits for every Job in a release), so
     a failure never blocks platform readiness: "ready" and "seeded" stay
@@ -315,11 +317,12 @@ data:
 
     # activeDeadlineSeconds is sized against the worst case below, or the pod
     # dies before printing an outcome line: every poll attempt costs WAIT_DELAY
-    # plus WAIT_SOCKET_TIMEOUT, and REQUEST_BUDGET covers six 60 s calls.
+    # plus WAIT_SOCKET_TIMEOUT, and REQUEST_BUDGET covers eight 60 s calls
+    # (the 409 path adds a tag GET and a validate POST).
     WAIT_DELAY = 2.0
     WAIT_SOCKET_TIMEOUT = 5.0
     REQUEST_TIMEOUT = 60
-    REQUEST_BUDGET = 360
+    REQUEST_BUDGET = 480
     LEGAL_INFO_ATTEMPTS = 200
     PARTITION_RECORD_ATTEMPTS = 120
     LEGAL_AUTHZ_ATTEMPTS = 100
@@ -364,6 +367,61 @@ data:
                 "personalData": "No Personal Data",
             },
         }
+
+
+    def properties_drift(existing: dict, desired: dict) -> list:
+        """Property names where an existing tag differs from the one we POST.
+
+        Legal normalizes on write (countryOfOrigin upper-cased, originator
+        trimmed, expirationDate serialized yyyy-MM-dd), so comparing the
+        stripped values it returns against what we send is exact.
+        """
+        drift = []
+        for key, want in desired.items():
+            have = existing.get(key)
+            if isinstance(want, list):
+                same = sorted(str(v).strip().upper() for v in have or []) == sorted(
+                    str(v).strip().upper() for v in want
+                )
+            else:
+                same = str(have or "").strip() == str(want)
+            if not same:
+                drift.append(key)
+        return drift
+
+
+    def verify_existing_tag(legal_host: str, legal_tag: str, headers: dict) -> str:
+        """Why a same-name tag is not the tag bootstrap requires, or "".
+
+        A 409 proves the name is taken, not that it names a usable tag, so
+        compare the stored properties and ask legal for its own validity
+        verdict (which covers expiry) before reporting convergence.
+        """
+        try:
+            req = urllib.request.Request(
+                f"{legal_host}/api/legal/v1/legaltags/{legal_tag}", headers=headers
+            )
+            resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT)
+            existing = json.loads(resp.read()).get("properties") or {}
+            drift = properties_drift(existing, tag_body(legal_tag)["properties"])
+            if drift:
+                return f"properties differ: {', '.join(drift)}"
+
+            req = urllib.request.Request(
+                f"{legal_host}/api/legal/v1/legaltags:validate",
+                data=json.dumps({"names": [legal_tag]}).encode(),
+                method="POST",
+                headers={"Content-Type": "application/json", **headers},
+            )
+            resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT)
+            invalid = json.loads(resp.read()).get("invalidLegalTags") or []
+        except urllib.error.HTTPError as e:
+            return f"verification failed -> {e.code}: {e.read().decode(errors='replace')}"
+        except Exception as e:
+            return f"verification failed -> {type(e).__name__}: {e}"
+        if invalid:
+            return "; ".join(f"{i.get('name')}: {i.get('reason')}" for i in invalid)
+        return ""
 
 
     def resolve_blob_endpoint(keyvault_name: str, partition: str) -> str:
@@ -497,7 +555,13 @@ data:
             print(f"  POST {legaltags_url} -> {e.code}")
             print(e.read().decode(errors="replace"))
             if e.code == 409:
-                print(f"  Legal tag '{legal_tag}' already exists; treating as success.")
+                print(f"  Tag '{legal_tag}' exists; verifying it is the required tag...")
+                conflict = verify_existing_tag(legal_host, legal_tag, auth_headers)
+                if conflict:
+                    print(f"  Existing tag is not the required tag -> {conflict}")
+                    outcome("legal_tag_conflict")
+                    return 1
+                print("  Existing tag matches and validates; treating as success.")
                 tag_outcome = "already_exists"
 
         if tag_outcome is None:

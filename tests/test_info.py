@@ -10,7 +10,7 @@ from spi import info
 from spi.templates import LEGAL_TAG_BASE, spi_init_values_configmap
 
 
-def _wire(monkeypatch, osdu_config=None, partitions=None, legal_tag_base=None):
+def _wire(monkeypatch, osdu_config=None, partitions=None, legal_tag_base=None, seeded=True):
     monkeypatch.setattr(
         info,
         "_read_ingress_config",
@@ -39,6 +39,7 @@ def _wire(monkeypatch, osdu_config=None, partitions=None, legal_tag_base=None):
     )
     monkeypatch.setattr(info, "_read_partitions_list", lambda: partitions or ["opendes"])
     monkeypatch.setattr(info, "_read_legal_tag_base", lambda: legal_tag_base or LEGAL_TAG_BASE)
+    monkeypatch.setattr(info, "_legal_tag_seeded", lambda partition: seeded)
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: True)
 
 
@@ -70,7 +71,7 @@ def test_openid_issuer_empty_until_tenant_known(monkeypatch):
     assert result["azure"]["openid_issuer"] == ""
 
 
-def test_partitions_report_their_default_legal_tag(monkeypatch):
+def test_partitions_report_their_seeded_legal_tag(monkeypatch):
     _wire(monkeypatch, partitions=["opendes", "second"])
 
     result = info.collect_info()
@@ -80,6 +81,39 @@ def test_partitions_report_their_default_legal_tag(monkeypatch):
         f"second-{LEGAL_TAG_BASE}",
     ]
     assert result["partitions"][0]["primary"] is True
+
+
+def test_legal_tag_empty_until_seeding_is_observed(monkeypatch):
+    """Legal seeding is non-gating, so the environment can be ready and
+    deployable with no tag. Publishing the derived name anyway would tell an
+    acceptance suite to reference a tag that was never created, including on
+    environments deployed before legal-init existed."""
+    _wire(monkeypatch, partitions=["opendes"], seeded=False)
+
+    partition = info.collect_info()["partitions"][0]
+
+    assert partition["legal_tag"] == ""
+    assert partition["legal_tag_desired"] == f"opendes-{LEGAL_TAG_BASE}"
+
+
+def test_legal_tag_seeded_reads_the_job_outcome(monkeypatch):
+    """Only the Job's own success proves the tag exists; a Job that is absent,
+    still running, or failed must not read as seeded."""
+    seen = []
+
+    def fake_kubectl_json(args):
+        seen.append(args)
+        return {"status": {"succeeded": 1}}
+
+    monkeypatch.setattr(info, "kubectl_json", fake_kubectl_json)
+    assert info._legal_tag_seeded("opendes") is True
+    assert seen[0] == ["get", "job", "legal-init-opendes", "-n", "osdu"]
+
+    monkeypatch.setattr(info, "kubectl_json", lambda args: {"status": {"failed": 2}})
+    assert info._legal_tag_seeded("opendes") is False
+
+    monkeypatch.setattr(info, "kubectl_json", lambda args: None)
+    assert info._legal_tag_seeded("opendes") is False
 
 
 def test_legal_tag_base_read_from_init_values(monkeypatch):

@@ -8,7 +8,8 @@ you may not use this file except in compliance with the License.
 # One legal-init Job per partition, rendered from .Values.partitions. Each Job
 # stages the legal COO catalog into the partition's configuration container and
 # POSTs the default legal tag "{partition}-{legalTag}". Re-runs are safe: the
-# blob upload overwrites and a 409 on the tag is treated as success.
+# blob upload overwrites and a 409 succeeds only once the existing tag is
+# verified to match what this Job would have created.
 #
 # Rendered only by the non-gating osdu-spi-legal HelmRelease (legalEnabled);
 # helm-controller waits for every Job in a release, so keeping legal out of

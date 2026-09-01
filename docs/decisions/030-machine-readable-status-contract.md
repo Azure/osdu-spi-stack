@@ -55,8 +55,15 @@ record written at the end of `spi up` supplies the version fields.
 - `azure.openid_issuer` is the OIDC v2.0 issuer URL, published explicitly
   rather than derived by consumers from the tenant id. It is an empty string
   until the cluster reports its tenant, so consumers treat present-but-empty
-  as not yet available. `partitions[].legal_tag` is the default tag
-  `legal-init` creates for that partition (ADR-015).
+  as not yet available.
+- `partitions[].legal_tag` is observed state and follows that same
+  present-but-empty idiom: it names the default tag only once that
+  partition's `legal-init` Job has succeeded, and is an empty string while
+  seeding is pending, failed, or was never run. Because legal seeding is
+  non-gating, an environment can be `ready` and `deployable` with the tag
+  absent, so a consumer that needs a compliant tag gates on this field rather
+  than on `deployable`. `partitions[].legal_tag_desired` always carries the
+  configured name (ADR-015), for diagnosing a seed that has not landed.
 
 Rejected: a separate `spi facts` command. A clean consumer-facing name, but a
 third overlapping surface next to `status` and `info` with no content of its

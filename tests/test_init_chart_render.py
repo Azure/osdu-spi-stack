@@ -262,6 +262,27 @@ def _transport_error(reason: str = "connection refused"):
     return handler
 
 
+# The properties init_legal.py POSTs. Pinned to the script itself by
+# test_legal_init_accepts_an_existing_tag_that_matches, so a change to
+# tag_body() cannot leave the verification fixtures agreeing with nothing.
+_TAG_PROPERTIES = {
+    "countryOfOrigin": ["US"],
+    "contractId": "No Contract Related",
+    "expirationDate": "2099-01-01",
+    "dataType": "Public Domain Data",
+    "originator": "OSDU",
+    "securityClassification": "Public",
+    "exportClassification": "EAR99",
+    "personalData": "No Personal Data",
+}
+
+
+def _existing_tag(**overrides) -> bytes:
+    return json.dumps(
+        {"name": "opendes-demo-legaltag", "properties": {**_TAG_PROPERTIES, **overrides}}
+    ).encode()
+
+
 _DEFAULT_ROUTES = {
     "legal_info": _responds(200),
     "partition_record": _responds(200),
@@ -269,6 +290,8 @@ _DEFAULT_ROUTES = {
     "blob_upload": _responds(201),
     "legaltags_get": _responds(200, b"[]"),
     "legaltags_post": _responds(201, b'{"name": "opendes-demo-legaltag"}'),
+    "legaltags_by_name": _responds(200, _existing_tag()),
+    "legaltags_validate": _responds(200, b'{"invalidLegalTags": []}'),
 }
 
 
@@ -287,6 +310,10 @@ def _route_of(url: str, method: str) -> str:
         return "blob_upload"
     if url.endswith("/legaltags"):
         return "legaltags_get" if method == "GET" else "legaltags_post"
+    if url.endswith("/legaltags:validate"):
+        return "legaltags_validate"
+    if "/api/legal/v1/legaltags/" in url:
+        return "legaltags_by_name"
     raise _Unrouted(f"{method} {url}")
 
 
@@ -369,10 +396,54 @@ def test_legal_init_creates_tag(legal_init):
     )
 
 
-def test_legal_init_treats_existing_tag_as_success(legal_init):
-    result = legal_init({"legaltags_post": _http_error(409, b"already exists")})
+_CONFLICT = {"legaltags_post": _http_error(409, b"already exists")}
+
+
+def test_legal_init_accepts_an_existing_tag_that_matches(legal_init):
+    """A 409 is success only after the stored tag is checked, so the check has
+    to actually run: both verification calls are asserted here, and the fixture
+    they answer with is pinned to the body the script POSTs."""
+    result = legal_init(_CONFLICT)
     assert result.exit_code == 0
     assert "legal-init outcome: already_exists" in result.stdout
+    assert len(result.routed("legaltags_by_name")) == 1
+    assert len(result.routed("legaltags_validate")) == 1
+
+    post = result.routed("legaltags_post")[0]
+    assert json.loads(post.body)["properties"] == _TAG_PROPERTIES
+
+
+def test_legal_init_rejects_an_existing_tag_configured_differently(legal_init):
+    """A taken name is not proof of convergence: a same-name tag carrying
+    another country would let the acceptance suite reference a tag the stack
+    never agreed to create."""
+    result = legal_init(
+        {**_CONFLICT, "legaltags_by_name": _responds(200, _existing_tag(countryOfOrigin=["MY"]))}
+    )
+    assert result.exit_code == 1
+    assert "legal-init outcome: legal_tag_conflict" in result.stdout
+    assert "countryOfOrigin" in result.stdout
+    assert result.routed("legaltags_validate") == []
+
+
+def test_legal_init_rejects_an_existing_tag_legal_calls_invalid(legal_init):
+    """Matching properties are not enough; legal owns the validity verdict, so
+    an expired tag with the right shape still fails."""
+    invalid = json.dumps(
+        {"invalidLegalTags": [{"name": "opendes-demo-legaltag", "reason": "Expired"}]}
+    ).encode()
+    result = legal_init({**_CONFLICT, "legaltags_validate": _responds(200, invalid)})
+    assert result.exit_code == 1
+    assert "legal-init outcome: legal_tag_conflict" in result.stdout
+    assert "Expired" in result.stdout
+
+
+def test_legal_init_reports_a_conflict_when_verification_cannot_run(legal_init):
+    """An unverifiable tag is not a verified one. The run must not fall through
+    to the generic boundary and report already_exists or unexpected_error."""
+    result = legal_init({**_CONFLICT, "legaltags_by_name": _http_error(404, b"not found")})
+    assert result.exit_code == 1
+    assert "legal-init outcome: legal_tag_conflict" in result.stdout
 
 
 def test_legal_init_fails_on_rejected_tag(legal_init):

@@ -112,9 +112,10 @@ def _read_legal_tag_base() -> str:
     """Return the legal-tag base name the init Jobs rendered from.
 
     Read back from the same spi-init-values ConfigMap the osdu-spi-init chart
-    consumes, so the reported tag is the one legal-init actually created. A
+    consumes, so the reported name is the one legal-init would create. A
     ConfigMap written before the key existed falls back to the constant the
-    chart's values default carries, which is what those Jobs used.
+    chart's values default carries, which is what those Jobs used. This is the
+    desired name only; ``_legal_tag_seeded`` decides whether it exists.
     """
     data = kubectl_json(["get", "configmap", "spi-init-values", "-n", "osdu-flux"])
     values_yaml = ((data or {}).get("data") or {}).get("values.yaml", "")
@@ -123,6 +124,17 @@ def _read_legal_tag_base() -> str:
         if stripped.startswith("legalTag:"):
             return stripped.split(":", 1)[1].strip()
     return LEGAL_TAG_BASE
+
+
+def _legal_tag_seeded(partition: str) -> bool:
+    """Whether legal-init is observed to have created this partition's tag.
+
+    Legal seeding is deliberately non-gating (ADR-030), so an environment can
+    be ready and deployable with the tag pending, failed, or never attempted;
+    only the Job's own success proves it exists.
+    """
+    data = kubectl_json(["get", "job", f"legal-init-{partition}", "-n", "osdu"])
+    return bool(((data or {}).get("status") or {}).get("succeeded"))
 
 
 def _parse_partitions_from_values_yaml(text: str) -> list:
@@ -349,8 +361,13 @@ def _collect_info(show_secret_refs: bool = False) -> tuple[dict, list]:
                 "cosmos_account": cosmos,
                 "servicebus_namespace": sb,
                 "storage_account": storage,
-                # The default tag legal-init creates for this partition.
-                "legal_tag": f"{partitions[i]}-{legal_tag_base}",
+                # Observed, not derived: empty until legal-init is seen to have
+                # created the tag, the same present-but-empty idiom as
+                # openid_issuer. legal_tag_desired always carries the name.
+                "legal_tag": (
+                    f"{partitions[i]}-{legal_tag_base}" if _legal_tag_seeded(partitions[i]) else ""
+                ),
+                "legal_tag_desired": f"{partitions[i]}-{legal_tag_base}",
             }
             for i, (_label, cosmos, sb, storage) in enumerate(partition_rows)
         ],
@@ -390,7 +407,7 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
             item["cosmos_account"],
             item["servicebus_namespace"],
             item["storage_account"],
-            item["legal_tag"],
+            item["legal_tag"] or f"[dim]{item['legal_tag_desired']} (not seeded)[/dim]",
         )
         for item in info["partitions"]
     ]
