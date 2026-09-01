@@ -11,8 +11,9 @@ workflow YAML they do not own (the `Azure/osdu-spi` template syncs it to
 them). When a deploy misbehaves, the operator debugging it needs the exact
 sequence, what each step asserts, and which recovery path applies.
 
-**Status.** `spi service pin --image --ephemeral`, `verify`, and the
-ownership-checked `reset` (with `--ephemeral --stale-only`) are implemented.
+**Status.** `spi service pin --image --ephemeral`, `verify`, the
+ownership-checked `reset --if-run`, and the separate stale sweep
+(`reset --ephemeral --stale-only`) are implemented.
 `spi onboard`, `spi service refresh`, the refresh workflow's backstop step,
 and the fork-side jobs are ahead of the code (phases 1 and 4 of the roadmap
 in [environment-lifecycle.md](environment-lifecycle.md)). Remove the marks as

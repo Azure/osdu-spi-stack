@@ -22,7 +22,7 @@ Imperative in the CLI (via `az`), not Bicep:
 - Soft-deleted Key Vault precheck and `az keyvault recover`. ARM cannot branch on a live query.
 - `az aks get-credentials`. Kubeconfig merge, not a resource.
 - `az aks mesh enable-istio-cni`. The resource provider rejects `proxyRedirectionMechanism` at cluster creation; the CLI skips the call when the cluster already reports `CNIChaining`.
-- Key Vault runtime secrets that depend on in-cluster seed passwords (Redis, Elasticsearch per-partition credentials). Written post-handoff by the CLI from the generated seed, without waiting for middleware (ADR-010).
+- Key Vault runtime secrets: Redis and per-partition Elasticsearch credentials from the generated seed passwords and fixed in-cluster hostnames, plus `tbl-storage-endpoint` derived from the common Storage account name. Written post-handoff by the CLI without waiting for middleware (ADR-010).
 - K8s bootstrap: namespaces, StorageClasses, ServiceAccount, `osdu-config` ConfigMap.
 
 `spi up --dry-run` runs `az deployment group what-if` against `aks.bicep` and `main.bicep`, giving an ARM-level diff before any resource provisioning.

@@ -83,7 +83,7 @@ spi up --env <env>
    ├── az deployment group create  --template-file infra/flux.bicep
    │       --parameters profile=<profile> ingressMode=<mode>
    │
-   └── az keyvault secret set  (runtime secrets, from seed)
+   └── az keyvault secret set  (runtime secrets: seed passwords, fixed hostnames, Table endpoint)
 ```
 
 `spi up --dry-run` stops after the `what-if` on `aks.bicep` and `main.bicep`. Everything below that line only runs in a real deploy.
