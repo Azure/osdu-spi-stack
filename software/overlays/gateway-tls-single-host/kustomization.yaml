@@ -1,8 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Azure-mode overlay: base gateway (HTTP:80 for ACME challenges) plus a
-# single HTTPS:443 listener bound to the auto-FQDN, terminated with a
-# Let's Encrypt cert issued via HTTP-01 on the same gateway.
+# Azure-mode overlay: the base gateway plus one HTTPS:443 listener on the
+# auto-FQDN with a Let's Encrypt cert.
 resources:
   - ../../components/gateway
   - certificate.yaml
@@ -22,8 +21,8 @@ patches:
           hostname: "${INGRESS_FQDN}"
           tls:
             mode: Terminate
-            # Cross-namespace: cert issues into platform; the
-            # ReferenceGrant in certificate.yaml authorizes the read.
+            # The ReferenceGrant in certificate.yaml authorizes this
+            # cross-namespace read.
             certificateRefs:
               - name: osdu-tls
                 namespace: platform

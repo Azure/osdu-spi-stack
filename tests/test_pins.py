@@ -179,17 +179,14 @@ def _pinned_data(service: str, pin: ServicePin) -> dict:
 
 def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     """Wire pins.read_lock/run_command to an in-memory ConfigMap so the real
-    ``mutate_lock`` compare-and-retry loop runs against a controllable fake
-    cluster instead of a mocked-out patch call.
+    ``mutate_lock`` compare-and-retry loop runs against a fake cluster.
 
-    ``conflicts`` simulates that many concurrent writers landing a change
-    (an unrelated pin annotation plus a bumped resourceVersion) between the
-    read and the patch attempt, forcing that many JSON Patch ``test``
-    failures before the loop's own patch can land.
+    ``conflicts`` is how many concurrent writers land a change (an unrelated
+    pin plus a bumped resourceVersion) between the read and the patch,
+    forcing that many JSON Patch ``test`` failures first.
 
-    Returns a dict with ``patch`` (the final applied ``(data, pins)`` pair),
-    ``reconciled`` (the services passed to ``reconcile_consumers``), and
-    ``attempts`` (how many patch calls were issued).
+    Returns ``patch`` (the final ``(data, pins)`` pair), ``reconciled`` (the
+    services passed to ``reconcile_consumers``), and ``attempts``.
     """
 
     box = [lock]

@@ -13,21 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Resolve latest OSDU container image tags from the GitLab registry.
+"""Resolve the latest OSDU image tags from the community GitLab registry.
 
-Queries the OSDU community GitLab container registry API for each service
-and updates the HelmRelease YAML files under software/stacks/osdu/ with
-the correct image repository and tag.
+GitLab's cleanup policy prunes old tags, so a hardcoded SHA goes stale; this
+rewrites the image references under software/stacks/osdu/ to tags that exist.
 
-The GitLab cleanup policy prunes old image tags, so hardcoded SHAs go stale.
-This script ensures we always deploy with a tag that exists in the registry.
+Usage: resolve-image-tags.py [--update]   (without --update, resolve and print)
 
-Usage:
-    python scripts/resolve-image-tags.py              # resolve and show
-    python scripts/resolve-image-tags.py --update     # resolve and update YAML files
-
-Environment variables:
-    OSDU_IMAGE_BRANCH         - Branch suffix for image names (default: master)
+Env:
+  OSDU_IMAGE_BRANCH  branch suffix for image names (default master)
 """
 
 import os
@@ -46,21 +40,14 @@ from spi.images import (  # noqa: E402
 
 
 def update_yaml_file(filepath: Path, repository: str, tag: str) -> bool:
-    """Update the image reference in a YAML file.
+    """Rewrite the image reference in a YAML file.
 
-    Handles two formats:
-      1. HelmRelease values split across two lines:
-             repository: foo/bar
-             tag: "sha"
-         (used by software/stacks/osdu/services/*.yaml)
-      2. Kubernetes core Pod spec combined form:
-             image: "foo/bar:sha"
-         (legacy static manifests only; live-locked manifests keep placeholders)
+    Handles the HelmRelease split form (`repository:` and `tag:` lines,
+    keeping a Flux `${VAR:=default}` default) and the combined Pod-spec form
+    (`image: "repo:tag"`).
     """
     content = filepath.read_text()
 
-    # Format 1: split repository: / tag:. Preserve Flux substitution
-    # defaults when present, e.g. ${PARTITION_IMAGE_TAG:=sha}.
     new_content = re.sub(
         r"(^\s*repository:\s*)(.+)$",
         lambda m: m.group(1) + _replace_default(m.group(2), repository, quote=False),
@@ -76,10 +63,8 @@ def update_yaml_file(filepath: Path, repository: str, tag: str) -> bool:
         flags=re.MULTILINE,
     )
 
-    # Format 2: combined image: "repo:tag" (with or without surrounding quotes).
-    # Only rewrite lines where the existing value already references the
-    # same repository we are updating, so this does not accidentally touch
-    # unrelated image fields (istio-proxy, init containers, etc).
+    # Only an `image:` naming this repository is rewritten, so init containers
+    # and sidecar images are untouched.
     repo_escaped = re.escape(repository)
     new_content = re.sub(
         rf'(^\s*image:\s*)(["\']?){repo_escaped}:[^\s"\']+(["\']?)(\s*)$',

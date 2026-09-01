@@ -19,10 +19,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.theme import Theme
 
-# Single merged theme covering keys previously scattered across helpers.py,
-# secrets.py, status.py, and info.py. "ready"/"notready"/"failed" are the
-# status-board idioms; "success"/"error"/"warning"/"info" are the semantic
-# idioms; "azure"/"kubectl"/"flux"/"helm" are command-banner idioms.
+# Status-board, semantic, and command-banner styles in one theme.
 _theme = Theme(
     {
         "azure": "bold cyan",

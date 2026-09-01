@@ -1,26 +1,15 @@
 name: Release
 
-# Merging the release-please PR creates a DRAFT release; the assets job
-# publishes it only after uploading the wheel, so /releases/latest never
-# serves a release without the spi-*-py3-none-any.whl that `spi update`
-# requires (src/spi/update.py). The vX.Y.Z tag is created with the draft
-# (force-tag-creation), so release-please still finds the version if the
-# assets job fails before publishing.
-#
-# The App token matters: PRs opened with GITHUB_TOKEN never trigger
-# workflows, so validate.yml would not run on the release PR.
-#
-# bump-environment runs last: once a real release is cut and its assets
-# publish, it opens a PR bumping ops/environments/shared.yaml's stackVersion
-# to the new tag. That file is excluded from release-please's own commit
-# parsing (.release-please-config.json), so merging the bump PR cannot
-# trigger another release; it instead triggers env-upgrade.
+# release-please creates a draft release and its tag; the assets job publishes
+# only after the wheel `spi update` requires is uploaded, so /releases/latest
+# never serves a release without it. The App token matters: PRs opened with
+# GITHUB_TOKEN never trigger validate.yml. bump-environment then opens the
+# stackVersion bump PR, which triggers env-upgrade and not another release.
 
 on:
   push:
     branches: [main]
-  # Rebuild assets for an existing tag. Prefer "Re-run failed jobs" for a
-  # failed assets job on a still-draft release.
+  # Rebuilds assets for an existing tag.
   workflow_dispatch:
     inputs:
       tag:
@@ -64,7 +53,7 @@ jobs:
   assets:
     name: assets
     needs: release-please
-    # !cancelled() lets this run when release-please was skipped (dispatch).
+    # !cancelled() lets a dispatch run past the skipped release-please job.
     if: >
       !cancelled() && (
         needs.release-please.outputs.release_created == 'true' ||
@@ -91,7 +80,6 @@ jobs:
             REF="$TAG"
           else
             TAG="$RP_TAG"
-            # Build the exact commit release-please recorded for the release.
             REF="$RP_SHA"
           fi
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::unexpected tag '$TAG'"; exit 1; }
@@ -116,7 +104,7 @@ jobs:
       - name: Build wheel + sdist
         run: |
           uv build
-          # spi update contract: asset must be spi-<version>-py3-none-any.whl
+          # spi update downloads exactly this asset name.
           test -f "dist/spi-${{ steps.meta.outputs.version }}-py3-none-any.whl"
           ls -la dist/
 
@@ -125,8 +113,7 @@ jobs:
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
-          # Hide the release while assets change: a failed upload then leaves
-          # a draft, never a published release missing its wheel.
+          # A failed upload leaves a draft, never a published release missing its wheel.
           gh release edit "$TAG" --draft=true --repo "${{ github.repository }}"
           gh release upload "$TAG" dist/*.whl dist/*.tar.gz \
             --clobber --repo "${{ github.repository }}"
@@ -135,10 +122,7 @@ jobs:
   bump-environment:
     name: bump-environment
     needs: [release-please, assets]
-    # Only after release-please actually cut a new release and the assets
-    # job published it successfully; never for a workflow_dispatch asset
-    # rebuild of an existing tag, which carries no new stackVersion to bump
-    # to and would otherwise loop against its own commit.
+    # Never on a dispatch rebuild: it carries no new stackVersion to bump to.
     if: >
       github.event_name == 'push' &&
       needs.release-please.outputs.release_created == 'true' &&
@@ -165,9 +149,7 @@ jobs:
 
       - name: Read the live declaration
         id: declaration
-        # Source Python parsing the declaration; see
-        # docs/design/environment-lifecycle.md for why this repo never lets
-        # a lifecycle step shell-evaluate ops/environments/shared.yaml.
+        # Source Python only parses and validates the declaration.
         run: |
           uv sync --frozen
           uv run python scripts/export_environment.py
@@ -211,9 +193,8 @@ jobs:
           rm -f "${DECL}.bak"
 
           git add "$DECL"
-          # The commit that stackVersion bump must touch only the declaration:
-          # mixing another file into it would defeat the release-please
-          # exclude-paths skip and re-trigger release parsing.
+          # Any other file in this commit would re-enter release-please's commit
+          # parsing, which excludes only the declaration path.
           CHANGED=$(git diff --cached --name-only)
           if [ "$CHANGED" != "$DECL" ]; then
             echo "::error::bump commit touched more than $DECL: $CHANGED"

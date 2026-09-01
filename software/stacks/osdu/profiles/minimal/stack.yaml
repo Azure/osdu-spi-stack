@@ -1,22 +1,7 @@
 # SPI Stack - Minimal Profile
-# Middleware only. Identical to the core profile through Layer 4b, then
-# stops: no OSDU services, no partition/entitlements bootstrap, no schema
-# load, no reference services.
-#
-# Layer 0a: Namespaces
-# Layer 0b: Karpenter NodePools (platform + osdu)
-# Layer 1: Operators (ECK, CNPG) + cert-manager + trust-manager +
-#          shared Helm sources
-#          (the Gateway is owned by the ingress tree)
-# Layer 2: Middleware (Elasticsearch, Redis, PostgreSQL) -- on platform nodes
-# Layer 3: Airflow (depends on PostgreSQL) -- on platform nodes
-# Layer 4a: OSDU configuration (ConfigMap created by CLI)
-# Layer 4b: Bootstrap (trust-manager Bundles for CA distribution + Redis Istio DR)
-#
-# Use this profile to develop against the middleware substrate itself --
-# authoring an HTTPRoute, debugging a Helm chart, validating the
-# trust-manager CA distribution -- without the OSDU services adding noise.
-# Pair it with any --ingress-mode; the CLI selects the matching
+# Middleware only: identical to the core profile through Layer 4b, then stops
+# (no OSDU services, bootstrap Jobs, schema load, or reference services).
+# Pairs with any --ingress-mode; the CLI selects the matching
 # software/stacks/osdu/ingress/<mode>-minimal tree.
 
 ---
@@ -86,7 +71,7 @@ spec:
   timeout: 10m
 
 ---
-# Layer 1a2: trust-manager (cross-namespace CA bundle distribution)
+# Layer 1a2: trust-manager
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -149,8 +134,8 @@ spec:
   timeout: 10m
 
 ---
-# Temporary Gateway ownership handoff. This Kustomization must
-# reconcile once with an empty inventory and pruning disabled before removal.
+# Gateway ownership handoff: reconciles an empty inventory with pruning
+# disabled, so a later rollout can remove it without deleting the Gateway.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -172,9 +157,9 @@ spec:
   timeout: 5m
 
 ---
-# Layer 1e: Shared Helm sources (the bitnami HelmRepository used by both
-# Redis and, in the dns ingress modes, ExternalDNS). It has its own owner
-# so neither consumer's inventory can prune a source the other needs.
+# Layer 1e: Shared Helm sources. The bitnami HelmRepository serves Redis and,
+# in the dns ingress modes, ExternalDNS; a single owner keeps either
+# consumer's inventory from pruning it.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -235,8 +220,8 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/redis
-  # Temporary source ownership handoff. Re-enable pruning after
-  # this reconciles once without the bitnami HelmRepository in its inventory.
+  # Source ownership handoff: pruning stays off until this has reconciled
+  # once without the bitnami HelmRepository in its inventory.
   prune: false
   wait: true
   timeout: 10m
@@ -306,11 +291,9 @@ spec:
   timeout: 5m
 
 ---
-# Layer 4b: Bootstrap (trust-manager Bundles + Redis Istio DestinationRule)
-# Declares two trust-manager Bundle CRs that mirror the Redis and
-# Elasticsearch TLS CAs from platform -> osdu, plus the Redis mTLS-disable
-# DestinationRule. Depends on middleware being Ready so the source secrets
-# exist, and on trust-manager so the Bundle CRD is registered.
+# Layer 4b: Bootstrap (trust-manager Bundles + Redis Istio DestinationRule).
+# Waits on middleware so the source CA secrets exist and on trust-manager so
+# the Bundle CRD is registered.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

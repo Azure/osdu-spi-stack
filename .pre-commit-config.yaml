@@ -1,17 +1,5 @@
-# Pre-commit hooks. Catches lint, format, type, and test regressions at commit
-# time so they do not propagate to PRs and CI.
-#
-# Setup (one-time per clone):
-#   uv sync
-#   uv run pre-commit install
-#
-# Run against the whole tree without committing:
-#   uv run pre-commit run --all-files
-#
-# Local hooks only. Every tool is invoked through `uv run`, so the pinned
-# versions in pyproject.toml are the single source of truth. No version
-# drift between the pre-commit framework's pinned tools and what CI runs.
-# Same hook set, same versions, locally and on GitHub Actions.
+# Local hooks only, each invoked through `uv run`, so pyproject.toml pins the
+# tool versions and local runs match CI.
 
 default_language_version:
   python: python3.10
@@ -24,8 +12,7 @@ repos:
         entry: uv run ruff check --fix --exit-non-zero-on-fix
         language: system
         types: [python]
-        # Auto-fix what is safe; exit non-zero if any fix is applied so the
-        # commit fails and the contributor re-stages the corrected files.
+        # A fix fails the commit so the corrected files get re-staged.
 
       - id: ruff-format
         name: ruff format
@@ -33,7 +20,6 @@ repos:
         language: system
         types: [python]
         files: ^(src|tests)/
-        # Matches the existing ruff format scope in CI (ruff format --check src tests).
 
       - id: ty
         name: ty check
@@ -41,9 +27,7 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
-        # ty operates on the project as a unit (resolves imports across
-        # src/spi). Always check src + tests rather than the staged file
-        # list. Same scope as the typecheck CI job.
+        # ty resolves imports across the project, so the staged file list is not enough.
 
       - id: pytest
         name: pytest
@@ -51,5 +35,3 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
-        # Catches regressions before they reach CI. Skip with
-        # `git commit --no-verify` if needed (rare).

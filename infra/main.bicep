@@ -1,16 +1,11 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// Azure PaaS entrypoint for the OSDU SPI Stack. AKS deploys first so its OIDC
-// issuer can bind workload identities; Flux deploys after the CLI bootstraps
-// the cluster.
-//
-// Cosmos DB, Service Bus, and Storage disable local authentication.
-// Compatibility secrets contain ``DISABLED`` and services must use Workload
-// Identity. Runtime secrets derived from in-cluster passwords remain CLI-owned.
-//
-// The CLI supplies environment-specific top-level resource names; fixed child
-// names remain part of the OSDU service contract.
+// Azure PaaS for the OSDU SPI Stack, deployed between aks.bicep (whose OIDC
+// issuer binds the workload identity) and flux.bicep. Local authentication is
+// off on Cosmos DB, Service Bus and Storage; the key and connection secrets
+// hold "DISABLED" and services use Workload Identity. The CLI supplies the
+// top-level resource names; child names are part of the OSDU service contract.
 
 targetScope = 'resourceGroup'
 
@@ -167,9 +162,8 @@ module rbacModule 'modules/rbac.bicep' = {
   ]
 }
 
-// DNS Zone Contributor must be assigned from the zone's resource group, which
-// may differ from the stack resource group.
-
+// DNS Zone Contributor is assigned at the zone's resource group, which may
+// differ from the stack's.
 module externalDnsIdentityModule 'modules/external-dns-identity.bicep' = if (!empty(dnsZoneName)) {
   name: 'spi-external-dns-identity'
   params: {
@@ -184,16 +178,13 @@ module externalDnsRoleModule 'modules/external-dns-role.bicep' = if (!empty(dnsZ
   scope: resourceGroup(dnsZoneResourceGroup)
   params: {
     dnsZoneName: dnsZoneName
-    // The module and this reference use the same deployment condition.
     #disable-next-line BCP318
     principalId: externalDnsIdentityModule.outputs.principalId
   }
 }
 
-// Static secrets are declared individually because BCP178 prevents a
-// for-expression from iterating over values derived from module outputs.
-// Secret values are intentionally not exposed as deployment outputs.
-
+// Declared one by one: BCP178 forbids a for-expression over module outputs.
+// Secret values are never deployment outputs.
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
 }
@@ -300,10 +291,8 @@ resource partitionServiceBusSecrets 'Microsoft.KeyVault/vaults/secrets@2023-07-0
   ]
 }]
 
-// The bundled Java agent requires initialized request telemetry and otherwise
-// causes HTTP 500 responses. The CLI disables the agent when telemetry is off.
-// See ADR-020.
-
+// The bundled Java agent returns HTTP 500 without request telemetry, so the
+// CLI disables the agent when telemetry is off.
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (enableApplicationInsights) {
   name: logAnalyticsName
   location: location
@@ -325,8 +314,8 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = if (enableAppl
   }
 }
 
-// The CLI maps these flat outputs into runtime configuration. Per-partition
-// arrays remain aligned with partitionNames; Key Vault values are not outputs.
+// Per-partition arrays stay aligned with partitionNames; Key Vault values are
+// never outputs.
 @description('Tenant ID used by the deployed workload identities.')
 output tenantId string = tenant().tenantId
 
@@ -390,7 +379,6 @@ output partitionStorageIds array = [for i in range(0, length(dataPartitions)): p
 @description('Storage account names ordered to match partitionNames.')
 output partitionStorageNamesOut array = partitionStorageNames
 
-// The output condition matches the resource deployment condition.
 @description('Application Insights connection string, or an empty string when telemetry is disabled.')
 #disable-next-line BCP318
 output appInsightsConnectionString string = enableApplicationInsights ? appInsights.properties.ConnectionString : ''
@@ -401,7 +389,6 @@ output appInsightsName string = enableApplicationInsights ? appInsightsName : ''
 @description('Client ID for the ExternalDNS workload identity, or an empty string when DNS mode is disabled.')
 output externalDnsClientId string = !empty(dnsZoneName) ? externalDnsIdentityModule.outputs.clientId : ''
 
-// The output condition matches the module deployment condition.
 @description('Principal ID for the ExternalDNS workload identity, or an empty string when DNS mode is disabled.')
 #disable-next-line BCP318
 output externalDnsPrincipalId string = !empty(dnsZoneName) ? externalDnsIdentityModule.outputs.principalId : ''

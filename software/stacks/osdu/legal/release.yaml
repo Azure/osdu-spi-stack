@@ -7,8 +7,8 @@ spec:
   targetNamespace: osdu
   interval: 30m
   install:
-    # Must outlast the legal Job's 3600s activeDeadlineSeconds so helm
-    # observes the Job's own typed outcome instead of timing out first.
+    # Outlasts the legal Job's 3600s activeDeadlineSeconds so helm observes
+    # the Job's own outcome.
     timeout: 65m
     remediation:
       retries: 3
@@ -22,12 +22,11 @@ spec:
       sourceRef:
         kind: GitRepository
         name: osdu-spi-stack-system
-  # Same chart and injected partition list as osdu-spi-init, with only the
-  # legal component rendered: helm-controller waits for every Job in a
-  # release, so legal seeding lives in its own non-gating release to keep a
-  # failure from blocking spi-osdu-init and everything behind it. Inline
-  # values override valuesFrom, so the toggles hold whatever the ConfigMap
-  # carries.
+  # Same chart and partition list as osdu-spi-init with only the legal
+  # component rendered. helm-controller waits for every Job in a release, so
+  # legal seeding gets its own non-gating release and a failure cannot block
+  # spi-osdu-init and everything behind it. Inline values override
+  # valuesFrom, so the toggles hold whatever the ConfigMap carries.
   valuesFrom:
     - kind: ConfigMap
       name: spi-init-values

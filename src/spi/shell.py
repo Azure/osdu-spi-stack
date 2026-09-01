@@ -14,26 +14,19 @@
 
 """Command execution and kubectl helpers.
 
-``run_command`` is the transparent front door used whenever an az/kubectl/
-flux/helm command should be visible to the operator. ``kubectl_apply_yaml``
-retries on transient kube-API errors. ``kubectl_json`` is the silent query
-helper used where panel output would be noise: the panels show what the CLI
-changes, not what it reads. ``prune_kube_context`` clears the kubeconfig
-entries a deleted cluster leaves behind.
+``run_command`` shows the operator every command that changes state;
+``kubectl_json`` is the silent query path. Every process goes through
+``run_process``.
 
-Every process the CLI launches goes through ``run_process``. On native Windows, CLIs such as
-Azure CLI install as ``.cmd`` batch shims; ``CreateProcess`` cannot run a
-batch file, so the OS relaunches it through ``cmd.exe``, which re-parses the
-flat command line (``shell=False`` constrains Python, not the OS). For those
+On native Windows, CLIs such as Azure CLI install as ``.cmd`` shims that
+``CreateProcess`` relaunches through ``cmd.exe``, which re-parses the flat
+command line (``shell=False`` constrains Python, not the OS). For those
 shims ``prepare_command`` builds an explicit ``cmd.exe`` command line with
-every argument escaped, applying the mitigations published for the
-CVE-2024-24576 (BatBadBut) class. Scope: the guarantee holds for standard
-``%*``-forwarding shims such as ``az.cmd``. A shim that re-parses its
-arguments again (``call``, ``%~1`` re-expansion, ``setlocal
-enabledelayedexpansion``) defeats any command-line escaping scheme, and
-cmd.exe caps its command line at 8,191 characters where ``CreateProcess``
-allows 32,767. Panels printed by ``run_command`` show the logical argv, not
-the serialized cmd.exe line.
+every argument escaped against the CVE-2024-24576 (BatBadBut) class. The
+guarantee holds for standard ``%*``-forwarding shims such as ``az.cmd``; a
+shim that re-parses its arguments (``call``, ``%~1``, delayed expansion)
+defeats any escaping, and cmd.exe caps the line at 8,191 characters.
+Panels show the logical argv, not the serialized cmd.exe line.
 """
 
 import json
@@ -78,15 +71,12 @@ def escape_batch_argument(value: str) -> str:
     """Escape one argument so a ``%*``-forwarding batch shim receives it verbatim.
 
     The argument must survive two parsers. For cmd.exe, quoting protects
-    metacharacters and each ``%`` is neutralized with the ``%%cd:~,%``
-    empty-substring expansion; it relies on command
-    extensions, on ``CD`` being a defined dynamic variable, and on batch
-    ``%*`` substitution text not being re-scanned for expansion. For the
-    target's MSVCRT argv parser, backslash runs before a quote are doubled
-    and an embedded quote becomes ``""``, which keeps cmd's quote state
-    balanced for any input, so no quote-parity restriction is needed. Every
-    argument is quoted: an unquoted fast path would only add tokenization
-    edge cases.
+    metacharacters and each ``%`` becomes the ``%%cd:~,%`` empty-substring
+    expansion, which relies on command extensions and on ``%*`` text not
+    being re-scanned. For the target's MSVCRT parser, backslash runs before
+    a quote are doubled and an embedded quote becomes ``""``, keeping cmd's
+    quote state balanced for any input. Every argument is quoted; an
+    unquoted fast path would only add tokenization edge cases.
     """
     if any(ch in value for ch in ("\r", "\n", "\0")):
         raise BatchArgumentError(
@@ -279,15 +269,10 @@ def kubectl_json(args: List[str]) -> Optional[Dict[str, Any]]:
 def _kubeconfig_serves(view: Dict[str, Any], cluster: str, server_fqdn: str) -> bool:
     """Whether the named kubeconfig cluster answers on ``server_fqdn``.
 
-    Compares the parsed hostname rather than testing for a substring: an
-    expected ``api.azmk8s.io`` also occurs inside
-    ``api.azmk8s.io.example.invalid``, so a substring test would clear a
-    context pointing at an entirely different host.
-
-    A server the URL parser rejects, such as an unmatched IPv6 bracket, is
-    an unproven identity like any other and leaves the kubeconfig alone.
-    The value comes from the operator's kubeconfig, and raising here would
-    abort a teardown whose resource group is already deleted.
+    Compares the parsed hostname, not a substring, so a context pointing at
+    ``api.azmk8s.io.example.invalid`` is not cleared. A server the URL parser
+    rejects is an unproven identity and leaves the kubeconfig alone rather
+    than aborting a teardown whose resource group is already deleted.
     """
     for item in view.get("clusters") or []:
         if item.get("name") == cluster:
@@ -300,9 +285,8 @@ def _kubeconfig_serves(view: Dict[str, Any], cluster: str, server_fqdn: str) -> 
     return False
 
 
-# `kubectl config unset` writes to the file holding the winning value, so a
-# multi-file KUBECONFIG that names the deleted context more than once needs
-# one pass per file. Bounded because a value that will not clear must not spin.
+# `kubectl config unset` edits only the file holding the winning value, so a
+# multi-file KUBECONFIG needs one pass per file; bounded so it cannot spin.
 _MAX_SELECTION_CLEARS = 8
 
 
@@ -350,21 +334,12 @@ def _clear_stale_selection(view: Dict[str, Any], context: str) -> Optional[Dict[
 def prune_kube_context(context: str, server_fqdn: str) -> None:
     """Remove the kubeconfig entries left behind by a deleted cluster.
 
-    ``server_fqdn`` is the API server the torn-down cluster answered on, and
-    is what establishes that the context belongs to that cluster. Cluster
-    names repeat across subscriptions by design (``spi up --env dev1`` in two
-    subscriptions builds two ``spi-stack-dev1`` clusters), so matching on the
-    name alone would strip credentials for whichever one
-    ``az aks get-credentials`` wrote last. An empty value means the identity
-    could not be established; the entries stay, because leaving a stale
-    context costs a stale context, while guessing costs a live cluster its
-    credentials.
-
-    The cluster and user entries are deleted only when no context that
-    survives the delete still references them, so entries shared with another
-    context stay.
-    Best effort: the cluster is already gone by the time this runs, and
-    ``spi down`` does not require kubectl, so nothing here fails a teardown.
+    ``server_fqdn`` is what ties the context to the torn-down cluster:
+    cluster names repeat across subscriptions, so matching on the name alone
+    would strip credentials for whichever cluster was written last. An empty
+    value leaves the entries in place; a stale context costs less than a live
+    cluster's credentials. Cluster and user entries go only when no surviving
+    context references them. Best effort: nothing here fails a teardown.
     """
     if not shutil.which("kubectl"):
         return
@@ -412,11 +387,8 @@ def prune_kube_context(context: str, server_fqdn: str) -> None:
         )
         return
 
-    # What survives the delete is the only sound basis for the reference and
-    # selection checks below. A multi-file KUBECONFIG merges first-wins, and
-    # delete-context edits only the file holding the winner, so a shadowed
-    # context of the same name can surface here and bring live references
-    # with it.
+    # Re-read after the delete: a multi-file KUBECONFIG merges first-wins, so
+    # a shadowed context of the same name can surface with live references.
     after = kubectl_json(["config", "view"])
     if after is None:
         console.print(

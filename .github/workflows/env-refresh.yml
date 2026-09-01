@@ -1,17 +1,10 @@
 name: Environment Refresh
 
-# Proves ops/environments/shared.yaml's standing environment is still
-# serving: quiesce, reconcile the pinned source (no image or version
-# change), wait for Flux, probe the gateway, and reopen for deploys only
-# after every check passes. Runs weekdays at 05:00 UTC and by manual
-# dispatch.
-#
-# Every operational CLI call in this workflow uses the bare `spi` installed
-# from the declared stackVersion's release wheel, never `uv run spi`.
-# Source Python (scripts/export_environment.py) only parses and validates
-# the declaration.
-#
-# See docs/design/environment-lifecycle.md for the full lifecycle contract.
+# Proves the standing environment in ops/environments/shared.yaml still
+# serves: quiesce, reconcile the pinned source, wait for Flux, probe the
+# gateway, reopen for deploys. Every operational call uses the `spi` wheel
+# of the declared stackVersion, never `uv run spi`; the lifecycle contract
+# is docs/design/environment-lifecycle.md.
 
 on:
   schedule:
@@ -49,8 +42,7 @@ jobs:
 
       - name: Validate and export declaration
         id: export
-        # Source Python parsing the declaration, not an operational spi call;
-        # see the workflow header.
+        # Source Python only parses and validates the declaration.
         run: |
           uv sync --frozen
           uv run python scripts/export_environment.py --declaration-path "$DECLARATION_PATH"
@@ -85,9 +77,8 @@ jobs:
       - name: Detect existing resource group and AKS cluster
         run: |
           set -euo pipefail
-          # declare already gates should_run on the declaration's presence,
-          # so it is known present here; an absent RG or cluster means the
-          # live environment was deleted, not a first-provision skip.
+          # The declaration is present, so a missing RG or cluster is a deleted
+          # environment, not a first-provision skip.
           RG="spi-stack-${ENV_NAME}"
           if ! RG_EXISTS=$(az group exists --name "$RG" --only-show-errors); then
             echo "::error::Failed to determine whether resource group $RG exists"
@@ -117,11 +108,8 @@ jobs:
     if: needs.declare.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     environment: azure-shared
-    # Plain reconcile against an already-provisioned, version-pinned cluster:
-    # no cold-start image resolution or Bicep pass, so the wait below only
-    # needs to cover a Flux re-reconcile of already-scheduled workloads. The
-    # 230-minute wait budget still allows for a cold schema-load Job if the
-    # standing environment happens to need one (e.g. after a node recycle).
+    # Same budget as smoke.yml's verify job: a re-reconcile is usually quick,
+    # but a recycled node can put the schema-load Job through its cold window.
     timeout-minutes: 270
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
@@ -183,11 +171,8 @@ jobs:
         run: spi connect --resource-group "spi-stack-${ENV_NAME}" --cluster "spi-stack-${ENV_NAME}"
 
       - name: Require an initialized deployment
-        # A prior provision can die after creating AKS but before writing
-        # the deploy record. Unlike env-upgrade, refresh has no provision
-        # job to recover with, so fail closed with a clear reason instead
-        # of letting the record's own error surface uninterpreted from
-        # `spi maintenance set`.
+        # A provision that died before writing the deploy record leaves AKS
+        # without one; refresh has no provision job to recover with.
         run: |
           set -euo pipefail
           RECORD=$(kubectl get configmap spi-deploy-record -n osdu-flux \
@@ -198,16 +183,10 @@ jobs:
           fi
 
       - name: Quiesce (set maintenance)
-        # Named separately from reconcile so a future fork-drain protocol can
-        # be inserted here, after quiesce and before mutation, without
-        # changing this workflow's shape.
         run: spi maintenance set
 
       - name: spi reconcile
-        # Plain reconcile: preserves the version-pinned source and the
-        # current image lock. Canonical images do not advance on this
-        # schedule during the pre-onboarding phase; see
-        # docs/design/environment-lifecycle.md.
+        # No --refresh-images: the pinned source and current image lock stand.
         run: spi reconcile --image-branch "$IMAGE_BRANCH"
 
       - name: Wait for Flux Kustomizations to be Ready
@@ -249,9 +228,8 @@ jobs:
             echo "::error::GitRepository is not suspended after a refresh reconcile"
             exit 1
           fi
-          # Exit 2 covers every deployability blocker, not just maintenance
-          # (ADR-030); confirm convergence held and maintenance is the only
-          # reason deploys are still refused before the next step clears it.
+          # Exit 2 covers every deployability blocker, so the fields must show
+          # maintenance as the only reason before the next step clears it.
           if [ "$READY" != "true" ]; then
             echo "::error::environment is not ready (ready=$READY); refusing to clear maintenance"
             exit 1
@@ -266,9 +244,7 @@ jobs:
           fi
 
       - name: Clear maintenance
-        # Only reached once readiness, gateway probes, and the version/
-        # suspension assertion above have all passed. Never wrapped in
-        # if: always().
+        # Reached only after every check above passed; never `if: always()`.
         run: spi maintenance clear
 
       - name: Require deployable status

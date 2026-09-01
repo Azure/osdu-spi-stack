@@ -35,7 +35,7 @@ from .ingress import get_ingress_ip
 from .shell import kubectl_json
 from .templates import LEGAL_TAG_BASE
 
-# OSDU API services exposed via HTTPRoutes. Order preserved for display.
+# Display order.
 _OSDU_API_PATHS = [
     ("partition", "/api/partition/v1/"),
     ("entitlements", "/api/entitlements/v2/"),
@@ -154,7 +154,6 @@ def _parse_partitions_from_values_yaml(text: str) -> list:
             if stripped.startswith("- "):
                 out.append(stripped[2:].strip())
             elif stripped and not stripped.startswith("-"):
-                # Hit a sibling key; stop collecting.
                 break
     return out
 
@@ -219,12 +218,12 @@ def _compute_endpoints(cfg: dict) -> tuple:
         if kibana_host:
             middleware["Kibana"] = f"https://{kibana_host}/"
         if airflow_host:
-            # The UI router's basename comes from base_url (/airflow), so the
-            # working URL keeps that path even on a dedicated host.
+            # The UI router's basename comes from base_url, so /airflow stays
+            # even on a dedicated host.
             middleware["Airflow"] = f"https://{airflow_host}/airflow/"
         return mode, base, endpoints, middleware
 
-    # Fallback: ip mode or no ConfigMap yet.
+    # ip mode, or no ConfigMap yet.
     ip = cfg.get("GATEWAY_IP", "") or get_ingress_ip()
     base = f"http://{ip}" if ip else ""
     endpoints = {svc: f"{base}{path}" for svc, path in _OSDU_API_PATHS} if base else {}
@@ -348,8 +347,7 @@ def _collect_info(show_secret_refs: bool = False) -> tuple[dict, list]:
             "servicebus": osdu.get("PRIMARY_SERVICEBUS_NAMESPACE", ""),
             "tenant_id": tenant_id,
             "data_plane_application_id": osdu.get("AAD_CLIENT_ID", ""),
-            # Published explicitly so consumers never derive the issuer URL
-            # themselves; empty until the cluster reports its tenant.
+            # Empty until the cluster reports its tenant.
             "openid_issuer": (
                 f"https://login.microsoftonline.com/{tenant_id}/v2.0" if tenant_id else ""
             ),
@@ -361,9 +359,8 @@ def _collect_info(show_secret_refs: bool = False) -> tuple[dict, list]:
                 "cosmos_account": cosmos,
                 "servicebus_namespace": sb,
                 "storage_account": storage,
-                # Observed, not derived: empty until legal-init is seen to have
-                # created the tag, the same present-but-empty idiom as
-                # openid_issuer. legal_tag_desired always carries the name.
+                # Observed, not derived: empty until legal-init has created the
+                # tag. legal_tag_desired always carries the name.
                 "legal_tag": (
                     f"{partitions[i]}-{legal_tag_base}" if _legal_tag_seeded(partitions[i]) else ""
                 ),
@@ -376,9 +373,8 @@ def _collect_info(show_secret_refs: bool = False) -> tuple[dict, list]:
 
     if show_secret_refs:
         creds_list = _get_live_credentials()
-        # JSON output is the path most likely to be piped into logs or CI
-        # artifacts, so it carries secret references, never values; the
-        # interactive table below is the only place values render.
+        # JSON is what gets piped into logs, so it carries secret references,
+        # never values; only the interactive table renders them.
         info["credentials"] = [
             {"service": svc, "username": u, "secret_ref": ref} for svc, u, _p, ref in creds_list
         ]
@@ -416,7 +412,6 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
         print(json.dumps(info, indent=2))
         return
 
-    # Human-readable display
     console.print(Panel("[bold]SPI Stack Access Info[/bold]", border_style="cyan"))
 
     if info["suspended"]:

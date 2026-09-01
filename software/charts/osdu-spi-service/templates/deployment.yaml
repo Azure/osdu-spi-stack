@@ -33,7 +33,7 @@ spec:
     spec:
       serviceAccountName: {{ .Values.serviceAccountName }}
 
-      # -- AKS Automatic / Deployment Safeguards compliance
+      # AKS Deployment Safeguards compliance
       securityContext:
         runAsNonRoot: true
         seccompProfile:

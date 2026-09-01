@@ -30,10 +30,8 @@ resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' 
   location: location
 }
 
-// ARM's Managed Identity RP rejects concurrent federated credential
-// writes against the same UAMI (ConcurrentFederatedIdentityCredentials-
-// WritesForSingleManagedIdentity). Serial execution prevents loop iterations
-// from failing against that provider constraint.
+// The Managed Identity RP rejects concurrent federated credential writes on
+// one identity (ConcurrentFederatedIdentityCredentialsWritesForSingleManagedIdentity).
 @batchSize(1)
 resource federatedCredentials 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = [for ns in federatedNamespaces: if (!empty(oidcIssuerUrl)) {
   parent: identity

@@ -13,26 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Validate the live environment declaration and export it to GITHUB_OUTPUT.
+"""Validate the environment declaration and export it to GITHUB_OUTPUT.
 
-The one place `env-upgrade.yml` and `env-refresh.yml` read
-`ops/environments/shared.yaml`. Every value this script writes to
-`$GITHUB_OUTPUT` has already passed `spi.environment.parse_declaration`, so
-downstream workflow steps consume typed, schema-checked strings and never
-need to shell-evaluate YAML themselves.
-
-Always parses against the checked-out commit's schema (this script inserts
-the checkout's own `src/` ahead of anything importable from an installed
-release wheel), so a declaration authored against a newer schema is judged
-by the same code that will review the PR which changed it, not by a
-possibly older installed CLI.
+The lifecycle workflows read ops/environments/shared.yaml only through this
+script, so every value they consume has passed the schema in spi.environment.
+The checkout's own src/ is inserted ahead of any installed wheel so the
+declaration is judged by the schema of the commit that changed it.
 
 Exit codes:
-  0  declaration absent (clean skip) or exported successfully
-  1  declaration present but fails schema validation (fail closed)
-
-Usage:
-  python3 scripts/export_environment.py [--declaration-path PATH]
+  0  declaration absent (clean skip) or exported
+  1  declaration present but invalid
 """
 
 from __future__ import annotations
@@ -56,7 +46,6 @@ def _write_outputs(pairs: dict[str, str]) -> None:
     lines = [f"{key}={value}" for key, value in pairs.items()]
     output_path = os.environ.get("GITHUB_OUTPUT")
     if not output_path:
-        # Local/manual invocation outside Actions: print for inspection.
         for line in lines:
             print(line)
         return

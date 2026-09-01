@@ -14,37 +14,29 @@ spec:
         kind: HelmRepository
         name: jetstack
         namespace: osdu-flux
-  # Upstream default-install fails AKS Safeguards because trust-manager's
-  # defaultPackage init container is emitted without resource requests.
-  # We don't use the default-CAs feature (our Bundles source from Secrets),
-  # so disable it to remove the offending init container entirely.
+  # The defaultPackage init container ships without resource requests and
+  # fails Deployment Safeguards; the Bundles source from Secrets, so it is
+  # disabled.
   values:
     crds:
       enabled: true
     defaultPackage:
       enabled: false
-    # Trust namespace = where source Secrets/ConfigMaps are read from.
-    # Our source CAs live in platform (Redis via cert-manager, Elasticsearch
-    # via ECK), so trust-manager watches that namespace for sources.
+    # Source CAs live in platform (Redis via cert-manager, Elasticsearch via
+    # ECK).
     app:
       trust:
         namespace: platform
-      # seccompProfile: RuntimeDefault (satisfies AKS Safeguards).
-      # Pod/container securityContext are baked into the chart templates
-      # with Safeguards-compliant defaults (runAsNonRoot, readOnlyRootFS,
-      # all caps dropped, allowPrivilegeEscalation=false).
+      # AKS Deployment Safeguards compliance
       securityContext:
         seccompProfileEnabled: true
-      # Disable the metrics Service. The chart emits trust-manager and
-      # trust-manager-metrics Services with identical selector
-      # (app: trust-manager); AKS Deployment Safeguards' unique-selector
-      # Gatekeeper policy rejects the second. We do not scrape trust-manager
-      # metrics, so dropping the Service is safe.
+      # The metrics Service shares the main Service's selector, which
+      # Deployment Safeguards rejects; nothing scrapes it.
       metrics:
         service:
           enabled: false
-    # Allow Bundle targets to write Secret (not just ConfigMap) outputs,
-    # scoped to just the two names the osdu services need.
+    # Bundle targets may write Secrets, scoped to the two names the OSDU
+    # services mount.
     secretTargets:
       enabled: true
       authorizedSecrets:

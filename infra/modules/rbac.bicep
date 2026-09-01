@@ -1,10 +1,8 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// RBAC role assignments for the OSDU workload identity. Scoped per
-// resource so principals get only what they need. Uses deterministic
-// guid() names so a re-deploy updates the assignment rather than
-// creating duplicates.
+// Per-resource role assignments for the OSDU workload identity. Deterministic
+// guid() names let a re-deploy update an assignment instead of duplicating it.
 
 @description('Principal ID of the OSDU workload identity receiving data-plane access.')
 param principalId string
@@ -37,7 +35,6 @@ param partitionStorageNames array
 @description('Existing Service Bus namespaces receiving sender and receiver role assignments.')
 param serviceBusNames array
 
-// Azure built-in role definition IDs.
 var roleIds = {
   keyVaultSecretsUser: '4633458b-17de-408a-b874-0445c86b69e6'
   keyVaultSecretsOfficer: 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
@@ -48,9 +45,7 @@ var roleIds = {
   acrPull: '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 }
 
-// main.bicep orders this module after the sibling modules that create these
-// resources.
-
+// main.bicep orders this module after the modules that create these resources.
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
 }
@@ -81,9 +76,8 @@ resource keyVaultSecretsUserAssignment 'Microsoft.Authorization/roleAssignments@
   }
 }
 
-// Deployer needs Secrets Officer to write the post-handoff bootstrap secrets
-// (tbl-storage-endpoint, redis-*, {partition}-elastic-*) that depend on
-// in-cluster passwords and cannot be declared in this template.
+// The deployer writes the bootstrap secrets that depend on in-cluster passwords
+// (redis-*, {partition}-elastic-*) after this template runs.
 resource deployerKeyVaultSecretsOfficerAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(deployerPrincipalId)) {
   scope: keyVault
   name: guid(keyVault.id, deployerPrincipalId, roleIds.keyVaultSecretsOfficer)
@@ -104,8 +98,7 @@ resource acrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   }
 }
 
-// Pods pull images through the kubelet identity, not the workload identity.
-// Without this role, images from the SPI registry fail with ImagePullBackOff.
+// Pods pull through the kubelet identity, not the workload identity.
 resource kubeletAcrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(kubeletIdentityObjectId)) {
   scope: acr
   name: guid(acr.id, kubeletIdentityObjectId, roleIds.acrPull)

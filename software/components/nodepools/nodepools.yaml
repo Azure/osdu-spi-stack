@@ -1,6 +1,5 @@
-# Karpenter NodePools for workload isolation.
-# Platform pool: stateful middleware (ES, Redis, PG, Airflow)
-# OSDU pool: stateless OSDU microservices
+# Karpenter NodePools: platform for stateful middleware, osdu for the
+# stateless OSDU services.
 ---
 apiVersion: karpenter.sh/v1
 kind: NodePool

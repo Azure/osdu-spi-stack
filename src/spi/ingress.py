@@ -12,14 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Ingress / DNS resolution and the spi-ingress-config ConfigMap.
+"""Ingress mode resolution and the spi-ingress-config ConfigMap.
 
-Owns every decision that depends on the ingress mode:
-  - CLI flag + env var precedence for ``--ingress-mode``/``--acme-email``.
-  - Azure-mode FQDN (deterministic, computed from dns_label + region).
-  - DNS-mode zone auto-discovery from the current subscription.
-  - The ``spi-ingress-config`` ConfigMap that the Flux ingress profile
-    consumes via postBuild substituteFrom.
+Flag and env var precedence, the azure-mode FQDN, dns-mode zone discovery,
+and the ConfigMap the Flux ingress tree substitutes from all live here.
 """
 
 import json
@@ -97,15 +93,12 @@ def discover_dns_zone() -> tuple:
 
 
 def compute_ingress_fqdn(dns_label: str, location: str) -> str:
-    """Return the deterministic Azure-assigned FQDN for the Istio LB's PIP.
+    """Return the Azure-assigned FQDN for the Istio LoadBalancer.
 
-    The DNS label is applied by the Azure cloud controller when it sees the
-    ``service.beta.kubernetes.io/azure-dns-label-name`` annotation on the
-    AKS managed Istio LoadBalancer Service. The annotation itself is applied
-    by Flux (software/components/azure-dns-label): admission policy denies
-    the write to every non-Flux identity, and the AKS-provisioned PIPs live
-    in the locked-down node resource group, so no imperative path exists
-    (ADR-026).
+    The DNS label annotation on the add-on's Service is applied by Flux
+    (software/components/azure-dns-label) because admission policy denies
+    the write to every other identity, so the FQDN is computed rather than
+    read back.
     """
     return f"{dns_label}.{location}.cloudapp.azure.com"
 
@@ -186,7 +179,6 @@ def create_ingress_config(
         data["INGRESS_HOST_OSDU"] = f"{prefix}.{config.dns_zone}"
         data["INGRESS_HOST_KIBANA"] = f"{prefix}-kibana.{config.dns_zone}"
         data["INGRESS_HOST_AIRFLOW"] = f"{prefix}-airflow.{config.dns_zone}"
-    # IP mode: only the four base keys above; no hostnames, no ACME.
 
     yaml_lines = [
         "apiVersion: v1",
@@ -199,7 +191,6 @@ def create_ingress_config(
         "data:",
     ]
     for key, value in sorted(data.items()):
-        # Quote values that might look YAML-special (spaces, colons, etc).
         yaml_lines.append(f'  {key}: "{value}"')
     yaml_content = "\n".join(yaml_lines) + "\n"
 

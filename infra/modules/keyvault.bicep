@@ -1,8 +1,8 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// Soft-deleted vault recovery requires a live lookup and is performed by the
-// CLI before this module runs.
+// The CLI recovers a soft-deleted vault before this module runs; ARM cannot
+// branch on that lookup.
 
 @description('Globally unique Key Vault name of 3-24 characters, using alphanumerics and nonconsecutive hyphens; must start with a letter and end with an alphanumeric character.')
 param name string
@@ -19,11 +19,9 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
       name: 'standard'
     }
     tenantId: tenant().tenantId
-    // Data-plane access uses Azure RBAC rather than Key Vault access policies.
     enableRbacAuthorization: true
     enableSoftDelete: true
     softDeleteRetentionInDays: 90
-    // VM, disk encryption, and ARM template integrations cannot read secrets.
     enabledForDeployment: false
     enabledForDiskEncryption: false
     enabledForTemplateDeployment: false

@@ -1,12 +1,2 @@
-# Identified maintainers with a deep investment in the project.
-#
-# Every change requires approval from a listed owner before merge into
-# `main`. Enforcement lives on the protected branch (Settings → Branches →
-# Branch protection rules → "Require review from Code Owners").
-#
-# Maintainers:
-#   @danielscholl                  Daniel Scholl (Microsoft)
-#   @Azure/azure-global-energy     Azure Global Energy team
-
-# Default owner for everything
+# Every change needs a listed owner's approval; branch protection enforces it.
 * @danielscholl @Azure/azure-global-energy

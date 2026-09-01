@@ -6,10 +6,9 @@ you may not use this file except in compliance with the License.
 */}}
 
 {{- if .Values.coreEnabled }}
-# One entitlements-init Job per partition. Each Job POSTs tenant-provisioning
-# so entitlements creates users.data.root and sibling root groups with the
-# caller's appid as OWNER. Gates on partition-init having landed the partition
-# record (checks GET /partitions/{p}) before calling tenant-provisioning.
+# One Job per partition. POSTs tenant-provisioning so entitlements creates
+# the root groups with the caller's appid as OWNER, once partition-init has
+# landed the partition record.
 {{- range $partition := .Values.partitions }}
 ---
 apiVersion: batch/v1

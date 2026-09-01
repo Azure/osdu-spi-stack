@@ -1,8 +1,8 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// Shared storage account (common across partitions) for OSDU platform
-// artifacts: Airflow logs/dags, shared reference data, partition-info table.
+// Storage shared across partitions: Airflow logs and DAGs, reference data,
+// the partition-info table.
 
 @description('Globally unique storage account name of 3-24 lowercase alphanumeric characters.')
 param name string
@@ -35,7 +35,6 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   properties: {
     accessTier: 'Hot'
     minimumTlsVersion: 'TLS1_2'
-    // Public blob and shared-key access are disabled; workloads use Entra RBAC.
     allowBlobPublicAccess: false
     allowSharedKeyAccess: false
     defaultToOAuthAuthentication: true

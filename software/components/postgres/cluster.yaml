@@ -1,5 +1,4 @@
-# CNPG PostgreSQL cluster for Airflow metadata storage only.
-# OSDU data services use Azure CosmosDB (not PostgreSQL).
+# CNPG PostgreSQL for Airflow metadata only; OSDU services use Cosmos DB.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -12,8 +11,7 @@ spec:
   minSyncReplicas: 1
   maxSyncReplicas: 1
 
-  # Pin the PostgreSQL major explicitly; otherwise the image silently
-  # follows the CNPG operator's default (which moved to PG 18 in 1.30).
+  # Pinned: otherwise the image follows the operator's default major.
   imageName: ghcr.io/cloudnative-pg/postgresql:17
 
   postgresql:
@@ -48,7 +46,7 @@ spec:
       cpu: "2"
       memory: 2Gi
 
-  # AKS Automatic Safeguards compliance
+  # AKS Deployment Safeguards compliance
   enableSuperuserAccess: true
 
   affinity:

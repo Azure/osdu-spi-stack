@@ -1,12 +1,10 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// AKS Automatic cluster with managed Istio. The BYO VNet requires a dedicated
-// control-plane identity; the pod workload identity is created separately by
-// main.bicep from this template's OIDC issuer output.
-//
-// The CLI enables Istio CNI chaining after deployment because the resource
-// provider rejects proxyRedirectionMechanism during cluster creation.
+// AKS Automatic cluster with managed Istio on a pre-created VNet. main.bicep
+// binds the workload identity to this template's OIDC issuer output; the CLI
+// enables Istio CNI chaining afterwards because the resource provider rejects
+// proxyRedirectionMechanism at creation.
 
 targetScope = 'resourceGroup'
 
@@ -29,10 +27,8 @@ param availabilityZones array = [
   '3'
 ]
 
-// The "Subnets should be private" Azure Policy requires
-// ``defaultOutboundAccess: false``, which the managed-VNet path does not set.
-// A pre-created VNet is therefore required in subscriptions enforcing the policy.
-
+// The managed-VNet path cannot satisfy the "Subnets should be private" policy;
+// vnet.bicep carries the reason.
 module vnetModule 'modules/vnet.bicep' = {
   name: 'spi-aks-vnet'
   params: {
@@ -43,14 +39,10 @@ module vnetModule 'modules/vnet.bicep' = {
   }
 }
 
-// AKS Automatic + BYO VNet rejects SAMI with
-// ``OnlySupportedOnUserAssignedMSICluster``. This identity is used only by the
-// control plane to reconcile the pre-existing VNet, not by OSDU workloads.
-//
-// The UAMI needs ``Network Contributor`` on the VNet so the cluster
-// can manage NICs, NAT association, and API server subnet delegation. VNet
-// scope covers every subnet AKS Automatic reconciles.
-
+// Automatic with a BYO VNet rejects a system-assigned identity
+// (OnlySupportedOnUserAssignedMSICluster). This control-plane identity needs
+// Network Contributor on the whole VNet for NICs, NAT association and the API
+// server subnet delegation; OSDU workloads never use it.
 var clusterIdentityName = '${clusterName}-ctl-id'
 var networkContributorRoleId = '4d97b98b-1d4f-4787-a291-c67834d212e7'
 
@@ -76,18 +68,11 @@ resource clusterIdentityNetworkContributor 'Microsoft.Authorization/roleAssignme
   ]
 }
 
-// Automatic SKU validation requires:
-//   - UAMI (user-assigned managed identity) when using BYO VNet.
-//     Managed-VNet Automatic clusters require SAMI; BYO-VNet requires
-//     UAMI; these are mutually exclusive.
-//   - Ephemeral OS disks on the explicit system pool
-//   - webApplicationRouting and KeyvaultSecretsProvider add-ons enabled
-//   - hostedSystemProfile wired to the BYO VNet so AKS Automatic's
-//     service-created "hostedpool" does not fall back to a managed VNet
-//
-// With BYO VNet, outboundType switches from managedNATGateway to
-// userAssignedNATGateway (the NAT we pre-created in vnet.bicep).
-
+// Automatic SKU validation requires the user-assigned identity, an ephemeral OS
+// disk on the explicit system pool, the webAppRouting and KeyvaultSecretsProvider
+// add-ons, and hostedSystemProfile on the BYO VNet so the service-created hosted
+// pool does not fall back to a managed VNet. The BYO VNet also switches
+// outboundType to the NAT gateway vnet.bicep creates.
 resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
   name: clusterName
   location: location
@@ -105,7 +90,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
     kubernetesVersion: kubernetesVersion
     dnsPrefix: clusterName
 
-    // Pin the node resource group name because it is immutable after creation.
+    // Immutable after creation.
     nodeResourceGroup: '${clusterName}-nodes'
 
     enableRBAC: true
@@ -115,12 +100,10 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
     // Automatic requires public API server for Karpenter.
     publicNetworkAccess: 'Enabled'
 
-    // main.bicep consumes the issuer URL to create federated credentials.
     oidcIssuerProfile: {
       enabled: true
     }
 
-    // Keep AKS Automatic's service-created hosted pools on the BYO VNet.
     hostedSystemProfile: {
       enabled: true
       nodeSubnetID: vnetModule.outputs.subnetId
@@ -131,7 +114,6 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
       defaultNodePools: 'Auto'
     }
 
-    // The BYO subnets use the NAT gateway created by vnet.bicep.
     networkProfile: {
       outboundType: 'userAssignedNATGateway'
       networkPlugin: 'azure'
@@ -140,9 +122,8 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
       loadBalancerSku: 'standard'
     }
 
-    // API server VNet integration is always-on for AKS Automatic with
-    // BYO VNet and requires a dedicated delegated subnet distinct from
-    // the node subnets (see vnet.bicep).
+    // API server VNet integration is always on with a BYO VNet and needs its
+    // own delegated subnet.
     apiServerAccessProfile: {
       subnetId: vnetModule.outputs.apiServerSubnetId
     }
@@ -177,7 +158,6 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
       }
     }
 
-    // Automatic requires the explicit system pool to use an ephemeral OS disk.
     agentPoolProfiles: [
       {
         name: 'systempool'
@@ -191,8 +171,8 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
       }
     ]
 
-    // Pin the Istio revision so AKS does not upgrade the mesh independently
-    // of the Kubernetes version. ADR-002 records the compatibility requirement.
+    // A pinned revision keeps AKS from upgrading the mesh independently of the
+    // Kubernetes version.
     serviceMeshProfile: {
       mode: 'Istio'
       istio: {

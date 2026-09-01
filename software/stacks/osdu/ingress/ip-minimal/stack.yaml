@@ -4,10 +4,10 @@
 ---
 # The Gateway: HTTP:80 only. Sole Flux owner of the object.
 #
-# The name is shared with the TLS modes on purpose: one child identity
-# across every non-bare mode means switching --ingress-mode rewrites this
-# Kustomization's spec.path instead of pruning one child and creating
-# another, which would delete the Gateway with it.
+# Named spi-gateway-tls like every non-bare mode, so switching
+# --ingress-mode only changes this Kustomization's spec.path. A
+# mode-specific name would prune the old child and its MirrorPrune
+# deletion would take the Gateway with it.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

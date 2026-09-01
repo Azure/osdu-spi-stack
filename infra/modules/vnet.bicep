@@ -1,14 +1,11 @@
 // Copyright 2026, Microsoft
 // Licensed under the Apache License, Version 2.0.
 //
-// Private network for AKS Automatic: VNet + NAT gateway + private subnets.
-//
-// Exists specifically to satisfy the "Subnets should be private" Azure
-// Policy (definition 7bca8353-aa3b-429b-904a-9229c4385837). The policy rejects
-// any subnet where ``defaultOutboundAccess`` is not explicitly ``false``.
-// AKS Automatic's managed-VNet path does not set this property, so the VNet is
-// pre-created and passed in via ``vnetSubnetID``/``hostedSystemProfile``
-// on the managed cluster.
+// VNet, NAT gateway and private subnets for AKS Automatic. The "Subnets should
+// be private" policy (7bca8353-aa3b-429b-904a-9229c4385837) rejects any subnet
+// without defaultOutboundAccess: false, which the managed-VNet path never sets,
+// so the network is created here and handed to the cluster. Egress still flows
+// through the NAT gateway; the flag only disables implicit outbound SNAT.
 
 targetScope = 'resourceGroup'
 
@@ -73,10 +70,6 @@ resource natGateway 'Microsoft.Network/natGateways@2024-01-01' = {
   }
 }
 
-// The subnet explicitly sets ``defaultOutboundAccess: false`` to satisfy
-// Azure Policy "Subnets should be private". Outbound egress still flows
-// through the attached NAT gateway; the flag disables implicit outbound SNAT.
-
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
   location: location
@@ -88,8 +81,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
     }
     subnets: [
       {
-        // The NAT gateway is required by the cluster's
-        // ``userAssignedNATGateway`` outbound mode.
+        // The cluster's userAssignedNATGateway outbound mode needs the gateway attached.
         name: subnetName
         properties: {
           addressPrefix: subnetAddressPrefix
@@ -100,8 +92,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         }
       }
       {
-        // AKS Automatic custom networking requires a managed system node
-        // subnet; without it, the hosted pool rejects the user-assigned NAT gateway.
+        // Without a system node subnet the hosted pool rejects the user-assigned NAT gateway.
         name: systemNodeSubnetName
         properties: {
           addressPrefix: systemNodeSubnetAddressPrefix
@@ -112,8 +103,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         }
       }
       {
-        // API server VNet integration requires a dedicated subnet delegated
-        // to Microsoft.ContainerService/managedClusters.
+        // API server VNet integration needs its own delegated subnet.
         name: apiServerSubnetName
         properties: {
           addressPrefix: apiServerSubnetAddressPrefix

@@ -1,18 +1,8 @@
 # One-shot Job that loads the OSDU shared schemas into the primary
-# partition. Runs after the core OSDU services HelmReleases have been
-# applied (see spi-osdu-schema-load Flux Kustomization in
-# software/stacks/osdu/profiles/core/stack.yaml).
-#
-# Uses the existing `workload-identity-sa` in the `osdu` namespace,
-# already federated to the OSDU UAMI (see infra/modules/identity.bicep).
-# The AKS Workload Identity webhook injects AZURE_CLIENT_ID,
-# AZURE_TENANT_ID, and AZURE_FEDERATED_TOKEN_FILE automatically when
-# the pod carries the `azure.workload.identity/use: "true"` label and
-# the SA has the matching annotations.
-#
-# The loader image's default entrypoint runs `bootstrap.sh` from
-# /home/osdu/deployments/scripts/azure; we mount our wrapper over that
-# path (and Token.py alongside it) rather than overriding `command`.
+# partition, authenticating through workload-identity-sa. The loader
+# image's entrypoint runs bootstrap.sh from /home/osdu/deployments/scripts/azure,
+# so the wrapper and Token.py are mounted over that path rather than
+# overriding `command`.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -23,24 +13,13 @@ metadata:
     app.kubernetes.io/component: schema-load
 spec:
   backoffLimit: 2
-  # 150 min ceiling covers every delay this Job can hit on a cold cluster.
-  # activeDeadlineSeconds starts counting when the Job becomes active, i.e.
-  # before the Pod is even scheduled, so it also includes node provisioning,
-  # scheduling, and image pull -- not just the time bootstrap.sh spends
-  # running. Observed cold-start node provisioning took ~28 min;
-  # 1800s (30 min) is budgeted for that pod-startup phase. The remaining
-  # 7200s covers the script's own WAIT_DEADLINE_SECONDS=2700 (the schema
-  # endpoint can stay unavailable for up to 45 min after the Pod starts
-  # running; the observed worst case was ~33 min, so this leaves
-  # headroom) plus 3600s+ for the throttled POST of ~1,386 schemas, which can
-  # itself exceed 30 min. The Flux Kustomization timeout must remain longer
-  # than this deadline.
+  # Counts from Job activation, before the Pod is scheduled: 1800s for node
+  # provisioning, scheduling, and image pull, 2700s for the script's own
+  # schema-service wait, and the rest for the throttled load of ~1,386
+  # schemas. The Flux Kustomization timeout must exceed this.
   activeDeadlineSeconds: 9000
-  # No ttlSecondsAfterFinished: this is a one-shot loader. Flux
-  # reconciles this Kustomization every 10 min; a TTL would let the
-  # controller delete the completed Job and the next reconcile would
-  # re-apply it, turning a one-shot into a periodic re-run. Operators
-  # trigger re-runs manually (kubectl delete job schema-load -n osdu).
+  # No ttlSecondsAfterFinished: a TTL would let Flux re-apply the deleted
+  # Job on its next reconcile. Re-run with kubectl delete job schema-load -n osdu.
   template:
     metadata:
       labels:
@@ -64,13 +43,9 @@ spec:
             defaultMode: 0755
       containers:
         - name: loader
-          # Resolved live from the osdu-image-lock ConfigMap's composed
-          # SCHEMA_LOAD_IMAGE_REF (repository@digest, or repository:tag when
-          # no digest was recorded), on the same SHA selected for
-          # schema-service. No static default: a pinned SHA goes stale as
-          # upstream prunes it. A lock that predates schema-load's inclusion
-          # or its ref is backfilled by `spi reconcile` before Flux applies
-          # this Job.
+          # From the osdu-image-lock ConfigMap, on the same SHA as
+          # schema-service. No static default: upstream prunes old tags.
+          # `spi reconcile` backfills a lock that predates this key.
           image: ${SCHEMA_LOAD_IMAGE_REF}
           imagePullPolicy: IfNotPresent
           envFrom:
@@ -79,12 +54,8 @@ spec:
           env:
             - name: NAMESPACE
               value: "osdu"
-            # The OSDU community schema-load image's bootstrap.sh reads
-            # ${DATA_PARTITION}. The osdu-config ConfigMap exposes the
-            # primary partition as PRIMARY_PARTITION (renamed to make
-            # multi-partition deploys honest); alias it back to the env
-            # name the loader expects. system-db is primary-only by
-            # design, so loading against the primary is correct.
+            # The loader reads DATA_PARTITION; system-db is primary-only,
+            # so it is aliased from PRIMARY_PARTITION.
             - name: DATA_PARTITION
               valueFrom:
                 configMapKeyRef:

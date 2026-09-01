@@ -73,11 +73,10 @@ def _resolve_aad_client_id(identity_client_id: str) -> str:
     """Return the appid services should mint service-to-service tokens for.
 
     Defaults to the OSDU UAMI client id (single-resource scope, dodges
-    AADSTS28000); the AAD_CLIENT_ID host env var overrides this to point
-    at a separate OSDU AAD app registration. The Istio audience list and
-    the osdu-config ConfigMap must agree on this value, or service-to-
-    service calls fail jwt_authn and reach the Spring filter without an
-    x-app-id header (ADR-016).
+    AADSTS28000); the AAD_CLIENT_ID host env var points at a separate app
+    registration instead. The Istio audience list and the osdu-config
+    ConfigMap must agree on this value, or service-to-service calls fail
+    jwt_authn and reach the Spring filter without an x-app-id header.
     """
     return os.environ.get("AAD_CLIENT_ID", "").strip() or identity_client_id
 
@@ -210,21 +209,16 @@ def _write_keyvault_bootstrap_secrets(
     elastic_password: str,
     redis_password: str,
 ) -> None:
-    """Write the small set of secrets OSDU services read at startup.
+    """Write the secrets OSDU services read at startup.
 
-    Partition reads tbl-storage-endpoint to locate its metadata table.
-    Indexer and workflow read redis-hostname/redis-password via KeyVaultFacade.
-    Search and indexer read {partition}-elastic-* via partition service API.
-
-    Elastic credentials are written per-partition because the partition record
-    resolves them by partition-prefixed secret name. All partitions share the
-    single in-cluster ES cluster and therefore the same elastic user/password.
+    Elastic credentials are written per partition because the partition
+    record resolves them by partition-prefixed name; every partition shares
+    the one in-cluster Elasticsearch and therefore the same password.
     """
     console.print("\n[bold]Writing OSDU bootstrap secrets to Key Vault...[/bold]")
     tbl_endpoint = f"https://{storage_account_name}.table.core.windows.net/"
-    # ECK's self-signed cert SANs cover elasticsearch-es-http.platform.svc
-    # but NOT the ...svc.cluster.local form; with elastic-ssl-enabled=true
-    # the long form fails hostname verification (SSLPeerUnverifiedException).
+    # ECK's certificate SANs cover the .svc form only; the .svc.cluster.local
+    # form fails hostname verification.
     elastic_endpoint = "https://elasticsearch-es-http.platform.svc:9200"
     redis_hostname = "platform-redis-master.platform.svc.cluster.local"
 
@@ -242,10 +236,8 @@ def _write_keyvault_bootstrap_secrets(
             ]
         )
 
-    # The deployer's Key Vault Secrets Officer assignment is created by
-    # rbac.bicep moments earlier; ARM data-plane propagation can lag a few
-    # minutes. Retry the first write on ForbiddenByRbac so we don't fail
-    # the whole deploy on a benign timing window.
+    # The Secrets Officer assignment from rbac.bicep can take minutes to reach
+    # the data plane; retry the first write on ForbiddenByRbac.
     deadline = time.time() + 300
     first = True
     for name, value in secrets_to_write:
@@ -374,10 +366,8 @@ def _resolved_revision(repository: dict, expected_ref: str, ref_field: str) -> s
 
     revision = repository.get("status", {}).get("artifact", {}).get("revision", "")
     prefix, separator, digest = revision.partition("@")
-    # Flux reports the bare ref name for branch/tag sources (the qualified
-    # refs/heads|tags/ form is only used for spec.ref.name, which this CLI
-    # never sets); restrict the qualified form to ref_field's own namespace
-    # so a tag deployment can't validate a same-named branch's artifact.
+    # The qualified form is restricted to ref_field's own namespace so a tag
+    # deployment cannot validate a same-named branch's artifact.
     namespace = "refs/tags/" if ref_field == "tag" else "refs/heads/"
     accepted_refs = {expected_ref, f"{namespace}{expected_ref}"}
     match = re.fullmatch(r"(?:sha1|sha256):([0-9a-fA-F]{40,64})", digest)
@@ -498,27 +488,22 @@ def deploy_azure(
 ) -> None:
     """Provision Azure infra, bootstrap Kubernetes, deploy via GitOps.
 
-    In ``dry_run`` mode, only the Azure PaaS Bicep preview runs; AKS, the
-    Kubernetes bootstrap phase, and GitOps activation are skipped so the
-    caller can inspect what would change without actually provisioning.
+    Under ``dry_run`` only the Bicep what-if previews run; the Kubernetes
+    bootstrap and GitOps activation are skipped.
     """
     resolved_images: dict[str, ResolvedImage] = {}
-    # Only core deploys OSDU services that consume the image lock. Minimal and
-    # bare skip the community-registry roundtrip entirely.
+    # Only core consumes the image lock. Resolving before provisioning means a
+    # registry failure stops the run before anything is half-configured.
     if refresh_images and not dry_run and config.profile is Profile.CORE:
-        # Resolve before provisioning so registry/API failures stop quickly and
-        # never leave a partially configured cluster with a mixed image set.
         resolved_images = _resolve_image_lock(image_branch)
 
-    # For dns mode we need to resolve the DNS zone BEFORE running main.bicep
-    # so the conditional external-dns-identity + DNS Zone Contributor role
-    # modules get the right scope + name.
+    # main.bicep's ExternalDNS identity and role modules need the zone's
+    # name and resource group as parameters.
     if not dry_run and config.ingress_mode == IngressMode.DNS and not config.dns_zone:
         zone, rg = discover_dns_zone()
         config.dns_zone = zone
         config.dns_zone_rg = rg
 
-    # Phase 1-3: Azure infrastructure
     infra_outputs = provision_azure_infra(
         config,
         dry_run=dry_run,
@@ -529,7 +514,6 @@ def deploy_azure(
     if dry_run:
         return
 
-    # Phase 4: Kubernetes bootstrap
     istio_revision = ensure_namespaces()
     create_istio_revision_configmap(istio_revision)
     ensure_secrets()
@@ -540,8 +524,7 @@ def deploy_azure(
     _create_istio_auth(config, infra_outputs)
     _create_spi_init_values(config)
 
-    # Phase 4b: Ingress mode resolution (requires live cluster + Istio LB).
-    # Bare deploys no Gateway, so there is nothing to configure.
+    # Bare deploys no Gateway, so there is no ingress to configure.
     if config.profile is not Profile.BARE:
         resolve_post_deploy_inputs(config)
         create_ingress_config(
@@ -551,7 +534,6 @@ def deploy_azure(
             gateway_ip=get_ingress_ip(),
         )
 
-    # Phase 5: GitOps activation (Flux extension + Kustomization via Bicep)
     console.print("\n[bold]Deploying Flux extension and GitOps config via Bicep...[/bold]")
     run_bicep_deployment(
         template_path=str(INFRA_FLUX_BICEP),
@@ -576,11 +558,6 @@ def deploy_azure(
             f"ingress: {config.ingress_mode.value}"
         )
 
-    # Phase 6: Non-blocking runtime writes.
-    # Cross-namespace CA copies and the Redis Istio DestinationRule moved
-    # into Flux (software/stacks/osdu/bootstrap/) as Pass 1 of ADR-011.
-    # Only the KV seed writes remain here; they run in seconds since all
-    # values are known as soon as infra is up and the seed is generated.
     seed = get_or_create_seed()
     _write_keyvault_bootstrap_secrets(
         config=config,
@@ -590,21 +567,16 @@ def deploy_azure(
         redis_password=seed["redis_password"],
     )
 
-    # Phase 7: verify and suspend the requested source, then publish the
-    # deploy record used by machine consumers.
     _finalize_gitops_source(config)
 
 
 def _cluster_api_server(config: Config) -> str:
     """The API server FQDN of the cluster about to be deleted, or "".
 
-    Read while the resource group still exists, because it is what proves a
-    kubeconfig context belongs to this cluster rather than a same-named one
-    in another subscription. Comes back empty when the cluster is already
-    gone or was never created, and the prune then leaves the kubeconfig
-    alone. `privateFqdn` comes first because a private cluster populates both
-    fields, and `az aks get-credentials` without `--public-fqdn` is what wrote
-    the kubeconfig entry this is compared against.
+    The FQDN proves a kubeconfig context belongs to this cluster rather than
+    a same-named one in another subscription; empty means the cluster is
+    gone and the prune leaves the kubeconfig alone. `privateFqdn` comes first
+    because `az aks get-credentials` wrote that form for a private cluster.
     """
     result = run_command(
         [

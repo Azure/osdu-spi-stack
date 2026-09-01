@@ -53,18 +53,12 @@ def osdu_config_configmap(
 ) -> str:
     """ConfigMap with Azure PaaS endpoints for OSDU services.
 
-    The PRIMARY_* keys carry the primary partition's data plane endpoints.
-    OSDU services do not consume them for per-request routing — they call
-    partition-service to resolve each request's backend by partition id.
-    The keys exist for the schema-load Job (which targets osdu-system-db,
-    primary-only by design — ADR-013) and for operator visibility.
+    Services resolve per-request backends through partition-service; the
+    PRIMARY_* keys exist for the schema-load Job, which targets the
+    primary-only system database, and for operator visibility.
 
-    aad_client_id is the Entra app id used by the Spring auth filters to
-    match the JWT appid claim, and by core-lib-azure to build the
-    `${{aadClientId}}/.default` scope inside `getWIToken`. Defaults to the
-    UAMI client id (single-resource scope, dodges AADSTS28000); override
-    with the AAD_CLIENT_ID host env var to point at a separate OSDU app
-    registration.
+    aad_client_id is the app id the Spring auth filters match against the
+    JWT appid claim and core-lib-azure scopes `getWIToken` to.
     """
     return f"""\
 apiVersion: v1
@@ -116,27 +110,19 @@ def istio_auth_resources(
     entra_client_id: str,
     aad_client_id: str,
 ) -> str:
-    """RequestAuthentication + PeerAuthentication + EnvoyFilter required for
-    Azure-provider OSDU services to extract the caller's app id from a
-    validated JWT (see ADR-016).
+    """Istio resources that project the caller's app id from a validated JWT.
 
-    The RequestAuthentication validates the bearer and parks the decoded
-    payload as Envoy dynamic metadata. The EnvoyFilter's Lua reads that
-    metadata and writes x-app-id / x-user-id headers, which the in-process
-    Spring filters in the *-azure service images consume. The
-    PeerAuthentication keeps mTLS in PERMISSIVE mode so the bootstrap Jobs
-    are not rejected by managed-mesh defaults.
+    The RequestAuthentication validates the bearer and parks the payload as
+    Envoy dynamic metadata; the EnvoyFilter's Lua writes x-app-id and
+    x-user-id headers from it for the Spring filters in the *-azure images.
+    The PeerAuthentication keeps mTLS PERMISSIVE so the bootstrap Jobs are
+    not rejected.
 
-    Both ``entra_client_id`` (the OSDU UAMI client id) and ``aad_client_id``
-    are listed in the jwtRules audiences. The bootstrap Jobs present tokens
-    with ``aud=https://management.azure.com/``; the Lua's special-case branch
-    pins ``x-app-id`` to ``entra_client_id`` for those. Service-to-service
-    calls inside the cluster mint tokens via core-lib-azure's ``getWIToken``
-    with scope ``${{aadClientId}}/.default`` (i.e. ``aud=aad_client_id``),
-    so ``aad_client_id`` must also be a valid audience for those calls to
-    pass jwt_authn and have ``x-app-id`` projected. When the operator does
-    not override AAD_CLIENT_ID, both values are equal and only one entry is
-    emitted per jwtRule.
+    Both client ids are jwtRule audiences. Bootstrap Jobs present
+    ``aud=https://management.azure.com/`` and the Lua pins their x-app-id to
+    ``entra_client_id``; service-to-service tokens carry
+    ``aud=aad_client_id`` and must pass jwt_authn too. When the two ids are
+    equal only one audience entry is emitted.
     """
     extra_aud = (
         f'\n        - "{aad_client_id}"'
@@ -268,10 +254,8 @@ spec:
 """
 
 
-# Base name of the default legal tag legal-init creates per partition as
-# "{partition}-{LEGAL_TAG_BASE}". Must stay identical to the osdu-spi-init
-# chart's `legalTag` values default, which covers clusters bootstrapped before
-# the CLI pinned the value here.
+# legal-init creates "{partition}-{LEGAL_TAG_BASE}"; must match the
+# osdu-spi-init chart's `legalTag` default.
 LEGAL_TAG_BASE = "demo-legaltag"
 
 

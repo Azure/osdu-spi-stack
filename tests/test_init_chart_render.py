@@ -15,12 +15,9 @@
 """Contract tests for the osdu-spi-init bootstrap chart.
 
 Renders the chart with Helm and asserts the per-partition Job fan-out and the
-legal-init contract: the partition-prefixed tag name, the Key Vault name
-sourced from osdu-config, and embedded init scripts that at least compile.
-
-The rendered init_legal.py is then executed against a routed fake of urlopen,
-so both success paths and every typed failure outcome are covered end to end.
-Skipped when Helm is not installed.
+legal-init contract, then executes the rendered init_legal.py against a
+routed fake of urlopen so every typed outcome is covered. Skipped when Helm
+is not installed.
 """
 
 import ast
@@ -143,11 +140,10 @@ def test_legal_release_declares_no_volume_it_does_not_own():
 
 
 def test_legal_init_deadline_covers_its_wait_budget(init_scripts):
-    """The legal Job must outlive init_legal.py's own worst case, recomputed
-    here from the script's constants: every gate's attempts at a delay plus a
-    socket timeout, then the authenticated calls. A shorter deadline kills the
-    pod before a typed outcome is printed, which is the whole point of the
-    per-outcome logging."""
+    """The legal Job must outlive init_legal.py's worst case, recomputed from
+    the script's constants: every gate's attempts at a delay plus a socket
+    timeout, then the authenticated calls. A shorter deadline kills the pod
+    before a typed outcome is printed."""
     const = _script_constants(init_scripts["init_legal.py"])
     attempts = (
         const["LEGAL_INFO_ATTEMPTS"]

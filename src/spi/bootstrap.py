@@ -29,12 +29,9 @@ ISTIO_REVISION_KEY = "ISTIO_REVISION"
 def _detect_istio_revision() -> str | None:
     """Detect the installed Istio ASM revision from the cluster.
 
-    The istiod deployment is named ``istiod-<revision>`` (e.g.
-    ``istiod-asm-1-30``); the aks-istio-system namespace itself carries no
-    ``istio.io/rev`` label, so the deployment name is the reliable source.
-    Returns ``None`` when the cluster query fails or no ``istiod-*``
-    deployment is visible, so callers can distinguish "detection failed"
-    from an actual revision.
+    The aks-istio-system namespace carries no ``istio.io/rev`` label, so the
+    ``istiod-<revision>`` deployment name is the source. Returns ``None``
+    when the query fails or no such deployment is visible.
     """
     data = kubectl_json(["get", "deploy", "-n", "aks-istio-system"])
     if data and data.get("items"):
@@ -60,9 +57,7 @@ def ensure_namespaces(istio_revision: str = "") -> str:
             text=True,
         )
 
-    # Only osdu namespace gets Istio injection (platform middleware
-    # does not need the service mesh and istio-init requires NET_ADMIN
-    # which AKS Deployment Safeguards rejects).
+    # Only osdu gets sidecar injection; the middleware does not need the mesh.
     yaml_content = f"""\
 apiVersion: v1
 kind: Namespace

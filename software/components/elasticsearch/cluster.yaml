@@ -1,5 +1,4 @@
-# Elasticsearch cluster managed by ECK operator.
-# 3 nodes across availability zones for HA.
+# ECK-managed Elasticsearch, 3 nodes spread across availability zones.
 apiVersion: elasticsearch.k8s.elastic.co/v1
 kind: Elasticsearch
 metadata:
@@ -9,16 +8,9 @@ metadata:
     app.kubernetes.io/managed-by: osdu-spi-stack
 spec:
   version: 8.18.2
-  # AKS Automatic Deployment Safeguards enforces the
-  # uniqueServiceSelectors policy as Deny in user namespaces (platform,
-  # foundation are not in the policy's excludedNamespaces). ECK's
-  # default elasticsearch-es-http and elasticsearch-es-transport
-  # services would share the same selectors and be rejected. Mirror the
-  # sister Terraform repo's pattern
-  # (../osdu-spi-infra/main/software/spi-stack/modules/elastic/main.tf):
-  # override both services' selectors with a distinct discriminator
-  # label, and stamp both labels on the pod template so both services
-  # still match the same pods.
+  # Deployment Safeguards denies Services with identical selectors, which
+  # ECK's default http and transport Services have. Each gets its own
+  # discriminator label, and the pod template carries both.
   http:
     service:
       spec:

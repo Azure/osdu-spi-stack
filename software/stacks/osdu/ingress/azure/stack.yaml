@@ -1,22 +1,15 @@
 # SPI Stack - Ingress profile: AZURE (default)
 #
-# Uses Azure's auto-assigned <label>.<region>.cloudapp.azure.com FQDN.
-# spi-ingress-dns-label stamps service.beta.kubernetes.io/
-# azure-dns-label-name=<cluster-name>-ingress onto the add-on's ingress
-# Service; only the Flux controllers may write in aks-istio-ingress.
-# gateway-tls-single-host renders the whole Gateway: HTTP:80 plus an
-# HTTPS:443 listener bound to the FQDN. cert-manager issues the Let's
-# Encrypt cert via HTTP-01 against that same HTTP:80 listener. All OSDU
-# APIs and middleware UIs (Kibana /kibana, Airflow /airflow) live under
-# one host.
+# One host: Azure's auto-assigned <label>.<region>.cloudapp.azure.com FQDN
+# carries the OSDU APIs and the middleware UIs (/kibana, /airflow), with a
+# Let's Encrypt cert issued via HTTP-01 on the same Gateway.
 #
 # Required variables in spi-ingress-config ConfigMap (osdu-flux):
 #   ACME_EMAIL, INGRESS_FQDN, DNS_LABEL
 
 ---
-# Azure DNS label on the add-on's external ingress Service. Applied by
-# Flux because only the flux-system controllers are exempt from the
-# admission policy that denies writes in aks-istio-ingress.
+# DNS label on the add-on's ingress Service. Only the flux-system
+# controllers may write in aks-istio-ingress, so Flux applies it.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -39,7 +32,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# Cert issuers (Let's Encrypt staging + prod).
+# Let's Encrypt issuers (staging + prod).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -64,7 +57,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# Kibana with server.basePath=/kibana so it can serve from a subpath.
+# Kibana served from the /kibana subpath.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -85,9 +78,8 @@ spec:
   timeout: 10m
 
 ---
-# The Gateway: HTTP:80 for ACME HTTP-01 plus the HTTPS:443 listener
-# bound to the auto-FQDN. The ingress tree is the Gateway's sole Flux
-# owner, so no second Kustomization re-applies the object.
+# The Gateway: HTTP:80 for ACME HTTP-01 plus HTTPS:443 on the FQDN. The
+# ingress tree is the Gateway's sole Flux owner.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -113,9 +105,8 @@ spec:
         name: spi-ingress-config
 
 ---
-# HTTPRoutes for the middleware UIs (Kibana /kibana, Airflow /airflow) on
-# the single FQDN. Split from spi-osdu-routes so it carries no dependency
-# on spi-osdu-services and stays reconcilable under the minimal profile.
+# HTTPRoutes for the middleware UIs. Separate from spi-osdu-routes so they
+# carry no dependency on spi-osdu-services and reconcile under minimal.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -142,7 +133,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# HTTPRoutes for the OSDU APIs on the single FQDN.
+# HTTPRoutes for the OSDU APIs.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:

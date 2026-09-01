@@ -26,9 +26,6 @@ from pydantic_core import ErrorDetails
 
 from .config import IngressMode, Profile
 
-# The one declaration this repository manages today. A future onboarding
-# phase may add more named environments; nothing here assumes there is only
-# ever one file.
 DEFAULT_DECLARATION_PATH = Path("ops/environments/shared.yaml")
 
 _ENV_RE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -37,8 +34,7 @@ _LOCATION_RE = re.compile(r"^[a-z][a-z0-9]*$")
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 _SUFFIX_RE = re.compile(r"^[a-z0-9]{5}$")
 
-# IngressMode.IP is a hidden HTTP-only debug fallback; the shared environment's
-# documented schema (ops/environments/README.md) is 'azure' or 'dns' only.
+# IngressMode.IP is a debug fallback and not part of the declaration schema.
 _DECLARABLE_INGRESS_MODES = {IngressMode.AZURE.value, IngressMode.DNS.value}
 
 
@@ -80,14 +76,9 @@ class EnvironmentDeclarationError(ValueError):
 class EnvironmentDeclaration(BaseModel):
     """The flat, reviewed contract lifecycle workflows deploy from.
 
-    Field names are `snake_case` for Python use; the YAML on disk (and the
-    values re-exported to `GITHUB_OUTPUT`) use the camelCase aliases below.
-    `extra="forbid"` enforces the strict key set: an unexpected key is a
-    validation error, not a silently ignored field. Population is by alias
-    only (no `populate_by_name`): the on-disk schema is camelCase, exactly,
-    and accepting the snake_case field name too would let a declaration
-    written as `stack_version:` validate here yet be missed by the
-    `^stackVersion:` bump automation in `.github/workflows/release.yml`.
+    The on-disk schema is camelCase, exactly, and population is by alias only:
+    accepting `stack_version:` too would let a declaration validate here yet
+    be missed by the `^stackVersion:` bump in `.github/workflows/release.yml`.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -159,9 +150,8 @@ def _validate_shape(data: dict) -> None:
         )
 
 
-# Field name -> on-disk alias, for fields where they differ. Lets a rejected
-# snake_case key (e.g. from populate_by_name muscle memory) be pointed at the
-# camelCase key the schema actually accepts, instead of a bare "extra field".
+# Lets a rejected snake_case key be pointed at the camelCase key the schema
+# accepts, instead of a bare "extra field" error.
 _ALIAS_BY_FIELD_NAME: dict[str, str] = {
     name: field.alias
     for name, field in EnvironmentDeclaration.model_fields.items()
@@ -204,12 +194,10 @@ def parse_declaration(raw: str) -> EnvironmentDeclaration:
 def load_declaration(path: Path | str | None = None) -> EnvironmentDeclaration | None:
     """Load and validate the declaration at `path`, or `None` when absent.
 
-    An absent file is the expected steady state before activation and after
-    any future teardown; callers (the lifecycle workflows) must treat `None`
-    as a clean skip, never as an error. A present-but-invalid file still
-    raises `EnvironmentDeclarationError`, including a mismatch between `env`
-    and the filename stem: this module's contract is `<name>.yaml`, and a
-    typo in either one must not silently deploy the wrong environment.
+    An absent file is a clean skip for the lifecycle workflows, never an
+    error. A present but invalid file raises `EnvironmentDeclarationError`,
+    including when `env` and the filename stem disagree: a typo in either
+    must not deploy the wrong environment.
     """
     resolved = Path(path) if path is not None else DEFAULT_DECLARATION_PATH
     if not resolved.exists():

@@ -6,11 +6,9 @@ you may not use this file except in compliance with the License.
 */}}
 
 {{- if .Values.coreEnabled }}
-# One partition-init Job per partition, rendered from .Values.partitions. Each
-# Job POSTs the partition record stored in osdu-spi-init-partition-records to
-# the partition service, authenticating via Workload Identity so the caller's
-# appid becomes TenantInfo.service-account. Re-runs are safe: 409 is treated
-# as success.
+# One Job per partition. POSTs the partition record from
+# osdu-spi-init-partition-records; the caller's appid becomes
+# TenantInfo.service-account. 409 is treated as success.
 {{- range $partition := .Values.partitions }}
 ---
 apiVersion: batch/v1

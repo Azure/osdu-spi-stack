@@ -4,12 +4,8 @@
 
 """Contract tests for the scheduled Azure smoke workflow.
 
-The smoke is a production reliability signal. These tests protect the two
-properties that issue #41 depends on:
-
-* the unattended path begins at the bare profile; and
-* bare still validates AKS + Flux, but does not require an ingress substrate it
-  deliberately does not deploy.
+The unattended path begins at the bare profile, and bare validates AKS plus
+Flux without requiring an ingress substrate it does not deploy.
 """
 
 import os
@@ -139,11 +135,9 @@ def _run_probe_gateway(tmp_path: Path, endpoints_mode: str) -> subprocess.Comple
 
 
 def test_probe_gateway_stderr_warning_cannot_satisfy_the_gate(tmp_path: Path):
-    """Regression test: on Kubernetes 1.33+, `kubectl get endpoints` emits a
-    deprecation warning on stderr even when it succeeds. If that warning were
-    merged into the address capture, it would read as a non-empty address
-    list and pass with zero real endpoints, reopening the hole the ready
-    endpoint check exists to close.
+    """On Kubernetes 1.33+, `kubectl get endpoints` warns on stderr even when
+    it succeeds. Merged into the address capture, that warning would read as
+    a non-empty address list and pass with zero real endpoints.
     """
     result = _run_probe_gateway(tmp_path, "warn-empty")
 
@@ -234,14 +228,9 @@ def test_verify_gate_outlives_the_schema_load_and_reference_timeouts():
         "verify job timeout-minutes must exceed the wait_for_flux_ready.sh --timeout"
     )
 
-    # The verify job also runs checkout/tool-install/login/get-credentials
-    # steps before the wait starts, and the HTTPS acceptance probe can retry
-    # for a while after the wait succeeds. A margin that is only "> 0" over
-    # the wait timeout can be exhausted by those steps alone, letting the job
-    # get cancelled while its probes are still healthy. Require the margin to
-    # cover the probe's own worst-case retry budget plus a setup allowance.
-    # The retry loop itself lives in scripts/probe_gateway.sh (shared with the
-    # env-upgrade/env-refresh lifecycle workflows), not inline in the step.
+    # Setup steps run before the wait and the HTTPS probe retries after it,
+    # so the margin over --timeout must cover the probe's worst-case retry
+    # budget (scripts/probe_gateway.sh) plus a setup allowance.
     https_step = _steps(verify)["Acceptance probe (HTTPS terminates)"]["run"]
     assert "probe_gateway.sh https" in https_step, (
         "the HTTPS acceptance probe step must call scripts/probe_gateway.sh"

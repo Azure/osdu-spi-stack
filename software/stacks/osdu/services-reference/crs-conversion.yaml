@@ -68,9 +68,7 @@ spec:
         value: http://entitlements/api/entitlements/v2
       - name: STORAGE_URL
         value: http://storage/api/storage/v2
-    # Init container to download SIS reference data.
-    # Uses Azure Linux 3.0 (MCR-hosted) with tdnf to install curl and tar.
-    # Runs as root so tdnf can install; all capabilities dropped.
+    # Downloads SIS reference data; root so tdnf can install, every capability dropped.
     initContainers:
       - name: download-sis-data
         image: mcr.microsoft.com/azurelinux/base/core:3.0

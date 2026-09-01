@@ -1,14 +1,6 @@
-# Dependabot configuration.
-# Docs: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-#
-# Scope kept narrow on purpose:
-#   - pip: tracks pyproject.toml + uv.lock for the spi CLI itself.
-#   - github-actions: tracks action `uses:` pins inside .github/workflows/.
-# Out of scope (handled differently):
-#   - OSDU service container image tags -- managed by scripts/resolve-image-tags.py + `spi reconcile --refresh-images`.
-#   - Helm chart pins in software/components/**/release.yaml -- bumped manually
-#     against the chart's release notes (low frequency, breaking-change risk).
-#   - Bicep AVM module versions -- pinned in infra/modules/ when stabilized.
+# Tracks the CLI's Python dependencies and action pins only. OSDU image tags
+# move through `spi reconcile --refresh-images`, and Helm chart pins are bumped
+# by hand against each chart's release notes.
 
 version: 2
 updates:

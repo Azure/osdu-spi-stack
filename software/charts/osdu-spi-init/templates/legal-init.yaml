@@ -5,18 +5,11 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */}}
 
-# One legal-init Job per partition, rendered from .Values.partitions. Each Job
-# stages the legal COO catalog into the partition's configuration container and
-# POSTs the default legal tag "{partition}-{legalTag}". Re-runs are safe: the
-# blob upload overwrites and a 409 succeeds only once the existing tag is
-# verified to match what this Job would have created.
-#
-# Rendered only by the non-gating osdu-spi-legal HelmRelease (legalEnabled);
-# helm-controller waits for every Job in a release, so keeping legal out of
-# the osdu-spi-init release is what stops a legal failure from blocking
-# schema-load. The pods mount the scripts ConfigMap the core release renders;
-# the spi-osdu-legal Kustomization dependsOn spi-osdu-init guarantees it
-# exists first.
+# One Job per partition. Stages the legal COO catalog into the partition's
+# configuration container and POSTs the default legal tag
+# "{partition}-{legalTag}"; a 409 succeeds only when the existing tag matches.
+# Rendered by the non-gating osdu-spi-legal release, whose Kustomization
+# depends on spi-osdu-init so the scripts ConfigMap exists first.
 {{- if .Values.legalEnabled }}
 {{- range $partition := .Values.partitions }}
 ---

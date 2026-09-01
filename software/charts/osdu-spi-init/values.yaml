@@ -3,51 +3,37 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-# -- Partitions to bootstrap. Injected via Flux valuesFrom from the
-#    spi-init-values ConfigMap the CLI writes; the default here is only used
-#    when the chart is rendered locally (helm template) without the ConfigMap.
+# -- Partitions to bootstrap. Flux injects the CLI-written spi-init-values
+#    ConfigMap; this default only serves a local helm template.
 partitions:
   - opendes
 
-# -- Base name of the default legal tag legal-init creates per partition as
-#    "{partition}-{legalTag}". The CLI pins the same value into the
-#    spi-init-values ConfigMap (templates.LEGAL_TAG_BASE) so `spi info` reports
-#    the tag consumers should use; keep the two defaults identical.
+# -- Base name of the default legal tag, created per partition as
+#    "{partition}-{legalTag}". Must match templates.LEGAL_TAG_BASE in the CLI.
 legalTag: demo-legaltag
 
-# -- Component toggles. The chart is instantiated twice: the gating
-#    osdu-spi-init HelmRelease (schema-load waits on it) renders only the
-#    core Jobs (coreEnabled, legalEnabled: false), while the non-gating
-#    osdu-spi-legal HelmRelease renders only the legal Jobs (coreEnabled:
-#    false), so a legal failure never blocks platform readiness. Both default
-#    on so `helm template` and the render tests see every manifest.
+# -- Component toggles. The osdu-spi-init release renders only the core
+#    Jobs and osdu-spi-legal only the legal Jobs; both default on so helm
+#    template and the render tests see every manifest.
 coreEnabled: true
 legalEnabled: true
 
-# -- Azure Entra tenant ID the Workload Identity SA is federated against. The
-#    MSAL exchange needs this to build the authority URL. Injected at runtime
-#    by the AKS Workload Identity webhook as AZURE_TENANT_ID, so we pull it
-#    from the environment rather than from values.
-# -- Namespace where the Jobs run. The workload-identity-sa already exists
-#    here (created by the CLI during bootstrap).
+# -- Namespace where the Jobs run; the CLI bootstrap creates
+#    workload-identity-sa here.
 namespace: osdu
 
-# -- Base image for both Jobs. python:3.12-slim with an initContainer that
-#    pip-installs msal into a shared emptyDir keeps the image surface small
-#    and avoids coupling to the schema-load image tag. Cold-start penalty
-#    (~15 s) is acceptable for one-shot bootstrap Jobs that run at most once
-#    per environment.
+# -- Base image for the Jobs. An initContainer pip-installs msal into a
+#    shared emptyDir, which avoids coupling to the schema-load image tag.
 image:
   repository: python
   tag: "3.12-slim"
   pullPolicy: IfNotPresent
 
-# -- Service account used by every Job pod; the AKS Workload Identity webhook
-#    injects AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_FEDERATED_TOKEN_FILE when
-#    the pod carries the azure.workload.identity/use: "true" label.
+# -- Service account for every Job pod; the Workload Identity webhook injects
+#    the AZURE_* variables when the pod carries azure.workload.identity/use.
 serviceAccountName: workload-identity-sa
 
-# -- Node scheduling: Jobs run on the osdu nodepool alongside the services.
+# -- Jobs run on the osdu nodepool alongside the services.
 nodeSelector:
   spi-pool: osdu
 
@@ -57,8 +43,7 @@ tolerations:
     value: "osdu"
     effect: NoSchedule
 
-# -- Resource requests/limits for the init script container. Same shape for
-#    both partition-init and entitlements-init.
+# -- Resources for the init script container.
 resources:
   requests:
     cpu: 50m
@@ -67,18 +52,12 @@ resources:
     cpu: 500m
     memory: 512Mi
 
-# -- activeDeadlineSeconds for the core Jobs. 10 min is generous for a few
-#    HTTP POSTs once the services are up.
+# -- activeDeadlineSeconds for the core Jobs, a few HTTP POSTs.
 activeDeadlineSeconds: 600
 
-# -- activeDeadlineSeconds for the legal Jobs, which carry their own budget:
-#    init_legal.py's worst case is 3300 s (420 poll attempts costing a 2 s
-#    delay plus a 5 s socket timeout each, then 360 s of authenticated calls),
-#    so the shared 600 s deadline would kill the pod before a typed outcome is
-#    printed. test_legal_init_deadline_covers_its_wait_budget recomputes that
-#    figure from the script's own constants rather than trusting this number.
+# -- activeDeadlineSeconds for the legal Jobs. init_legal.py's worst case is
+#    3300 s; test_legal_init_deadline_covers_its_wait_budget recomputes it.
 legalActiveDeadlineSeconds: 3600
 
-# -- backoffLimit: two retries are enough; the init scripts handle 409
-#    (already-exists) as success, so a failure here is a real error.
+# -- The scripts treat 409 as success, so a retried failure is a real error.
 backoffLimit: 2

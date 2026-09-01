@@ -34,7 +34,7 @@ spec:
         azure.workload.identity/client-id: "${EXTERNAL_DNS_CLIENT_ID}"
     podLabels:
       azure.workload.identity/use: "true"
-    # AKS Automatic Safeguards compliance
+    # AKS Deployment Safeguards compliance
     containerSecurityContext:
       runAsNonRoot: true
       runAsUser: 1001
