@@ -17,7 +17,7 @@
 A pin points one service at a container image other than its canonical:
 either the image built by an OSDU GitLab merge-request pipeline, resolved
 from the MR's source branch at its head commit, or a fork-built GHCR image
-identified by manifest digest (ADR-031). Pins live in the lock itself: the
+identified by manifest digest. Pins live in the lock itself: the
 service's data keys are overwritten and provenance (origin, canonical
 image, owning workflow run, timestamps) is recorded in one JSON
 annotation, so `spi reconcile --refresh-images` and `spi up` can re-render
@@ -509,7 +509,7 @@ def reconcile_consumers(services: list[str]) -> None:
 
 
 def _refuse_unless_deployable() -> None:
-    """Enforce the ADR-030 deployable rule on pin writes, fail-closed.
+    """Enforce the deployable rule on pin writes, fail-closed.
 
     Refuses unless every Kustomization is Ready, the deploy record is
     present, and ``maintenance`` is unset: the same `deployable` rule
@@ -683,7 +683,7 @@ def _captured_canonical(
 
 
 def _abort_if_maintenance_intervened(mutation: _LockMutation, service: str) -> None:
-    """Roll this call's lock write back if a lifecycle run intervened (ADR-029)."""
+    """Roll this call's lock write back if a lifecycle run intervened."""
 
     blocker = _post_write_maintenance_check()
     if not blocker:
@@ -850,7 +850,7 @@ def pin_service_image(
     source_sha: str = "",
     source_run_url: str = "",
 ) -> ServicePin:
-    """Pin a service to a fork-built GHCR image by manifest digest (ADR-031).
+    """Pin a service to a fork-built GHCR image by manifest digest.
 
     Unlike an MR pin the target is exactly the named service: a fork build
     ships one image, so a schema pin never pins the loader, and a loader
@@ -991,7 +991,7 @@ def pin_service_image(
 def reset_service(service: str, if_run: str = "") -> ResetResult:
     """Release a service pin, restoring its canonical image when one was recorded.
 
-    With ``if_run`` the reset is ownership-conditional (ADR-031): it acts
+    With ``if_run`` the reset is ownership-conditional: it acts
     only while the live pin still records that owning run, so a crashed
     run's always-run restore job cannot clobber a newer sibling's pin. A
     refusal is a typed ``ResetRefusedError`` and mutates nothing. Run-owned
@@ -1098,7 +1098,7 @@ def _kubectl_read_json(args: list[str], describe: str) -> dict | None:
 
 def _collision_note(service: str, digest: str) -> str:
     """Name the pin now holding the lock when it is not ours: the
-    cross-pipeline guard's fail-fast diagnostic (ADR-031)."""
+    cross-pipeline guard's fail-fast diagnostic."""
 
     try:
         pin = live_pins().get(service)
@@ -1310,7 +1310,7 @@ def _pin_age_exceeds_threshold(pin: ServicePin, now: datetime) -> bool:
 
 
 def sweep_stale_ephemeral_pins() -> SweepResult:
-    """Sweep abandoned ephemeral pins: ADR-031's weekday backstop.
+    """Sweep abandoned ephemeral pins, the weekday backstop.
 
     A pin is stale when its owning workflow run reports a terminal state or,
     when that state is unreachable, when its age exceeds

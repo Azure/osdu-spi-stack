@@ -384,7 +384,7 @@ def parse_image_digest_ref(ref: str) -> tuple[str, str]:
     """Split an image reference into (repository, digest), digest required.
 
     Tags are rejected outright: a fork deploy's identity is the manifest
-    digest (ADR-031), and GHCR's ``sha-*`` tags are pruned after 30 days, so
+    digest, and GHCR's ``sha-*`` tags are pruned after 30 days, so
     a tag reference would go stale under a live pin.
     """
 
@@ -464,7 +464,7 @@ def ghcr_index_child_digests(repository: str, digest: str) -> tuple[str, ...]:
 
 
 def require_ghcr_repository(repository: str) -> None:
-    """Enforce the ADR-031 GHCR owner allow-list on a pin's repository."""
+    """Enforce the GHCR owner allow-list on a pin's repository."""
 
     parts = repository.lower().split("/")
     if len(parts) < 3 or parts[0] != GHCR_HOST or parts[1] not in GHCR_ALLOWED_OWNERS:
@@ -526,7 +526,7 @@ def image_lock_missing_schema_load(lock_data: Mapping[str, str]) -> bool:
 
     A lock missing the composed ref counts as missing even when it already
     carries repository/tag: the schema-load Job substitutes the single
-    ``_IMAGE_REF`` key (ADR-013), so a lock recorded before that key existed
+    ``_IMAGE_REF`` key, so a lock recorded before that key existed
     still needs backfilling.
     """
 
@@ -551,7 +551,7 @@ def schema_load_lock_patch(
     """Return the loader entries missing from an existing image lock.
 
     Locks generated before schema-load joined the live lock carry a schema pin
-    but no loader keys, and the Job requires them (ADR-013). The loader is
+    but no loader keys, and the Job requires them. The loader is
     resolved from the schema tag the lock already records, so the backfill
     keeps the loader on the running service's commit instead of jumping to the
     newest master build.

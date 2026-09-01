@@ -116,7 +116,7 @@ def _create_osdu_config(config: Config, infra_outputs: dict) -> None:
 
 def _create_istio_auth(config: Config, infra_outputs: dict) -> None:
     """Apply RequestAuthentication + PeerAuthentication + EnvoyFilter that
-    project the JWT payload into x-app-id / x-user-id headers (ADR-016).
+    project the JWT payload into x-app-id / x-user-id headers.
     Required because the Azure-provider OSDU service images read identity
     from those headers; without these resources every authenticated call is
     rejected with app-id= empty.

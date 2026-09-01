@@ -339,7 +339,7 @@ class TestReconcileRefreshesClusterConfig:
 
 class TestSchemaLoadImageLockBackfill:
     """The schema-load Job substitutes its image from `osdu-image-lock` with no
-    static fallback (ADR-013). A cluster whose lock predates schema-load's
+    static fallback. A cluster whose lock predates schema-load's
     inclusion would render an unresolved image, so `spi reconcile` backfills
     the loader entries before Flux applies the manifest.
     """

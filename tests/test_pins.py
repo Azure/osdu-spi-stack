@@ -682,8 +682,8 @@ class TestPinServicePostWriteRecheck:
     def test_restoring_a_legacy_pin_keeps_its_live_digest(self, monkeypatch):
         """A pin encoded before `created_at` and `digest` joined the schema
         decodes with those fields empty while the lock still carries them.
-        Re-deriving the entry from the annotation would blank the digest keys
-        ADR-017 makes load-bearing, so the rollback replays the lock data."""
+        Re-deriving the entry from the annotation would blank the load-bearing
+        digest keys, so the rollback replays the lock data."""
         legacy = _pin(mr="7", repository="repo/storage-fix-earlier", tag="e" * 40)
         assert (legacy.created_at, legacy.digest) == ("", "")
         live = _pinned_data("storage", legacy)
@@ -2439,7 +2439,7 @@ class TestPinCodecProvenance:
         assert decoded["storage"].origin == "github"
 
     def test_annotation_without_provenance_reads_as_operator_pin(self):
-        """A pin encoded before the ADR-031 fields existed decodes with them
+        """A pin encoded before the provenance fields existed decodes with them
         empty, which every consumer reads as a non-ephemeral operator pin."""
         fields = dict(
             mr="847",

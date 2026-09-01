@@ -74,7 +74,7 @@ class KustomizationState:
 class KustomizationReadiness:
     """Flux convergence, computed once so nothing can disagree with it.
 
-    `spi status` and the ADR-030/031 pin guard both derive their Ready
+    `spi status` and the pin guard both derive their Ready
     answer from this, rather than each re-reading Kustomizations.
     """
 
@@ -224,7 +224,7 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
     """Read Flux Kustomizations and derive Ready convergence and its blocker.
 
     The single predicate for Flux readiness: `collect_status` and the pin
-    guard in `pins.py` (ADR-030/031) both call this rather than each
+    guard in `pins.py` both call this rather than each
     re-deriving `ready` from `kubectl get kustomizations`.
     """
 

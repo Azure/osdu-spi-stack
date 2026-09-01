@@ -129,7 +129,7 @@ def _read_legal_tag_base() -> str:
 def _legal_tag_seeded(partition: str) -> bool:
     """Whether legal-init is observed to have created this partition's tag.
 
-    Legal seeding is deliberately non-gating (ADR-030), so an environment can
+    Legal seeding is deliberately non-gating, so an environment can
     be ready and deployable with the tag pending, failed, or never attempted;
     only the Job's own success proves it exists.
     """

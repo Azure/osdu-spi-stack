@@ -383,7 +383,7 @@ class TestVerifyReleaseAsset:
 class TestRevisionGatedConvergence:
     """An upgrade re-points the source while every Kustomization is still
     Ready for the revision being replaced, so a bare Ready wait can pass
-    before any of the new revision is applied (ADR-029)."""
+    before any of the new revision is applied."""
 
     def test_wait_script_supports_an_expected_revision(self):
         script = (REPO_ROOT / "scripts" / "wait_for_flux_ready.sh").read_text(encoding="utf-8")
