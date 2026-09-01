@@ -20,7 +20,7 @@ This split is the decision in [ADR-010](../decisions/010-keyvault-secret-managem
 
 There are no Class 1 secrets. The OSDU services authenticate to Cosmos, Service Bus, Storage, and Key Vault using AAD bearer tokens minted via Workload Identity (see [workload-identity](workload-identity.md)). Tokens are short-lived, refreshed automatically by the Azure SDK, and never written to disk.
 
-The one carve-out is `{partition}-sb-connection` for indexer-queue. Its community `indexer-queue-master` image expects a real Service Bus SAS connection string because the current `core-lib-azure` `SubscriptionClientFactoryImpl` does not honor the Workload Identity flag. [ADR-023](../decisions/023-entra-only-data-plane.md) disables local (key/SAS) auth on every Cosmos and Service Bus account, so `{partition}-sb-connection` (and the other Cosmos key/connection secrets) now hold the literal `"DISABLED"`; indexer-queue therefore cannot subscribe until a Workload-Identity-capable image lands via the custom-image supply chain, tracked separately. See [ADR-005](../decisions/005-workload-identity.md) Consequences for the carve-out history.
+The one carve-out is `{partition}-sb-connection` for indexer-queue. Its community `indexer-queue-master` image expects a real Service Bus SAS connection string because the current `core-lib-azure` `SubscriptionClientFactoryImpl` does not honor the Workload Identity flag. [ADR-023](../decisions/023-entra-only-data-plane.md) disables local (key/SAS) auth on every Cosmos and Service Bus account, so `{partition}-sb-connection` (and the other Cosmos key/connection secrets) now hold the literal `"DISABLED"`; indexer-queue therefore cannot subscribe until a Workload-Identity-capable image lands via the custom-image supply chain, tracked separately. See [ADR-005](../decisions/005-workload-identity.md) Consequences.
 
 ## Class 2: Key Vault secrets
 
@@ -49,13 +49,13 @@ A small set of KV secrets covers the in-cluster middleware. The CLI knows all of
 | `{p}-elastic-endpoint`, `{p}-elastic-username`, `{p}-elastic-password` | Fixed ES service DNS + generated `elastic_password` |
 | `redis-hostname`, `redis-password` | Fixed Redis service DNS + generated `redis_password` |
 
-`src/spi/deploy.py` (`_write_keyvault_bootstrap_secrets`) writes these with `az keyvault secret set` during Phase 6 of `spi up`. Because every value is already known from the seed, there is no wait for middleware to reach `Ready`.
+`src/spi/deploy.py` (`_write_keyvault_bootstrap_secrets`) writes these with `az keyvault secret set` at Phase 1 step 11 of `spi up` ([deployment-lifecycle](deployment-lifecycle.md)). Because every value is already known from the seed, there is no wait for middleware to reach `Ready`.
 
 Re-running `spi up` against a live cluster re-runs these writes idempotently; KV is fine with rewrites of the same value.
 
 ### Reader: the services
 
-Services read their KV secrets via the Azure SDK using Workload Identity. The OSDU `partition-azure` provider auto-prefixes the partition id onto every `sensitive: true` value at read time, so the partition record's `partition.json` template holds **bare** suffixes (`cosmos-endpoint`, not `opendes-cosmos-endpoint`). The ADR-015 amendment that originally got this wrong is now folded into the ADR body; the chart template uses bare values.
+Services read their KV secrets via the Azure SDK using Workload Identity. The OSDU `partition-azure` provider auto-prefixes the partition id onto every `sensitive: true` value at read time, so the partition record's `partition.json` template holds **bare** suffixes (`cosmos-endpoint`, not `opendes-cosmos-endpoint`). The chart template (`software/charts/osdu-spi-init/templates/partition-record.yaml`) holds the bare values.
 
 ## Class 3: In-cluster middleware secrets
 
@@ -121,8 +121,6 @@ $ kubectl exec -n osdu deploy/partition -- \
 # What the service actually resolves at runtime (after partition-azure prefixes):
 # → KV secret name "opendes-cosmos-endpoint", value resolved via Workload Identity.
 ```
-
-The fact that the partition record value is the bare suffix and the KV secret name is the prefixed form is the bare-vs-prefixed nuance from ADR-015.
 
 ## Related ADRs
 

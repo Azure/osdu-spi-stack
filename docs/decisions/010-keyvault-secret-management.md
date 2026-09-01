@@ -17,12 +17,12 @@ Three stores, each with a single job:
 | Class | Store | Access path |
 |---|---|---|
 | Azure PaaS credentials | Entra ID tokens | Workload Identity (ADR-005); no stored material |
-| PaaS metadata and secret values | Azure Key Vault | SDK reads under Workload Identity (or CSI) |
+| PaaS metadata and secret values | Azure Key Vault | SDK reads under Workload Identity |
 | In-cluster middleware passwords | Kubernetes Secrets in `platform`/`osdu` | CLI generates once per environment; CA material mirrored via trust-manager (ADR-011) |
 
 Non-sensitive endpoint configuration (partition name, tenant ID, cluster ingress hostname, Redis and Elasticsearch FQDNs) lives in the `osdu-config` ConfigMap in the `osdu` namespace and is mounted into services via `envFrom`.
 
-Key Vault secret values are declared **in Bicep** (`infra/main.bicep`) where the source is Azure: endpoints, resource identifiers, tenant and subscription. Local auth is disabled on Cosmos and Service Bus (ADR-023), so per-partition key and connection secrets carry the literal `DISABLED` and no `listKeys()` call runs at any scope. The CLI writes only the handful of **runtime** secrets whose values originate in-cluster and are not available at infra-deploy time:
+Key Vault secret values are declared in Bicep (`infra/main.bicep`) where the source is Azure: endpoints, resource identifiers, tenant and subscription. Local auth is disabled on Cosmos and Service Bus (ADR-023), so per-partition key and connection secrets carry the literal `DISABLED` and no `listKeys()` call runs at any scope. The CLI writes only the handful of runtime secrets whose values originate in-cluster and are not available at infra-deploy time:
 
 - Per-partition Elasticsearch endpoint, username, password (ECK-issued credentials).
 - Redis hostname and password (Bitnami-chart-issued).
@@ -32,7 +32,7 @@ These runtime writes happen once infra is up and the CLI's local seed is generat
 
 Rejected:
 - **Kubernetes Secrets for PaaS credentials.** Visible to anyone with cluster read access; defeats the point of Workload Identity.
-- **CSI mount for every secret.** CSI is available (AKS Automatic provides the driver) and is used for a few values, but SDK reads under Workload Identity keep the secret path in code, which matches what OSDU's upstream Azure provider modules already do.
+- **CSI mount for every secret.** CSI is available (AKS Automatic provides the driver) and avoids secret-handling code in services, but SDK reads under Workload Identity keep the secret path in code, which matches what OSDU's upstream Azure provider modules already do.
 - **Write every Key Vault secret post-deploy from Python.** Loses Bicep's deploy-time guarantees (correct keys, correct access policies) for values that are knowable at infra time.
 
 ## Consequences
@@ -40,4 +40,4 @@ Rejected:
 - Azure PaaS credentials never land in Kubernetes. A compromised cluster leaks in-cluster secrets but not Azure data.
 - Key Vault access is audited; every secret read is a log entry.
 - The in-cluster secret surface is small (three middleware passwords) and is regenerated deterministically per environment.
-- The CLI's post-handoff responsibilities are narrow and bounded: write a small set of runtime secrets, exit. No wait for middleware readiness, no long polling tail.
+- The CLI's post-handoff responsibilities are narrow: write a small set of runtime secrets, exit. No wait for middleware readiness, no long polling tail.

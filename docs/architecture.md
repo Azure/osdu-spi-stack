@@ -13,13 +13,13 @@ SPI Stack deploys the OSDU platform on Azure with a hybrid provisioning model: B
 
 SPI Stack has three control planes working together:
 
-1. **The `spi` CLI** bootstraps the environment. It creates the resource group, submits Bicep deployments for the cluster (`infra/aks.bicep`) and the rest of the Azure PaaS surface (`infra/main.bicep`), bootstraps the cluster (namespaces, StorageClasses, ServiceAccount, `osdu-config` ConfigMap), submits a third Bicep deployment (`infra/flux.bicep`) that activates the AKS Flux extension, then writes a small set of runtime Key Vault secrets once in-cluster middleware is Ready.
+1. **The `spi` CLI** bootstraps the environment. It creates the resource group, submits Bicep deployments for the cluster (`infra/aks.bicep`) and the rest of the Azure PaaS surface (`infra/main.bicep`), bootstraps the cluster (namespaces, StorageClasses, ServiceAccount, `osdu-config` ConfigMap), submits a third Bicep deployment (`infra/flux.bicep`) that activates the AKS Flux extension, then writes a small set of runtime Key Vault secrets from the generated middleware seed.
 2. **Flux CD** manages desired-state reconciliation. It watches this Git repository and the OCI chart registry, and continuously converges the cluster to match.
 3. **Kubernetes operators** (ECK, CNPG, cert-manager, trust-manager) manage the lifecycle of individual middleware systems beneath the Flux layer.
 
 The CLI does the minimum work needed to get Azure resources provisioned and Flux running. After that, Flux owns everything inside the cluster.
 
-> **Dev/test posture.** The CLI and defaults are tuned for Azure dev/test environments: generated shared credentials for in-cluster middleware, Let's Encrypt or self-signed certificates depending on ingress mode, and optional live credential display. This makes the stack easy to spin up and inspect, but it should not be confused with a hardened production operating model.
+> **Dev/test posture.** The CLI and defaults are tuned for Azure dev/test environments: generated shared credentials for in-cluster middleware, Let's Encrypt or self-signed certificates depending on ingress mode, and optional live credential display. The stack is quick to spin up and inspect; it is not a hardened production operating model.
 
 ## System Architecture
 
@@ -35,7 +35,7 @@ This project uses a **GitOps + bootstrap** model (see [ADR-008](decisions/008-bi
    - Provision the AKS cluster and all Azure PaaS resources via Bicep.
    - Bootstrap the cluster with namespaces, StorageClasses, ServiceAccount, and the `osdu-config` ConfigMap.
    - Activate the AKS Flux extension (also declared in Bicep).
-   - Once middleware is Ready, write runtime Key Vault secrets that depend on in-cluster seed passwords.
+   - Write runtime Key Vault secrets from the generated seed passwords, without waiting for middleware.
 2. Flux then owns steady-state reconciliation for everything else.
 
 This keeps the in-cluster graph clean, while accepting that Azure infrastructure must land imperatively before Flux can start.
@@ -51,7 +51,7 @@ The deployment pipeline has two phases: the CLI's Bicep-driven bootstrap (top) a
 | Phase | Mechanism | What |
 |-------|-----------|------|
 | 1. Resource Group | `az group create` | Resource group for the environment |
-| 2. AKS + managed Istio | Bicep (`infra/aks.bicep`, AVM `container-service/managed-cluster`) | AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio |
+| 2. AKS + managed Istio | Bicep (`infra/aks.bicep`) | AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio |
 | 3. Azure PaaS | Bicep (`infra/main.bicep`) | Managed Identity + federated credentials, Key Vault + static metadata secrets, ACR, Cosmos DB Gremlin + per-partition SQL, per-partition Service Bus (topics + subscriptions), common + per-partition Storage, RBAC role assignments |
 | 4. K8s bootstrap | `kubectl apply` | Namespaces, StorageClasses, `workload-identity-sa`, `osdu-config` ConfigMap, `spi-ingress-config` ConfigMap |
 | 5. Flux activation | Bicep (`infra/flux.bicep`) | AKS Flux extension + `fluxConfigurations` with two Kustomizations (stack profile, ingress mode) |
@@ -68,10 +68,10 @@ Three application namespaces:
 | Namespace | Purpose | Istio injection | Contents |
 |-----------|---------|-----------------|----------|
 | **foundation** | Cluster operators | No | ECK, CNPG, cert-manager, trust-manager |
-| **platform** | Middleware and Gateway | No | Elasticsearch, Redis, PostgreSQL (Airflow), Airflow, Istio Gateway |
+| **platform** | Middleware and TLS certificates | No | Elasticsearch, Redis, PostgreSQL (Airflow), Airflow, cert-manager Certificates |
 | **osdu** | OSDU services | Yes | OSDU service deployments, schema-load Job, `osdu-config`, `workload-identity-sa` |
 
-The `flux-system` namespace is managed by the AKS Flux extension and hosts the Flux controllers. SPI-owned GitOps objects (the `GitRepository`, Kustomizations, and bootstrap ConfigMaps/Secrets) live in the dedicated `osdu-flux` namespace (see [ADR-019](decisions/019-osdu-flux-gitops-namespace.md)). `aks-istio-system` and `aks-istio-ingress` are owned by AKS. See [ADR-006](decisions/006-three-namespace-model.md).
+The `flux-system` namespace is managed by the AKS Flux extension and hosts the Flux controllers. SPI-owned GitOps objects (the `GitRepository`, Kustomizations, and bootstrap ConfigMaps/Secrets) live in the dedicated `osdu-flux` namespace (see [ADR-019](decisions/019-osdu-flux-gitops-namespace.md)). `aks-istio-system` and `aks-istio-ingress` are owned by AKS; the `spi-gateway` Gateway lives in `aks-istio-ingress`, bound to the managed ingress ([ADR-026](decisions/026-bind-managed-istio-ingress.md)). See [ADR-006](decisions/006-three-namespace-model.md).
 
 ### Layered dependency model
 
@@ -81,7 +81,7 @@ The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines seven
 |-------|------|------------|
 | 0a | Namespaces | none |
 | 0b | Karpenter NodePools | 0a |
-| 1 | Operators (ECK, CNPG), cert-manager, trust-manager, Gateway | 0a (trust-manager on cert-manager) |
+| 1 | Operators (ECK, CNPG), cert-manager, trust-manager, shared Helm sources | 0a (trust-manager on cert-manager) |
 | 2 | Middleware (Elasticsearch, Redis, PostgreSQL) | 1 + 0b |
 | 3 | Airflow | 2 (PostgreSQL) |
 | 4a | OSDU configuration placeholder | 0a |
@@ -89,9 +89,10 @@ The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines seven
 | 5 | Core OSDU services | 4b + 0b |
 | 5a | Partition + entitlements bootstrap (per-partition Jobs) | 5 |
 | 5b | Schema load (one-shot Job) | 5a |
+| 5c | Legal tag seeding (per-partition Jobs, non-gating) | 5a |
 | 6 | Reference services | 5, 5b |
 
-The ingress profile (`software/stacks/osdu/ingress/<mode>/`) adds Kustomizations at Layer 1 (cert issuers, ExternalDNS in `dns` mode, TLS overlays) and Layer 6 (HTTPRoutes, split into `spi-middleware-routes` and `spi-osdu-routes`). See [ADR-007](decisions/007-layered-kustomization-ordering.md) and [ADR-012](decisions/012-ingress-profiles.md).
+The ingress profile (`software/stacks/osdu/ingress/<mode>/`) adds Kustomizations at Layer 1 (cert issuers, ExternalDNS in `dns` mode, and the `spi-gateway-tls` overlay that owns the Gateway) and Layer 6 (HTTPRoutes, split into `spi-middleware-routes` and `spi-osdu-routes`). See [ADR-007](decisions/007-layered-kustomization-ordering.md) and [ADR-012](decisions/012-ingress-profiles.md).
 
 ### Stack profiles
 
@@ -198,11 +199,11 @@ Client --> Istio Gateway --> OSDU Service --+--> Cosmos DB (read/write records)
 
 ## Identity and Access
 
-A single User-Assigned Managed Identity (`osdu-identity`) is shared by all OSDU services. A federated credential binds it to the `workload-identity-sa` ServiceAccount in the `osdu` namespace. Pods with the `azure.workload.identity/use: "true"` label get projected tokens and exchange them for Entra ID access tokens at runtime.
+A single User-Assigned Managed Identity (`<cluster>-osdu-identity`) is shared by all OSDU services. A federated credential binds it to the `workload-identity-sa` ServiceAccount in the `osdu` namespace. Pods with the `azure.workload.identity/use: "true"` label get projected tokens and exchange them for Entra ID access tokens at runtime.
 
 | Component | Detail |
 |-----------|--------|
-| Identity | User-Assigned Managed Identity (`osdu-identity`) |
+| Identity | User-Assigned Managed Identity (`<cluster>-osdu-identity`) |
 | ServiceAccount | `workload-identity-sa` in `osdu` |
 | Token path | `/var/run/secrets/azure/tokens/token` |
 | Exchange | Entra ID token exchange via AKS OIDC issuer |
@@ -213,12 +214,13 @@ A single User-Assigned Managed Identity (`osdu-identity`) is shared by all OSDU 
 |------|-------|---------|
 | Key Vault Secrets User | Vault | Read secrets |
 | Storage Blob Data Contributor | Common + per-partition accounts | Blob operations |
-| Storage Table Data Contributor | Common + per-partition accounts | Table operations |
+| Storage Table Data Contributor | Common account | Table operations |
 | Service Bus Data Sender | Per-partition namespace | Publish events |
 | Service Bus Data Receiver | Per-partition namespace | Consume events |
+| Cosmos DB Built-in Data Contributor | Per-partition SQL account, Gremlin account | Cosmos data-plane RBAC |
 | AcrPull | ACR | Pull container images |
 
-A second UAMI (`external-dns-identity`, scoped `DNS Zone Contributor` on the zone's resource group) is provisioned conditionally when the ingress mode is `dns`. See [ADR-005](decisions/005-workload-identity.md) and [ADR-012](decisions/012-ingress-profiles.md).
+A second UAMI (`<cluster>-external-dns`, scoped `DNS Zone Contributor` on the zone's resource group) is provisioned conditionally when the ingress mode is `dns`. See [ADR-005](decisions/005-workload-identity.md) and [ADR-012](decisions/012-ingress-profiles.md).
 
 ## Reconciliation Lifecycle
 
@@ -230,7 +232,7 @@ Changes to this repository (middleware manifests, profile definitions, service Y
 
 ### Service update loop
 
-When an OSDU service merges to master, its GitLab CI pipeline builds a new container image and the community registry exposes a new immutable SHA tag. The first `spi up` resolves the current master tags and writes them to `osdu-flux/osdu-image-lock`; a re-run preserves an existing lock unless `--refresh-images` re-resolves it ([ADR-017](decisions/017-osdu-image-lock.md)). An explicit `--no-refresh-images` fails closed if a core deployment has no lock yet. The service Kustomizations consume that ConfigMap through Flux post-build substitution. This keeps the deployed image set explicit while avoiding stale, pruned tags in long-lived test workflows.
+When an OSDU service merges to its main branch, CI builds a new container image and the canonical registry exposes a new immutable tag: community GitLab by default, or the fork's GHCR `main` line once the service is onboarded ([ADR-033](decisions/033-canonical-image-source-follows-onboarding.md)). The first `spi up` resolves the current tags and writes them to `osdu-flux/osdu-image-lock`; a re-run preserves an existing lock unless `--refresh-images` re-resolves it ([ADR-017](decisions/017-osdu-image-lock.md)). An explicit `--no-refresh-images` fails closed if a core deployment has no lock yet. The service Kustomizations consume that ConfigMap through Flux post-build substitution. This keeps the deployed image set explicit while avoiding stale, pruned tags in long-lived test workflows.
 
 Run `spi reconcile --refresh-images` to resolve a fresh image lock for an existing cluster, then reconcile the service Kustomizations and schema-load before reference services. Schema-load uses the same selected SHA as schema-service, with the loader repository checked for that exact tag. A plain `spi reconcile` leaves the pins alone, except that it backfills the schema-load entries into a lock generated before the loader joined it.
 
@@ -251,14 +253,15 @@ Created by the CLI during K8s bootstrap and mounted into every OSDU service via 
 | Key | Source |
 |-----|--------|
 | `DOMAIN` | Ingress hostname or IP (mode-dependent) |
-| `DATA_PARTITION` | Primary partition name |
+| `PRIMARY_PARTITION` | Primary partition name |
 | `AZURE_TENANT_ID` | Entra ID tenant |
 | `AAD_CLIENT_ID` | Managed identity client ID |
-| `KEYVAULT_URI` | Key Vault URI |
-| `COSMOSDB_ENDPOINT` | Cosmos DB SQL endpoint |
-| `STORAGE_ACCOUNT_NAME` | Common Storage account |
-| `SERVICEBUS_NAMESPACE` | Service Bus namespace |
-| `REDIS_HOSTNAME` | In-cluster Redis FQDN |
+| `KEYVAULT_URI`, `KEYVAULT_URL`, `KEYVAULT_NAME` | Key Vault URI and name |
+| `PRIMARY_COSMOSDB_ENDPOINT`, `COSMOSDB_DATABASE` | Primary partition's Cosmos DB SQL endpoint and database (`osdu-db`) |
+| `PRIMARY_STORAGE_ACCOUNT_NAME` | Primary partition's Storage account |
+| `PRIMARY_SERVICEBUS_NAMESPACE` | Primary partition's Service Bus namespace |
+| `REDIS_PORT`, `SERVER_PORT` | Fixed ports (6379, 8080) |
+| `APPINSIGHTS_KEY` | Application Insights key, empty when not provisioned |
 | `ELASTICSEARCH_HOST` | In-cluster Elasticsearch FQDN |
 
 ### Secret model
@@ -285,14 +288,14 @@ Redis and Elasticsearch TLS CAs live as Secrets in `platform`. trust-manager (in
 | Cosmos DB Gremlin | Entitlements graph | 4000 RU/s autoscale |
 | Key Vault | Secret management | Standard, RBAC-enabled |
 | ACR | Container images | Basic SKU |
-| Managed Identity (`osdu-identity`) | Workload Identity | Single, shared |
-| Managed Identity (`external-dns-identity`) | DNS Zone Contributor | Conditional on `dns` ingress mode |
+| Managed Identity (`<cluster>-osdu-identity`) | Workload Identity | Single, shared |
+| Managed Identity (`<cluster>-external-dns`) | DNS Zone Contributor | Conditional on `dns` ingress mode |
 
 ### Per partition
 
 | Resource | Purpose | Sizing |
 |----------|---------|--------|
-| Cosmos DB SQL | Operational data | 4000 RU/s autoscale, 24 containers |
+| Cosmos DB SQL | Operational data | 4000 RU/s autoscale; `osdu-db` (24 containers) and `osdu-system-db` (5 containers) |
 | Service Bus | Async messaging | Standard SKU, 14 topics, 14 subscriptions |
 | Storage account | Blob and table storage | Standard LRS, 5 containers |
 

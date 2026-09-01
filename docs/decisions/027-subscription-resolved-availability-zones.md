@@ -35,20 +35,22 @@ capacity remains ARM-validated.
 
 Three states stop the deployment preflight, each naming the size and region:
 the size is not offered in the region, no zone survives the restrictions, or a
-restriction reduces the set below what is published (AKS Automatic refuses a
-reduced list). When the catalogue read itself fails (throttling, policy), the
+restriction reduces the set below what is published. When the catalogue read itself fails (throttling, policy), the
 CLI warns and leaves the template default in place rather than blocking the
-deployment on an unverifiable answer; ARM then adjudicates as it did before
-this record.
+deployment on an unverifiable answer; ARM then adjudicates.
 
 The template keeps its parameter and default, so a direct `az deployment`
 without the CLI still works and an explicit pin remains possible.
 
 Rejected: requiring operators to override the parameter per environment; the
 value is discoverable, and the cost of guessing wrong is a failed deployment in
-a subscription they may be using for the first time. Rejected: a per-region
+a subscription they may be using for the first time.
+
+Rejected: a per-region
 zone table in the repository; it encodes one subscription's entitlements into a
-shared template and goes stale silently. Rejected: failing hard when the
+shared template and goes stale silently.
+
+Rejected: failing hard when the
 catalogue read fails; that converts a throttled read into a blocked deployment
 whose zones were, in every observed subscription, the default anyway.
 

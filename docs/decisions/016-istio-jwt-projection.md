@@ -8,7 +8,7 @@ The Azure-provider OSDU service images ship an in-process Spring filter chain th
 
 Three Istio resources satisfy the contract, applied imperatively from the CLI in the same Phase 4 step that writes `osdu-config`; the CLI already holds the tenant id and the OSDU UAMI client id, which keeps the substitution local:
 
-- `RequestAuthentication` accepting the AAD v1 and v2 issuers and audiences `{client_id}` and `https://management.azure.com[/]`, with `outputPayloadToHeader: x-payload` and `forwardOriginalToken: true`.
+- `RequestAuthentication` `spi-osdu-jwt-authn` accepting the AAD v1 and v2 issuers and audiences `{client_id}` and `https://management.azure.com[/]`, with `outputPayloadToHeader: x-payload` and `forwardOriginalToken: true`.
 - `EnvoyFilter` `spi-osdu-identity-filter` in `osdu`, on `SIDECAR_INBOUND`: its Lua reads `jwt_authn` dynamic metadata and writes `x-app-id` / `x-user-id`; the `aud == https://management.azure.com/` branch substitutes the OSDU UAMI client id, matching the audience Workload Identity tokens present.
 - `PeerAuthentication` `spi-osdu-mtls` mode `PERMISSIVE` in `osdu`, defensive against managed-mesh defaults that could break the init Jobs.
 

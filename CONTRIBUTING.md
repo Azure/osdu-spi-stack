@@ -42,9 +42,8 @@ uv run pre-commit install
 ```
 
 The hooks run on every `git commit` and check the staged Python files against
-ruff (lint + format with auto-fix), `ty` (type check), and pytest. Same scope
-as the corresponding CI jobs, so anything pre-commit accepts will also pass
-CI.
+ruff (lint + format with auto-fix), `ty` (type check), and pytest, the same
+scope as the `lint`, `typecheck`, and `test` CI jobs.
 
 To run all hooks against the whole tree without committing:
 
@@ -125,7 +124,8 @@ Before opening a pull request:
 
 1. **Run the pre-commit hooks** against the whole tree:
    `uv run pre-commit run --all-files`. Covers ruff lint, ruff format, `ty`
-   type check, and pytest. Same checks the CI validate jobs run.
+   type check, and pytest, matching the `lint`, `typecheck`, and `test` CI
+   jobs. Manifest and Bicep what-if checks run only in CI.
 2. **Verify the CLI works**: `uv run spi --help`
 3. **Run prerequisite checks**: `uv run spi check`
 4. **Test locally** if possible: deploy with `uv run spi up --env dev1` and

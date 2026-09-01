@@ -43,6 +43,7 @@ L1  spi-cert-manager          dependsOn: spi-namespaces
     spi-eck-operator          dependsOn: spi-namespaces
     spi-cnpg-operator         dependsOn: spi-namespaces
     spi-helm-sources          dependsOn: spi-namespaces           (ADR-025)
+    spi-gateway               dependsOn: spi-namespaces           (renders nothing; inventory handoff, ADR-025)
 L2  spi-elasticsearch         dependsOn: spi-eck-operator, spi-nodepools
     spi-redis                 dependsOn: spi-cert-manager, spi-nodepools, spi-helm-sources
     spi-postgresql            dependsOn: spi-cnpg-operator, spi-nodepools
@@ -64,7 +65,7 @@ A Kustomization with `wait: true` (every Kustomization in the SPI stack uses thi
 
 Two gotchas worth knowing:
 
-1. **`wait: true` is per-layer slow.** A slow operator delays everything behind it. Per-layer `timeout` is tuned in `stack.yaml` (15 min for Elasticsearch and Airflow, 30 min for the OSDU service layers, 155 min for schema-load, which tracks the Job's `activeDeadlineSeconds` plus headroom). Bumping a timeout is a real change; bump it deliberately, not reflexively.
+1. **`wait: true` is per-layer slow.** A slow operator delays everything behind it. Per-layer `timeout` is tuned in `stack.yaml` (15 min for Elasticsearch, Airflow, and the init Jobs, 30 min for the OSDU service and reference layers, 70 min for the legal bootstrap, 155 min for schema-load, which tracks the Job's `activeDeadlineSeconds` plus headroom). Bumping a timeout is a real change; bump it deliberately, not reflexively.
 2. **Cross-Kustomization dependencies are not transitive.** L5 dependsOn L4b but not L1; if L1 breaks, L5 reports its own gate as unmet (L4b never went Ready), not "L1 broken." Trace the chain upward to find the root.
 
 When debugging a stuck layer:
@@ -155,7 +156,7 @@ and [ADR-029](../decisions/029-environment-lifecycle-and-reset-boundary.md).
 
 ## Worked example: debug a stuck service
 
-Symptom: `spi osdu-services` reports `Ready=False` after the timeout.
+Symptom: `spi-osdu-services` reports `Ready=False` after the timeout.
 
 ```bash
 $ flux get kustomizations -n osdu-flux | grep osdu

@@ -26,8 +26,7 @@ authorization names each identity explicitly.
   `main`, `fork_integration`, and the PR runs the template's ADR-036 gate
   admits. `fork_upstream` is excluded even though ADR-036's event matrix
   runs deploy stages on its pushes: those builds are core-only, without the
-  Azure provider, so they cannot serve in this environment, and the
-  companion template change narrows that matrix to match. Azure role
+  Azure provider, so they cannot serve in this environment. Azure role
   assignments: Azure Kubernetes Service Cluster User Role on the cluster,
   Key Vault Secrets User on the environment vault. The UAMIs live outside
   the environment resource group, in a persistent identity RG, because the

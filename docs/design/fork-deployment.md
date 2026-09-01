@@ -11,9 +11,12 @@ workflow YAML they do not own (the `Azure/osdu-spi` template syncs it to
 them). When a deploy misbehaves, the operator debugging it needs the exact
 sequence, what each step asserts, and which recovery path applies.
 
-**Status.** Target mechanism ahead of the code; this is phases 1 and 4 of the
-roadmap in [environment-lifecycle.md](environment-lifecycle.md). Remove the
-marks as the phases land.
+**Status.** `spi service pin --image --ephemeral`, `verify`, and the
+ownership-checked `reset` (with `--ephemeral --stale-only`) are implemented.
+`spi onboard`, `spi service refresh`, the refresh workflow's backstop step,
+and the fork-side jobs are ahead of the code (phases 1 and 4 of the roadmap
+in [environment-lifecycle.md](environment-lifecycle.md)). Remove the marks as
+they land.
 
 ## The sequence
 
@@ -92,7 +95,8 @@ default empty, which reads as a non-ephemeral operator pin.
 ## Stale-pin recovery
 
 A cancelled run, an expired token, or a lost runner strands a pin the restore
-job never returns. The weekday refresh workflow runs the backstop:
+job never returns. The weekday refresh workflow runs the backstop (the
+workflow step is unbuilt; the sweep verb exists):
 
 - `spi service reset --ephemeral --stale-only` sweeps an ephemeral
   pin only when its owning workflow run reports a terminal state or, when
@@ -103,8 +107,8 @@ job never returns. The weekday refresh workflow runs the backstop:
   display-only and never fetched, since a fork identity controls its value.
   An ephemeral pin cannot be written without an allow-listed `source_repo`,
   a commit, and a numeric `run_id`, so the lookup inputs always exist.
-- `spi service refresh` per GitHub-origin service then advances the
-  environment to the current retained canonical (ADR-033).
+- `spi service refresh` (unbuilt) per GitHub-origin service then advances
+  the environment to the current retained canonical (ADR-033).
 
 A pin swept mid-run cannot happen silently: the test job's pre-flight verify
 fails with the pin's replacement named, and the re-run is the recovery.
