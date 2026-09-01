@@ -52,6 +52,7 @@ L4b spi-bootstrap             dependsOn: spi-trust-manager, spi-elasticsearch, s
 L5  spi-osdu-services         dependsOn: spi-bootstrap, spi-nodepools
 L5a spi-osdu-init             dependsOn: spi-osdu-services        (ADR-015)
 L5b spi-osdu-schema-load      dependsOn: spi-osdu-init            (ADR-013)
+L5c spi-osdu-legal            dependsOn: spi-osdu-init            (ADR-015, non-gating)
 L6  spi-osdu-reference        dependsOn: spi-osdu-services, spi-osdu-schema-load
 ```
 
@@ -196,7 +197,7 @@ Pods roll one at a time as each `HelmRelease` reconciles. `spi status --watch` s
 - [ADR-009](../decisions/009-flux-cd-for-gitops.md) -- Flux CD + AKS GitOps Extension
 - [ADR-013](../decisions/013-schema-load-flux-job.md) -- Schema Load via a Flux-Managed Job
 - [ADR-014](../decisions/014-suspend-gitops-after-deploy.md) -- Suspend GitOps After Deploy
-- [ADR-015](../decisions/015-partition-entitlements-bootstrap.md) -- Partition + Entitlements Bootstrap
+- [ADR-015](../decisions/015-partition-entitlements-bootstrap.md) -- Partition, Entitlements, and Legal Bootstrap
 - [ADR-017](../decisions/017-osdu-image-lock.md) -- Per-Deploy Image Lock
 - [ADR-018](../decisions/018-karpenter-nodepool-authoring.md) -- Karpenter NodePool Authoring
 - [ADR-028](../decisions/028-version-pinned-shared-environment.md) -- Version-Pinned Shared Backing Environment

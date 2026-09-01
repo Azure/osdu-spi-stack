@@ -5,6 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */}}
 
+{{- if .Values.coreEnabled }}
 # One partition-init Job per partition, rendered from .Values.partitions. Each
 # Job POSTs the partition record stored in osdu-spi-init-partition-records to
 # the partition service, authenticating via Workload Identity so the caller's
@@ -57,4 +58,5 @@ spec:
             runAsUser: 1000
             capabilities:
               drop: [ALL]
+{{- end }}
 {{- end }}

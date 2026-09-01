@@ -56,6 +56,11 @@ class KustomizationState:
     ready: bool
     reason: str
     message: str
+    # Kustomizations labeled spi-stack.gating: "false" (seeding work such as
+    # spi-osdu-legal) stay visible here with their typed reason but are
+    # excluded from the Ready verdict: "ready" and "seeded" are separate
+    # signals.
+    gating: bool = True
 
     def to_dict(self) -> dict[str, str | bool]:
         return {
@@ -63,6 +68,7 @@ class KustomizationState:
             "ready": self.ready,
             "reason": self.reason,
             "message": self.message,
+            "gating": self.gating,
         }
 
 
@@ -253,26 +259,29 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
     states = []
     for item in items:
         condition = _ready_condition(item)
+        labels = item.get("metadata", {}).get("labels", {})
         states.append(
             KustomizationState(
                 name=item.get("metadata", {}).get("name", ""),
                 ready=condition.get("status") == "True",
                 reason=condition.get("reason", ""),
                 message=condition.get("message", ""),
+                gating=labels.get("spi-stack.gating", "true") != "false",
             )
         )
     states = tuple(states)
-    ready = bool(states) and all(state.ready for state in states)
+    gating = tuple(state for state in states if state.gating)
+    ready = bool(gating) and all(state.ready for state in gating)
 
     reason: StatusReason | None = None
-    if not states:
+    if not gating:
         reason = StatusReason(
             code="no_kustomizations",
-            message="No Flux Kustomizations are visible.",
+            message="No gating Flux Kustomizations are visible.",
             resource="kustomizations/osdu-flux",
         )
     else:
-        first_not_ready = next((state for state in states if not state.ready), None)
+        first_not_ready = next((state for state in gating if not state.ready), None)
         if first_not_ready is not None:
             detail = first_not_ready.message or first_not_ready.reason or "not Ready"
             reason = StatusReason(

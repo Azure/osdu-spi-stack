@@ -268,12 +268,21 @@ spec:
 """
 
 
+# Base name of the default legal tag legal-init creates per partition as
+# "{partition}-{LEGAL_TAG_BASE}". Must stay identical to the osdu-spi-init
+# chart's `legalTag` values default, which covers clusters bootstrapped before
+# the CLI pinned the value here.
+LEGAL_TAG_BASE = "demo-legaltag"
+
+
 def spi_init_values_configmap(partitions: list[str]) -> str:
     """ConfigMap consumed by the osdu-spi-init HelmRelease via valuesFrom.
 
     Lives in osdu-flux (where the HelmRelease is reconciled) and carries the
     full Helm values YAML. The CLI writes it based on --partition flags so that
     enabling a new partition is a CLI argument change, not a git edit.
+    `spi info` reads the same ConfigMap back, so the legal tag name it reports
+    is the one the init Jobs rendered from.
     """
     partition_lines = "\n".join(f"    - {p}" for p in partitions)
     return f"""\
@@ -288,4 +297,5 @@ data:
   values.yaml: |
     partitions:
 {partition_lines}
+    legalTag: {LEGAL_TAG_BASE}
 """

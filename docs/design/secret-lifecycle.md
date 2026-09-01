@@ -129,7 +129,7 @@ The fact that the partition record value is the bare suffix and the KV secret na
 - [ADR-005](../decisions/005-workload-identity.md) -- Workload Identity for Azure PaaS Access
 - [ADR-010](../decisions/010-keyvault-secret-management.md) -- Key Vault + ConfigMap Secret Model
 - [ADR-011](../decisions/011-trust-manager-ca-distribution.md) -- Cross-Namespace CA Distribution via trust-manager
-- [ADR-015](../decisions/015-partition-entitlements-bootstrap.md) -- Partition + Entitlements Bootstrap (bare KV suffix in partition records)
+- [ADR-015](../decisions/015-partition-entitlements-bootstrap.md) -- Partition, Entitlements, and Legal Bootstrap (bare KV suffix in partition records)
 
 ## Source files
 
