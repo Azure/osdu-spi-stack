@@ -8,7 +8,7 @@ Bicep inherits ARM's idempotency and parallel orchestration without a state file
 
 ## Decision
 
-All Azure resources except the deployer's cluster-admin role assignment are declared in Bicep. The Python CLI is a thin orchestrator that calls `az deployment group create` once per template and handles the seams Bicep cannot cover.
+All Azure resources are declared in Bicep except three the CLI creates directly: the resource group, the deployer's cluster-admin role assignment, and the runtime Key Vault secrets. The Python CLI is a thin orchestrator that calls `az deployment group create` once per template and handles the seams Bicep cannot cover.
 
 Layout:
 

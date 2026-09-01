@@ -74,6 +74,7 @@ spi up --env <env>
    ├── az deployment group create  --template-file infra/aks.bicep
    ├── az aks get-credentials
    ├── az aks mesh enable-istio-cni
+   ├── az role assignment create  (deployer AKS RBAC Cluster Admin, wait for propagation)
    │
    ├── (KV recovery if needed)
    ├── az deployment group create  --template-file infra/main.bicep
@@ -84,7 +85,6 @@ spi up --env <env>
    ├── az deployment group create  --template-file infra/flux.bicep
    │       --parameters profile=<profile> ingressMode=<mode>
    │
-   ├── az role assignment create  (deployer AKS RBAC Cluster Admin, wait for propagation)
    └── az keyvault secret set  (runtime secrets: seed passwords, fixed hostnames, Table endpoint)
 ```
 
