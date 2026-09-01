@@ -23,6 +23,7 @@ so both success paths and every typed failure outcome are covered end to end.
 Skipped when Helm is not installed.
 """
 
+import ast
 import email.message
 import importlib.util
 import io
@@ -112,14 +113,38 @@ def test_component_split_matches_the_two_releases():
     assert [doc["metadata"]["name"] for doc in legal] == ["legal-init-opendes"]
 
 
-def test_legal_init_deadline_covers_its_wait_budget():
-    """The legal script can sleep 2100s across its wait gates, so it must not
-    inherit the core Jobs' 600s deadline: the pod would be killed before a
-    typed outcome is printed."""
+def _script_constants(source: str) -> dict:
+    """Module-level literal constants, read without importing: init_legal.py
+    pulls auth and wait off /scripts, which only exists inside the Job."""
+    return {
+        target.id: node.value.value
+        for node in ast.parse(source).body
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+
+
+def test_legal_init_deadline_covers_its_wait_budget(init_scripts):
+    """The legal Job must outlive init_legal.py's own worst case, recomputed
+    here from the script's constants: every gate's attempts at a delay plus a
+    socket timeout, then the authenticated calls. A shorter deadline kills the
+    pod before a typed outcome is printed, which is the whole point of the
+    per-outcome logging."""
+    const = _script_constants(init_scripts["init_legal.py"])
+    attempts = (
+        const["LEGAL_INFO_ATTEMPTS"]
+        + const["PARTITION_RECORD_ATTEMPTS"]
+        + const["LEGAL_AUTHZ_ATTEMPTS"]
+    )
+    budget = (
+        attempts * (const["WAIT_DELAY"] + const["WAIT_SOCKET_TIMEOUT"]) + const["REQUEST_BUDGET"]
+    )
+
     docs = _render(["opendes"])
     legal = _jobs(docs, "legal-init")[0]
     core = _jobs(docs, "partition-init")[0]
-    assert legal["spec"]["activeDeadlineSeconds"] == 3600
+    assert legal["spec"]["activeDeadlineSeconds"] >= budget
     assert core["spec"]["activeDeadlineSeconds"] == 600
 
 

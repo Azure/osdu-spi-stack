@@ -34,7 +34,7 @@
 #
 # Exit codes:
 #   0  every gating Kustomization Ready=True (spi-stack.gating: "false" ones,
-#      e.g. legal seeding, are excluded from the verdict per ADR-030)
+#      e.g. legal seeding, are excluded from the verdict)
 #   1  --timeout elapsed, or --grace elapsed before any Kustomization appeared
 #   2  prerequisite missing (kubectl/jq)
 
@@ -190,7 +190,7 @@ while :; do
             .items
             # Non-gating Kustomizations (spi-stack.gating: "false", e.g. legal
             # seeding) are excluded from the Ready verdict, matching the spi
-            # status contract (ADR-030): ready and seeded are separate signals.
+            # status contract: ready and seeded are separate signals.
             | map(select((.metadata.labels["spi-stack.gating"] // "true") != "false"))
             | group_by(.metadata.labels["spi-stack.layer"] // "-")
             | map({

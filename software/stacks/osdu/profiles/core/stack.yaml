@@ -388,7 +388,7 @@ spec:
       namespace: osdu-flux
 
 ---
-# Layer 5a: legal seeding (per-partition one-shot Jobs, non-gating)
+# Layer 5c: legal seeding (per-partition one-shot Jobs, non-gating)
 # Stages the legal COO catalog and creates the default legal tag. Runs the
 # same chart as spi-osdu-init with only the legal component enabled, in its
 # own release so helm's Job wait cannot gate schema-load on it. The

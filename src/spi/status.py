@@ -59,7 +59,7 @@ class KustomizationState:
     # Kustomizations labeled spi-stack.gating: "false" (seeding work such as
     # spi-osdu-legal) stay visible here with their typed reason but are
     # excluded from the Ready verdict: "ready" and "seeded" are separate
-    # signals (ADR-030).
+    # signals.
     gating: bool = True
 
     def to_dict(self) -> dict[str, str | bool]:

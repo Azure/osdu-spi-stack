@@ -52,6 +52,7 @@ L4b spi-bootstrap             dependsOn: spi-trust-manager, spi-elasticsearch, s
 L5  spi-osdu-services         dependsOn: spi-bootstrap, spi-nodepools
 L5a spi-osdu-init             dependsOn: spi-osdu-services        (ADR-015)
 L5b spi-osdu-schema-load      dependsOn: spi-osdu-init            (ADR-013)
+L5c spi-osdu-legal            dependsOn: spi-osdu-init            (ADR-015, non-gating)
 L6  spi-osdu-reference        dependsOn: spi-osdu-services, spi-osdu-schema-load
 ```
 

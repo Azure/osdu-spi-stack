@@ -72,9 +72,11 @@ resources:
 activeDeadlineSeconds: 600
 
 # -- activeDeadlineSeconds for the legal Jobs, which carry their own budget:
-#    the script may sleep up to 2100 s across its three wait gates (600 + 300
-#    + 150 attempts at 2 s) before request time, so the shared 600 s deadline
-#    would kill the pod before a typed outcome is printed.
+#    init_legal.py's worst case is 3300 s (420 poll attempts costing a 2 s
+#    delay plus a 5 s socket timeout each, then 360 s of authenticated calls),
+#    so the shared 600 s deadline would kill the pod before a typed outcome is
+#    printed. test_legal_init_deadline_covers_its_wait_budget recomputes that
+#    figure from the script's own constants rather than trusting this number.
 legalActiveDeadlineSeconds: 3600
 
 # -- backoffLimit: two retries are enough; the init scripts handle 409

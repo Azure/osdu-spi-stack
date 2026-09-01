@@ -64,11 +64,13 @@ L0a  spi-namespaces
                             |
                             +--> L5   spi-osdu-services   (10 services)
                                        |
-                                       +--> L5a  spi-osdu-init       (partition, entitlements, legal, ADR-015)
+                                       +--> L5a  spi-osdu-init       (partition + entitlements, ADR-015)
                                                   |
                                                   +--> L5b  spi-osdu-schema-load    (ADR-013)
-                                                             |
-                                                             +--> L6  spi-osdu-reference
+                                                  |          |
+                                                  |          +--> L6  spi-osdu-reference
+                                                  |
+                                                  +--> L5c  spi-osdu-legal          (non-gating, ADR-015)
 ```
 
 Each edge is a `dependsOn` entry. Each dependency gates on the parent's health check. See [flux reconciliation](flux-reconciliation.md) for the full mechanics.
