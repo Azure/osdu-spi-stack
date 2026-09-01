@@ -31,12 +31,13 @@ The sequence inside `deploy.deploy_azure()` is:
 5. **`infra/aks.bicep` deploy.** AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio, declared as a raw `Microsoft.ContainerService/managedClusters` resource. This is the slowest single step (~30 min).
 6. **`az aks get-credentials`** merges the kubeconfig.
 7. **`az aks mesh enable-istio-cni`.** The resource provider rejects `proxyRedirectionMechanism` at cluster creation, so the CLI enables CNI chaining afterwards and skips the call when the cluster already reports `CNIChaining`. See [ADR-008](../decisions/008-bicep-for-azure-provisioning.md).
-8. **`infra/main.bicep` deploy.** Identity, RBAC, Key Vault (with Bicep-resolved secrets), ACR, Cosmos DB Gremlin, per-partition (Cosmos SQL + Service Bus + Storage), common Storage, optional `external-dns-*` for `dns` ingress. (The VNet is provisioned by `aks.bicep`, not here.)
-9. **K8s bootstrap.** `kubectl apply` for namespaces, StorageClasses, the middleware secret seed (`spi-secrets`) plus the `platform`/`osdu` credential Secrets, `workload-identity-sa` (in `platform` and `osdu`), the `osdu-config` ConfigMap, the `spi-ingress-config` ConfigMap, the `spi-init-values` ConfigMap, and the Istio JWT projection resources from [ADR-016](../decisions/016-istio-jwt-projection.md). The `core` profile also creates the `osdu-image-lock` ConfigMap, resolved live from the OSDU community registry per [ADR-017](../decisions/017-osdu-image-lock.md); `minimal` and `bare` skip image resolution and this ConfigMap.
-10. **`infra/flux.bicep` deploy.** Activates the AKS Flux extension and creates the `fluxConfigurations` resource with two top-level Kustomizations: `stack` (pointing at `./software/stacks/osdu/profiles/<profile>`) and `ingress` (pointing at `./software/stacks/osdu/ingress/<mode>`).
-11. **Runtime Key Vault secrets.** The CLI writes the runtime secrets to Key Vault: per-partition Elasticsearch credentials and Redis hostname/password from the generated seed passwords and fixed in-cluster hostnames, and `tbl-storage-endpoint` derived from the common Storage account name. There is no wait for middleware Ready, since every value is known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md).
-12. **Suspend pin.** `_finalize_gitops_source()` waits up to 10 minutes for `gitrepository/osdu-spi-stack-system` to appear, resumes and reconciles it with a 10-minute timeout, verifies `Ready=True` and the requested artifact revision, then `_set_source_suspended()` patches `spec.suspend: true`. See [ADR-014](../decisions/014-suspend-gitops-after-deploy.md).
-13. **Next-steps panel.** The CLI prints `spi status --watch`, `spi info`, and the matching `spi down` command with flags pre-filled.
+8. **Deployer cluster-admin grant.** `az role assignment create --role "Azure Kubernetes Service RBAC Cluster Admin"` on the cluster for the signed-in principal, then a wait until the assignment propagates (minutes). Local accounts are disabled, so bootstrap `kubectl` has no other path.
+9. **`infra/main.bicep` deploy.** Identity, RBAC, Key Vault (with Bicep-resolved secrets), ACR, Cosmos DB Gremlin, per-partition (Cosmos SQL + Service Bus + Storage), common Storage, optional `external-dns-*` for `dns` ingress. (The VNet is provisioned by `aks.bicep`, not here.)
+10. **K8s bootstrap.** `kubectl apply` for namespaces, StorageClasses, the middleware secret seed (`spi-secrets`) plus the `platform`/`osdu` credential Secrets, `workload-identity-sa` (in `platform` and `osdu`), the `osdu-config` ConfigMap, the `spi-ingress-config` ConfigMap, the `spi-init-values` ConfigMap, and the Istio JWT projection resources from [ADR-016](../decisions/016-istio-jwt-projection.md). The `core` profile also creates the `osdu-image-lock` ConfigMap, resolved live from the OSDU community registry per [ADR-017](../decisions/017-osdu-image-lock.md); `minimal` and `bare` skip image resolution and this ConfigMap.
+11. **`infra/flux.bicep` deploy.** Activates the AKS Flux extension and creates the `fluxConfigurations` resource with two top-level Kustomizations: `stack` (pointing at `./software/stacks/osdu/profiles/<profile>`) and `ingress` (pointing at `./software/stacks/osdu/ingress/<mode>`).
+12. **Runtime Key Vault secrets.** The CLI writes the runtime secrets to Key Vault: per-partition Elasticsearch credentials and Redis hostname/password from the generated seed passwords and fixed in-cluster hostnames, and `tbl-storage-endpoint` derived from the common Storage account name. There is no wait for middleware Ready, since every value is known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md).
+13. **Suspend pin.** `_finalize_gitops_source()` waits up to 10 minutes for `gitrepository/osdu-spi-stack-system` to appear, resumes and reconciles it with a 10-minute timeout, verifies `Ready=True` and the requested artifact revision, then `_set_source_suspended()` patches `spec.suspend: true`. See [ADR-014](../decisions/014-suspend-gitops-after-deploy.md).
+14. **Next-steps panel.** The CLI prints `spi status --watch`, `spi info`, and the matching `spi down` command with flags pre-filled.
 
 At this point the CLI exits. You have a cluster with Flux installed, a suspended `GitRepository`, all `Kustomization` definitions queued, and the runtime KV secrets in place. The OSDU services have not finished starting yet.
 
@@ -144,10 +145,10 @@ Milestones to watch for in the CLI output:
 
 1. **"Resource group spi-stack-dev1 ready"** -- Phase 1 step 3.
 2. **"AKS deployment complete"** -- Phase 1 step 5. The cluster exists.
-3. **"PaaS deployment complete"** -- Phase 1 step 8. Cosmos, Service Bus, Storage, Key Vault, ACR are live.
-4. **"Flux extension activated"** -- Phase 1 step 10. Flux is running in `flux-system`; SPI GitOps objects reconcile in `osdu-flux`.
-5. **"Writing OSDU bootstrap secrets to Key Vault..."** -- Phase 1 step 11. Redis/Elasticsearch credentials and `tbl-storage-endpoint` are written from the seed passwords, fixed in-cluster hostnames, and the common Storage account name.
-6. **"GitRepository suspended"** -- Phase 1 step 12. CLI is about to exit.
+3. **"PaaS deployment complete"** -- Phase 1 step 9. Cosmos, Service Bus, Storage, Key Vault, ACR are live.
+4. **"Flux extension activated"** -- Phase 1 step 11. Flux is running in `flux-system`; SPI GitOps objects reconcile in `osdu-flux`.
+5. **"Writing OSDU bootstrap secrets to Key Vault..."** -- Phase 1 step 12. Redis/Elasticsearch credentials and `tbl-storage-endpoint` are written from the seed passwords, fixed in-cluster hostnames, and the common Storage account name.
+6. **"GitRepository suspended"** -- Phase 1 step 13. CLI is about to exit.
 
 Switch to another terminal:
 

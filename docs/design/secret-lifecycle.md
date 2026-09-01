@@ -50,7 +50,7 @@ A small set of KV secrets covers the in-cluster middleware. The CLI knows all of
 | `redis-hostname`, `redis-password` | Fixed Redis service DNS + generated `redis_password` |
 | `tbl-storage-endpoint` | `https://<common storage account>.table.core.windows.net/` |
 
-`src/spi/deploy.py` (`_write_keyvault_bootstrap_secrets`) writes these with `az keyvault secret set` at Phase 1 step 11 of `spi up` ([deployment-lifecycle](deployment-lifecycle.md)). Because every value is generated, fixed, or derived from a name the CLI already holds, there is no wait for middleware to reach `Ready`.
+`src/spi/deploy.py` (`_write_keyvault_bootstrap_secrets`) writes these with `az keyvault secret set` at Phase 1 step 12 of `spi up` ([deployment-lifecycle](deployment-lifecycle.md)). Because every value is generated, fixed, or derived from a name the CLI already holds, there is no wait for middleware to reach `Ready`.
 
 Re-running `spi up` against a live cluster re-runs these writes idempotently; KV is fine with rewrites of the same value.
 
