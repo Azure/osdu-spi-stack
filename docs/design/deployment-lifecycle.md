@@ -146,7 +146,7 @@ Milestones to watch for in the CLI output:
 2. **"AKS deployment complete"** -- Phase 1 step 5. The cluster exists.
 3. **"PaaS deployment complete"** -- Phase 1 step 8. Cosmos, Service Bus, Storage, Key Vault, ACR are live.
 4. **"Flux extension activated"** -- Phase 1 step 10. Flux is running in `flux-system`; SPI GitOps objects reconcile in `osdu-flux`.
-5. **"Writing runtime KV secrets"** -- Phase 1 step 11. Redis/Elasticsearch credentials are written to Key Vault from the seed.
+5. **"Writing OSDU bootstrap secrets to Key Vault..."** -- Phase 1 step 11. Redis/Elasticsearch credentials and `tbl-storage-endpoint` are written from the seed passwords, fixed in-cluster hostnames, and the common Storage account name.
 6. **"GitRepository suspended"** -- Phase 1 step 12. CLI is about to exit.
 
 Switch to another terminal:

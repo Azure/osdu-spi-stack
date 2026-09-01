@@ -11,7 +11,7 @@
 | Class | Examples | Store | Access path |
 |---|---|---|---|
 | Azure PaaS credentials | Cosmos DB, Service Bus, Storage, Key Vault | Entra ID (token broker) | Workload Identity; no stored material |
-| PaaS metadata + secret values | Cosmos endpoints, Storage account names, Service Bus namespace, tenant ID | Azure Key Vault | SDK reads via Workload Identity (or CSI) |
+| PaaS metadata + secret values | Cosmos endpoints, Storage account names, Service Bus namespace, tenant ID | Azure Key Vault | SDK reads via Workload Identity |
 | In-cluster middleware secrets | Redis, Elasticsearch, PostgreSQL (Airflow), Airflow signing keys | Kubernetes Secrets in `platform` / `osdu` | CLI-generated seed (`spi-secrets`), consumed by the operators |
 
 This split is the decision in [ADR-010](../decisions/010-keyvault-secret-management.md). The next sections walk each class.

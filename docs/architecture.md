@@ -199,12 +199,12 @@ Client --> Istio Gateway --> OSDU Service --+--> Cosmos DB (read/write records)
 
 ## Identity and Access
 
-A single User-Assigned Managed Identity (`<cluster>-osdu-identity`) is shared by all OSDU services. A federated credential binds it to the `workload-identity-sa` ServiceAccount in the `osdu` namespace. Pods with the `azure.workload.identity/use: "true"` label get projected tokens and exchange them for Entra ID access tokens at runtime.
+A single User-Assigned Managed Identity (`<cluster>-osdu-identity`) is shared by all OSDU services. Federated credentials bind it to the `workload-identity-sa` ServiceAccount in eight namespaces (the list in `infra/modules/identity.bicep`); the CLI creates that ServiceAccount in `platform` and `osdu`. Pods with the `azure.workload.identity/use: "true"` label get projected tokens and exchange them for Entra ID access tokens at runtime.
 
 | Component | Detail |
 |-----------|--------|
 | Identity | User-Assigned Managed Identity (`<cluster>-osdu-identity`) |
-| ServiceAccount | `workload-identity-sa` in `osdu` |
+| ServiceAccount | `workload-identity-sa` in `platform` and `osdu` (federated for eight namespaces) |
 | Token path | `/var/run/secrets/azure/tokens/token` |
 | Exchange | Entra ID token exchange via AKS OIDC issuer |
 
@@ -269,7 +269,7 @@ Created by the CLI during K8s bootstrap and mounted into every OSDU service via 
 | Class | Store | Access path |
 |-------|-------|-------------|
 | Azure PaaS credentials | Entra ID | Workload Identity; no stored material |
-| PaaS metadata and secret values | Azure Key Vault | SDK reads under Workload Identity (or CSI) |
+| PaaS metadata and secret values | Azure Key Vault | SDK reads under Workload Identity |
 | In-cluster middleware passwords | Kubernetes Secrets in `platform`/`osdu` | CLI-generated once per environment |
 
 Most Key Vault secret values are declared in `infra/main.bicep` and resolved at deploy time. Local auth is disabled on the Cosmos and Service Bus accounts (ADR-023), so their key and connection secrets are written as `"DISABLED"` placeholders instead of real key material. A small set of runtime secrets are written post-handoff by the CLI: Elasticsearch and Redis credentials from the generated seed passwords and fixed in-cluster hostnames, and `tbl-storage-endpoint` derived from the common Storage account name. See [ADR-010](decisions/010-keyvault-secret-management.md).

@@ -6,9 +6,8 @@ environment. `src/spi/environment.py` owns the schema. `env-upgrade.yml` and
 `env-refresh.yml` read it to drive a deployment; `release.yml`'s bump job
 reads and validates it to open the version-bump PR, and is the only writer.
 
-There is one declaration today, `shared.yaml`, deliberately not checked in by
-the implementation that introduces this schema: activation is a separate,
-reviewed PR (see [Activation](#activation) below).
+There is one declaration today, `shared.yaml`. Adding a declaration is a
+reviewed PR of its own (see [Activation](#activation) below).
 
 ## Schema
 
