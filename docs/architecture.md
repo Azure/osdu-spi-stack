@@ -258,10 +258,10 @@ Created by the CLI during K8s bootstrap and mounted into every OSDU service via 
 | `AAD_CLIENT_ID` | Managed identity client ID |
 | `KEYVAULT_URI`, `KEYVAULT_URL`, `KEYVAULT_NAME` | Key Vault URI and name |
 | `PRIMARY_COSMOSDB_ENDPOINT`, `COSMOSDB_DATABASE` | Primary partition's Cosmos DB SQL endpoint and database (`osdu-db`) |
-| `PRIMARY_STORAGE_ACCOUNT_NAME` | Primary partition's Storage account |
+| `PRIMARY_STORAGE_ACCOUNT_NAME` | Common Storage account (not the partition's; the CLI fills it from `common_storage_name`) |
 | `PRIMARY_SERVICEBUS_NAMESPACE` | Primary partition's Service Bus namespace |
 | `REDIS_PORT`, `SERVER_PORT` | Fixed ports (6379, 8080) |
-| `APPINSIGHTS_KEY` | Application Insights key, empty when not provisioned |
+| `APPINSIGHTS_KEY` | Always empty; the CLI does not wire the provisioned connection string through (ADR-020) |
 | `ELASTICSEARCH_HOST` | In-cluster Elasticsearch FQDN |
 
 ### Secret model
@@ -295,7 +295,7 @@ Redis and Elasticsearch TLS CAs live as Secrets in `platform`. trust-manager (in
 
 | Resource | Purpose | Sizing |
 |----------|---------|--------|
-| Cosmos DB SQL | Operational data | 4000 RU/s autoscale; `osdu-db` (24 containers) and `osdu-system-db` (5 containers) |
+| Cosmos DB SQL | Operational data | 4000 RU/s autoscale; `osdu-db` (24 containers), plus `osdu-system-db` (5 containers) on the primary partition only |
 | Service Bus | Async messaging | Standard SKU, 14 topics, 14 subscriptions |
 | Storage account | Blob and table storage | Standard LRS, 5 containers |
 

@@ -16,4 +16,4 @@ Rejected: never provision and document a manual wiring procedure. Trades a one-p
 
 - Default deployments carry no telemetry cost or extra deploy time.
 - Enabling telemetry is a single parameter, not a manual wiring procedure.
-- The CLI does not surface the parameter; enabling telemetry means passing it to the Bicep deployment directly.
+- Provisioning is the only wired half. The CLI does not surface `enableApplicationInsights`, `appInsightsName`, or `logAnalyticsName`, drops the connection-string output when reshaping Bicep outputs, and leaves `APPINSIGHTS_KEY` empty in `osdu-config`; a provisioned component receives no telemetry until that wiring exists.

@@ -32,7 +32,7 @@ Splitting them also keeps `--dry-run` useful: `spi up --dry-run` runs `az deploy
 
 ## Hand-written Bicep throughout
 
-`aks.bicep` declares the `Microsoft.ContainerService/managedClusters` resource directly, with the AKS Automatic parameter shape spelled out in the file: system-pool VM size and zones, Ephemeral OS disk, NAT gateway egress on the VNet from `modules/vnet.bicep`, `serviceMeshProfile` for Istio, and the OIDC issuer and Workload Identity flags. The PaaS modules under `infra/modules/` are the same style: one resource type per file, small enough to read in a review. No Azure Verified Module is referenced. [ADR-008](../decisions/008-bicep-for-azure-provisioning.md) owns the rationale.
+`aks.bicep` declares the `Microsoft.ContainerService/managedClusters` resource directly, with the AKS Automatic parameter shape spelled out in the file: system-pool VM size and zones, Ephemeral OS disk, NAT gateway egress on the VNet from `modules/vnet.bicep`, `serviceMeshProfile` for Istio, and the OIDC issuer and Workload Identity flags. The PaaS modules under `infra/modules/` are the same style: one deployment concern per file (`partition.bicep` bundles a partition's Cosmos, Service Bus, Storage, secrets, and role assignments), small enough to read in a review. No Azure Verified Module is referenced. [ADR-008](../decisions/008-bicep-for-azure-provisioning.md) owns the rationale.
 
 ## Module inventory (`infra/modules/`)
 
