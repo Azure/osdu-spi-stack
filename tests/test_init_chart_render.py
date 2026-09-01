@@ -382,12 +382,17 @@ def test_legal_init_fails_on_rejected_tag(legal_init):
 
 
 def test_legal_init_fails_when_token_acquisition_fails(legal_init):
+    """An unusable token is not a staging failure. The tag POST needs one too,
+    so the run ends on auth_failed rather than continuing to a POST that cannot
+    succeed and reporting the catalog as the problem."""
+
     def get_token(resource: str = "https://management.azure.com/") -> str:
         raise SystemExit("Token acquisition failed: 401 unauthorized_client")
 
     result = legal_init(token=get_token)
     assert result.exit_code == 1
     assert "legal-init outcome: auth_failed" in result.stdout
+    assert result.routed("legaltags_post") == []
 
 
 def test_legal_init_creates_the_tag_even_when_keyvault_denies(legal_init):
@@ -405,6 +410,16 @@ def test_legal_init_creates_the_tag_even_when_blob_upload_denies(legal_init):
     result = legal_init({"blob_upload": _http_error(403, b"AuthorizationFailure")})
     assert result.exit_code == 1
     assert "legal-init outcome: catalog_not_staged" in result.stdout
+    assert len(result.routed("legaltags_post")) == 1
+
+
+def test_legal_init_creates_the_tag_when_keyvault_body_is_malformed(legal_init):
+    """The invariant is staging-local, not exception-type-specific: a 2xx from
+    Key Vault carrying an unusable body must cost the catalog, not the tag."""
+    result = legal_init({"keyvault": _responds(200, b"<html>not json</html>")})
+    assert result.exit_code == 1
+    assert "legal-init outcome: catalog_not_staged" in result.stdout
+    assert result.routed("blob_upload") == []
     assert len(result.routed("legaltags_post")) == 1
 
 
