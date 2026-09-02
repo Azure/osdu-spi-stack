@@ -521,7 +521,7 @@ def get_kustomization_table(items: tuple[dict, ...] | None = None) -> Table:
             name,
             f"L{layer}" if layer != "-" else "-",
             status_icon(is_ready, reason),
-            message,
+            Text(message),
             age_str(ready_cond.get("lastTransitionTime", "")),
         )
     return table
@@ -599,7 +599,7 @@ def get_helmrelease_table() -> Table:
         if len(message) > 50:
             message = message[:47] + "..."
 
-        table.add_row(name, chart, version, state, message)
+        table.add_row(name, chart, version, state, Text(message))
 
     captions = []
     if retries_exceeded:
@@ -871,15 +871,20 @@ def get_summary(snapshot: StatusSnapshot) -> Panel:
     if snapshot.maintenance:
         counts += "  [bold red]| MAINTENANCE[/bold red]"
 
+    body = Text.from_markup(counts)
+    body.append("\n")
+
     # The verdict the JSON envelope reports, in the same words, so an operator
     # reading the dashboard and a fork job reading --json cannot disagree.
     if snapshot.deployable:
-        verdict = "[ready]Deployable[/ready]"
+        body.append("Deployable", style="ready")
     else:
-        blocker = snapshot.reason.message if snapshot.reason else "no reason reported"
-        verdict = f"[failed]Not deployable:[/failed] {blocker}"
+        body.append("Not deployable: ", style="failed")
+        # Appended, not interpolated: a Flux condition message carries paths
+        # like [/tmp/kustomize-9f2] that Rich would read as a closing tag.
+        body.append(snapshot.reason.message if snapshot.reason else "no reason reported")
 
-    return Panel(f"{counts}\n{verdict}", title="Summary", border_style="cyan")
+    return Panel(body, title="Summary", border_style="cyan")
 
 
 def render_status(snapshot: StatusSnapshot | None = None):

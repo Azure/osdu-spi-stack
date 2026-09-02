@@ -268,6 +268,31 @@ def test_status_human_surfaces_maintenance(monkeypatch):
     assert "Not deployable: The environment is in maintenance." in output
 
 
+def test_status_human_survives_markup_in_a_flux_message(monkeypatch):
+    """A Flux condition message is cluster-supplied text, and Rich reads a
+    bracketed path in it as a closing tag. It must render, not raise."""
+    hostile = "failed to load [/tmp/kustomize-9f2]/kustomization.yaml"
+
+    def required(args, description):
+        if "kustomizations" in args:
+            data = _kustomizations(ready=False)
+            data["items"][0]["status"]["conditions"][0]["message"] = hostile
+            return data
+        return {"spec": {"suspend": False}}
+
+    _wire(monkeypatch)
+    monkeypatch.setattr(status, "_required_kubectl_json", required)
+    monkeypatch.setattr(status, "kubectl_json", lambda _args: None)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    output = _plain(result.output)
+
+    assert result.exception is None, result.exception
+    assert "[/tmp/kustomize-9f2]" in output
+    assert "Not deployable:" in output
+
+
 def test_status_human_stays_quiet_when_deployable(monkeypatch):
     _wire(monkeypatch, suspended=False)
     monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
