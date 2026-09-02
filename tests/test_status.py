@@ -367,6 +367,9 @@ def _helmrelease(name: str, *, stalled: bool) -> dict:
 
 def _wire_helmreleases(monkeypatch, items):
     monkeypatch.setattr(status, "kubectl_json", lambda args: {"items": items})
+    monkeypatch.setattr(
+        status, "_required_kubectl_json", lambda args, description: {"items": items}
+    )
 
 
 def test_stalled_helmreleases_lists_only_exhausted_retries(monkeypatch):
@@ -378,10 +381,35 @@ def test_stalled_helmreleases_lists_only_exhausted_retries(monkeypatch):
     assert status.stalled_helmreleases() == [("osdu-flux", "partition")]
 
 
-def test_stalled_helmreleases_is_empty_when_read_fails(monkeypatch):
-    monkeypatch.setattr(status, "kubectl_json", lambda args: None)
+@pytest.mark.parametrize(
+    "detail",
+    [
+        'error: the server doesn\'t have a resource type "helmreleases"',
+        'error: no matches for kind "HelmRelease"',
+    ],
+)
+def test_stalled_helmreleases_treats_absent_type_as_empty(monkeypatch, detail):
+    """A profile that never declares HelmReleases reads as empty."""
+
+    def _raise(args, description):
+        raise status.StatusError(f"Could not {description}: {detail}")
+
+    monkeypatch.setattr(status, "_required_kubectl_json", _raise)
 
     assert status.stalled_helmreleases() == []
+
+
+def test_stalled_helmreleases_raises_on_read_failure(monkeypatch):
+    """An unreadable cluster must not be reported as "nothing stalled": the
+    caller would skip the reset and claim a recovery it never performed."""
+
+    def _raise(args, description):
+        raise status.StatusError(f"Could not {description}: connection refused")
+
+    monkeypatch.setattr(status, "_required_kubectl_json", _raise)
+
+    with pytest.raises(status.StatusError, match="connection refused"):
+        status.stalled_helmreleases()
 
 
 def test_helmrelease_table_marks_stalled_release(monkeypatch):

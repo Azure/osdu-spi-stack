@@ -224,6 +224,24 @@ def _optional_configmap(name: str, namespace: str) -> dict | None:
     return parsed
 
 
+_ABSENT_RESOURCE_MARKERS = (
+    "not found",
+    "no matches for kind",
+    "doesn't have a resource type",
+)
+
+
+def _is_absent_resource(exc: StatusError) -> bool:
+    """Whether a failed read means the resource type is absent from this cluster.
+
+    A profile that never declares a resource reads as empty; authorization
+    errors, API timeouts, and context failures stay fatal rather than being
+    reported as "nothing there".
+    """
+    detail = str(exc).lower()
+    return any(marker in detail for marker in _ABSENT_RESOURCE_MARKERS)
+
+
 def _ready_condition(item: dict) -> dict:
     conditions = item.get("status", {}).get("conditions", [])
     return next((condition for condition in conditions if condition.get("type") == "Ready"), {})
@@ -243,11 +261,7 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
             "read Flux Kustomizations",
         )
     except StatusError as exc:
-        detail = str(exc).lower()
-        if not any(
-            marker in detail
-            for marker in ("not found", "no matches for kind", "doesn't have a resource type")
-        ):
+        if not _is_absent_resource(exc):
             raise
         kustomization_data = {"items": []}
     raw_items = kustomization_data.get("items")
@@ -521,14 +535,21 @@ def stalled_helmreleases() -> list[tuple[str, str]]:
 
     helm-controller never retries a Stalled release on its own, and a
     Kustomization re-apply of the unchanged manifest does not reset it either.
+
+    Raises StatusError when the read fails for any reason other than the
+    HelmRelease type being absent, so a failed read is never mistaken for
+    "nothing stalled".
     """
-    data = kubectl_json(["get", "helmreleases", "-A"])
-    if not data:
+    try:
+        data = _required_kubectl_json(["get", "helmreleases", "-A"], "read Flux HelmReleases")
+    except StatusError as exc:
+        if not _is_absent_resource(exc):
+            raise
         return []
     return [
         (item["metadata"]["namespace"], item["metadata"]["name"])
         for item in data.get("items", [])
-        if _stalled_condition(item)
+        if isinstance(item, dict) and _stalled_condition(item)
     ]
 
 

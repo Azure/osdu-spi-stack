@@ -13,6 +13,7 @@ Both the detection and the paths that write the ConfigMap are covered here.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import typer
 from typer.testing import CliRunner
 
 from spi import cli
@@ -26,6 +27,7 @@ from spi.bootstrap import (
     render_istio_revision_configmap,
 )
 from spi.images import ResolvedImage
+from spi.status import StatusError
 
 
 def _deploy_list(*names: str) -> dict:
@@ -379,9 +381,7 @@ class TestReconcileResetsStalledHelmReleases:
 
         assert [cmd[3] for cmd in resets] == ["helmrelease/partition"]
         assert resets[0][4:6] == ["-n", "osdu-flux"]
-        pairs = dict(
-            arg.split("=", 1) for arg in resets[0] if arg.startswith("reconcile.fluxcd.io/")
-        )
+        pairs = dict(arg.split("=", 1) for arg in resets[0] if "=" in arg)
         assert set(pairs) == {
             "reconcile.fluxcd.io/requestedAt",
             "reconcile.fluxcd.io/resetAt",
@@ -396,6 +396,52 @@ class TestReconcileResetsStalledHelmReleases:
 
         assert resets == []
         assert "Resetting stalled" not in result.output
+
+    def test_unreadable_helmreleases_abort_the_reconcile(self):
+        """A read that fails for any reason other than an absent type must not
+        read as "nothing stalled": reconcile would then report success while
+        leaving the releases it exists to recover still stalled.
+        """
+        runner = CliRunner()
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.run_command", return_value=SimpleNamespace(returncode=0, stdout="")),
+            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch(
+                "spi.status.stalled_helmreleases",
+                side_effect=StatusError("Could not read Flux HelmReleases: connection refused"),
+            ),
+        ):
+            result = runner.invoke(cli.app, ["reconcile"])
+
+        assert result.exit_code == 1
+        assert "Could not check for stalled HelmReleases" in result.output
+        assert "connection refused" in result.output
+
+    def test_failed_reset_annotation_aborts(self):
+        """The annotation is the recovery itself, so an RBAC denial or API
+        error has to stop the run rather than be reported as a reset.
+        """
+        runner = CliRunner()
+
+        def _run_command(cmd_list, **kwargs):
+            if cmd_list[:2] == ["kubectl", "annotate"] and cmd_list[3].startswith("helmrelease/"):
+                raise typer.Exit(code=1)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.run_command", side_effect=_run_command),
+            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.status.stalled_helmreleases", return_value=[("osdu-flux", "partition")]),
+        ):
+            result = runner.invoke(cli.app, ["reconcile"])
+
+        assert result.exit_code == 1
 
 
 class TestSchemaLoadImageLockBackfill:
