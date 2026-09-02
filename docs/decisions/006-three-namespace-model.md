@@ -11,7 +11,7 @@ The SPI Stack creates and reconciles three application namespaces:
 | Namespace | Purpose | Istio injection | Contents |
 |---|---|---|---|
 | `foundation` | Cluster operators | No | ECK, CNPG, cert-manager, trust-manager |
-| `platform` | Stateful middleware and ingress | No | Elasticsearch, Redis, PostgreSQL, Airflow, Istio Gateway |
+| `platform` | Stateful middleware and TLS certificates | No | Elasticsearch, Redis, PostgreSQL, Airflow, cert-manager Certificates |
 | `osdu` | OSDU services | Yes (`istio.io/rev`) | OSDU services, schema-load Job, `osdu-config` ConfigMap, `workload-identity-sa` |
 
 `flux-system` is owned by the AKS Flux extension (ADR-009). `aks-istio-system` and `aks-istio-ingress` are owned by AKS.

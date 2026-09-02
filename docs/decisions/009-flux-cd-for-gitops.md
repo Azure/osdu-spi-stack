@@ -30,6 +30,6 @@ Rejected:
 
 - Cluster state is reconstructable from Git. A fresh `spi up` against an existing repo reproduces the same end state.
 - Ordering between layers, between profile and ingress, and between services and schema-load is declarative and visible (`flux get kustomizations`).
-- Flux component upgrades (source-controller, kustomize-controller, helm-controller) move with the AKS extension; we do not pin Flux versions.
+- Flux component upgrades (source-controller, kustomize-controller, helm-controller) move with the AKS extension; Flux versions are not pinned.
 - Every in-cluster change is a Git commit. Urgent hotfixes are `kubectl apply` plus a follow-up PR, not persistent state.
 - Ingress mode and profile switches are Bicep re-deploys that mutate one path each. The CLI does not have to delete and recreate Kustomizations to switch modes.

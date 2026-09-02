@@ -14,8 +14,8 @@ The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines a set
 |---|---|---|
 | 0a | `spi-namespaces` | none |
 | 0b | `spi-nodepools` | 0a |
-| 1 | `spi-cert-manager`, `spi-trust-manager`, `spi-eck-operator`, `spi-cnpg-operator` | 0a (trust-manager also on cert-manager) |
-| 2 | `spi-elasticsearch`, `spi-redis`, `spi-postgresql` | matching L1 operator + 0b |
+| 1 | `spi-cert-manager`, `spi-trust-manager`, `spi-eck-operator`, `spi-cnpg-operator`, `spi-helm-sources`, `spi-gateway` (ownership handoff, ADR-025) | 0a (trust-manager also on cert-manager) |
+| 2 | `spi-elasticsearch`, `spi-redis`, `spi-postgresql` | matching L1 operator + 0b (Redis: cert-manager + helm-sources) |
 | 3 | `spi-airflow` | `spi-postgresql` |
 | 4a | `spi-osdu-config` | 0a |
 | 4b | `spi-bootstrap` (trust-manager Bundles + Redis DestinationRule, ADR-011) | trust-manager, ES, Redis, osdu-config |
@@ -29,7 +29,7 @@ The ingress profile (`software/stacks/osdu/ingress/<mode>/stack.yaml`, ADR-012) 
 
 The `minimal` profile (ADR-021) declares layers 0a through 4b verbatim and stops, pairing with the `<mode>-minimal` ingress trees so no `dependsOn` is left unsatisfiable.
 
-All Kustomizations use `wait: true` so each layer's Ready gate reflects actual workload health; per-layer `timeout` is tuned to the slowest workload in that layer (15 min for Elasticsearch and Airflow, 30 min for the OSDU service layers; schema-load's 155 min tracks the Job's `activeDeadlineSeconds` of 9000 s, a pod-startup allowance plus the cold-cluster wait and the throttled load, with headroom for reconcile overhead).
+All Kustomizations use `wait: true` so each layer's Ready gate reflects actual workload health; per-layer `timeout` is tuned to the slowest workload in that layer (15 min for Elasticsearch and Airflow, 10 min for the other middleware, 30 min for the OSDU service layers; schema-load's 155 min tracks the Job's `activeDeadlineSeconds` of 9000 s, a pod-startup allowance plus the cold-cluster wait and the throttled load, with headroom for reconcile overhead).
 
 `spi-osdu-legal` is the one layer nothing depends on. It carries `spi-stack.gating: "false"`, so a failed seed stays visible with its typed reason without holding back the Ready verdict, and its 70 min timeout tracks the legal Job's own deadline rather than any downstream layer.
 

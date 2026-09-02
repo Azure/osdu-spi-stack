@@ -30,7 +30,7 @@ annotation schema live in `docs/design/fork-deployment.md`.
   `reconcile.fluxcd.io/watch: Enabled` label, so Flux reconciles the
   consuming Kustomizations when the ConfigMap changes; fork CI mutates
   nothing in Flux and holds no Flux write permission (ADR-032).
-- **Verified, not assumed.** Deploy success is the running pod carrying the
+- **Verified deploys.** Deploy success is the running pod carrying the
   digest, asserted by the CLI after the pin and re-asserted by the test job
   before it runs, so a deploy overwritten by a colliding pipeline fails fast,
   naming the colliding run from the pin annotation, instead of producing a

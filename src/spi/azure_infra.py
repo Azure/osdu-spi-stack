@@ -14,12 +14,16 @@
 
 """Azure PaaS infrastructure provisioning.
 
-Everything Bicep can express lives in ``infra/aks.bicep`` and
-``infra/main.bicep``. The imperative steps are the ones ARM cannot make:
-creating the resource group Bicep deploys into, branching on a soft-deleted
-Key Vault, merging the kubeconfig, and enabling Istio CNI chaining, which
-the AVM module does not type. Key Vault secrets that depend on in-cluster
-passwords are written later by ``deploy.py``.
+Everything Bicep can express lives in ``infra/aks.bicep``,
+``infra/main.bicep``, and ``infra/flux.bicep`` (the last deployed from
+``deploy.py`` after Kubernetes bootstrap). The imperative steps here are the
+ones ARM cannot make or the CLI must sequence itself: creating the resource
+group Bicep deploys into, branching on a soft-deleted Key Vault, merging the
+kubeconfig, enabling Istio CNI chaining, which the provider rejects at
+creation, and granting the signed-in principal cluster-admin on the cluster,
+kept here so the propagation poll runs before the first kubectl call.
+Runtime Key Vault secrets (seed passwords, fixed hostnames, the Table
+endpoint) are written later by ``deploy.py``.
 
 ``provision_azure_infra`` returns the infra_outputs dict the Kubernetes
 bootstrap consumes. With ``dry_run`` the login check and resource group
@@ -371,9 +375,7 @@ def create_aks_automatic(
     """
     header = "Previewing" if dry_run else "Deploying"
     console.print(f"\n[bold]{header} AKS Automatic cluster via Bicep...[/bold]")
-    console.print(
-        "  [info]Cluster is declared in infra/aks.bicep via the AVM managed-cluster module.[/info]"
-    )
+    console.print("  [info]Cluster is declared in infra/aks.bicep.[/info]")
     aks_parameters = {
         "clusterName": config.cluster_name,
         "location": config.location,
@@ -397,7 +399,7 @@ def create_aks_automatic(
 
     connect_cluster(config.resource_group, config.cluster_name)
 
-    # The AVM module does not type proxyRedirectionMechanism. CNI chaining
+    # The provider rejects proxyRedirectionMechanism at creation. CNI chaining
     # avoids the NET_ADMIN capability the default sidecar init container needs.
     _ensure_istio_cni_chaining(config)
 
@@ -583,7 +585,7 @@ def _wait_for_cluster_rbac(timeout_seconds: int = 600):
 
 
 def _ensure_istio_cni_chaining(config: Config):
-    """Enable Istio CNI chaining (not expressible in AVM managed-cluster v0.13.0)."""
+    """Enable Istio CNI chaining, which the provider rejects at cluster creation."""
     result = run_command(
         [
             "az",

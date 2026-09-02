@@ -10,8 +10,8 @@ verb applies, what it costs, and what it will not fix; improvising that during
 an incident is how a 20-minute refresh becomes a 4-hour rebuild.
 
 **Status.** `env-upgrade` and `env-refresh` are implemented and described
-below as built. `env-reset` and `env-teardown`, the pin backstop, the drain,
-and the test-identity ensure step remain unbuilt; those sections still
+below as built. `env-reset` and `env-teardown`, the backstop's workflow step,
+the drain, and the test-identity ensure step remain unbuilt; those sections still
 describe the target mechanism ahead of the code. Remove the remaining marks
 as those phases land.
 
@@ -39,16 +39,16 @@ details the pins.
 
 ## The pin and the bump flow
 
-`ops/environments/shared.yaml` (unbuilt) declares the environment:
+`ops/environments/shared.yaml` declares the environment:
 
 ```yaml
 env: shared
-stackVersion: v0.6.0
+stackVersion: v0.8.0
 profile: core
 location: westus3
 ingressMode: azure
 imageBranch: master
-nameSuffix: x7k2q
+nameSuffix: a43c7
 ```
 
 Publishing a release opens a `stackVersion` bump PR (a job in
@@ -155,8 +155,8 @@ to deploys only after the probes pass.
   connection during provision, and the upgrade workflow uses a direct,
   short-lived AKS connection only to recognize an incomplete first provision
   that has no deploy record yet.
-- `spi service pin/verify/reset/refresh` (unbuilt beyond the existing
-  `pin`/`reset`): the fork deploy seam. The sequence and its recovery paths
+- `spi service pin/verify/reset` (implemented; `spi service refresh` is
+  unbuilt): the fork deploy seam. The sequence and its recovery paths
   are [fork-deployment.md](fork-deployment.md); the fork-side jobs live in
   the `Azure/osdu-spi` template's workflows, not here.
 
@@ -209,11 +209,11 @@ gh run watch
 
 ## Implementation roadmap
 
-1. **Foundations** (partially built): `spi status --json`, `spi connect`,
-   chart digest rendering, and digest-preserving lock overlays are
-   implemented (ADR-030). Still unbuilt: the generalized pin surface
-   (`--image`, `verify`, `refresh`, ownership-checked `reset`) and the two
-   fork RBAC Roles. Exit test: hand-pin a partition GHCR digest against a
+1. **Foundations** (mostly built): `spi status --json`, `spi connect`,
+   chart digest rendering, digest-preserving lock overlays (ADR-030), and
+   the pin surface (`pin --image --ephemeral`, `verify`, ownership-checked
+   `reset`, the stale sweep; ADR-031) are implemented. Still unbuilt:
+   `spi service refresh` and the two fork RBAC Roles. Exit test: hand-pin a partition GHCR digest against a
    standing environment and reset it.
 2. **Versioning** (built for the backing environment): `repoTag` in
    `infra/flux.bicep`, `spi up --tag`, the deploy record, the declaration
@@ -242,7 +242,7 @@ gh run watch
 
 ## Source files
 
-- `ops/environments/shared.yaml` (planned), `ops/environments/README.md`
+- `ops/environments/shared.yaml`, `ops/environments/README.md`
 - `src/spi/environment.py`, `src/spi/deploy_record.py`
 - `infra/flux.bicep`
 - `src/spi/cli.py`, `src/spi/deploy.py`, `src/spi/status.py`,

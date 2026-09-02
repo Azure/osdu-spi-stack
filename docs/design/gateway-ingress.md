@@ -2,7 +2,7 @@
 
 **What this explains.** What `--ingress-mode azure`, `--ingress-mode dns`, and `--ingress-mode ip` provision concretely, how to switch between them on an existing cluster, and how to debug a 404 or a TLS error.
 
-**Why it matters.** Three modes look like three flags but they swap out cert-manager issuers, ExternalDNS, TLS overlays, and HTTPRoute hostnames. Knowing which mode is live tells you which moving parts are wired and which are deliberately absent.
+**Why it matters.** Three modes look like three flags but they swap out cert-manager issuers, ExternalDNS, TLS overlays, and HTTPRoute hostnames. Knowing which mode is live tells you which moving parts are wired and which are absent.
 
 > **Companion docs.** [Bicep architecture](bicep-architecture.md) explains the `external-dns-*` modules and how `--ingress-mode` is plumbed into `infra/flux.bicep`. [Flux reconciliation](flux-reconciliation.md) covers how the `ingress` Kustomization layers on top of the `stack` Kustomization.
 
@@ -24,7 +24,7 @@ Some pieces are in every mode and live under `software/components/`:
   implementation and the AKS managed Istio add-on Service
   `aks-istio-ingress/aks-istio-ingressgateway-external`. The stack does not
   render this add-on-owned Service.
-- **`Gateway` resource** in the `aks-istio-ingress` namespace. The base manifest under `software/components/gateway/` listens on HTTP:80; the `azure` and `dns` TLS overlays layer their HTTPS listeners on top. The selected ingress profile is its sole Flux renderer, through one `spi-gateway-tls` Kustomization that every non-bare mode declares under that same name: the TLS modes point it at their overlay, `ip` points it at the base component. One name means switching `--ingress-mode` only rewrites `spec.path` instead of pruning one owner and creating another. The legacy stack-profile `spi-gateway` renders nothing and is retained temporarily as a non-pruning ownership handoff (ADR-025).
+- **`Gateway` resource** in the `aks-istio-ingress` namespace. The base manifest under `software/components/gateway/` listens on HTTP:80; the `azure` and `dns` TLS overlays layer their HTTPS listeners on top. The selected ingress profile is its sole Flux renderer, through one `spi-gateway-tls` Kustomization that every non-bare mode declares under that same name: the TLS modes point it at their overlay, `ip` points it at the base component. One name means switching `--ingress-mode` only rewrites `spec.path` instead of pruning one owner and creating another. The stack-profile `spi-gateway` Kustomization renders nothing (`software/components/inventory-handoff/`) and stays as a non-pruning inventory handoff (ADR-025).
 - **cert-manager** for any mode that issues TLS (`azure`, `dns`).
 - **`spi-ingress-config` ConfigMap** in `osdu-flux`, written by the CLI during K8s bootstrap. Carries `GATEWAY_HOSTNAME`, `GATEWAY_LABEL`, `DNS_ZONE`, and similar values consumed by Flux `postBuild.substituteFrom`.
 
@@ -41,7 +41,7 @@ Two artifacts make this mode work end-to-end:
    node-resource-group deny assignment blocks patching the public IP itself
    (ADR-026). The Azure cloud controller then gives the existing public IP a
    `<label>.<region>.cloudapp.azure.com` FQDN.
-2. **Single-host cert-manager `Certificate`.** A `Certificate` for `<label>.<region>.cloudapp.azure.com` issued by a `ClusterIssuer` that uses HTTP-01 against the Gateway. The HTTPS listener referencing the cert Secret is applied at the same time as the HTTP:80 listener that solves the challenge, so the listener simply stays unprogrammed until cert-manager finishes the ACME dance.
+2. **Single-host cert-manager `Certificate`.** A `Certificate` for `<label>.<region>.cloudapp.azure.com` issued by a `ClusterIssuer` that uses HTTP-01 against the Gateway. The HTTPS listener referencing the cert Secret is applied at the same time as the HTTP:80 listener that solves the challenge, so the listener stays unprogrammed until cert-manager finishes the ACME dance.
 
 Routing in this mode: every OSDU API is reached at `https://<label>.<region>.cloudapp.azure.com/api/<service>/v1/...`. Kibana is served at `https://<label>.<region>.cloudapp.azure.com/kibana` via a subpath overlay. Airflow is not externally routed in this mode (use `kubectl port-forward` if you need its UI).
 
