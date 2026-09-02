@@ -11,7 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from spi import cli, status
-from spi.deploy_record import DeployRecord
+from spi.deploy_record import DeployRecord, DeployRecordError
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -65,7 +65,7 @@ def _wire(monkeypatch, *, ready=True, record=_record(), lock=None, suspended=Tru
         "_optional_configmap",
         lambda name, namespace: lock,
     )
-    monkeypatch.setattr("spi.info.collect_info", lambda: {"base_url": "https://example.test"})
+    monkeypatch.setattr("spi.info.collect_base_url", lambda: "https://example.test")
 
 
 def _wire_kustomization_error(monkeypatch, detail: str):
@@ -317,3 +317,22 @@ def test_watch_status_retries_after_transient_contract_read_error(monkeypatch):
     status.watch_status(interval=0)
 
     assert calls == 2
+
+
+def test_deploy_record_failure_outranks_a_later_read_failure(monkeypatch):
+    """Reads run concurrently, so both of these fail on the same pass. The
+    deploy record is read before the image lock, and that ordering is what
+    the caller sees."""
+    _wire(monkeypatch)
+
+    def failing_record(required=False):
+        raise DeployRecordError("deploy record is corrupt")
+
+    def failing_lock(name, namespace):
+        raise status.StatusError(f"Could not read ConfigMap {name}: connection refused")
+
+    monkeypatch.setattr(status, "read_deploy_record", failing_record)
+    monkeypatch.setattr(status, "_optional_configmap", failing_lock)
+
+    with pytest.raises(status.StatusError, match="deploy record is corrupt"):
+        status.collect_status()

@@ -48,8 +48,10 @@ def _wire(monkeypatch, osdu_config=None, partitions=None, legal_tag_base=None, s
             "AZURE_REGION": "westus3",
         },
     )
-    monkeypatch.setattr(info, "_read_partitions_list", lambda: partitions or ["opendes"])
-    monkeypatch.setattr(info, "_read_legal_tag_base", lambda: legal_tag_base or LEGAL_TAG_BASE)
+    names = partitions or ["opendes"]
+    values_yaml = "partitions:\n" + "".join(f"  - {name}\n" for name in names)
+    values_yaml += f"legalTag: {legal_tag_base or LEGAL_TAG_BASE}\n"
+    monkeypatch.setattr(info, "_read_init_values_yaml", lambda: values_yaml)
     monkeypatch.setattr(info, "_legal_tag_seeded", lambda partition: seeded)
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: True)
 
@@ -165,28 +167,22 @@ def test_legal_tag_base_read_from_init_values(monkeypatch):
         return {"data": {"values.yaml": values_yaml}}
 
     monkeypatch.setattr(info, "kubectl_json", fake_kubectl_json)
-    assert info._read_legal_tag_base() == LEGAL_TAG_BASE
+    assert info._legal_tag_base_from_values_yaml(info._read_init_values_yaml()) == LEGAL_TAG_BASE
 
-    monkeypatch.setattr(
-        info,
-        "kubectl_json",
-        lambda args: {"data": {"values.yaml": "partitions:\n  - opendes\nlegalTag: custom-tag\n"}},
+    assert (
+        info._legal_tag_base_from_values_yaml("partitions:\n  - opendes\nlegalTag: custom-tag\n")
+        == "custom-tag"
     )
-    assert info._read_legal_tag_base() == "custom-tag"
 
 
 def test_legal_tag_base_falls_back_for_older_configmaps(monkeypatch):
     """A spi-init-values written before the legalTag key existed means the
     Jobs used the chart default; the fallback constant must match it."""
-    monkeypatch.setattr(
-        info,
-        "kubectl_json",
-        lambda args: {"data": {"values.yaml": "partitions:\n  - opendes\n"}},
-    )
-    assert info._read_legal_tag_base() == LEGAL_TAG_BASE
+    assert info._legal_tag_base_from_values_yaml("partitions:\n  - opendes\n") == LEGAL_TAG_BASE
 
     monkeypatch.setattr(info, "kubectl_json", lambda args: None)
-    assert info._read_legal_tag_base() == LEGAL_TAG_BASE
+    assert info._read_init_values_yaml() == ""
+    assert info._legal_tag_base_from_values_yaml(info._read_init_values_yaml()) == LEGAL_TAG_BASE
 
 
 def test_cli_constant_matches_chart_values_default():
