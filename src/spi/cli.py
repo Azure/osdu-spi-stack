@@ -630,6 +630,9 @@ def info(
     output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
 ):
     """Show cluster access endpoints and optional credentials."""
+    if show_secrets and output_json:
+        raise typer.BadParameter("--show-secrets cannot be combined with --json")
+
     ctx = verify_spi_cluster()
 
     from .info import render_info

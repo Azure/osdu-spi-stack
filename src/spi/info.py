@@ -314,7 +314,7 @@ def _build_internal_services() -> list:
     ]
 
 
-def _collect_info(show_secret_refs: bool = False) -> tuple[dict, list]:
+def _collect_info() -> dict:
     from .guard import get_suspend_status
 
     cfg = _read_ingress_config()
@@ -371,28 +371,17 @@ def _collect_info(show_secret_refs: bool = False) -> tuple[dict, list]:
         "suspended": get_suspend_status(),
     }
 
-    if show_secret_refs:
-        creds_list = _get_live_credentials()
-        # JSON is what gets piped into logs, so it carries secret references,
-        # never values; only the interactive table renders them.
-        info["credentials"] = [
-            {"service": svc, "username": u, "secret_ref": ref} for svc, u, _p, ref in creds_list
-        ]
-    else:
-        creds_list = []
-
-    return info, creds_list
+    return info
 
 
 def collect_info() -> dict:
     """Collect the stable non-secret information contract."""
 
-    info, _credentials = _collect_info(show_secret_refs=False)
-    return info
+    return _collect_info()
 
 
 def render_info(show_secrets: bool = False, show_apis: bool = False, output_json: bool = False):
-    info, creds_list = _collect_info(show_secret_refs=show_secrets)
+    info = collect_info()
     mode = info["ingress_mode"]
     base = info["base_url"]
     endpoints = info["endpoints"]
@@ -411,6 +400,8 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
     if output_json:
         print(json.dumps(info, indent=2))
         return
+
+    creds_list = _get_live_credentials() if show_secrets else []
 
     console.print(Panel("[bold]SPI Stack Access Info[/bold]", border_style="cyan"))
 
