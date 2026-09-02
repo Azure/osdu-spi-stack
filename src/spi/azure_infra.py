@@ -14,13 +14,15 @@
 
 """Azure PaaS infrastructure provisioning.
 
-Everything Bicep can express lives in ``infra/aks.bicep`` and
-``infra/main.bicep``. The imperative steps are the ones ARM cannot make or
-the CLI must sequence itself: creating the resource group Bicep deploys
-into, branching on a soft-deleted Key Vault, merging the kubeconfig,
-enabling Istio CNI chaining, which the provider rejects at creation, and
-granting the signed-in principal cluster-admin on the cluster, kept here so
-the propagation poll runs before the first kubectl call. Runtime Key Vault secrets (seed passwords, fixed hostnames, the Table
+Everything Bicep can express lives in ``infra/aks.bicep``,
+``infra/main.bicep``, and ``infra/flux.bicep`` (the last deployed from
+``deploy.py`` after Kubernetes bootstrap). The imperative steps here are the
+ones ARM cannot make or the CLI must sequence itself: creating the resource
+group Bicep deploys into, branching on a soft-deleted Key Vault, merging the
+kubeconfig, enabling Istio CNI chaining, which the provider rejects at
+creation, and granting the signed-in principal cluster-admin on the cluster,
+kept here so the propagation poll runs before the first kubectl call.
+Runtime Key Vault secrets (seed passwords, fixed hostnames, the Table
 endpoint) are written later by ``deploy.py``.
 
 ``provision_azure_infra`` returns the infra_outputs dict the Kubernetes

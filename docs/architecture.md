@@ -81,7 +81,7 @@ The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines seven
 |-------|------|------------|
 | 0a | Namespaces | none |
 | 0b | Karpenter NodePools | 0a |
-| 1 | Operators (ECK, CNPG), cert-manager, trust-manager, shared Helm sources | 0a (trust-manager on cert-manager) |
+| 1 | Operators (ECK, CNPG), cert-manager, trust-manager, shared Helm sources, `spi-gateway` inventory handoff (renders nothing, ADR-025) | 0a (trust-manager on cert-manager) |
 | 2 | Middleware (Elasticsearch, Redis, PostgreSQL) | 1 + 0b |
 | 3 | Airflow | 2 (PostgreSQL) |
 | 4a | OSDU configuration placeholder | 0a |
