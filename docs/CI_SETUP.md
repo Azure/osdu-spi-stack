@@ -119,7 +119,7 @@ The JSON spec at `docs/branch-protection.json` enforces:
 
 | Setting | Value |
 |---|---|
-| Required status checks | `lint`, `typecheck`, `test`, `windows-shims`, `manifests`, `bicep-whatif`, `pr-title` |
+| Required status checks | `lint`, `lock`, `mirror-deps`, `typecheck`, `test`, `windows-shims`, `manifests`, `bicep-whatif`, `pr-title` |
 | Strict status checks | Branches must be up-to-date before merging |
 | Direct pushes | Blocked |
 | Force pushes | Blocked |
