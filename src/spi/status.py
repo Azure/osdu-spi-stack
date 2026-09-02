@@ -300,16 +300,17 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
     return KustomizationReadiness(items=items, states=states, ready=ready, reason=reason)
 
 
-def _read_deploy_record_result() -> DeployRecord | DeployRecordError | None:
-    """Read the deploy record, returning its failure rather than raising.
+def _read_deploy_record() -> DeployRecord | None:
+    """Read the deploy record, reporting its failure the way the others do.
 
-    ``gather_reads`` resolves in call order, so returning the error keeps a
-    Kustomization or GitRepository failure ahead of this one.
+    Raising here rather than returning the error is what keeps precedence in
+    call order: ``gather_reads`` stops at the first result that raises, so a
+    later read failing cannot mask this one.
     """
     try:
         return read_deploy_record(required=False)
     except DeployRecordError as exc:
-        return exc
+        raise StatusError(str(exc)) from exc
 
 
 def collect_status() -> StatusSnapshot:
@@ -320,7 +321,7 @@ def collect_status() -> StatusSnapshot:
     (
         kustomization_readiness,
         git_repository,
-        record_result,
+        record,
         image_lock,
         base_url,
     ) = gather_reads(
@@ -330,7 +331,7 @@ def collect_status() -> StatusSnapshot:
                 ["get", "gitrepository", "osdu-spi-stack-system", "-n", "osdu-flux"],
                 "read the Flux GitRepository",
             ),
-            _read_deploy_record_result,
+            _read_deploy_record,
             lambda: _optional_configmap("osdu-image-lock", "osdu-flux"),
             collect_base_url,
         ]
@@ -342,10 +343,6 @@ def collect_status() -> StatusSnapshot:
     reason = kustomization_readiness.reason
 
     suspended = bool(git_repository.get("spec", {}).get("suspend", False))
-
-    if isinstance(record_result, DeployRecordError):
-        raise StatusError(str(record_result))
-    record = record_result
 
     lock_data = (image_lock or {}).get("data") or {}
     if not isinstance(lock_data, dict):

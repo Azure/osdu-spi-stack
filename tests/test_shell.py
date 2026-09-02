@@ -22,14 +22,18 @@ test_shell_windows.py.
 
 import os
 import subprocess
+import threading
+from functools import partial
 from unittest import mock
 
 import pytest
 
 from spi.shell import (
+    _MAX_PARALLEL_READS,
     BatchArgumentError,
     build_batch_command_line,
     escape_batch_argument,
+    gather_reads,
     prepare_command,
     run_process,
 )
@@ -169,3 +173,84 @@ def test_run_process_forwards_kwargs_to_subprocess():
     assert result is completed
     prepare.assert_called_once_with(["kubectl", "get"])
     run.assert_called_once_with(["kubectl", "get"], capture_output=True, text=True, timeout=10)
+
+
+def test_gather_reads_returns_results_in_call_order():
+    """Results follow the call list, not completion order. The first call is
+    held until the second has finished, so completion order is the reverse."""
+    second_ran = threading.Event()
+
+    def first():
+        assert second_ran.wait(timeout=10), "the second call never ran; reads were serial"
+        return "first"
+
+    def second():
+        second_ran.set()
+        return "second"
+
+    assert gather_reads([first, second]) == ["first", "second"]
+
+
+def test_gather_reads_raises_the_earliest_failure_in_call_order():
+    """A later read failing first must not mask an earlier one. This is what
+    `collect_status` relies on to keep a Kustomization error ahead of the
+    reads that follow it."""
+    second_failed = threading.Event()
+
+    def first():
+        assert second_failed.wait(timeout=10), "the second call never ran; reads were serial"
+        raise RuntimeError("first")
+
+    def second():
+        second_failed.set()
+        raise RuntimeError("second")
+
+    with pytest.raises(RuntimeError, match="^first$"):
+        gather_reads([first, second])
+
+
+def test_gather_reads_runs_exactly_the_worker_cap_at_once():
+    """One more call than the cap: while every started call is blocked, the
+    extra one has no worker to run on, so exactly the cap is ever in flight.
+    """
+    started = threading.Semaphore(0)
+    release = threading.Event()
+    lock = threading.Lock()
+    live = 0
+
+    def probe():
+        nonlocal live
+        with lock:
+            live += 1
+        started.release()
+        assert release.wait(timeout=10), "the test never released the workers"
+        with lock:
+            live -= 1
+
+    results: list = []
+    runner = threading.Thread(
+        target=lambda: results.extend(gather_reads([probe] * (_MAX_PARALLEL_READS + 1)))
+    )
+    runner.start()
+    try:
+        for _ in range(_MAX_PARALLEL_READS):
+            assert started.acquire(timeout=10), "fewer calls ran at once than the cap allows"
+        assert not started.acquire(timeout=0.5), "more calls ran at once than the cap allows"
+        with lock:
+            assert live == _MAX_PARALLEL_READS
+    finally:
+        release.set()
+        runner.join(timeout=10)
+
+    assert len(results) == _MAX_PARALLEL_READS + 1
+
+
+def test_gather_reads_runs_a_lone_call_without_a_pool():
+    """One read is not worth a thread; it stays on the calling thread."""
+    assert gather_reads([threading.current_thread]) == [threading.current_thread()]
+    assert gather_reads([]) == []
+
+
+def test_gather_reads_passes_no_arguments_to_its_calls():
+    """Callers bind their arguments up front, so a read takes none."""
+    assert gather_reads([partial(len, "abcd"), partial(len, "ab")]) == [4, 2]
