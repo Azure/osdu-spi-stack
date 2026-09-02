@@ -11,9 +11,12 @@ authors = [
     { name = "Microsoft Corporation" },
 ]
 requires-python = ">=3.10"
+# Version floors must be installable from the Microsoft package feed proxy
+# declared below, which lags PyPI by roughly a week. The `mirror-deps` CI job
+# enforces that for both this runtime set and the dev group.
 dependencies = [
     "rich>=15.0.0",
-    "typer>=0.27.2",
+    "typer>=0.27.1",
     "pydantic>=2.13.4",
     "pyyaml>=6.0",
     "packaging>=26.3",
@@ -74,7 +77,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pyyaml>=6.0.3",
     "ruff>=0.16.4",
-    "ty>=0.0.75",
+    "ty>=0.0.74",
 ]
 
 [tool.ruff]

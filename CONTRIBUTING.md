@@ -66,6 +66,20 @@ re-stage. Skip hooks (rare, last resort) with `git commit --no-verify`.
 | `docs/design/` | Subsystem design documents |
 | `.github/skills/` | Portable AI agent skills |
 
+## Dependencies
+
+Dependency bounds in `pyproject.toml` must be satisfiable from
+`packagefeedproxy.microsoft.io`, the anonymous PyPI mirror that corporate
+networks blocking `pythonhosted.org` rely on. The mirror lags PyPI by roughly a
+week, so a bound that requires a release from the last few days makes the
+published wheel uninstallable for those users.
+
+After changing a bound, regenerate the lock with `uv lock`; never hand-edit
+`uv.lock`, whose URLs and hashes come from resolution. Two CI jobs enforce this:
+`lock` fails when `uv.lock` drifts from `pyproject.toml`, and `mirror-deps`
+installs the built wheel and resolves the dev group with the mirror as the only
+index. Normal development still resolves through PyPI as a fallback.
+
 ## Making Changes
 
 ### Branch Naming

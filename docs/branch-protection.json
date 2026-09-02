@@ -3,6 +3,8 @@
     "strict": true,
     "checks": [
       { "context": "lint", "app_id": -1 },
+      { "context": "lock", "app_id": -1 },
+      { "context": "mirror-deps", "app_id": -1 },
       { "context": "typecheck", "app_id": -1 },
       { "context": "test", "app_id": -1 },
       { "context": "windows-shims", "app_id": -1 },

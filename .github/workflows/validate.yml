@@ -13,6 +13,58 @@ permissions:
   contents: read
 
 jobs:
+  lock:
+    name: lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      # Every other job runs `uv sync --frozen`, which happily installs a lock
+      # that no longer matches pyproject.toml. This is the check that notices.
+      - name: uv.lock matches pyproject.toml
+        run: uv lock --check
+
+  mirror-deps:
+    name: mirror-deps
+    runs-on: ubuntu-latest
+    env:
+      # packagefeedproxy.microsoft.io lags PyPI by roughly a week. This job is
+      # the gate that keeps the wheel and the dev group installable inside that
+      # window; the rest of the repo still resolves through PyPI as well.
+      MIRROR_INDEX: https://packagefeedproxy.microsoft.io/pypi/simple/
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Build the wheel
+        run: uv build --wheel --out-dir dist
+      - name: Install the wheel with the mirror as the only index
+        run: |
+          set -euo pipefail
+          uv venv /tmp/mirror-venv
+          uv pip install \
+            --python /tmp/mirror-venv/bin/python \
+            --no-cache \
+            --default-index "$MIRROR_INDEX" \
+            --index-strategy unsafe-best-match \
+            dist/*.whl
+      - name: Smoke-test the mirror-only install
+        run: |
+          set -euo pipefail
+          /tmp/mirror-venv/bin/spi --version
+          /tmp/mirror-venv/bin/spi --help
+      - name: Resolve the dev dependency group from the mirror only
+        run: |
+          uv pip compile \
+            --group dev pyproject.toml \
+            --no-cache \
+            --default-index "$MIRROR_INDEX" \
+            --index-strategy unsafe-best-match \
+            -o /dev/null
+
   lint:
     name: lint
     runs-on: ubuntu-latest
