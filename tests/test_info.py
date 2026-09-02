@@ -4,10 +4,21 @@
 
 """Machine-readable environment information contract."""
 
+import json
+import re
 from pathlib import Path
 
-from spi import info
+from typer.testing import CliRunner
+
+from spi import cli, info
 from spi.templates import LEGAL_TAG_BASE, spi_init_values_configmap
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI styling so assertions survive Rich colorizing under CI."""
+    return _ANSI.sub("", text)
 
 
 def _wire(monkeypatch, osdu_config=None, partitions=None, legal_tag_base=None, seeded=True):
@@ -53,6 +64,32 @@ def test_collect_info_includes_versioned_identity_fields(monkeypatch):
     assert result["azure"]["tenant_id"] == "tenant-id"
     assert result["azure"]["data_plane_application_id"] == "application-id"
     assert result["suspended"] is True
+
+
+def test_render_info_json_never_reads_or_emits_live_credentials(monkeypatch, capsys):
+    _wire(monkeypatch)
+    sentinel = "sentinel-secret-value"
+    calls = []
+
+    def fake_get_live_credentials():
+        calls.append(True)
+        return [("PostgreSQL", sentinel, sentinel, "platform/secret#password")]
+
+    monkeypatch.setattr(info, "_get_live_credentials", fake_get_live_credentials)
+
+    info.render_info(show_secrets=True, output_json=True)
+
+    output = capsys.readouterr().out
+    assert calls == []
+    assert sentinel not in output
+    assert "credentials" not in json.loads(output)
+
+
+def test_info_rejects_show_secrets_with_json():
+    result = CliRunner().invoke(cli.app, ["info", "--show-secrets", "--json"])
+
+    assert result.exit_code == 2
+    assert "--show-secrets cannot be combined with --json" in _plain(result.output)
 
 
 def test_openid_issuer_is_published_explicitly(monkeypatch):

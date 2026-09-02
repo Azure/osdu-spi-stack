@@ -145,11 +145,12 @@ to deploys only after the probes pass.
   deploy gate, a typed reason, the deployed version, and the `maintenance`
   flag. Exit 0/2/1 (ADR-030). Implemented; both lifecycle workflows gate on
   it.
-- `spi info --json`: endpoints, partitions, Azure coordinates, secret
-  references. In `azure` ingress mode the FQDN embeds the environment's name
-  suffix; the declaration file persists the suffix across resets (ADR-028),
-  so the hostname is stable, and consumers still re-read it per run rather
-  than caching a value.
+- `spi info --json`: endpoints, partitions, and non-secret Azure coordinates.
+  Acceptance secret names come from each service descriptor, and their values
+  are fetched separately from Key Vault. In `azure` ingress mode the FQDN
+  embeds the environment's name suffix; the declaration file persists the
+  suffix across resets (ADR-028), so the hostname is stable, and consumers
+  still re-read it per run rather than caching a value.
 - `spi connect`: implemented; lifecycle jobs use it after a fresh OIDC login
   when reconnecting to an initialized deployment. `spi up` owns the cluster
   connection during provision, and the upgrade workflow uses a direct,
