@@ -20,6 +20,6 @@ Rejected: run cert-manager inside a managed namespace. Exemption is by identity,
 
 - Issuance works under the managed-namespace policy; validated live (issuance completed in ~30 s in `platform` after stalling indefinitely in `aks-istio-ingress`).
 - cert-manager can now publish `Ready` conditions, so the `spi-gateway-tls` Kustomization genuinely gates on issuance instead of passing a status-less Certificate.
-- The smoke workflow gained an HTTPS-handshake probe, closing the CI blind spot that let this ship.
+- The smoke workflow performs an HTTPS handshake, so a status-less Certificate no longer passes CI.
 - The TLS trust topology spans two namespaces; readers must follow a ReferenceGrant to see why the listener resolves.
 - Flux prunes the stalled Certificates from `aks-istio-ingress` on reconcile (it is exempt and owns them).

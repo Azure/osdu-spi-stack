@@ -28,7 +28,7 @@ Rejected:
 
 ## Consequences
 
-- Three stateful workloads still require in-cluster Premium SSD storage (~420 GiB provisioned in total).
+- Three stateful workloads still require in-cluster Premium SSD storage (450 GiB provisioned in total).
 - The CA chains for Elasticsearch HTTP and Redis TLS are self-signed (cert-manager + ECK) and must reach the `osdu` namespace; ADR-011 covers the distribution mechanism.
 - Operator updates (ECK, CNPG) move with their Flux HelmReleases and land through the normal reconcile loop.
 - Backup and disaster recovery for these systems are out of scope for the SPI Stack's dev/test framing; durable state lives in the Azure PaaS resources covered by ADR-001.

@@ -49,9 +49,9 @@ record written at the end of `spi up` supplies the version fields.
   derives `deployable`; when it is set and cleared, and the fail-closed rules
   around it, are ADR-029's ruling.
 - Endpoints, partitions, and secret references stay in `spi info --json`,
-  which carries the same `apiVersion` field plus `azure.tenant_id`, the
-  data-plane application id that acceptance suites need to mint tokens,
-  `azure.openid_issuer`, and `partitions[].legal_tag`.
+  which carries the same `apiVersion` field plus `azure.tenant_id`,
+  `azure.data_plane_application_id` (the application id acceptance suites
+  need to mint tokens), `azure.openid_issuer`, and `partitions[].legal_tag`.
 - `azure.openid_issuer` is the OIDC v2.0 issuer URL, published explicitly
   rather than derived by consumers from the tenant id. It is an empty string
   until the cluster reports its tenant, so consumers treat present-but-empty

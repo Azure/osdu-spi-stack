@@ -8,7 +8,7 @@ On native Windows, Azure CLI and other prerequisite tools install as `.cmd` batc
 
 Escape and launch through an explicit `cmd.exe` command line at the one chokepoint every subprocess already flows through, `spi.shell.run_process`, applying the published BatBadBut mitigations: MSVCRT quote doubling plus `%%cd:~,%` percent neutralization. Every argument is quoted, with no unquoted fast path, and POSIX behavior is unchanged. The only rejected inputs are newline and NUL, which cmd.exe cannot deliver; they fail as an ordinary command error whose message never echoes the value, which may be a secret.
 
-The guarantee rests on an end-to-end test, not on lineage: a Windows CI job asserts the decoded argv a target receives through a real `%*`-forwarding shim, which is what Azure CLI ships. Two limits are documented rather than papered over: a shim that re-parses its arguments again (`call`, `%~1` re-expansion, delayed expansion) defeats any command-line escaping scheme, and cmd.exe caps the command line at 8,191 characters.
+The guarantee rests on an end-to-end test, not on lineage: a Windows CI job asserts the decoded argv a target receives through a real `%*`-forwarding shim, which is what Azure CLI ships. Two limits remain: a shim that re-parses its arguments again (`call`, `%~1` re-expansion, delayed expansion) defeats any command-line escaping scheme, and cmd.exe caps the command line at 8,191 characters.
 
 Rejected: keep `shell=True` and pre-quote per call site. A missed site silently reintroduces the bug.
 

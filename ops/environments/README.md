@@ -6,20 +6,19 @@ environment. `src/spi/environment.py` owns the schema. `env-upgrade.yml` and
 `env-refresh.yml` read it to drive a deployment; `release.yml`'s bump job
 reads and validates it to open the version-bump PR, and is the only writer.
 
-There is one declaration today, `shared.yaml`, deliberately not checked in by
-the implementation that introduces this schema: activation is a separate,
-reviewed PR (see [Activation](#activation) below).
+There is one declaration today, `shared.yaml`. Adding a declaration is a
+reviewed PR of its own (see [Activation](#activation) below).
 
 ## Schema
 
 ```yaml
 env: shared
-stackVersion: v0.6.0
+stackVersion: v0.8.0
 profile: core
 location: westus3
 ingressMode: azure
 imageBranch: master
-nameSuffix: x7k2q
+nameSuffix: a43c7
 ```
 
 | Key | Meaning |

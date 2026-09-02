@@ -14,15 +14,15 @@ Three Bicep entrypoints, each with a single responsibility:
 
 | Template | Style | What it lands |
 |---|---|---|
-| `infra/aks.bicep` | AVM `container-service/managed-cluster` (pinned) | AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio, OIDC issuer |
+| `infra/aks.bicep` | Raw `Microsoft.ContainerService/managedClusters` resource plus `modules/vnet.bicep` | AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio, OIDC issuer |
 | `infra/main.bicep` | Raw modules under `infra/modules/` | Every other PaaS resource: identity, RBAC, Key Vault (with secrets), ACR, Cosmos DB Gremlin, per-partition (Cosmos SQL + Service Bus + Storage), common Storage, optional `external-dns-*` for `dns` ingress |
 | `infra/flux.bicep` | Raw (small) | AKS Flux extension + `fluxConfigurations` with two Kustomizations (stack profile, ingress mode) |
 
 Each deploys via `az deployment group create` against the same resource group. They run sequentially because each depends on values from the previous one (kubeconfig from AKS, identity client IDs from main, Kustomization paths from CLI inputs).
 
-### Why split into three
+### Three lifecycles
 
-A single template would work, but the three boundaries match three different lifecycles:
+The three boundaries match three different lifecycles:
 
 - **`aks.bicep`** is the slowest piece (~30 min) and almost never changes after first deploy.
 - **`main.bicep`** changes when you add a partition, swap a PaaS sku, or wire a new identity. It deploys in ~2-3 min and re-runs idempotently.
@@ -30,13 +30,9 @@ A single template would work, but the three boundaries match three different lif
 
 Splitting them also keeps `--dry-run` useful: `spi up --dry-run` runs `az deployment group what-if` against `aks.bicep` and `main.bicep` and skips everything after, so you see the ARM-level diff without paying for a full deploy.
 
-## Why AVM for AKS and raw Bicep for the rest
+## Hand-written Bicep throughout
 
-AKS Automatic has a non-trivial parameter shape: system-pool VM size, Ephemeral OS disk, NAT gateway for egress, `serviceMeshProfile` for Istio, Workload Identity flags. The AVM `container-service/managed-cluster` module bundles the correct defaults and updates them as Microsoft tunes the SKU.
-
-The PaaS modules (Key Vault, ACR, Storage, Cosmos, Service Bus, Managed Identity) are different: AVM's passthrough modules for these add a module-version axis to maintain without materially improving over raw Bicep. They are stable resources with well-known shape, so the raw modules under `infra/modules/` are small, readable, and reviewable.
-
-The full rationale is in [ADR-008](../decisions/008-bicep-for-azure-provisioning.md).
+`aks.bicep` declares the `Microsoft.ContainerService/managedClusters` resource directly, with the AKS Automatic parameter shape spelled out in the file: system-pool VM size and zones, Ephemeral OS disk, NAT gateway egress on the VNet from `modules/vnet.bicep`, `serviceMeshProfile` for Istio, and the OIDC issuer and Workload Identity flags. The PaaS modules under `infra/modules/` are the same style: one deployment concern per file (`partition.bicep` bundles a partition's Cosmos, Service Bus, Storage, secrets, and role assignments), small enough to read in a review. No Azure Verified Module is referenced. [ADR-008](../decisions/008-bicep-for-azure-provisioning.md) owns the rationale.
 
 ## Module inventory (`infra/modules/`)
 
@@ -57,15 +53,16 @@ The full rationale is in [ADR-008](../decisions/008-bicep-for-azure-provisioning
 
 ## Imperative seams in the CLI
 
-Five things Bicep cannot or will not do; the CLI handles them with `az`:
+Six things the CLI owns rather than Bicep, all through `az`:
 
 1. **`az group create`.** Bicep cannot create the resource group it deploys into.
 2. **Soft-delete Key Vault recovery.** `az keyvault list-deleted | jq` + `az keyvault recover`. ARM cannot branch on a live query, so the CLI checks before submitting `main.bicep` and runs `recover` if needed.
 3. **`az aks get-credentials`.** Kubeconfig merge is a client-side operation, not a resource.
-4. **`az aks mesh enable-istio-cni`.** AVM v0.13.0 types `proxyRedirectionMechanism` out of `IstioComponents`. The CLI patches it imperatively after `aks.bicep` lands; pin a newer AVM version when the parameter becomes available.
-5. **Runtime Key Vault secrets.** The in-cluster middleware secrets (`redis-*`, `{p}-elastic-*`) are not declarable in Bicep. The CLI writes them with `az keyvault secret set` from the generated seed passwords, with no wait for middleware Ready, since the values are known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md) and the [secret lifecycle](secret-lifecycle.md) doc for the full handoff.
+4. **`az aks mesh enable-istio-cni`.** The resource provider rejects `proxyRedirectionMechanism` at cluster creation. The CLI enables CNI chaining after `aks.bicep` lands and skips the call when the cluster already reports `CNIChaining`.
+5. **Deployer cluster-admin grant.** `az role assignment create --role "Azure Kubernetes Service RBAC Cluster Admin"` on the cluster for the signed-in principal, then a wait until the assignment propagates (minutes). Bicep could declare the assignment; the CLI keeps it imperative so the propagation poll runs before its first `kubectl` call, since local accounts are disabled.
+6. **Runtime Key Vault secrets.** The middleware secrets (`redis-*`, `{p}-elastic-*`) and `tbl-storage-endpoint` are not declared in Bicep. The CLI writes them with `az keyvault secret set` from the generated seed passwords, fixed in-cluster hostnames, and the common Storage account name, with no wait for middleware Ready, since every value is known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md) and the [secret lifecycle](secret-lifecycle.md) doc for the full handoff.
 
-These seams are explicit and small. Adding to them is a smell: most "Bicep cannot do this" answers turn out to be "I have not read the AVM changelog yet."
+Adding a seam is a smell; confirm first that the resource provider rejects the setting declaratively.
 
 ## Deploy order (per `spi up`)
 
@@ -77,6 +74,7 @@ spi up --env <env>
    ├── az deployment group create  --template-file infra/aks.bicep
    ├── az aks get-credentials
    ├── az aks mesh enable-istio-cni
+   ├── az role assignment create  (deployer AKS RBAC Cluster Admin, wait for propagation)
    │
    ├── (KV recovery if needed)
    ├── az deployment group create  --template-file infra/main.bicep
@@ -87,7 +85,7 @@ spi up --env <env>
    ├── az deployment group create  --template-file infra/flux.bicep
    │       --parameters profile=<profile> ingressMode=<mode>
    │
-   └── az keyvault secret set  (runtime secrets, from seed)
+   └── az keyvault secret set  (runtime secrets: seed passwords, fixed hostnames, Table endpoint)
 ```
 
 `spi up --dry-run` stops after the `what-if` on `aks.bicep` and `main.bicep`. Everything below that line only runs in a real deploy.
@@ -102,7 +100,7 @@ Suppose you want to add an Azure Cache for Redis to support a new service.
 4. **Plumb the config.** If consumers read it from `osdu-config`, extend `templates.py`'s `osdu_config_configmap()` function. If they read it from Key Vault, the secret you declared in step 1 is enough.
 5. **Preview.** `spi up --env dev1 --dry-run` shows the ARM-level diff. If it looks right, run without `--dry-run`.
 
-The CLI does not need to learn the resource. That is the point of declarative provisioning.
+The CLI does not need to learn the resource.
 
 ## Worked example: what `spi up --dry-run` actually does
 
@@ -135,7 +133,7 @@ The dry-run does not touch the cluster. It does land the resource group (Bicep n
 
 ## Source files
 
-- `infra/aks.bicep` -- AKS via AVM
+- `infra/aks.bicep` -- the AKS Automatic cluster
 - `infra/main.bicep` -- the PaaS modules
 - `infra/flux.bicep` -- AKS Flux extension + `fluxConfigurations`
 - `infra/modules/*.bicep` -- per-resource modules

@@ -20,7 +20,7 @@ Shape:
 
 Rejected:
 - **A long-running Deployment that loads once then sleeps.** Works, but lies to Kubernetes about what the workload is.
-- **A `null_resource + local-exec` in Terraform.** The approach in the sister `osdu-spi-infra` repo; re-introduces the CLI-tail problem inside Terraform instead of Python.
+- **A Terraform `null_resource` with `local-exec`.** Runs at apply time with no cluster-side resource to manage, but re-introduces the CLI-tail problem inside Terraform instead of Python.
 - **A home-grown Python loader that fetches schemas from Git.** Duplicates community CI, and the community image already publishes at the same SHA as the service.
 
 ## Consequences
