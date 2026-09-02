@@ -631,7 +631,10 @@ def info(
 ):
     """Show cluster access endpoints and optional credentials."""
     if show_secrets and output_json:
-        raise typer.BadParameter("--show-secrets cannot be combined with --json")
+        raise typer.BadParameter(
+            "--show-secrets cannot be combined with --json",
+            param_hint="--json",
+        )
 
     ctx = verify_spi_cluster()
 
