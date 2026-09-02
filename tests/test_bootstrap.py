@@ -13,6 +13,7 @@ Both the detection and the paths that write the ConfigMap are covered here.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import typer
 from typer.testing import CliRunner
 
 from spi import cli
@@ -26,6 +27,7 @@ from spi.bootstrap import (
     render_istio_revision_configmap,
 )
 from spi.images import ResolvedImage
+from spi.status import StatusError
 
 
 def _deploy_list(*names: str) -> dict:
@@ -150,6 +152,7 @@ class TestReconcileRefreshesClusterConfig:
             # spi.cli.run_command patch above does not intercept; without
             # this the default reconcile path shells out to real kubectl.
             patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
         assert result.exit_code == 0, result.output
@@ -243,6 +246,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.apply_image_lock", return_value={}),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
+            patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
 
@@ -287,6 +291,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.apply_image_lock", return_value={}),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
+            patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
 
@@ -331,10 +336,112 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.run_command", side_effect=_run_command),
             patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
 
         assert result.exit_code == 0, result.output
+
+
+class TestReconcileResetsStalledHelmReleases:
+    """helm-controller marks a release Stalled once install retries are
+    exhausted and never retries it, even after the cause is fixed. A
+    re-applied, unchanged HelmRelease manifest does not reset it either, so
+    reconcile has to annotate the release itself.
+    """
+
+    def _invoke(self, stalled):
+        runner = CliRunner()
+        events = []
+
+        def _run_command(cmd_list, **kwargs):
+            events.append(cmd_list)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.run_command", side_effect=_run_command),
+            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.status.resettable_helmreleases", return_value=stalled),
+        ):
+            result = runner.invoke(cli.app, ["reconcile"])
+
+        assert result.exit_code == 0, result.output
+        resets = [
+            cmd
+            for cmd in events
+            if cmd[:2] == ["kubectl", "annotate"] and cmd[3].startswith("helmrelease/")
+        ]
+        return result, resets
+
+    def test_stalled_release_gets_reset_and_force_annotations(self):
+        result, resets = self._invoke([("osdu-flux", "partition")])
+
+        assert [cmd[3] for cmd in resets] == ["helmrelease/partition"]
+        assert resets[0][4:6] == ["-n", "osdu-flux"]
+        pairs = dict(arg.split("=", 1) for arg in resets[0] if "=" in arg)
+        assert set(pairs) == {
+            "reconcile.fluxcd.io/requestedAt",
+            "reconcile.fluxcd.io/resetAt",
+            "reconcile.fluxcd.io/forceAt",
+        }
+        # helm-controller ignores resetAt and forceAt unless they match requestedAt.
+        assert len(set(pairs.values())) == 1
+        assert "Resetting HelmReleases that exhausted retries: partition" in result.output
+
+    def test_healthy_releases_are_left_alone(self):
+        result, resets = self._invoke([])
+
+        assert resets == []
+        assert "Resetting HelmReleases" not in result.output
+
+    def test_unreadable_helmreleases_abort_the_reconcile(self):
+        """A read that fails for any reason other than an absent type must not
+        read as "nothing stalled": reconcile would then report success while
+        leaving the releases it exists to recover still stalled.
+        """
+        runner = CliRunner()
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.run_command", return_value=SimpleNamespace(returncode=0, stdout="")),
+            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch(
+                "spi.status.resettable_helmreleases",
+                side_effect=StatusError("Could not read Flux HelmReleases: connection refused"),
+            ),
+        ):
+            result = runner.invoke(cli.app, ["reconcile"])
+
+        assert result.exit_code == 1
+        assert "Could not check for stalled HelmReleases" in result.output
+        assert "connection refused" in result.output
+
+    def test_failed_reset_annotation_aborts(self):
+        """The annotation is the recovery itself, so an RBAC denial or API
+        error has to stop the run rather than be reported as a reset.
+        """
+        runner = CliRunner()
+
+        def _run_command(cmd_list, **kwargs):
+            if cmd_list[:2] == ["kubectl", "annotate"] and cmd_list[3].startswith("helmrelease/"):
+                raise typer.Exit(code=1)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.run_command", side_effect=_run_command),
+            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.status.resettable_helmreleases", return_value=[("osdu-flux", "partition")]),
+        ):
+            result = runner.invoke(cli.app, ["reconcile"])
+
+        assert result.exit_code == 1
 
 
 class TestSchemaLoadImageLockBackfill:
@@ -364,6 +471,7 @@ class TestSchemaLoadImageLockBackfill:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.apply_schema_load_backfill", side_effect=_backfill) as backfill,
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
+            patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
 

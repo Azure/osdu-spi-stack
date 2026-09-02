@@ -8,6 +8,7 @@ import json
 import re
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 from spi import cli, status
@@ -336,3 +337,147 @@ def test_deploy_record_failure_outranks_a_later_read_failure(monkeypatch):
 
     with pytest.raises(status.StatusError, match="deploy record is corrupt"):
         status.collect_status()
+
+
+def _helmrelease(name: str, *, stalled: bool, reason: str = "RetriesExceeded") -> dict:
+    conditions = [
+        {
+            "type": "Ready",
+            "status": "False",
+            "reason": "InstallFailed",
+            "message": f"Helm install failed for release osdu/osdu-{name}",
+        }
+    ]
+    if stalled:
+        conditions.insert(
+            0,
+            {
+                "type": "Stalled",
+                "status": "True",
+                "reason": reason,
+                "message": (
+                    "Failed to install after 4 attempt(s)"
+                    if reason == "RetriesExceeded"
+                    else "invalid CEL expression in healthCheckExprs"
+                ),
+            },
+        )
+    return {
+        "metadata": {"name": name, "namespace": "osdu-flux"},
+        "spec": {"chart": {"spec": {"chart": "./software/charts/osdu-spi-service"}}},
+        "status": {"conditions": conditions},
+    }
+
+
+def _wire_helmreleases(monkeypatch, items):
+    monkeypatch.setattr(status, "kubectl_json", lambda args: {"items": items})
+    monkeypatch.setattr(
+        status, "_required_kubectl_json", lambda args, description: {"items": items}
+    )
+
+
+def test_resettable_helmreleases_lists_only_exhausted_retries(monkeypatch):
+    """helm-controller also stalls on terminal errors, where forcing another
+    attempt repeats the same failure; only RetriesExceeded is resettable."""
+    _wire_helmreleases(
+        monkeypatch,
+        [
+            _helmrelease("partition", stalled=True),
+            _helmrelease("legal", stalled=False),
+            _helmrelease("storage", stalled=True, reason="TerminalError"),
+        ],
+    )
+
+    assert status.resettable_helmreleases() == [("osdu-flux", "partition")]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        'error: the server doesn\'t have a resource type "helmreleases"',
+        'error: no matches for kind "HelmRelease"',
+    ],
+)
+def test_resettable_helmreleases_treats_absent_type_as_empty(monkeypatch, detail):
+    """A profile that never declares HelmReleases reads as empty."""
+
+    def _raise(args, description):
+        raise status.StatusError(f"Could not {description}: {detail}")
+
+    monkeypatch.setattr(status, "_required_kubectl_json", _raise)
+
+    assert status.resettable_helmreleases() == []
+
+
+def test_resettable_helmreleases_raises_on_read_failure(monkeypatch):
+    """An unreadable cluster must not be reported as "nothing stalled": the
+    caller would skip the reset and claim a recovery it never performed."""
+
+    def _raise(args, description):
+        raise status.StatusError(f"Could not {description}: connection refused")
+
+    monkeypatch.setattr(status, "_required_kubectl_json", _raise)
+
+    with pytest.raises(status.StatusError, match="connection refused"):
+        status.resettable_helmreleases()
+
+
+def test_helmrelease_table_marks_stalled_release(monkeypatch):
+    """A release that exhausted its retries renders as Stalled with the retry
+    message and the table names the remedy; helm-controller never retries it
+    on its own, so InstallFailed alone reads as a broken service."""
+    _wire_helmreleases(
+        monkeypatch,
+        [_helmrelease("partition", stalled=True), _helmrelease("legal", stalled=False)],
+    )
+
+    out = Console(width=200, record=True, force_terminal=False)
+    out.print(status.get_helmrelease_table())
+    text = _plain(out.export_text())
+
+    assert "Stalled" in text
+    assert "Failed to install after 4 attempt(s)" in text
+    assert "InstallFailed" in text
+    assert "1 stalled after exhausting retries; 'spi reconcile' resets them." in text
+
+
+def test_helmrelease_table_has_no_caption_without_stalls(monkeypatch):
+    _wire_helmreleases(monkeypatch, [_helmrelease("legal", stalled=False)])
+
+    out = Console(width=200, record=True, force_terminal=False)
+    out.print(status.get_helmrelease_table())
+    text = _plain(out.export_text())
+
+    assert "Stalled" not in text
+    assert "spi reconcile" not in text
+
+
+def test_helmrelease_table_separates_terminal_stalls_from_retry_stalls(monkeypatch):
+    """A terminal stall must not be captioned as exhausted retries: the reset
+    that clears a RetriesExceeded stall repeats the same failure here."""
+    _wire_helmreleases(
+        monkeypatch,
+        [
+            _helmrelease("partition", stalled=True),
+            _helmrelease("storage", stalled=True, reason="TerminalError"),
+        ],
+    )
+
+    out = Console(width=200, record=True, force_terminal=False)
+    out.print(status.get_helmrelease_table())
+    text = _plain(out.export_text())
+
+    assert "1 stalled after exhausting retries; 'spi reconcile' resets them." in text
+    assert "1 stalled on a terminal error; a reset repeats the same failure." in text
+
+
+def test_helmrelease_table_omits_retry_caption_for_terminal_stall_only(monkeypatch):
+    _wire_helmreleases(monkeypatch, [_helmrelease("storage", stalled=True, reason="TerminalError")])
+
+    out = Console(width=200, record=True, force_terminal=False)
+    out.print(status.get_helmrelease_table())
+    text = _plain(out.export_text())
+
+    assert "Stalled" in text
+    assert "exhausting retries" not in text
+    assert "a reset repeats the same failure." in text

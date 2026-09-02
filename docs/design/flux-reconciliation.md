@@ -125,7 +125,7 @@ The substitution is not marked `optional`. A missing ConfigMap fails `spi-namesp
 
 | Command | Effect | Suspended after? |
 |---|---|---|
-| `spi reconcile` | One-shot reconcile (annotates the source + stack Kustomization with `reconcile.fluxcd.io/requestedAt`) | yes (unchanged) |
+| `spi reconcile` | One-shot reconcile (annotates the source + stack Kustomization with `reconcile.fluxcd.io/requestedAt`), and resets any `HelmRelease` stalled on `RetriesExceeded` | yes (unchanged) |
 | `spi reconcile --suspend` | Set `spec.suspend: true` if not already | yes |
 | `spi reconcile --resume` | Set `spec.suspend: false` (Flux resumes 10-min polling) | no |
 | `spi reconcile --refresh-images` | Re-resolve `osdu-image-lock`, re-apply (active pins overlaid), then reconcile service Kustomizations | yes (unchanged) |
@@ -153,6 +153,42 @@ therefore mutates it without a readiness wait or gateway probes while leaving
 `maintenance: false` and `deployable: true`; see
 [environment-lifecycle.md](environment-lifecycle.md) for the full contract
 and [ADR-029](../decisions/029-environment-lifecycle-and-reset-boundary.md).
+
+## Stalled HelmReleases
+
+A `HelmRelease` that exhausts `install.remediation.retries` is marked
+`Stalled=True` with reason `RetriesExceeded`, and helm-controller stops
+retrying it. Neither the `interval` nor a re-apply of the unchanged manifest
+through its Kustomization clears that state, because the release's generation
+has not moved. The release holds at `Ready=False` after whatever blocked it is
+gone, and every Kustomization that depends on it holds at
+`DependencyNotReady`.
+
+The workload underneath can be healthy the whole time. A Deployment whose pods
+stay unschedulable past `progressDeadlineSeconds` reports `Failed` to Flux's
+health check, which fails the install early; once capacity arrives the
+Deployment recovers on its own, but the retries are already spent. The
+structural failure is that a transient capacity shortage outlasting four
+install attempts converts into a permanent stall.
+
+`RetriesExceeded` is not the only stall. helm-controller also sets
+`Stalled=True` for terminal causes, an invalid CEL health-check expression or
+a chart reference it may not read, where the release needs a change and
+another forced attempt repeats the same failure. Only a `RetriesExceeded`
+stall is recoverable by a reset, so the two are counted and captioned
+separately.
+
+`spi status` renders any stalled release as `Stalled` rather than
+`InstallFailed`, which distinguishes an exhausted controller from a service
+that is genuinely failing to start, and captions the table per cause:
+`RetriesExceeded` points at `spi reconcile`, a terminal stall says a reset
+repeats the same failure. `spi reconcile` annotates each `RetriesExceeded`
+release with `reconcile.fluxcd.io/requestedAt`, `resetAt`, and `forceAt` at
+one timestamp, clearing the failure count and forcing a single attempt;
+helm-controller ignores `resetAt` and `forceAt` unless they match
+`requestedAt`. Every other release is left alone, and a `HelmRelease` read
+that fails for any reason other than the type being absent aborts the command
+rather than reporting a reset that never happened.
 
 ## Worked example: debug a stuck service
 

@@ -224,6 +224,28 @@ def _optional_configmap(name: str, namespace: str) -> dict | None:
     return parsed
 
 
+# helm-controller's reason for a stall a reset clears; every other stall reason
+# is terminal and needs the release changed instead.
+RETRIES_EXCEEDED = "RetriesExceeded"
+
+_ABSENT_RESOURCE_MARKERS = (
+    "not found",
+    "no matches for kind",
+    "doesn't have a resource type",
+)
+
+
+def _is_absent_resource(exc: StatusError) -> bool:
+    """Whether a failed read means the resource type is absent from this cluster.
+
+    A profile that never declares a resource reads as empty; authorization
+    errors, API timeouts, and context failures stay fatal rather than being
+    reported as "nothing there".
+    """
+    detail = str(exc).lower()
+    return any(marker in detail for marker in _ABSENT_RESOURCE_MARKERS)
+
+
 def _ready_condition(item: dict) -> dict:
     conditions = item.get("status", {}).get("conditions", [])
     return next((condition for condition in conditions if condition.get("type") == "Ready"), {})
@@ -243,11 +265,7 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
             "read Flux Kustomizations",
         )
     except StatusError as exc:
-        detail = str(exc).lower()
-        if not any(
-            marker in detail
-            for marker in ("not found", "no matches for kind", "doesn't have a resource type")
-        ):
+        if not _is_absent_resource(exc):
             raise
         kustomization_data = {"items": []}
     raw_items = kustomization_data.get("items")
@@ -509,6 +527,37 @@ def get_kustomization_table(items: tuple[dict, ...] | None = None) -> Table:
     return table
 
 
+def _stalled_condition(item: dict) -> dict:
+    """The Stalled=True condition of a HelmRelease, or {} when it is not stalled."""
+    conditions = item.get("status", {}).get("conditions", [])
+    stalled = next((c for c in conditions if c.get("type") == "Stalled"), {})
+    return stalled if stalled.get("status") == "True" else {}
+
+
+def resettable_helmreleases() -> list[tuple[str, str]]:
+    """(namespace, name) of every HelmRelease a reset can actually clear.
+
+    Only a RetriesExceeded stall is resettable. helm-controller also stalls on
+    terminal errors, where the release needs a change and forcing another
+    attempt repeats the same failure.
+
+    Raises StatusError when the read fails for any reason other than the
+    HelmRelease type being absent, so a failed read is never mistaken for
+    "nothing stalled".
+    """
+    try:
+        data = _required_kubectl_json(["get", "helmreleases", "-A"], "read Flux HelmReleases")
+    except StatusError as exc:
+        if not _is_absent_resource(exc):
+            raise
+        return []
+    return [
+        (item["metadata"]["namespace"], item["metadata"]["name"])
+        for item in data.get("items", [])
+        if isinstance(item, dict) and _stalled_condition(item).get("reason") == RETRIES_EXCEEDED
+    ]
+
+
 def get_helmrelease_table() -> Table:
     table = Table(title="Helm Releases", border_style="cyan", expand=True)
     table.add_column("Name", style="bold")
@@ -522,6 +571,8 @@ def get_helmrelease_table() -> Table:
         table.add_row("[dim]No HelmReleases found[/dim]", "", "", "", "")
         return table
 
+    retries_exceeded = 0
+    terminal_stalls = 0
     for item in sorted(data["items"], key=lambda x: x["metadata"]["name"]):
         name = item["metadata"]["name"]
         history = item.get("status", {}).get("history") or []
@@ -533,13 +584,35 @@ def get_helmrelease_table() -> Table:
 
         conditions = item.get("status", {}).get("conditions", [])
         ready_cond = next((c for c in conditions if c.get("type") == "Ready"), {})
-        is_ready = ready_cond.get("status") == "True"
-        message = ready_cond.get("message", "")
-        reason = ready_cond.get("reason", "")
+        stalled = _stalled_condition(item)
+        if stalled:
+            if stalled.get("reason") == RETRIES_EXCEEDED:
+                retries_exceeded += 1
+            else:
+                terminal_stalls += 1
+            state = Text("Stalled", style="failed")
+            message = stalled.get("message", "")
+        else:
+            is_ready = ready_cond.get("status") == "True"
+            state = status_icon(is_ready, ready_cond.get("reason", ""))
+            message = ready_cond.get("message", "")
         if len(message) > 50:
             message = message[:47] + "..."
 
-        table.add_row(name, chart, version, status_icon(is_ready, reason), message)
+        table.add_row(name, chart, version, state, message)
+
+    captions = []
+    if retries_exceeded:
+        captions.append(
+            f"{retries_exceeded} stalled after exhausting retries; 'spi reconcile' resets them."
+        )
+    if terminal_stalls:
+        captions.append(
+            f"{terminal_stalls} stalled on a terminal error; a reset repeats the same failure."
+        )
+    if captions:
+        table.caption = " ".join(captions)
+        table.caption_style = "warning"
     return table
 
 

@@ -185,6 +185,24 @@ def _trigger_kustomization(name: str, requested_at: str) -> None:
     )
 
 
+def _reset_helmrelease(namespace: str, name: str, requested_at: str) -> None:
+    # helm-controller honors resetAt and forceAt only when they equal requestedAt.
+    run_command(
+        [
+            "kubectl",
+            "annotate",
+            "--overwrite",
+            f"helmrelease/{name}",
+            "-n",
+            namespace,
+            f"reconcile.fluxcd.io/requestedAt={requested_at}",
+            f"reconcile.fluxcd.io/resetAt={requested_at}",
+            f"reconcile.fluxcd.io/forceAt={requested_at}",
+        ],
+        description=f"Reset stalled HelmRelease ({name})",
+    )
+
+
 def _kustomization_exists(name: str) -> bool:
     """Report whether a Kustomization is declared on this cluster.
 
@@ -733,6 +751,8 @@ def reconcile(
     """Force Flux to reconcile the git source and stack."""
     import datetime
 
+    from .status import StatusError, resettable_helmreleases
+
     if suspend and resume:
         console.print("[error]Cannot use --suspend and --resume together.[/error]")
         raise typer.Exit(code=1)
@@ -851,6 +871,17 @@ def reconcile(
         ],
         description="Trigger GitRepository reconciliation",
     )
+
+    try:
+        resettable = resettable_helmreleases()
+    except StatusError as exc:
+        console.print(f"[error]Could not check for stalled HelmReleases: {exc}[/error]")
+        raise typer.Exit(code=1)
+    if resettable:
+        names = ", ".join(name for _namespace, name in resettable)
+        console.print(f"\n[bold]Resetting HelmReleases that exhausted retries:[/bold] {names}")
+        for namespace, name in resettable:
+            _reset_helmrelease(namespace, name, ts)
 
     for name in [
         "osdu-spi-stack",
