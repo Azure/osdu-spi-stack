@@ -8,6 +8,7 @@ import json
 import re
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 from spi import cli, status
@@ -336,3 +337,78 @@ def test_deploy_record_failure_outranks_a_later_read_failure(monkeypatch):
 
     with pytest.raises(status.StatusError, match="deploy record is corrupt"):
         status.collect_status()
+
+
+def _helmrelease(name: str, *, stalled: bool) -> dict:
+    conditions = [
+        {
+            "type": "Ready",
+            "status": "False",
+            "reason": "InstallFailed",
+            "message": f"Helm install failed for release osdu/osdu-{name}",
+        }
+    ]
+    if stalled:
+        conditions.insert(
+            0,
+            {
+                "type": "Stalled",
+                "status": "True",
+                "reason": "RetriesExceeded",
+                "message": "Failed to install after 4 attempt(s)",
+            },
+        )
+    return {
+        "metadata": {"name": name, "namespace": "osdu-flux"},
+        "spec": {"chart": {"spec": {"chart": "./software/charts/osdu-spi-service"}}},
+        "status": {"conditions": conditions},
+    }
+
+
+def _wire_helmreleases(monkeypatch, items):
+    monkeypatch.setattr(status, "kubectl_json", lambda args: {"items": items})
+
+
+def test_stalled_helmreleases_lists_only_exhausted_retries(monkeypatch):
+    _wire_helmreleases(
+        monkeypatch,
+        [_helmrelease("partition", stalled=True), _helmrelease("legal", stalled=False)],
+    )
+
+    assert status.stalled_helmreleases() == [("osdu-flux", "partition")]
+
+
+def test_stalled_helmreleases_is_empty_when_read_fails(monkeypatch):
+    monkeypatch.setattr(status, "kubectl_json", lambda args: None)
+
+    assert status.stalled_helmreleases() == []
+
+
+def test_helmrelease_table_marks_stalled_release(monkeypatch):
+    """A release that exhausted its retries renders as Stalled with the retry
+    message and the table names the remedy; helm-controller never retries it
+    on its own, so InstallFailed alone reads as a broken service."""
+    _wire_helmreleases(
+        monkeypatch,
+        [_helmrelease("partition", stalled=True), _helmrelease("legal", stalled=False)],
+    )
+
+    out = Console(width=200, record=True, force_terminal=False)
+    out.print(status.get_helmrelease_table())
+    text = _plain(out.export_text())
+
+    assert "Stalled" in text
+    assert "Failed to install after 4 attempt(s)" in text
+    assert "InstallFailed" in text
+    assert "1 stalled after exhausting retries; 'spi reconcile' resets them." in text
+
+
+def test_helmrelease_table_has_no_caption_without_stalls(monkeypatch):
+    _wire_helmreleases(monkeypatch, [_helmrelease("legal", stalled=False)])
+
+    out = Console(width=200, record=True, force_terminal=False)
+    out.print(status.get_helmrelease_table())
+    text = _plain(out.export_text())
+
+    assert "Stalled" not in text
+    assert "spi reconcile" not in text

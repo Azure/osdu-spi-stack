@@ -509,6 +509,29 @@ def get_kustomization_table(items: tuple[dict, ...] | None = None) -> Table:
     return table
 
 
+def _stalled_condition(item: dict) -> dict:
+    """The Stalled=True condition of a HelmRelease, or {} when it is not stalled."""
+    conditions = item.get("status", {}).get("conditions", [])
+    stalled = next((c for c in conditions if c.get("type") == "Stalled"), {})
+    return stalled if stalled.get("status") == "True" else {}
+
+
+def stalled_helmreleases() -> list[tuple[str, str]]:
+    """(namespace, name) of every HelmRelease that exhausted its retries.
+
+    helm-controller never retries a Stalled release on its own, and a
+    Kustomization re-apply of the unchanged manifest does not reset it either.
+    """
+    data = kubectl_json(["get", "helmreleases", "-A"])
+    if not data:
+        return []
+    return [
+        (item["metadata"]["namespace"], item["metadata"]["name"])
+        for item in data.get("items", [])
+        if _stalled_condition(item)
+    ]
+
+
 def get_helmrelease_table() -> Table:
     table = Table(title="Helm Releases", border_style="cyan", expand=True)
     table.add_column("Name", style="bold")
@@ -522,6 +545,7 @@ def get_helmrelease_table() -> Table:
         table.add_row("[dim]No HelmReleases found[/dim]", "", "", "", "")
         return table
 
+    stalled_count = 0
     for item in sorted(data["items"], key=lambda x: x["metadata"]["name"]):
         name = item["metadata"]["name"]
         history = item.get("status", {}).get("history") or []
@@ -533,13 +557,25 @@ def get_helmrelease_table() -> Table:
 
         conditions = item.get("status", {}).get("conditions", [])
         ready_cond = next((c for c in conditions if c.get("type") == "Ready"), {})
-        is_ready = ready_cond.get("status") == "True"
-        message = ready_cond.get("message", "")
-        reason = ready_cond.get("reason", "")
+        stalled = _stalled_condition(item)
+        if stalled:
+            stalled_count += 1
+            state = Text("Stalled", style="failed")
+            message = stalled.get("message", "")
+        else:
+            is_ready = ready_cond.get("status") == "True"
+            state = status_icon(is_ready, ready_cond.get("reason", ""))
+            message = ready_cond.get("message", "")
         if len(message) > 50:
             message = message[:47] + "..."
 
-        table.add_row(name, chart, version, status_icon(is_ready, reason), message)
+        table.add_row(name, chart, version, state, message)
+
+    if stalled_count:
+        table.caption = (
+            f"{stalled_count} stalled after exhausting retries; 'spi reconcile' resets them."
+        )
+        table.caption_style = "warning"
     return table
 
 
