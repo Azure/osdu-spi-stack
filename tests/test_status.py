@@ -253,6 +253,47 @@ def test_status_json_uses_contract_exit_code(monkeypatch):
     assert json.loads(result.output)["reason"]["code"] == "maintenance"
 
 
+def test_status_human_surfaces_maintenance(monkeypatch):
+    """A stuck maintenance flag is the failure mode ADR-029 leaves for an
+    operator, so the dashboard must name it, not just --json."""
+    _wire(monkeypatch, record=_record(maintenance=True))
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    output = _plain(result.output)
+
+    assert "Environment is in MAINTENANCE" in output
+    assert "spi maintenance clear" in output
+    assert "| MAINTENANCE" in output
+    assert "Not deployable: The environment is in maintenance." in output
+
+
+def test_status_human_stays_quiet_when_deployable(monkeypatch):
+    _wire(monkeypatch, suspended=False)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    output = _plain(result.output)
+
+    assert "MAINTENANCE" not in output
+    assert "SUSPENDED" not in output
+    assert "Deployable" in output
+    assert "Not deployable" not in output
+
+
+def test_status_human_verdict_matches_json_reason(monkeypatch):
+    """The renderer and the JSON path share one collector, so the blocker an
+    operator reads is the blocker fork CI gates on (ADR-030)."""
+    _wire(monkeypatch, record=None)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    snapshot = status.collect_status()
+    reason = snapshot.to_dict()["reason"]["message"]
+    result = CliRunner().invoke(cli.app, ["status"])
+
+    assert reason in _plain(result.output)
+
+
 @pytest.mark.parametrize(
     "detail",
     [
