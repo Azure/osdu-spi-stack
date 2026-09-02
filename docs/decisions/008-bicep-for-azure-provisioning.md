@@ -8,7 +8,7 @@ Bicep inherits ARM's idempotency and parallel orchestration without a state file
 
 ## Decision
 
-All Azure resources are declared in Bicep except three the CLI creates directly: the resource group, the deployer's cluster-admin role assignment, and the runtime Key Vault secrets. The Python CLI is a thin orchestrator that calls `az deployment group create` once per template and handles the seams Bicep cannot cover.
+All Azure resources are declared in Bicep except three the CLI creates directly: the resource group, the deployer's cluster-admin role assignment, and the runtime Key Vault secrets. The Python CLI is a thin orchestrator that calls `az deployment group create` once per template and owns the lifecycle seams listed below.
 
 Layout:
 
@@ -22,7 +22,7 @@ Imperative in the CLI (via `az`), not Bicep:
 - Soft-deleted Key Vault precheck and `az keyvault recover`. ARM cannot branch on a live query.
 - `az aks get-credentials`. Kubeconfig merge, not a resource.
 - `az aks mesh enable-istio-cni`. The resource provider rejects `proxyRedirectionMechanism` at cluster creation; the CLI skips the call when the cluster already reports `CNIChaining`.
-- `az role assignment create` granting the signed-in principal Azure Kubernetes Service RBAC Cluster Admin on the cluster, awaited until it propagates. Local accounts are disabled, so bootstrap `kubectl` cannot run without it, and the principal is only known at run time.
+- `az role assignment create` granting the signed-in principal Azure Kubernetes Service RBAC Cluster Admin on the cluster, awaited until it propagates. Bicep could declare this assignment (the principal is resolved before `aks.bicep` and already feeds `main.bicep`), but local accounts are disabled and the CLI must poll until the grant propagates before its first `kubectl` call, so the grant and its wait stay together in the CLI.
 - Key Vault runtime secrets: Redis and per-partition Elasticsearch credentials from the generated seed passwords and fixed in-cluster hostnames, plus `tbl-storage-endpoint` derived from the common Storage account name. Written post-handoff by the CLI without waiting for middleware (ADR-010).
 - K8s bootstrap: namespaces, StorageClasses, ServiceAccount, `osdu-config` ConfigMap.
 

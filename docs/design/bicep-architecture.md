@@ -53,13 +53,13 @@ Splitting them also keeps `--dry-run` useful: `spi up --dry-run` runs `az deploy
 
 ## Imperative seams in the CLI
 
-Six things Bicep cannot or will not do; the CLI handles them with `az`:
+Six things the CLI owns rather than Bicep, all through `az`:
 
 1. **`az group create`.** Bicep cannot create the resource group it deploys into.
 2. **Soft-delete Key Vault recovery.** `az keyvault list-deleted | jq` + `az keyvault recover`. ARM cannot branch on a live query, so the CLI checks before submitting `main.bicep` and runs `recover` if needed.
 3. **`az aks get-credentials`.** Kubeconfig merge is a client-side operation, not a resource.
 4. **`az aks mesh enable-istio-cni`.** The resource provider rejects `proxyRedirectionMechanism` at cluster creation. The CLI enables CNI chaining after `aks.bicep` lands and skips the call when the cluster already reports `CNIChaining`.
-5. **Deployer cluster-admin grant.** `az role assignment create --role "Azure Kubernetes Service RBAC Cluster Admin"` on the cluster for the signed-in principal, then a wait until the assignment propagates (minutes). Local accounts are disabled, so bootstrap `kubectl` has no other path.
+5. **Deployer cluster-admin grant.** `az role assignment create --role "Azure Kubernetes Service RBAC Cluster Admin"` on the cluster for the signed-in principal, then a wait until the assignment propagates (minutes). Bicep could declare the assignment; the CLI keeps it imperative so the propagation poll runs before its first `kubectl` call, since local accounts are disabled.
 6. **Runtime Key Vault secrets.** The middleware secrets (`redis-*`, `{p}-elastic-*`) and `tbl-storage-endpoint` are not declared in Bicep. The CLI writes them with `az keyvault secret set` from the generated seed passwords, fixed in-cluster hostnames, and the common Storage account name, with no wait for middleware Ready, since every value is known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md) and the [secret lifecycle](secret-lifecycle.md) doc for the full handoff.
 
 Adding a seam is a smell; confirm first that the resource provider rejects the setting declaratively.
