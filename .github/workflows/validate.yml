@@ -63,7 +63,7 @@ jobs:
             --no-cache \
             --default-index "$MIRROR_INDEX" \
             --index-strategy unsafe-best-match \
-            -o /dev/null
+            > /dev/null
 
   lint:
     name: lint
