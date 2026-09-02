@@ -1,6 +1,6 @@
 # Workload Identity
 
-**What this explains.** How one Managed Identity becomes a usable runtime credential inside an OSDU service pod, how the JWT projection in ADR-016 turns the resulting AAD bearer into a `x-app-id` header, and why the indexer-queue Service Bus carve-out is now closed.
+**What this explains.** How one Managed Identity becomes a usable runtime credential inside an OSDU service pod, how the JWT projection in ADR-016 turns the resulting AAD bearer into an `x-app-id` header, and why indexer-queue cannot yet reach Service Bus through it.
 
 **Why it matters.** "Workload Identity" sounds like one thing but is actually a federation chain across Entra ID, the AKS OIDC issuer, the AKS webhook, the Istio sidecar, and the service's Spring filter. Failures in any link surface as the same symptom: a 401 or 403 with an empty `app-id=`. This doc names each link so you can trace which one is broken.
 
@@ -43,13 +43,13 @@ Workload Identity gets the bearer **into** the pod. ADR-016 is about what happen
 
 The Azure-provider OSDU service images (`*-service-azure:*`) include an in-process Spring filter that reads the caller's application identity from a request header, not from the bearer directly. The header has to be populated by the Istio sidecar before the request reaches Java. With no Istio policy in place, the header is absent and authorization fails before any business logic runs.
 
-The SPI Stack CLI applies three Istio resources during K8s bootstrap (Phase 1, step 9 in [deployment-lifecycle](deployment-lifecycle.md)):
+The SPI Stack CLI applies three Istio resources during K8s bootstrap (Phase 1, step 10 in [deployment-lifecycle](deployment-lifecycle.md)):
 
 - **`RequestAuthentication` `spi-osdu-jwt-authn`** validates the bearer against both AAD v1 and v2 issuers, with audiences `{client_id}` and `https://management.azure.com[/]`. Configured with `outputPayloadToHeader: x-payload` so the decoded JWT lands in Envoy dynamic metadata.
 - **`EnvoyFilter` `spi-osdu-identity-filter`** on `SIDECAR_INBOUND`. Lua reads the JWT metadata and writes `x-app-id` / `x-user-id`. The branch that special-cases `aud == https://management.azure.com/` writes the OSDU UAMI client_id into both headers (so bootstrap Jobs with management-scope bearers land with the right `app-id`).
 - **`PeerAuthentication` `spi-osdu-mtls`** in `PERMISSIVE` mode in `osdu`. Defensive against managed-mesh defaults that could otherwise break the init Jobs.
 
-Because the projection runs inside the sidecar, the same path serves bootstrap Jobs, steady-state service-to-service calls, and external client calls through the gateway. The Spring filter does not care where the header came from; it just needs `x-app-id` populated.
+Because the projection runs inside the sidecar, the same path serves bootstrap Jobs, steady-state service-to-service calls, and external client calls through the gateway. The Spring filter does not care where the header came from; it needs only `x-app-id` populated.
 
 ## The audience list (and how to break it)
 
@@ -80,8 +80,6 @@ Step by step:
 4. **Confirm the Lua mapping.** The Lua reads `envoy.filters.http.jwt_authn` dynamic metadata. If the audience does not match one of the branches in the Lua, `x-app-id` is left empty even though `x-payload` was projected.
 5. **Confirm the audience list.** `kubectl get requestauthentication -n osdu -o yaml | grep -A5 audiences`. If `AAD_CLIENT_ID` is overridden and the AAD appid is missing here, that is the bug. Fix `deploy.py`'s `_create_istio_auth()` (which calls `istio_auth_resources()`), re-run the CLI step (or `kubectl apply` the generated RA manually), and retry.
 
-Five checks, each with a definitive answer. The full chain is small once you can name each link.
-
 ## Worked example: how to add a new RBAC scope
 
 Suppose a new service needs `Storage File Data SMB Share Contributor` on a particular Storage account.
@@ -90,7 +88,7 @@ Suppose a new service needs `Storage File Data SMB Share Contributor` on a parti
 2. **Wire it in `infra/main.bicep`.** Pass the storage account resource into the `rbac` module call.
 3. **Redeploy.** `spi up --env <env>` re-runs `main.bicep`. ARM is idempotent on role assignments; the new one lands, existing ones are untouched.
 
-No change to the federation chain, no change to the ServiceAccount, no change to pod templates. That is the point of one shared identity.
+No change to the federation chain, no change to the ServiceAccount, no change to pod templates.
 
 ## Related ADRs
 

@@ -57,7 +57,7 @@ spi up --env dev1
 ```
 
 > [!NOTE]
-> A full deployment typically takes 45–50 minutes, dominated by AKS Automatic
+> A full deployment typically takes 45-50 minutes, dominated by AKS Automatic
 > provisioning.
 
 > [!WARNING]
@@ -108,7 +108,7 @@ Flux deploys three application namespaces:
 | Namespace | Contents |
 |-----------|----------|
 | `foundation` | ECK, CNPG, cert-manager, and trust-manager |
-| `platform` | Elasticsearch, Redis, PostgreSQL, Airflow, and the Istio Gateway |
+| `platform` | Elasticsearch, Redis, PostgreSQL, Airflow, and the TLS certificates |
 | `osdu` | Core OSDU APIs, bootstrap jobs, schema load, and reference services |
 
 ### Profiles
@@ -146,11 +146,13 @@ See [Ingress modes](docs/architecture.md#ingress-profiles) and
 |---------|---------|
 | `spi check` | Validate deployment prerequisites |
 | `spi up` | Provision Azure resources and activate GitOps |
+| `spi connect` | Point `kubectl` at an existing environment's cluster |
 | `spi status` | Show deployment health and reconciliation progress |
 | `spi info` | Show cluster endpoints and optional credentials |
 | `spi reconcile` | Suspend, resume, or refresh Flux reconciliation |
-| `spi service` | Pin services to merge-request pipeline images |
+| `spi service` | Pin services to merge-request or fork-built images |
 | `spi update` | Check for and install a newer CLI release |
+| `spi maintenance` | Set or clear the deploy-blocking maintenance flag |
 | `spi down` | Delete the environment's Azure resources |
 
 Run `spi --help` or `spi <command> --help` for the complete command reference.
@@ -195,7 +197,7 @@ actually do, grant us the rights to use your contribution. For details, visit
 [https://cla.opensource.microsoft.com](https://cla.opensource.microsoft.com).
 
 When you submit a pull request, a CLA bot will automatically determine whether you need to
-provide a CLA and decorate the PR appropriately (e.g., status check, comment). Simply follow
+provide a CLA and decorate the PR appropriately (e.g., status check, comment). Follow
 the instructions provided by the bot. You will only need to do this once across all repos
 using our CLA.
 

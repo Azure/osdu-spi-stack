@@ -8,7 +8,7 @@ out-of-band.
 ## Azure OIDC federation
 
 GitHub Actions workflows in this repo authenticate to Azure via OpenID
-Connect (OIDC) federated credentials — no client secrets are stored in
+Connect (OIDC) federated credentials; no client secrets are stored in
 GitHub. The federation is one App Registration with three federated
 credentials, one per OIDC context the workflows run as.
 
@@ -36,8 +36,8 @@ GitHub repo secrets:
 - `AZURE_SUBSCRIPTION_ID`
 
 Azure resources used by CI:
-- Resource group `spi-ci-whatif` (in `centralus`) — read-only target for the
-  `bicep-whatif` validation job.
+- Resource group `spi-ci-whatif` (in `centralus`), the what-if target for the
+  `bicep-whatif` validation job. The job creates it when it is missing.
 
 ### To reproduce from scratch
 
@@ -48,7 +48,7 @@ az ad sp create --id "$APP_ID"
 
 # 2. Add one federated credential for each context. Replace every placeholder
 # with the exact subject emitted by GitHub for this repository's current OIDC
-# customization; the subject format itself is deliberately not prescribed here.
+# customization; the subject format itself is not prescribed here.
 for ENTRY in \
   "pull-request:<PULL_REQUEST_SUBJECT>" \
   "main:<MAIN_BRANCH_SUBJECT>" \
@@ -74,7 +74,7 @@ gh secret set AZURE_CLIENT_ID --body "$APP_ID" --repo Azure/osdu-spi-stack
 gh secret set AZURE_TENANT_ID --body "<TENANT_ID>" --repo Azure/osdu-spi-stack
 gh secret set AZURE_SUBSCRIPTION_ID --body "<SUBSCRIPTION_ID>" --repo Azure/osdu-spi-stack
 
-# 5. Pre-create the bicep-whatif RG
+# 5. Pre-create the bicep-whatif RG (optional; the job creates it if absent)
 az group create --name "spi-ci-whatif" --location "centralus" \
   --tags purpose=ci-whatif owner=osdu-spi-stack
 
@@ -134,14 +134,14 @@ The JSON spec at `docs/branch-protection.json` enforces:
 ### Notes on the solo-maintainer configuration
 
 - `required_approving_review_count: 0` because a single maintainer cannot
-  approve their own PR. When the team grows past one maintainer, raise to
-  `1` and require CODEOWNERS review will then have teeth.
+  approve their own PR. When the team grows past one maintainer, raise it to
+  `1`; CODEOWNERS review then has teeth.
 - `enforce_admins: false` lets the maintainer self-merge their own PRs once
   CI is green, without needing a second human. When the team grows, set to
   `true`.
-- `require_code_owner_reviews: true` is still useful in a solo configuration
-  — it ensures CODEOWNERS file is honored if any additional reviewers are
-  added later.
+- `require_code_owner_reviews: true` is still useful in a solo configuration:
+  it keeps the CODEOWNERS file honored if additional reviewers are added
+  later.
 
 ### To verify settings are applied
 
@@ -157,7 +157,7 @@ gh api repos/Azure/osdu-spi-stack/branches/main/protection \
 
 ## GitHub Environment `azure-smoke`
 
-Used by all three `smoke.yml` jobs. It deliberately has no protection rule:
+Used by all three `smoke.yml` jobs. It has no protection rule:
 scheduled smoke must provision, verify, and tear down without a human approval
 gate. A required reviewer leaves the cron run in `waiting`; because Smoke also
 uses one concurrency group, that waiting run blocks every later schedule and
@@ -270,8 +270,8 @@ done
 
 Notes:
 
-- PRs opened with `GITHUB_TOKEN` never trigger workflows; the App token is
-  what lets the required checks report on the release PR.
+- PRs opened with `GITHUB_TOKEN` never trigger workflows, so the required
+  checks report on the release PR only under the App token.
 - The `pr-title` check runs on `pull_request_target`, so it only exists once
   `pr-title.yml` is on `main`. Add it to branch protection after that merge,
   not before, or the PR introducing it deadlocks.
