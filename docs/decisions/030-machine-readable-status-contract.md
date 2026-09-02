@@ -48,7 +48,7 @@ record written at the end of `spi up` supplies the version fields.
 - The ConfigMap also carries the `maintenance` flag. Status surfaces it and
   derives `deployable`; when it is set and cleared, and the fail-closed rules
   around it, are ADR-029's ruling.
-- Endpoints, partitions, and secret references stay in `spi info --json`,
+- Endpoints, partitions, and non-secret Azure coordinates stay in `spi info --json`,
   which carries the same `apiVersion` field plus `azure.tenant_id`,
   `azure.data_plane_application_id` (the application id acceptance suites
   need to mint tokens), `azure.openid_issuer`, and `partitions[].legal_tag`.

@@ -5,12 +5,20 @@
 """Machine-readable environment information contract."""
 
 import json
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from spi import cli, info
 from spi.templates import LEGAL_TAG_BASE, spi_init_values_configmap
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI styling so assertions survive Rich colorizing under CI."""
+    return _ANSI.sub("", text)
 
 
 def _wire(monkeypatch, osdu_config=None, partitions=None, legal_tag_base=None, seeded=True):
@@ -81,7 +89,7 @@ def test_info_rejects_show_secrets_with_json():
     result = CliRunner().invoke(cli.app, ["info", "--show-secrets", "--json"])
 
     assert result.exit_code == 2
-    assert "--show-secrets cannot be combined with --json" in result.output
+    assert "--show-secrets cannot be combined with --json" in _plain(result.output)
 
 
 def test_openid_issuer_is_published_explicitly(monkeypatch):
