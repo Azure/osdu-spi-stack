@@ -144,11 +144,11 @@ $ uv run spi up --env dev1
 Milestones to watch for in the CLI output:
 
 1. **"Resource group spi-stack-dev1 ready"** -- Phase 1 step 3.
-2. **"AKS deployment complete"** -- Phase 1 step 4. The cluster exists.
-3. **"PaaS deployment complete"** -- Phase 1 step 9. Cosmos, Service Bus, Storage, Key Vault, ACR are live.
-4. **"Flux extension activated"** -- Phase 1 step 11. Flux is running in `flux-system`; SPI GitOps objects reconcile in `osdu-flux`.
+2. **"AKS Automatic cluster spi-stack-dev1 ready"** -- Phase 1 step 4. The cluster exists.
+3. **"Bicep deployment complete"** -- Phase 1 step 9. Cosmos, Service Bus, Storage, Key Vault, ACR are live.
+4. **"GitOps activated for profile: core"** -- Phase 1 step 11. Flux is running in `flux-system`; SPI GitOps objects reconcile in `osdu-flux`.
 5. **"Writing OSDU bootstrap secrets to Key Vault..."** -- Phase 1 step 12. Redis/Elasticsearch credentials and `tbl-storage-endpoint` are written from the seed passwords, fixed in-cluster hostnames, and the common Storage account name.
-6. **"GitRepository suspended"** -- Phase 1 step 13. CLI is about to exit.
+6. **"GitRepository pinned to v0.8.0 (<commit>); deployable after convergence."** -- Phase 1 step 13. CLI is about to exit.
 
 Switch to another terminal:
 

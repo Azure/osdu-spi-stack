@@ -13,12 +13,12 @@ reviewed PR of its own (see [Activation](#activation) below).
 
 ```yaml
 env: shared
-stackVersion: v0.6.0
+stackVersion: v0.8.0
 profile: core
 location: westus3
 ingressMode: azure
 imageBranch: master
-nameSuffix: x7k2q
+nameSuffix: a43c7
 ```
 
 | Key | Meaning |
