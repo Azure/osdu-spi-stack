@@ -751,7 +751,7 @@ def reconcile(
     """Force Flux to reconcile the git source and stack."""
     import datetime
 
-    from .status import StatusError, stalled_helmreleases
+    from .status import StatusError, resettable_helmreleases
 
     if suspend and resume:
         console.print("[error]Cannot use --suspend and --resume together.[/error]")
@@ -873,14 +873,14 @@ def reconcile(
     )
 
     try:
-        stalled = stalled_helmreleases()
+        resettable = resettable_helmreleases()
     except StatusError as exc:
         console.print(f"[error]Could not check for stalled HelmReleases: {exc}[/error]")
         raise typer.Exit(code=1)
-    if stalled:
-        names = ", ".join(name for _namespace, name in stalled)
-        console.print(f"\n[bold]Resetting stalled HelmReleases:[/bold] {names}")
-        for namespace, name in stalled:
+    if resettable:
+        names = ", ".join(name for _namespace, name in resettable)
+        console.print(f"\n[bold]Resetting HelmReleases that exhausted retries:[/bold] {names}")
+        for namespace, name in resettable:
             _reset_helmrelease(namespace, name, ts)
 
     for name in [

@@ -224,6 +224,10 @@ def _optional_configmap(name: str, namespace: str) -> dict | None:
     return parsed
 
 
+# helm-controller's reason for a stall a reset clears; every other stall reason
+# is terminal and needs the release changed instead.
+RETRIES_EXCEEDED = "RetriesExceeded"
+
 _ABSENT_RESOURCE_MARKERS = (
     "not found",
     "no matches for kind",
@@ -530,11 +534,12 @@ def _stalled_condition(item: dict) -> dict:
     return stalled if stalled.get("status") == "True" else {}
 
 
-def stalled_helmreleases() -> list[tuple[str, str]]:
-    """(namespace, name) of every HelmRelease that exhausted its retries.
+def resettable_helmreleases() -> list[tuple[str, str]]:
+    """(namespace, name) of every HelmRelease a reset can actually clear.
 
-    helm-controller never retries a Stalled release on its own, and a
-    Kustomization re-apply of the unchanged manifest does not reset it either.
+    Only a RetriesExceeded stall is resettable. helm-controller also stalls on
+    terminal errors, where the release needs a change and forcing another
+    attempt repeats the same failure.
 
     Raises StatusError when the read fails for any reason other than the
     HelmRelease type being absent, so a failed read is never mistaken for
@@ -549,7 +554,7 @@ def stalled_helmreleases() -> list[tuple[str, str]]:
     return [
         (item["metadata"]["namespace"], item["metadata"]["name"])
         for item in data.get("items", [])
-        if isinstance(item, dict) and _stalled_condition(item)
+        if isinstance(item, dict) and _stalled_condition(item).get("reason") == RETRIES_EXCEEDED
     ]
 
 
@@ -566,7 +571,8 @@ def get_helmrelease_table() -> Table:
         table.add_row("[dim]No HelmReleases found[/dim]", "", "", "", "")
         return table
 
-    stalled_count = 0
+    retries_exceeded = 0
+    terminal_stalls = 0
     for item in sorted(data["items"], key=lambda x: x["metadata"]["name"]):
         name = item["metadata"]["name"]
         history = item.get("status", {}).get("history") or []
@@ -580,7 +586,10 @@ def get_helmrelease_table() -> Table:
         ready_cond = next((c for c in conditions if c.get("type") == "Ready"), {})
         stalled = _stalled_condition(item)
         if stalled:
-            stalled_count += 1
+            if stalled.get("reason") == RETRIES_EXCEEDED:
+                retries_exceeded += 1
+            else:
+                terminal_stalls += 1
             state = Text("Stalled", style="failed")
             message = stalled.get("message", "")
         else:
@@ -592,10 +601,17 @@ def get_helmrelease_table() -> Table:
 
         table.add_row(name, chart, version, state, message)
 
-    if stalled_count:
-        table.caption = (
-            f"{stalled_count} stalled after exhausting retries; 'spi reconcile' resets them."
+    captions = []
+    if retries_exceeded:
+        captions.append(
+            f"{retries_exceeded} stalled after exhausting retries; 'spi reconcile' resets them."
         )
+    if terminal_stalls:
+        captions.append(
+            f"{terminal_stalls} stalled on a terminal error; a reset repeats the same failure."
+        )
+    if captions:
+        table.caption = " ".join(captions)
         table.caption_style = "warning"
     return table
 

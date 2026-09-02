@@ -152,7 +152,7 @@ class TestReconcileRefreshesClusterConfig:
             # spi.cli.run_command patch above does not intercept; without
             # this the default reconcile path shells out to real kubectl.
             patch("spi.cli.apply_schema_load_backfill", return_value=False),
-            patch("spi.status.stalled_helmreleases", return_value=[]),
+            patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
         assert result.exit_code == 0, result.output
@@ -246,7 +246,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.apply_image_lock", return_value={}),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
-            patch("spi.status.stalled_helmreleases", return_value=[]),
+            patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
 
@@ -291,7 +291,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.apply_image_lock", return_value={}),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
-            patch("spi.status.stalled_helmreleases", return_value=[]),
+            patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", "--refresh-images"])
 
@@ -336,7 +336,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.run_command", side_effect=_run_command),
             patch("spi.cli.apply_schema_load_backfill", return_value=False),
-            patch("spi.status.stalled_helmreleases", return_value=[]),
+            patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
 
@@ -364,7 +364,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.run_command", side_effect=_run_command),
             patch("spi.cli.apply_schema_load_backfill", return_value=False),
-            patch("spi.status.stalled_helmreleases", return_value=stalled),
+            patch("spi.status.resettable_helmreleases", return_value=stalled),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
 
@@ -389,13 +389,13 @@ class TestReconcileResetsStalledHelmReleases:
         }
         # helm-controller ignores resetAt and forceAt unless they match requestedAt.
         assert len(set(pairs.values())) == 1
-        assert "Resetting stalled HelmReleases: partition" in result.output
+        assert "Resetting HelmReleases that exhausted retries: partition" in result.output
 
     def test_healthy_releases_are_left_alone(self):
         result, resets = self._invoke([])
 
         assert resets == []
-        assert "Resetting stalled" not in result.output
+        assert "Resetting HelmReleases" not in result.output
 
     def test_unreadable_helmreleases_abort_the_reconcile(self):
         """A read that fails for any reason other than an absent type must not
@@ -410,7 +410,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.run_command", return_value=SimpleNamespace(returncode=0, stdout="")),
             patch("spi.cli.apply_schema_load_backfill", return_value=False),
             patch(
-                "spi.status.stalled_helmreleases",
+                "spi.status.resettable_helmreleases",
                 side_effect=StatusError("Could not read Flux HelmReleases: connection refused"),
             ),
         ):
@@ -437,7 +437,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.run_command", side_effect=_run_command),
             patch("spi.cli.apply_schema_load_backfill", return_value=False),
-            patch("spi.status.stalled_helmreleases", return_value=[("osdu-flux", "partition")]),
+            patch("spi.status.resettable_helmreleases", return_value=[("osdu-flux", "partition")]),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
 
@@ -471,7 +471,7 @@ class TestSchemaLoadImageLockBackfill:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.apply_schema_load_backfill", side_effect=_backfill) as backfill,
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
-            patch("spi.status.stalled_helmreleases", return_value=[]),
+            patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
 
