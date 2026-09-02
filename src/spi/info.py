@@ -24,6 +24,7 @@ and renders the right base URL / middleware UI table per ingress mode:
 
 import base64
 import json
+from functools import partial
 
 from rich.panel import Panel
 from rich.table import Table
@@ -32,7 +33,7 @@ from .azure_infra import _cosmos_sql_name, _sb_name, _storage_name
 from .config import BASE_NAME
 from .console import console
 from .ingress import get_ingress_ip
-from .shell import kubectl_json
+from .shell import gather_reads, kubectl_json
 from .templates import LEGAL_TAG_BASE
 
 # Display order.
@@ -91,35 +92,28 @@ def _read_flux_extension_values() -> dict:
     return data.get("data", {}) or {}
 
 
-def _read_partitions_list() -> list:
-    """Extract the partition list from the spi-init-values ConfigMap.
+def _read_init_values_yaml() -> str:
+    """Read the values.yaml blob from the spi-init-values ConfigMap.
 
     The CLI writes this ConfigMap from the --partition flags during bootstrap
-    (see deploy._create_spi_init_values). The Helm chart's per-partition init
-    Jobs render from the same source, so this is the authoritative list.
-
-    Returns ["opendes"] as a safe fallback when the ConfigMap is missing — a
-    cluster pre-bootstrap or one deployed without the CLI still renders sanely.
+    (see deploy._create_spi_init_values) and the osdu-spi-init chart renders
+    its per-partition Jobs from the same source, so it is authoritative for
+    both the partition list and the legal-tag base. One read feeds both
+    parsers. Empty string when the ConfigMap is missing, which leaves a
+    pre-bootstrap cluster rendering sanely rather than failing.
     """
     data = kubectl_json(["get", "configmap", "spi-init-values", "-n", "osdu-flux"])
-    if not data:
-        return []
-    values_yaml = (data.get("data") or {}).get("values.yaml", "")
-    return _parse_partitions_from_values_yaml(values_yaml)
+    return ((data or {}).get("data") or {}).get("values.yaml", "")
 
 
-def _read_legal_tag_base() -> str:
+def _legal_tag_base_from_values_yaml(text: str) -> str:
     """Return the legal-tag base name the init Jobs rendered from.
 
-    Read back from the same spi-init-values ConfigMap the osdu-spi-init chart
-    consumes, so the reported name is the one legal-init would create. A
-    ConfigMap written before the key existed falls back to the constant the
+    A ConfigMap written before the key existed falls back to the constant the
     chart's values default carries, which is what those Jobs used. This is the
     desired name only; ``_legal_tag_seeded`` decides whether it exists.
     """
-    data = kubectl_json(["get", "configmap", "spi-init-values", "-n", "osdu-flux"])
-    values_yaml = ((data or {}).get("data") or {}).get("values.yaml", "")
-    for raw in values_yaml.splitlines():
+    for raw in text.splitlines():
         stripped = raw.strip()
         if stripped.startswith("legalTag:"):
             return stripped.split(":", 1)[1].strip()
@@ -317,17 +311,24 @@ def _build_internal_services() -> list:
 def _collect_info() -> dict:
     from .guard import get_suspend_status
 
-    cfg = _read_ingress_config()
-    osdu = _read_osdu_config()
-    azure_ext = _read_flux_extension_values()
+    cfg, osdu, azure_ext, init_values, suspended = gather_reads(
+        [
+            _read_ingress_config,
+            _read_osdu_config,
+            _read_flux_extension_values,
+            _read_init_values_yaml,
+            get_suspend_status,
+        ]
+    )
     mode, base, endpoints, middleware = _compute_endpoints(cfg)
 
     rg = azure_ext.get("AZURE_RESOURCE_GROUP", "")
     env = _env_from_resource_group(rg)
-    partitions = _read_partitions_list()
+    partitions = _parse_partitions_from_values_yaml(init_values)
     partition_rows = _build_partitions_rows(partitions, env)
-    legal_tag_base = _read_legal_tag_base()
+    legal_tag_base = _legal_tag_base_from_values_yaml(init_values)
     tenant_id = osdu.get("AZURE_TENANT_ID", "")
+    seeded = gather_reads([partial(_legal_tag_seeded, name) for name in partitions])
 
     info = {
         "apiVersion": "spi.osdu.dev/v1",
@@ -361,14 +362,12 @@ def _collect_info() -> dict:
                 "storage_account": storage,
                 # Observed, not derived: empty until legal-init has created the
                 # tag. legal_tag_desired always carries the name.
-                "legal_tag": (
-                    f"{partitions[i]}-{legal_tag_base}" if _legal_tag_seeded(partitions[i]) else ""
-                ),
+                "legal_tag": (f"{partitions[i]}-{legal_tag_base}" if seeded[i] else ""),
                 "legal_tag_desired": f"{partitions[i]}-{legal_tag_base}",
             }
             for i, (_label, cosmos, sb, storage) in enumerate(partition_rows)
         ],
-        "suspended": get_suspend_status(),
+        "suspended": suspended,
     }
 
     return info
@@ -378,6 +377,18 @@ def collect_info() -> dict:
     """Collect the stable non-secret information contract."""
 
     return _collect_info()
+
+
+def collect_base_url() -> str:
+    """Return the stack's public base URL and nothing else.
+
+    ``collect_status`` needs this one field; routing it through
+    ``collect_info`` would pull the Azure, partition and legal-tag reads the
+    status contract has no use for.
+    """
+
+    _mode, base, _endpoints, _middleware = _compute_endpoints(_read_ingress_config())
+    return base
 
 
 def render_info(show_secrets: bool = False, show_apis: bool = False, output_json: bool = False):

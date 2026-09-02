@@ -37,7 +37,8 @@ import shlex
 import shutil
 import subprocess
 import time
-from typing import Any, Dict, List, Optional, Union
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 from urllib.parse import urlsplit
 
 import typer
@@ -248,6 +249,29 @@ def kubectl_apply_yaml(
         raise typer.Exit(code=1)
 
     raise typer.Exit(code=1)
+
+
+# Enough to overlap a status fan-out in one wave without opening a burst the
+# API server's fairness queues would rather not see.
+_MAX_PARALLEL_READS = 8
+
+
+def gather_reads(calls: Sequence[Callable[[], Any]]) -> List[Any]:
+    """Run independent read-only queries concurrently, returning results in order.
+
+    Each call blocks on a kubectl subprocess whose cost is process launch,
+    exec-credential auth and one API round trip, none of which contend.
+    Results and exceptions resolve in call order, so a caller's error
+    precedence does not depend on which query finished first.
+
+    Only for reads: concurrent writes would interleave the Rich panels that
+    show the operator what is changing.
+    """
+    if len(calls) < 2:
+        return [call() for call in calls]
+    with ThreadPoolExecutor(max_workers=min(len(calls), _MAX_PARALLEL_READS)) as pool:
+        futures = [pool.submit(call) for call in calls]
+        return [future.result() for future in futures]
 
 
 def kubectl_json(args: List[str]) -> Optional[Dict[str, Any]]:

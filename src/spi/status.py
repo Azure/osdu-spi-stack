@@ -18,6 +18,7 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from typing import List, Optional
 
 from rich.panel import Panel
@@ -27,9 +28,17 @@ from rich.text import Text
 from .console import console
 from .deploy_record import DeployRecord, DeployRecordError, read_deploy_record
 from .pins import PinError, decode_pins
-from .shell import kubectl_json, run_process
+from .shell import gather_reads, kubectl_json, run_process
 
 STATUS_API_VERSION = "spi.osdu.dev/v1"
+
+# The namespaces the stack owns, in layer order, with their dashboard titles.
+_STACK_POD_SECTIONS = [
+    ("foundation", "Foundation Pods (operators)"),
+    ("platform", "Platform Pods (middleware)"),
+    ("osdu", "OSDU Pods (services)"),
+]
+_STACK_NAMESPACES = [namespace for namespace, _title in _STACK_POD_SECTIONS]
 
 
 class StatusError(RuntimeError):
@@ -291,25 +300,53 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
     return KustomizationReadiness(items=items, states=states, ready=ready, reason=reason)
 
 
+def _read_deploy_record_result() -> DeployRecord | DeployRecordError | None:
+    """Read the deploy record, returning its failure rather than raising.
+
+    ``gather_reads`` resolves in call order, so returning the error keeps a
+    Kustomization or GitRepository failure ahead of this one.
+    """
+    try:
+        return read_deploy_record(required=False)
+    except DeployRecordError as exc:
+        return exc
+
+
 def collect_status() -> StatusSnapshot:
-    kustomization_readiness = collect_kustomization_readiness()
+    from .info import collect_base_url
+
+    # Five independent reads. Ordered results keep the failure a caller sees
+    # deterministic: a Kustomization error still outranks a GitRepository one.
+    (
+        kustomization_readiness,
+        git_repository,
+        record_result,
+        image_lock,
+        base_url,
+    ) = gather_reads(
+        [
+            collect_kustomization_readiness,
+            lambda: _required_kubectl_json(
+                ["get", "gitrepository", "osdu-spi-stack-system", "-n", "osdu-flux"],
+                "read the Flux GitRepository",
+            ),
+            _read_deploy_record_result,
+            lambda: _optional_configmap("osdu-image-lock", "osdu-flux"),
+            collect_base_url,
+        ]
+    )
+
     items = kustomization_readiness.items
     states = kustomization_readiness.states
     ready = kustomization_readiness.ready
     reason = kustomization_readiness.reason
 
-    git_repository = _required_kubectl_json(
-        ["get", "gitrepository", "osdu-spi-stack-system", "-n", "osdu-flux"],
-        "read the Flux GitRepository",
-    )
     suspended = bool(git_repository.get("spec", {}).get("suspend", False))
 
-    try:
-        record = read_deploy_record(required=False)
-    except DeployRecordError as exc:
-        raise StatusError(str(exc)) from exc
+    if isinstance(record_result, DeployRecordError):
+        raise StatusError(str(record_result))
+    record = record_result
 
-    image_lock = _optional_configmap("osdu-image-lock", "osdu-flux")
     lock_data = (image_lock or {}).get("data") or {}
     if not isinstance(lock_data, dict):
         raise StatusError("ConfigMap osdu-image-lock has invalid data")
@@ -321,9 +358,6 @@ def collect_status() -> StatusSnapshot:
     except PinError as exc:
         raise StatusError(str(exc)) from exc
 
-    from .info import collect_info
-
-    base_url = str(collect_info().get("base_url", ""))
     maintenance = record.maintenance if record else False
     deployable = ready and record is not None and not maintenance
 
@@ -519,7 +553,15 @@ def get_custom_resources(platform_ns: str = "platform") -> Table:
     table.add_column("Status")
     table.add_column("Details")
 
-    cnpg = kubectl_json(["get", "clusters.postgresql.cnpg.io", "-n", platform_ns])
+    cnpg, es = gather_reads(
+        [
+            lambda: kubectl_json(["get", "clusters.postgresql.cnpg.io", "-n", platform_ns]),
+            lambda: kubectl_json(
+                ["get", "elasticsearches.elasticsearch.k8s.elastic.co", "-n", platform_ns]
+            ),
+        ]
+    )
+
     if cnpg and cnpg.get("items"):
         for item in cnpg["items"]:
             name = item["metadata"]["name"]
@@ -536,7 +578,6 @@ def get_custom_resources(platform_ns: str = "platform") -> Table:
                 f"{instances}/{target} instances" if target else phase,
             )
 
-    es = kubectl_json(["get", "elasticsearches.elasticsearch.k8s.elastic.co", "-n", platform_ns])
     if es and es.get("items"):
         for item in es["items"]:
             name = item["metadata"]["name"]
@@ -637,15 +678,14 @@ def _fetch_jobs(namespaces: List[str]) -> List[dict]:
     return [j for j in data["items"] if j["metadata"].get("namespace") in target]
 
 
-def get_jobs_table(namespaces: List[str]) -> Optional[Table]:
+def get_jobs_table(jobs: List[dict]) -> Optional[Table]:
     """Show non-partition bootstrap Jobs across the stack's namespaces.
 
     Partition + entitlements init Jobs are pulled out into
     ``get_partition_init_table`` so multi-partition deploys present a
     per-partition view; remaining one-shot Jobs (schema-load, etc.)
-    appear here.
+    appear here. Takes the same fetched list that table renders from.
     """
-    jobs = _fetch_jobs(namespaces)
     generic = [
         j
         for j in jobs
@@ -792,24 +832,32 @@ def render_status(snapshot: StatusSnapshot | None = None):
             )
         )
 
+    # The summary and Kustomization tables render from the snapshot; every
+    # other section is an independent cluster read, so they go out in one wave.
+    helmreleases, custom_resources, jobs, *pod_tables = gather_reads(
+        [
+            get_helmrelease_table,
+            lambda: get_custom_resources(platform_ns="platform"),
+            lambda: _fetch_jobs(_STACK_NAMESPACES),
+            *[partial(get_pod_table, ns, title) for ns, title in _STACK_POD_SECTIONS],
+        ]
+    )
+
     sections = [
         get_summary(snapshot),
         get_kustomization_table(snapshot.kustomization_items),
-        get_helmrelease_table(),
-        get_custom_resources(platform_ns="platform"),
+        helmreleases,
+        custom_resources,
     ]
 
-    jobs = _fetch_jobs(namespaces=["foundation", "platform", "osdu"])
     partition_table = get_partition_init_table(jobs)
     if partition_table:
         sections.append(partition_table)
-    jobs_table = get_jobs_table(namespaces=["foundation", "platform", "osdu"])
+    jobs_table = get_jobs_table(jobs)
     if jobs_table:
         sections.append(jobs_table)
 
-    sections.append(get_pod_table("foundation", "Foundation Pods (operators)"))
-    sections.append(get_pod_table("platform", "Platform Pods (middleware)"))
-    sections.append(get_pod_table("osdu", "OSDU Pods (services)"))
+    sections.extend(pod_tables)
 
     for section in sections:
         console.print(section)

@@ -65,7 +65,7 @@ def _wire(monkeypatch, *, ready=True, record=_record(), lock=None, suspended=Tru
         "_optional_configmap",
         lambda name, namespace: lock,
     )
-    monkeypatch.setattr("spi.info.collect_info", lambda: {"base_url": "https://example.test"})
+    monkeypatch.setattr("spi.info.collect_base_url", lambda: "https://example.test")
 
 
 def _wire_kustomization_error(monkeypatch, detail: str):

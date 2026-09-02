@@ -57,14 +57,14 @@ def _wire_status(monkeypatch):
     monkeypatch.setattr(status, "_required_kubectl_json", required)
     monkeypatch.setattr(status, "read_deploy_record", lambda required=False: record)
     monkeypatch.setattr(status, "_optional_configmap", lambda name, namespace: None)
-    monkeypatch.setattr("spi.info.collect_info", lambda: {"base_url": "https://example.test"})
+    monkeypatch.setattr("spi.info.collect_base_url", lambda: "https://example.test")
 
 
 def _wire_info(monkeypatch):
     monkeypatch.setattr(info, "_read_ingress_config", lambda: {})
     monkeypatch.setattr(info, "_read_osdu_config", lambda: {})
     monkeypatch.setattr(info, "_read_flux_extension_values", lambda: {})
-    monkeypatch.setattr(info, "_read_partitions_list", lambda: [])
+    monkeypatch.setattr(info, "_read_init_values_yaml", lambda: "")
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: False)
 
 
