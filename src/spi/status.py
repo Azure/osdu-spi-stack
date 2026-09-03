@@ -521,7 +521,7 @@ def get_kustomization_table(items: tuple[dict, ...] | None = None) -> Table:
             name,
             f"L{layer}" if layer != "-" else "-",
             status_icon(is_ready, reason),
-            message,
+            Text(message),
             age_str(ready_cond.get("lastTransitionTime", "")),
         )
     return table
@@ -599,7 +599,7 @@ def get_helmrelease_table() -> Table:
         if len(message) > 50:
             message = message[:47] + "..."
 
-        table.add_row(name, chart, version, state, message)
+        table.add_row(name, chart, version, state, Text(message))
 
     captions = []
     if retries_exceeded:
@@ -852,45 +852,56 @@ def get_pod_table(namespace: str, title: str) -> Table:
     return table
 
 
-def get_summary(snapshot: StatusSnapshot | None = None) -> Panel:
-    counts = {"ready": 0, "progressing": 0, "failed": 0}
-    if snapshot is not None:
-        for item in snapshot.kustomizations:
-            counts["ready" if item.ready else "progressing"] += 1
-    else:
-        data = kubectl_json(["get", "kustomizations", "-n", "osdu-flux"])
-        if data and "items" in data:
-            for item in data["items"]:
-                ready = _ready_condition(item)
-                if ready.get("status") == "True":
-                    counts["ready"] += 1
-                else:
-                    counts["progressing"] += 1
+def get_summary(snapshot: StatusSnapshot) -> Panel:
+    ready_count = sum(1 for item in snapshot.kustomizations if item.ready)
+    total = len(snapshot.kustomizations)
 
-    total = sum(counts.values())
     if total == 0:
-        return Panel("[dim]No Flux resources found[/dim]", title="Summary", border_style="cyan")
+        counts = "[dim]No Flux resources found[/dim]"
+    else:
+        parts = []
+        if ready_count:
+            parts.append(f"[ready]{ready_count} ready[/ready]")
+        if total - ready_count:
+            parts.append(f"[notready]{total - ready_count} progressing[/notready]")
+        counts = f"Kustomizations: {' / '.join(parts)}  ({ready_count}/{total} complete)"
 
-    parts = []
-    if counts["ready"]:
-        parts.append(f"[ready]{counts['ready']} ready[/ready]")
-    if counts["progressing"]:
-        parts.append(f"[notready]{counts['progressing']} progressing[/notready]")
+    if snapshot.suspended:
+        counts += "  [bold yellow]| SUSPENDED[/bold yellow]"
+    if snapshot.maintenance:
+        counts += "  [bold red]| MAINTENANCE[/bold red]"
 
-    text = f"Kustomizations: {' / '.join(parts)}  ({counts['ready']}/{total} complete)"
-    suspended = snapshot.suspended if snapshot is not None else False
-    if snapshot is None:
-        from .guard import get_suspend_status
+    body = Text.from_markup(counts)
+    body.append("\n")
 
-        suspended = get_suspend_status()
-    if suspended:
-        text += "  [bold yellow]| SUSPENDED[/bold yellow]"
-    return Panel(text, title="Summary", border_style="cyan")
+    # The verdict the JSON envelope reports, in the same words, so an operator
+    # reading the dashboard and a fork job reading --json cannot disagree.
+    if snapshot.deployable:
+        body.append("Deployable", style="ready")
+    else:
+        body.append("Not deployable: ", style="failed")
+        # Appended, not interpolated: a Flux condition message carries paths
+        # like [/tmp/kustomize-9f2] that Rich would read as a closing tag.
+        body.append(snapshot.reason.message if snapshot.reason else "no reason reported")
+
+    return Panel(body, title="Summary", border_style="cyan")
 
 
 def render_status(snapshot: StatusSnapshot | None = None):
     snapshot = snapshot or collect_status()
     console.print(Panel("[bold]SPI Stack Status[/bold]", border_style="cyan"))
+
+    if snapshot.maintenance:
+        console.print(
+            Panel(
+                "[bold red]Environment is in MAINTENANCE[/bold red] -- "
+                "deploys and service pins are refused.\n"
+                "[dim]A lifecycle run sets this and clears it once its probes pass; a failed "
+                "run leaves it set.\n"
+                "Run 'spi maintenance clear' to reopen the environment.[/dim]",
+                border_style="red",
+            )
+        )
 
     if snapshot.suspended:
         console.print(

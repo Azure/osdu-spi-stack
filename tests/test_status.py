@@ -253,6 +253,72 @@ def test_status_json_uses_contract_exit_code(monkeypatch):
     assert json.loads(result.output)["reason"]["code"] == "maintenance"
 
 
+def test_status_human_surfaces_maintenance(monkeypatch):
+    """A stuck maintenance flag is the failure mode ADR-029 leaves for an
+    operator, so the dashboard must name it, not just --json."""
+    _wire(monkeypatch, record=_record(maintenance=True))
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    output = _plain(result.output)
+
+    assert "Environment is in MAINTENANCE" in output
+    assert "spi maintenance clear" in output
+    assert "| MAINTENANCE" in output
+    assert "Not deployable: The environment is in maintenance." in output
+
+
+def test_status_human_survives_markup_in_a_flux_message(monkeypatch):
+    """A Flux condition message is cluster-supplied text, and Rich reads a
+    bracketed path in it as a closing tag. It must render, not raise."""
+    hostile = "failed to load [/tmp/kustomize-9f2]/kustomization.yaml"
+
+    def required(args, description):
+        if "kustomizations" in args:
+            data = _kustomizations(ready=False)
+            data["items"][0]["status"]["conditions"][0]["message"] = hostile
+            return data
+        return {"spec": {"suspend": False}}
+
+    _wire(monkeypatch)
+    monkeypatch.setattr(status, "_required_kubectl_json", required)
+    monkeypatch.setattr(status, "kubectl_json", lambda _args: None)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    output = _plain(result.output)
+
+    assert result.exception is None, result.exception
+    assert "[/tmp/kustomize-9f2]" in output
+    assert "Not deployable:" in output
+
+
+def test_status_human_stays_quiet_when_deployable(monkeypatch):
+    _wire(monkeypatch, suspended=False)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    output = _plain(result.output)
+
+    assert "MAINTENANCE" not in output
+    assert "SUSPENDED" not in output
+    assert "Deployable" in output
+    assert "Not deployable" not in output
+
+
+def test_status_human_verdict_matches_json_reason(monkeypatch):
+    """The renderer and the JSON path share one collector, so the blocker an
+    operator reads is the blocker fork CI gates on (ADR-030)."""
+    _wire(monkeypatch, record=None)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    snapshot = status.collect_status()
+    reason = snapshot.to_dict()["reason"]["message"]
+    result = CliRunner().invoke(cli.app, ["status"])
+
+    assert reason in _plain(result.output)
+
+
 @pytest.mark.parametrize(
     "detail",
     [
