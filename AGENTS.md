@@ -49,6 +49,9 @@ corrected files. Run it before every PR; run individual tools from
   changed, then honest validation results.
 - **Branches** are named `<type>/<short-name>`, for example `feat/add-redis-component`.
 - **Code**: ruff line length 100 with import sorting; keep `ty` clean.
+- **Local Helm charts**: bump `version` in `Chart.yaml` with any change under
+  `software/charts/`. Flux repackages a path chart only when that version
+  moves, so an unbumped edit never reaches a cluster already running.
 - **Prose**: no em dashes; use commas, periods, or semicolons. Files under `docs/`
   additionally follow `docs/STYLE.md`.
 - **Comments** only where they add something the code cannot say: cross-file

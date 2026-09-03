@@ -139,6 +139,27 @@ def test_legal_release_declares_no_volume_it_does_not_own():
     ]
 
 
+def _millicores(quantity) -> int:
+    """A Kubernetes CPU quantity as millicores: "100m", "1", or "0.3"."""
+    text = str(quantity)
+    return int(text[:-1]) if text.endswith("m") else round(float(text) * 1000)
+
+
+def test_jobs_request_the_cpu_admission_will_grant_them():
+    """Deployment Safeguards raises a Job's CPU request to 100m at admission,
+    and a Job's pod template is immutable. A lower request leaves the live Job
+    differing from the release manifest in a field Helm can only close by
+    patching, which the API server rejects, so every later upgrade of the
+    release fails and so does its rollback."""
+    jobs = [doc for doc in _render(["opendes"]) if doc.get("kind") == "Job"]
+    assert jobs
+    for job in jobs:
+        pod = job["spec"]["template"]["spec"]
+        for container in pod["containers"] + pod.get("initContainers", []):
+            requested = container["resources"]["requests"]["cpu"]
+            assert _millicores(requested) >= 100, job["metadata"]["name"]
+
+
 def test_legal_init_deadline_covers_its_wait_budget(init_scripts):
     """The legal Job must outlive init_legal.py's worst case, recomputed from
     the script's constants: every gate's attempts at a delay plus a socket

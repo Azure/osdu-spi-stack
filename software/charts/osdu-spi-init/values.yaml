@@ -22,8 +22,8 @@ legalEnabled: true
 #    workload-identity-sa here.
 namespace: osdu
 
-# -- Base image for the Jobs. An initContainer pip-installs msal into a
-#    shared emptyDir, which avoids coupling to the schema-load image tag.
+# -- Base image for the Jobs. The scripts authenticate with urllib against the
+#    v1.0 token endpoint, so the image needs nothing beyond the standard library.
 image:
   repository: python
   tag: "3.12-slim"
@@ -43,10 +43,12 @@ tolerations:
     value: "osdu"
     effect: NoSchedule
 
-# -- Resources for the init script container.
+# -- Resources for the init script container. Deployment Safeguards raises a
+#    Job's CPU request to 100m; requesting less wedges every later upgrade
+#    against the immutable pod template.
 resources:
   requests:
-    cpu: 50m
+    cpu: 100m
     memory: 128Mi
   limits:
     cpu: 500m
