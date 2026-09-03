@@ -195,15 +195,18 @@ rather than reporting a reset that never happened.
 A Job's pod template is immutable, so anything that changes it after the Job
 exists is a difference Helm can only close by patching, and the patch is
 rejected. `safeguards-workload-mutating-webhook` raises a Job's CPU request to
-100m, which is why `osdu-spi-init` requests exactly that: a lower request holds
-the release at `RollbackFailed`, its automatic rollback failing the same way,
-from the first upgrade after the Jobs land. Nothing resets it; `spi reconcile`
-only touches `RetriesExceeded`. Recovery is a chart that renders the stored
-value, or `kubectl delete job -n osdu -l app.kubernetes.io/name=osdu-spi-init`.
+100m, which is why `osdu-spi-init` requests exactly that. A lower request holds
+`osdu-spi-init` and `osdu-spi-legal`, which render the same chart, at
+`RollbackFailed` with their automatic rollbacks failing the same way, from the
+first upgrade after the Jobs land. Nothing resets it; `spi reconcile` only
+touches `RetriesExceeded`. Recovery is a chart that requests what admission
+left on the live Job. Deleting the Jobs is not a recovery on its own: the retry
+recreates them from the same manifest, admission raises them again, and the
+next upgrade is rejected again.
 
 A chart edit that changes a rendered Job wedges the release the same way, and
 `force` is no escape. A Kustomization's `force` deletes and recreates on an
-immutable-field error, which is what protects schema-load; a HelmRelease's
+immutable-field error, which protects schema-load; a HelmRelease's
 `spec.upgrade.force` maps to Helm's Replace, and the API server rejects that
 for the same reason it rejects the patch.
 

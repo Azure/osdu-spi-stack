@@ -16,8 +16,5 @@ apiVersion: v2
 name: osdu-spi-init
 description: OSDU SPI partition + entitlements bootstrap Jobs (one-shot, per-partition)
 type: application
-# Bump on every chart change. The HelmRelease takes Flux's default
-# ChartVersion reconcile strategy, so an unchanged version never repackages
-# the artifact and edits never reach a cluster that is already running.
 version: 0.2.0
 appVersion: "0.1.0"

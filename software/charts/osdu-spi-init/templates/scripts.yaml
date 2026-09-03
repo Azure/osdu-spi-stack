@@ -6,7 +6,7 @@ you may not use this file except in compliance with the License.
 */}}
 
 {{- if .Values.coreEnabled }}
-# Scripts shared by the init Jobs. MSAL exchanges the webhook-injected
+# Scripts shared by the init Jobs. auth.py exchanges the webhook-injected
 # federated token for a bearer whose appid is the OSDU UAMI; partition-azure
 # stores that appid as TenantInfo.service-account and entitlements authorises
 # it as bootstrap admin.
