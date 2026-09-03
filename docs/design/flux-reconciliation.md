@@ -239,7 +239,7 @@ The Istio CRD has not registered yet, or the namespace is wrong. `kubectl get cr
 
 The same pattern works for HelmRelease failures (`flux get helmreleases -n osdu-flux`), schema-load Job failures (`kubectl logs job/schema-load -n osdu`), and image substitution failures (`kubectl get cm osdu-image-lock -n osdu-flux -o yaml` shows the resolved values).
 
-Every `helm` command against this stack needs `-n osdu-flux`. helm-controller stores a release in the HelmRelease's own namespace, not in `spec.targetNamespace`, so `helm get manifest airflow -n platform` returns an empty manifest rather than an error and reads as an answer.
+helm-controller stores a release in the HelmRelease's own namespace, not in `spec.targetNamespace`, so `helm get`, `helm history`, and `helm list` all want `-n osdu-flux`. Run against the target namespace they exit 1 with `Error: release: not found`, which reads as a missing release rather than a wrong namespace.
 
 ## Worked example: refresh service images on a live cluster
 
