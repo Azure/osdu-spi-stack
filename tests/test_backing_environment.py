@@ -152,6 +152,8 @@ def test_finalize_suspends_before_record(monkeypatch):
         value for value in calls if isinstance(value, tuple) and value[0] == "record"
     )
     assert record_call[1]["initial_maintenance"] is True
+    assert record_call[1]["env"] == "shared"
+    assert record_call[1]["profile"] == "core"
 
 
 def test_finalize_resuspends_on_reconcile_failure(monkeypatch):
