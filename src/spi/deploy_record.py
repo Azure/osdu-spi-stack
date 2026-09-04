@@ -149,6 +149,10 @@ def _decode_record(obj: dict) -> DeployRecord:
         )
 
     env = data.get("env", "")
+    if not isinstance(env, str):
+        raise DeployRecordError(
+            f"ConfigMap {DEPLOY_RECORD_CONFIGMAP} has invalid env value {env!r}"
+        )
     return DeployRecord(
         ref=data["ref"],
         resolved_commit=data["resolvedCommit"],
@@ -156,7 +160,7 @@ def _decode_record(obj: dict) -> DeployRecord:
         cli_version=data["cliVersion"],
         profile=data["profile"],
         maintenance=raw_maintenance == "true",
-        env=env if isinstance(env, str) else "",
+        env=env,
     )
 
 

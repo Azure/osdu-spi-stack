@@ -672,11 +672,19 @@ def info(
 
     ctx = verify_spi_cluster()
 
+    from .deploy_record import DeployRecordError
     from .info import render_info
 
     if not output_json:
         console.print(f"  [dim]Cluster context: {ctx}[/dim]")
-    render_info(show_secrets=show_secrets, show_apis=show_apis, output_json=output_json)
+    try:
+        render_info(show_secrets=show_secrets, show_apis=show_apis, output_json=output_json)
+    except DeployRecordError as exc:
+        if output_json:
+            typer.echo(str(exc), err=True)
+        else:
+            console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -1131,6 +1139,11 @@ def service_reset(
     if not output_json:
         console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
+    from .deploy_record import environment_label
+
+    environment = _environment_facts()
+    label = environment_label(environment)
+
     if sweep:
         try:
             outcome = sweep_stale_ephemeral_pins()
@@ -1149,15 +1162,18 @@ def service_reset(
                 swept=list(outcome.swept),
                 kept=[{"service": name, "reason": why} for name, why in outcome.kept],
                 refreshRequired=list(outcome.refresh_required),
+                environment=environment,
             )
             return
         for name in outcome.swept:
-            console.print(f"  [success]{name}[/success] stale pin swept; canonical image restored")
+            console.print(
+                f"  [success]{name}[/success] stale pin swept on {label}; canonical image restored"
+            )
         for name, why in outcome.kept:
             console.print(f"  [dim]{name} kept: {why}[/dim]")
         for name in outcome.refresh_required:
             console.print(
-                f"  [warning]{name} stale pin removed, but no canonical image was "
+                f"  [warning]{name} stale pin removed on {label}, but no canonical image was "
                 "recorded[/warning]"
             )
         if outcome.refresh_required:
@@ -1166,7 +1182,7 @@ def service_reset(
                 "canonical images.[/warning]"
             )
         if not (outcome.swept or outcome.kept or outcome.refresh_required):
-            console.print("No ephemeral pins to sweep.")
+            console.print(f"No ephemeral pins to sweep on {label}.")
         return
 
     assert service is not None
@@ -1185,7 +1201,6 @@ def service_reset(
             console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
 
-    environment = _environment_facts()
     if output_json:
         parts = []
         if result.restored:
@@ -1205,14 +1220,12 @@ def service_reset(
         )
         return
 
-    from .deploy_record import environment_label
-
-    label = environment_label(environment)
     for name in result.restored:
         console.print(f"  [success]{name}[/success] restored to canonical image on {label}")
     for name in result.refresh_required:
         console.print(
-            f"  [warning]{name} pin removed, but no canonical image was recorded[/warning]"
+            f"  [warning]{name} pin removed on {label}, but no canonical image was "
+            "recorded[/warning]"
         )
     if result.refresh_required:
         console.print(

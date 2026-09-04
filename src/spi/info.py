@@ -32,11 +32,7 @@ from rich.table import Table
 from .azure_infra import _cosmos_sql_name, _sb_name, _storage_name
 from .config import BASE_NAME
 from .console import console
-from .deploy_record import (
-    DeployRecordError,
-    environment_facts,
-    read_deploy_record,
-)
+from .deploy_record import environment_facts, read_deploy_record
 from .ingress import get_ingress_ip
 from .shell import gather_reads, kubectl_json
 from .templates import LEGAL_TAG_BASE
@@ -314,15 +310,13 @@ def _build_internal_services() -> list:
 
 
 def _read_deploy_record():
-    """The deploy record, or None when absent or unreadable.
+    """The deploy record, or None when absent.
 
-    `status` fails closed on an unreadable record because it gates deploys;
-    `info` publishes facts and degrades to an empty identity block instead.
+    An unreadable or malformed record raises, as it does for `status`: an
+    all-empty identity block means no record (ADR-030), and publishing it
+    over a read failure would hand consumers a false fact.
     """
-    try:
-        return read_deploy_record(required=False)
-    except DeployRecordError:
-        return None
+    return read_deploy_record(required=False)
 
 
 def _collect_info() -> dict:

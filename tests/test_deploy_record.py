@@ -299,3 +299,17 @@ def test_environment_descriptions_cover_the_missing_record():
     assert deploy_record.describe_environment(present) == (
         "shared v0.9.1  profile core  deployed 2026-09-04T14:36:46Z"
     )
+
+
+def test_record_with_non_string_env_is_rejected(monkeypatch):
+    """Only an absent env is compatible; a present non-string value is corruption."""
+    obj = _object(maintenance="false")
+    obj["data"]["env"] = 7
+    monkeypatch.setattr(
+        deploy_record,
+        "run_process",
+        lambda *args, **kwargs: _completed(stdout=json.dumps(obj)),
+    )
+
+    with pytest.raises(DeployRecordError, match="invalid env"):
+        deploy_record.read_deploy_record()

@@ -237,21 +237,26 @@ def test_info_json_publishes_the_same_environment_block_as_status(monkeypatch):
     assert facts["profile"] == "core"
 
 
-def test_info_json_environment_is_empty_when_the_record_is_unreadable(monkeypatch):
+def test_info_fails_when_the_record_is_unreadable(monkeypatch):
+    """An empty identity block means no record. A read failure is not that,
+    so info exits 1 like status rather than publishing a false fact."""
     from spi.deploy_record import DeployRecordError
 
     real_read = info._read_deploy_record
     _wire(monkeypatch)
     monkeypatch.setattr(info, "_read_deploy_record", real_read)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
 
     def unreadable(required=False):
         raise DeployRecordError("forbidden")
 
     monkeypatch.setattr(info, "read_deploy_record", unreadable)
 
-    facts = info.collect_info()["environment"]
+    result = CliRunner().invoke(cli.app, ["info", "--json"])
 
-    assert facts["stackVersion"] == ""
+    assert result.exit_code == 1
+    assert "forbidden" in result.output
+    assert "{" not in result.output
 
 
 def test_info_human_header_names_environment_and_profile(monkeypatch):
