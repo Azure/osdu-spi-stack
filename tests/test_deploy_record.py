@@ -229,3 +229,73 @@ def test_maintenance_cli(monkeypatch, command, enabled, message):
     assert result.exit_code == 0
     assert calls == [enabled]
     assert message in result.output
+
+
+def test_record_without_env_decodes_with_empty_name(monkeypatch):
+    """Records written before the field existed still read; the name is empty."""
+    monkeypatch.setattr(
+        deploy_record,
+        "run_process",
+        lambda *args, **kwargs: _completed(stdout=json.dumps(_object(maintenance="false"))),
+    )
+
+    record = deploy_record.read_deploy_record()
+
+    assert record is not None
+    assert record.env == ""
+    assert deploy_record.environment_facts(record)["name"] == ""
+    assert deploy_record.environment_facts(record)["stackVersion"] == "v0.6.0"
+
+
+def test_upsert_writes_env_and_set_maintenance_preserves_it(monkeypatch):
+    monkeypatch.setattr(deploy_record, "_read_record_object", lambda required=False: None)
+    captured = {}
+    monkeypatch.setattr(
+        deploy_record, "_create_record", lambda record: captured.setdefault("created", record)
+    )
+
+    deploy_record.upsert_deploy_record(
+        ref="v0.9.1",
+        resolved_commit="c" * 40,
+        deployed_at="2026-09-04T14:36:46Z",
+        cli_version="0.9.1",
+        profile="core",
+        initial_maintenance=False,
+        env="shared",
+    )
+    assert captured["created"].to_data()["env"] == "shared"
+
+    stored = _object(maintenance="false")
+    stored["data"]["env"] = "shared"
+    monkeypatch.setattr(deploy_record, "_read_record_object", lambda required=True: stored)
+    monkeypatch.setattr(
+        deploy_record, "_patch_record", lambda obj, record: captured.setdefault("patched", record)
+    )
+
+    deploy_record.set_maintenance(True)
+
+    assert captured["patched"].env == "shared"
+    assert captured["patched"].maintenance is True
+
+
+def test_environment_descriptions_cover_the_missing_record():
+    absent = deploy_record.environment_facts(None)
+    assert all(value == "" for value in absent.values())
+    assert deploy_record.environment_label(absent) == "unknown environment (no deploy record)"
+    assert deploy_record.describe_environment(absent) == "unknown (no deploy record)"
+
+    present = deploy_record.environment_facts(
+        deploy_record.DeployRecord(
+            ref="v0.9.1",
+            resolved_commit="b11c6748ca05",
+            deployed_at="2026-09-04T14:36:46Z",
+            cli_version="0.9.1",
+            profile="core",
+            maintenance=False,
+            env="shared",
+        )
+    )
+    assert deploy_record.environment_label(present) == "shared v0.9.1"
+    assert deploy_record.describe_environment(present) == (
+        "shared v0.9.1  profile core  deployed 2026-09-04T14:36:46Z"
+    )

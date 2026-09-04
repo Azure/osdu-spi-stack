@@ -91,6 +91,22 @@ def _emit_outcome(outcome: str, code: Optional[str], detail: str, **extra) -> No
     print(json.dumps(payload))
 
 
+def _environment_facts() -> Dict[str, str]:
+    """Identity of the connected environment for confirmations; never raises."""
+    from .deploy_record import DeployRecordError, environment_facts, read_deploy_record
+
+    try:
+        return environment_facts(read_deploy_record(required=False))
+    except DeployRecordError:
+        return environment_facts(None)
+
+
+def _environment_label() -> str:
+    from .deploy_record import environment_label
+
+    return environment_label(_environment_facts())
+
+
 def _guarded_context(output_json: bool) -> str:
     """Run the cluster guard, keeping the `--json` final-line contract.
 
@@ -975,7 +991,10 @@ def service_pin(
             console.print(f"[error]{exc}[/error]")
             raise typer.Exit(code=1)
         marker = f" (ephemeral, run {pin.run_id})" if pin.ephemeral else ""
-        console.print(f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker}")
+        console.print(
+            f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker} "
+            f"on {_environment_label()}"
+        )
         if pin.ephemeral:
             console.print(
                 f"[dim]Release with: spi service reset {service} --if-run {pin.run_id}[/dim]"
@@ -991,9 +1010,11 @@ def service_pin(
         console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
 
+    environment = _environment_label()
     for name, pin in results:
         console.print(
-            f"  [success]{name}[/success] pinned to MR !{pin.mr} ({pin.branch} @ {pin.tag[:12]})"
+            f"  [success]{name}[/success] pinned to MR !{pin.mr} ({pin.branch} @ {pin.tag[:12]}) "
+            f"on {environment}"
         )
     console.print(f"[dim]Release with: spi service reset {service}[/dim]")
 
@@ -1045,6 +1066,7 @@ def service_verify(
         raise typer.Exit(code=1)
 
     detail = f"{result.deployment} pod {result.pod} runs {result.image_id}"
+    environment = _environment_facts()
     if output_json:
         _emit_outcome(
             "verified",
@@ -1054,9 +1076,14 @@ def service_verify(
             container=result.container,
             pod=result.pod,
             imageId=result.image_id,
+            environment=environment,
         )
         return
-    console.print(f"  [success]{service}[/success] verified: {detail}")
+    from .deploy_record import environment_label
+
+    console.print(
+        f"  [success]{service}[/success] verified on {environment_label(environment)}: {detail}"
+    )
 
 
 @service_app.command("reset")
@@ -1158,6 +1185,7 @@ def service_reset(
             console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
 
+    environment = _environment_facts()
     if output_json:
         parts = []
         if result.restored:
@@ -1173,11 +1201,15 @@ def service_reset(
             "; ".join(parts),
             restored=list(result.restored),
             refreshRequired=list(result.refresh_required),
+            environment=environment,
         )
         return
 
+    from .deploy_record import environment_label
+
+    label = environment_label(environment)
     for name in result.restored:
-        console.print(f"  [success]{name}[/success] restored to canonical image")
+        console.print(f"  [success]{name}[/success] restored to canonical image on {label}")
     for name in result.refresh_required:
         console.print(
             f"  [warning]{name} pin removed, but no canonical image was recorded[/warning]"

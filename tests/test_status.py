@@ -50,6 +50,7 @@ def _record(maintenance: bool = False) -> DeployRecord:
         cli_version="0.6.0",
         profile="core",
         maintenance=maintenance,
+        env="shared",
     )
 
 
@@ -547,3 +548,59 @@ def test_helmrelease_table_omits_retry_caption_for_terminal_stall_only(monkeypat
     assert "Stalled" in text
     assert "exhausting retries" not in text
     assert "a reset repeats the same failure." in text
+
+
+def test_status_json_publishes_the_environment_block(monkeypatch):
+    """Identity rides the same envelope fork CI already gates on, built from
+    the deploy record, so a verdict can say which environment proved it."""
+    _wire(monkeypatch)
+
+    payload = status.collect_status().to_dict()
+
+    assert payload["environment"] == {
+        "name": "shared",
+        "stackVersion": "v0.6.0",
+        "resolvedCommit": "a" * 40,
+        "profile": "core",
+        "deployedAt": "2026-08-27T18:00:00Z",
+        "cliVersion": "0.6.0",
+    }
+    assert payload["stack"]["ref"] == "v0.6.0"
+
+
+def test_status_json_environment_is_empty_without_a_record(monkeypatch):
+    _wire(monkeypatch, record=None)
+
+    payload = status.collect_status().to_dict()
+
+    assert payload["environment"]["name"] == ""
+    assert payload["environment"]["stackVersion"] == ""
+
+
+def test_status_human_ends_with_the_summary_and_names_the_environment(monkeypatch):
+    """A terminal shows the tail. The verdict and the environment identity are
+    the lines the command exists to answer, so they print last."""
+    _wire(monkeypatch, suspended=False)
+    monkeypatch.setattr(status, "kubectl_json", lambda _args: None)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    # Rich wraps panel text at the terminal width; compare without the box.
+    unwrapped = " ".join(_plain(result.output).replace("│", " ").split())
+
+    identity = "Environment: shared v0.6.0 profile core deployed 2026-08-27T18:00:00Z"
+    assert identity in unwrapped
+    assert unwrapped.index("Flux Kustomizations") < unwrapped.index(identity)
+    assert unwrapped.index("Deployable") > unwrapped.index(identity)
+    tail = [line for line in _plain(result.output).splitlines() if line.strip()][-4:]
+    assert any("Deployable" in line for line in tail)
+
+
+def test_status_human_names_a_missing_record(monkeypatch):
+    _wire(monkeypatch, record=None)
+    monkeypatch.setattr(status, "kubectl_json", lambda _args: None)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+
+    assert "Environment: unknown (no deploy record)" in _plain(result.output)
