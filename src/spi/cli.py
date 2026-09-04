@@ -91,6 +91,22 @@ def _emit_outcome(outcome: str, code: Optional[str], detail: str, **extra) -> No
     print(json.dumps(payload))
 
 
+def _environment_facts() -> Dict[str, str]:
+    """Identity of the connected environment for confirmations; never raises."""
+    from .deploy_record import DeployRecordError, environment_facts, read_deploy_record
+
+    try:
+        return environment_facts(read_deploy_record(required=False))
+    except DeployRecordError:
+        return environment_facts(None)
+
+
+def _environment_label() -> str:
+    from .deploy_record import environment_label
+
+    return environment_label(_environment_facts())
+
+
 def _guarded_context(output_json: bool) -> str:
     """Run the cluster guard, keeping the `--json` final-line contract.
 
@@ -656,11 +672,19 @@ def info(
 
     ctx = verify_spi_cluster()
 
+    from .deploy_record import DeployRecordError
     from .info import render_info
 
     if not output_json:
         console.print(f"  [dim]Cluster context: {ctx}[/dim]")
-    render_info(show_secrets=show_secrets, show_apis=show_apis, output_json=output_json)
+    try:
+        render_info(show_secrets=show_secrets, show_apis=show_apis, output_json=output_json)
+    except DeployRecordError as exc:
+        if output_json:
+            typer.echo(str(exc), err=True)
+        else:
+            console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -975,7 +999,10 @@ def service_pin(
             console.print(f"[error]{exc}[/error]")
             raise typer.Exit(code=1)
         marker = f" (ephemeral, run {pin.run_id})" if pin.ephemeral else ""
-        console.print(f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker}")
+        console.print(
+            f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker} "
+            f"on {_environment_label()}"
+        )
         if pin.ephemeral:
             console.print(
                 f"[dim]Release with: spi service reset {service} --if-run {pin.run_id}[/dim]"
@@ -991,9 +1018,11 @@ def service_pin(
         console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
 
+    environment = _environment_label()
     for name, pin in results:
         console.print(
-            f"  [success]{name}[/success] pinned to MR !{pin.mr} ({pin.branch} @ {pin.tag[:12]})"
+            f"  [success]{name}[/success] pinned to MR !{pin.mr} ({pin.branch} @ {pin.tag[:12]}) "
+            f"on {environment}"
         )
     console.print(f"[dim]Release with: spi service reset {service}[/dim]")
 
@@ -1045,6 +1074,7 @@ def service_verify(
         raise typer.Exit(code=1)
 
     detail = f"{result.deployment} pod {result.pod} runs {result.image_id}"
+    environment = _environment_facts()
     if output_json:
         _emit_outcome(
             "verified",
@@ -1054,9 +1084,14 @@ def service_verify(
             container=result.container,
             pod=result.pod,
             imageId=result.image_id,
+            environment=environment,
         )
         return
-    console.print(f"  [success]{service}[/success] verified: {detail}")
+    from .deploy_record import environment_label
+
+    console.print(
+        f"  [success]{service}[/success] verified on {environment_label(environment)}: {detail}"
+    )
 
 
 @service_app.command("reset")
@@ -1104,6 +1139,11 @@ def service_reset(
     if not output_json:
         console.print(f"  [dim]Cluster context: {ctx}[/dim]")
 
+    from .deploy_record import environment_label
+
+    environment = _environment_facts()
+    label = environment_label(environment)
+
     if sweep:
         try:
             outcome = sweep_stale_ephemeral_pins()
@@ -1122,15 +1162,18 @@ def service_reset(
                 swept=list(outcome.swept),
                 kept=[{"service": name, "reason": why} for name, why in outcome.kept],
                 refreshRequired=list(outcome.refresh_required),
+                environment=environment,
             )
             return
         for name in outcome.swept:
-            console.print(f"  [success]{name}[/success] stale pin swept; canonical image restored")
+            console.print(
+                f"  [success]{name}[/success] stale pin swept on {label}; canonical image restored"
+            )
         for name, why in outcome.kept:
             console.print(f"  [dim]{name} kept: {why}[/dim]")
         for name in outcome.refresh_required:
             console.print(
-                f"  [warning]{name} stale pin removed, but no canonical image was "
+                f"  [warning]{name} stale pin removed on {label}, but no canonical image was "
                 "recorded[/warning]"
             )
         if outcome.refresh_required:
@@ -1139,7 +1182,7 @@ def service_reset(
                 "canonical images.[/warning]"
             )
         if not (outcome.swept or outcome.kept or outcome.refresh_required):
-            console.print("No ephemeral pins to sweep.")
+            console.print(f"No ephemeral pins to sweep on {label}.")
         return
 
     assert service is not None
@@ -1173,14 +1216,16 @@ def service_reset(
             "; ".join(parts),
             restored=list(result.restored),
             refreshRequired=list(result.refresh_required),
+            environment=environment,
         )
         return
 
     for name in result.restored:
-        console.print(f"  [success]{name}[/success] restored to canonical image")
+        console.print(f"  [success]{name}[/success] restored to canonical image on {label}")
     for name in result.refresh_required:
         console.print(
-            f"  [warning]{name} pin removed, but no canonical image was recorded[/warning]"
+            f"  [warning]{name} pin removed on {label}, but no canonical image was "
+            "recorded[/warning]"
         )
     if result.refresh_required:
         console.print(

@@ -61,6 +61,9 @@ skews ahead of the cluster contract (ADR-031).
    `K8S_DEPLOYMENT_NAME` and `K8S_CONTAINER_NAME` cover deviants. With
    `--json` the last stdout line is a `{outcome, code, detail}` envelope;
    exit 2 carries the typed code, exit 1 means the cluster was unreachable.
+   A verified envelope also carries `environment` (name, stack version,
+   profile), the same block `spi status --json` and `spi info --json`
+   publish, so the job's verdict can name the environment that proved it.
 6. **Test.** The integration-test job re-runs the verify as a pre-flight
    (the cross-pipeline guard: a colliding deploy fails fast, naming the
    colliding run from the pin annotation), resolves endpoints from

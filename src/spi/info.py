@@ -32,6 +32,7 @@ from rich.table import Table
 from .azure_infra import _cosmos_sql_name, _sb_name, _storage_name
 from .config import BASE_NAME
 from .console import console
+from .deploy_record import environment_facts, read_deploy_record
 from .ingress import get_ingress_ip
 from .shell import gather_reads, kubectl_json
 from .templates import LEGAL_TAG_BASE
@@ -308,16 +309,27 @@ def _build_internal_services() -> list:
     ]
 
 
+def _read_deploy_record():
+    """The deploy record, or None when absent.
+
+    An unreadable or malformed record raises, as it does for `status`: an
+    all-empty identity block means no record (ADR-030), and publishing it
+    over a read failure would hand consumers a false fact.
+    """
+    return read_deploy_record(required=False)
+
+
 def _collect_info() -> dict:
     from .guard import get_suspend_status
 
-    cfg, osdu, azure_ext, init_values, suspended = gather_reads(
+    cfg, osdu, azure_ext, init_values, suspended, record = gather_reads(
         [
             _read_ingress_config,
             _read_osdu_config,
             _read_flux_extension_values,
             _read_init_values_yaml,
             get_suspend_status,
+            _read_deploy_record,
         ]
     )
     mode, base, endpoints, middleware = _compute_endpoints(cfg)
@@ -332,6 +344,7 @@ def _collect_info() -> dict:
 
     info = {
         "apiVersion": "spi.osdu.dev/v1",
+        "environment": environment_facts(record),
         "ingress_mode": mode,
         "base_url": base,
         "endpoints": endpoints,
@@ -426,7 +439,15 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
             )
         )
 
-    console.print(f"\n  [ready]Ingress mode:[/ready] {mode or 'unknown'}")
+    identity = info["environment"]
+    if identity["stackVersion"]:
+        label = f"{identity['name'] or 'unnamed'}  {identity['stackVersion']}"
+        if identity["profile"]:
+            label += f"  profile {identity['profile']}"
+        console.print(f"\n  [ready]Environment:  [/ready] {label}")
+    else:
+        console.print("\n  [warning]Environment:   unknown (no deploy record)[/warning]")
+    console.print(f"  [ready]Ingress mode:[/ready] {mode or 'unknown'}")
     if base:
         console.print(f"  [ready]Base URL:    [/ready] {base}")
     else:

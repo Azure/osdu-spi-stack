@@ -2477,3 +2477,110 @@ class TestPinCodecProvenance:
         _, saved = calls["patch"]
         assert saved["storage"].origin == "gitlab-mr"
         assert saved["storage"].ephemeral is False
+
+
+class TestConfirmationsNameTheEnvironment:
+    """Pinning into the wrong environment is the costly mistake; every
+    confirmation says which one it touched."""
+
+    def test_image_pin_confirmation_names_the_environment(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(
+            cli,
+            "pin_service_image",
+            lambda service, image, **kwargs: _image_pin(
+                ephemeral=False, run_id="", source_repo="", source_sha=""
+            ),
+        )
+
+        result = CliRunner().invoke(cli.app, ["service", "pin", "storage", "--image", _GHCR_IMAGE])
+
+        assert result.exit_code == 0
+        assert "on test v0.0.0" in _plain(result.output)
+
+    def test_mr_pin_confirmation_names_the_environment(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(cli, "pin_service", lambda service, mr_iid: [(service, _pin())])
+
+        result = CliRunner().invoke(cli.app, ["service", "pin", "schema", "--mr", "847"])
+
+        assert result.exit_code == 0
+        assert "on test v0.0.0" in _plain(result.output)
+
+    def test_verify_json_carries_the_environment_block(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(
+            cli,
+            "verify_service_image",
+            lambda service, image, deployment=None, container=None: pins.VerifyResult(
+                deployment="osdu-storage",
+                container="osdu-storage",
+                pod="osdu-storage-abc12",
+                image_id=_GHCR_IMAGE,
+            ),
+        )
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "verify", "storage", "--image", _GHCR_IMAGE, "--json"]
+        )
+
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["environment"]["name"] == "test"
+        assert payload["environment"]["stackVersion"] == "v0.0.0"
+
+    def test_confirmation_survives_an_unreadable_record(self, monkeypatch, real_environment_facts):
+        from spi import deploy_record
+
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+
+        def unreadable(required=False):
+            raise deploy_record.DeployRecordError("forbidden")
+
+        monkeypatch.setattr(deploy_record, "read_deploy_record", unreadable)
+        monkeypatch.setattr(
+            cli,
+            "pin_service_image",
+            lambda service, image, **kwargs: _image_pin(
+                ephemeral=False, run_id="", source_repo="", source_sha=""
+            ),
+        )
+
+        result = CliRunner().invoke(cli.app, ["service", "pin", "storage", "--image", _GHCR_IMAGE])
+
+        assert result.exit_code == 0
+        unwrapped = " ".join(_plain(result.output).split())
+        assert "on unknown environment (no deploy record)" in unwrapped
+
+    def test_sweep_json_and_human_output_name_the_environment(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(
+            cli,
+            "sweep_stale_ephemeral_pins",
+            lambda: pins.SweepResult(("storage",), (), ("schema",)),
+        )
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "reset", "--ephemeral", "--stale-only", "--json"]
+        )
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["outcome"] == "swept"
+        assert payload["environment"]["name"] == "test"
+
+        result = CliRunner().invoke(cli.app, ["service", "reset", "--ephemeral", "--stale-only"])
+        unwrapped = " ".join(_plain(result.output).split())
+        assert "storage stale pin swept on test v0.0.0" in unwrapped
+        assert "schema stale pin removed on test v0.0.0" in unwrapped
+
+    def test_refresh_only_reset_names_the_environment(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(
+            cli,
+            "reset_service",
+            lambda service, if_run="": pins.ResetResult((), ("storage",)),
+        )
+
+        result = CliRunner().invoke(cli.app, ["service", "reset", "storage"])
+
+        assert result.exit_code == 0
+        unwrapped = " ".join(_plain(result.output).split())
+        assert "storage pin removed on test v0.0.0" in unwrapped

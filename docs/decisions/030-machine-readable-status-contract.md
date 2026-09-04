@@ -19,9 +19,21 @@ record written at the end of `spi up` supplies the version fields.
   `reason` naming the first deployability blocker when `deployable` is false
   (a non-ready Kustomization, the `maintenance` flag, or a missing deploy
   record), `suspended`, `maintenance`, Kustomization counts with a not-ready
-  list, `stack` (ref, resolved commit, deploy timestamp, CLI version,
-  profile), `images` (branch, resolved-at, count, pinned services), and
-  `baseUrl`.
+  list, `environment` (name, stack version, resolved commit, profile,
+  deploy timestamp, CLI version), `images` (branch, resolved-at, count,
+  pinned services), and `baseUrl`. `stack` repeats the version fields
+  without the name and is kept one release for existing consumers.
+- `environment` is built by one function from the deploy record and
+  published unchanged by `spi info --json` too, so a fork job binding facts
+  from `info` and gating on `status` reads one identity. The name is the
+  `env` the environment was provisioned with (the declaration's `env` for a
+  lifecycle-managed environment, the `--env` flag for a personal one); it is
+  recorded because the kubectl context is client-side and renamable. Empty
+  strings mean no deploy record. The human dashboards print the same block:
+  `spi status` closes with it in the Summary panel, printed last so the
+  verdict is what remains on a terminal after the tables scroll; `spi info`
+  opens with name and profile beside the ingress mode; `spi service pin`,
+  `verify` and `reset` name the environment in their confirmation.
 - `ready` and `deployable` answer different questions. `ready` is Flux
   convergence: each gating Kustomization reports `Ready=True`, the same
   predicate `scripts/wait_for_flux_ready.sh` polls. Kustomizations labeled
@@ -44,7 +56,7 @@ record written at the end of `spi up` supplies the version fields.
   (`spi-stack-version`, `spi-deployed-utc`) readable with no cluster access,
   and a `spi-deploy-record` ConfigMap in `osdu-flux` (ADR-019) holding the
   ref, the resolved commit from `GitRepository.status.artifact.revision`, the
-  CLI version, profile, and timestamp.
+  CLI version, profile, environment name, and timestamp.
 - The ConfigMap also carries the `maintenance` flag. Status surfaces it and
   derives `deployable`; when it is set and cleared, and the fail-closed rules
   around it, are ADR-029's ruling.

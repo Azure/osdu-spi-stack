@@ -26,7 +26,13 @@ from rich.table import Table
 from rich.text import Text
 
 from .console import console
-from .deploy_record import DeployRecord, DeployRecordError, read_deploy_record
+from .deploy_record import (
+    DeployRecord,
+    DeployRecordError,
+    describe_environment,
+    environment_facts,
+    read_deploy_record,
+)
 from .pins import PinError, decode_pins
 from .shell import gather_reads, kubectl_json, run_process
 
@@ -151,6 +157,7 @@ class StatusSnapshot:
     images: ImageState
     base_url: str
     kustomization_items: tuple[dict, ...]
+    record: DeployRecord | None = None
 
     def to_dict(self) -> dict:
         not_ready = [item.to_dict() for item in self.kustomizations if not item.ready]
@@ -166,6 +173,8 @@ class StatusSnapshot:
                 "ready": sum(1 for item in self.kustomizations if item.ready),
                 "notReady": not_ready,
             },
+            "environment": environment_facts(self.record),
+            # Superseded by `environment`; kept one release for consumers.
             "stack": self.stack.to_dict(),
             "images": self.images.to_dict(),
             "baseUrl": self.base_url,
@@ -408,6 +417,7 @@ def collect_status() -> StatusSnapshot:
         ),
         base_url=base_url,
         kustomization_items=items,
+        record=record,
     )
 
 
@@ -871,7 +881,10 @@ def get_summary(snapshot: StatusSnapshot) -> Panel:
     if snapshot.maintenance:
         counts += "  [bold red]| MAINTENANCE[/bold red]"
 
-    body = Text.from_markup(counts)
+    body = Text("Environment: ", style="ready")
+    body.append(describe_environment(environment_facts(snapshot.record)))
+    body.append("\n")
+    body.append_text(Text.from_markup(counts))
     body.append("\n")
 
     # The verdict the JSON envelope reports, in the same words, so an operator
@@ -925,7 +938,6 @@ def render_status(snapshot: StatusSnapshot | None = None):
     )
 
     sections = [
-        get_summary(snapshot),
         get_kustomization_table(snapshot.kustomization_items),
         helmreleases,
         custom_resources,
@@ -939,6 +951,9 @@ def render_status(snapshot: StatusSnapshot | None = None):
         sections.append(jobs_table)
 
     sections.extend(pod_tables)
+    # Last, so the verdict is what remains on screen after 200 lines of
+    # tables scroll past; a red verdict then has its detail directly above.
+    sections.append(get_summary(snapshot))
 
     for section in sections:
         console.print(section)

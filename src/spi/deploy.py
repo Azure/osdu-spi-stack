@@ -473,6 +473,7 @@ def _finalize_gitops_source(config: Config) -> None:
         cli_version=__version__,
         profile=config.profile.value,
         initial_maintenance=bool(config.repo_tag),
+        env=config.env,
     )
     state = "maintenance enabled" if record.maintenance else "deployable after convergence"
     display_result(f"GitRepository pinned to {expected_ref} ({resolved_commit[:12]}); {state}.")

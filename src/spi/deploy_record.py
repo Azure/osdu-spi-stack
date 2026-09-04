@@ -30,6 +30,8 @@ class DeployRecord:
     cli_version: str
     profile: str
     maintenance: bool
+    # Records written before the field existed decode with an empty name.
+    env: str = ""
 
     def to_data(self) -> dict[str, str]:
         return {
@@ -39,10 +41,56 @@ class DeployRecord:
             "cliVersion": self.cli_version,
             "profile": self.profile,
             "maintenance": "true" if self.maintenance else "false",
+            "env": self.env,
         }
 
     def to_dict(self) -> dict[str, str | bool]:
         return asdict(self)
+
+
+def environment_facts(record: DeployRecord | None) -> dict[str, str]:
+    """The identity block `spi status --json` and `spi info --json` both publish.
+
+    One builder for both commands so a fork job binding facts from `info`
+    and gating on `status` cannot see two different environments. Empty
+    strings mean the cluster has no deploy record.
+    """
+    if record is None:
+        return {
+            "name": "",
+            "stackVersion": "",
+            "resolvedCommit": "",
+            "profile": "",
+            "deployedAt": "",
+            "cliVersion": "",
+        }
+    return {
+        "name": record.env,
+        "stackVersion": record.ref,
+        "resolvedCommit": record.resolved_commit,
+        "profile": record.profile,
+        "deployedAt": record.deployed_at,
+        "cliVersion": record.cli_version,
+    }
+
+
+def environment_label(facts: dict[str, str]) -> str:
+    """Short form for confirmations: `shared v0.9.1`."""
+    if not facts.get("stackVersion"):
+        return "unknown environment (no deploy record)"
+    return f"{facts.get('name') or 'unnamed'} {facts['stackVersion']}"
+
+
+def describe_environment(facts: dict[str, str]) -> str:
+    """Dashboard form: name, version, profile, deploy time. Fits an 80-column panel."""
+    if not facts.get("stackVersion"):
+        return "unknown (no deploy record)"
+    parts = [environment_label(facts)]
+    if facts.get("profile"):
+        parts.append(f"profile {facts['profile']}")
+    if facts.get("deployedAt"):
+        parts.append(f"deployed {facts['deployedAt']}")
+    return "  ".join(parts)
 
 
 def _read_record_object(required: bool = False) -> dict | None:
@@ -100,6 +148,11 @@ def _decode_record(obj: dict) -> DeployRecord:
             f"{data['maintenance']!r}"
         )
 
+    env = data.get("env", "")
+    if not isinstance(env, str):
+        raise DeployRecordError(
+            f"ConfigMap {DEPLOY_RECORD_CONFIGMAP} has invalid env value {env!r}"
+        )
     return DeployRecord(
         ref=data["ref"],
         resolved_commit=data["resolvedCommit"],
@@ -107,6 +160,7 @@ def _decode_record(obj: dict) -> DeployRecord:
         cli_version=data["cliVersion"],
         profile=data["profile"],
         maintenance=raw_maintenance == "true",
+        env=env,
     )
 
 
@@ -215,6 +269,7 @@ def upsert_deploy_record(
     cli_version: str,
     profile: str,
     initial_maintenance: bool,
+    env: str = "",
 ) -> DeployRecord:
     """Write a deploy record while preserving an existing maintenance flag."""
 
@@ -231,6 +286,7 @@ def upsert_deploy_record(
             cli_version=cli_version,
             profile=profile,
             maintenance=maintenance,
+            env=env,
         )
 
         if obj is None:
@@ -263,6 +319,7 @@ def set_maintenance(enabled: bool) -> DeployRecord:
             cli_version=current.cli_version,
             profile=current.profile,
             maintenance=enabled,
+            env=current.env,
         )
         if _patch_record(obj, updated):
             return updated

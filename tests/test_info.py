@@ -11,7 +11,18 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from spi import cli, info
+from spi.deploy_record import DeployRecord
 from spi.templates import LEGAL_TAG_BASE, spi_init_values_configmap
+
+_RECORD = DeployRecord(
+    ref="v0.9.1",
+    resolved_commit="b11c6748ca05",
+    deployed_at="2026-09-04T14:36:46Z",
+    cli_version="0.9.1",
+    profile="core",
+    maintenance=False,
+    env="shared",
+)
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -21,7 +32,14 @@ def _plain(text: str) -> str:
     return _ANSI.sub("", text)
 
 
-def _wire(monkeypatch, osdu_config=None, partitions=None, legal_tag_base=None, seeded=True):
+def _wire(
+    monkeypatch,
+    osdu_config=None,
+    partitions=None,
+    legal_tag_base=None,
+    seeded=True,
+    record=_RECORD,
+):
     monkeypatch.setattr(
         info,
         "_read_ingress_config",
@@ -53,6 +71,7 @@ def _wire(monkeypatch, osdu_config=None, partitions=None, legal_tag_base=None, s
     values_yaml += f"legalTag: {legal_tag_base or LEGAL_TAG_BASE}\n"
     monkeypatch.setattr(info, "_read_init_values_yaml", lambda: values_yaml)
     monkeypatch.setattr(info, "_legal_tag_seeded", lambda partition: seeded)
+    monkeypatch.setattr(info, "_read_deploy_record", lambda: record)
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: True)
 
 
@@ -201,3 +220,60 @@ def test_cli_constant_matches_chart_values_default():
         if line.startswith("legalTag:")
     )
     assert chart_default == LEGAL_TAG_BASE
+
+
+def test_info_json_publishes_the_same_environment_block_as_status(monkeypatch):
+    """One builder feeds both commands (ADR-030): a fork job binding facts
+    from info and gating on status must be reading the same environment."""
+    from spi import status
+
+    _wire(monkeypatch)
+
+    facts = info.collect_info()["environment"]
+
+    assert facts == status.environment_facts(_RECORD)
+    assert facts["name"] == "shared"
+    assert facts["stackVersion"] == "v0.9.1"
+    assert facts["profile"] == "core"
+
+
+def test_info_fails_when_the_record_is_unreadable(monkeypatch):
+    """An empty identity block means no record. A read failure is not that,
+    so info exits 1 like status rather than publishing a false fact."""
+    from spi.deploy_record import DeployRecordError
+
+    real_read = info._read_deploy_record
+    _wire(monkeypatch)
+    monkeypatch.setattr(info, "_read_deploy_record", real_read)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    def unreadable(required=False):
+        raise DeployRecordError("forbidden")
+
+    monkeypatch.setattr(info, "read_deploy_record", unreadable)
+
+    result = CliRunner().invoke(cli.app, ["info", "--json"])
+
+    assert result.exit_code == 1
+    assert "forbidden" in result.output
+    assert "{" not in result.output
+
+
+def test_info_human_header_names_environment_and_profile(monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["info"])
+    output = _plain(result.output)
+
+    assert "Environment:   shared  v0.9.1  profile core" in output
+    assert output.index("Environment:") < output.index("Ingress mode:")
+
+
+def test_info_human_header_marks_a_missing_record(monkeypatch):
+    _wire(monkeypatch, record=None)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["info"])
+
+    assert "Environment:   unknown (no deploy record)" in _plain(result.output)

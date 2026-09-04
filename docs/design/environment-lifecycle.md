@@ -145,7 +145,9 @@ to deploys only after the probes pass.
   deploy gate, a typed reason, the deployed version, and the `maintenance`
   flag. Exit 0/2/1 (ADR-030). Implemented; both lifecycle workflows gate on
   it.
-- `spi info --json`: endpoints, partitions, and non-secret Azure coordinates.
+- `spi info --json`: endpoints, partitions, non-secret Azure coordinates,
+  and the `environment` identity block (name, stack version, profile) that
+  `spi status --json` publishes from the same deploy record.
   Acceptance secret names come from each service descriptor, and their values
   are fetched separately from Key Vault. In `azure` ingress mode the FQDN
   embeds the environment's name suffix; the declaration file persists the
