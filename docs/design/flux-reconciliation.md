@@ -190,6 +190,33 @@ helm-controller ignores `resetAt` and `forceAt` unless they match
 that fails for any reason other than the type being absent aborts the command
 rather than reporting a reset that never happened.
 
+## Jobs are patched, not replaced
+
+A Job's pod template is immutable, so anything that changes it after the Job
+exists is a difference Helm can only close by patching, and the patch is
+rejected. `safeguards-workload-mutating-webhook` raises a Job's CPU request to
+100m, which is why `osdu-spi-init` requests exactly that. A lower request holds
+`osdu-spi-init` and `osdu-spi-legal`, which render the same chart, at
+`RollbackFailed` with their automatic rollbacks failing the same way, from the
+first upgrade after the Jobs land. Nothing resets it; `spi reconcile` only
+touches `RetriesExceeded`. Recovery is a chart that requests what admission
+left on the live Job. Deleting the Jobs is not a recovery on its own: the retry
+recreates them from the same manifest, admission raises them again, and the
+next upgrade is rejected again.
+
+A chart edit that changes a rendered Job wedges the release the same way, and
+`force` is no escape. A Kustomization's `force` deletes and recreates on an
+immutable-field error, which protects schema-load; a HelmRelease's
+`spec.upgrade.force` maps to Helm's Replace, and the API server rejects that
+for the same reason it rejects the patch.
+
+The airflow Jobs are release-managed too, since `useHelmHooks: false` keeps
+Flux from skipping them, but the chart's default `ttlSecondsAfterFinished: 300`
+deletes them once they finish, so a later upgrade creates them rather than
+patching them. `osdu-spi-init` cannot borrow that: `spi info` and `spi status`
+read its Jobs as the evidence that bootstrap ran
+([ADR-015](../decisions/015-partition-entitlements-bootstrap.md)).
+
 ## Worked example: debug a stuck service
 
 Symptom: `spi-osdu-services` reports `Ready=False` after the timeout.
@@ -214,6 +241,8 @@ $ kubectl describe kustomization spi-bootstrap -n osdu-flux
 The Istio CRD has not registered yet, or the namespace is wrong. `kubectl get crd | grep istio` confirms. Fix the upstream Gateway owner (`spi-gateway-tls`, declared by the selected ingress tree) or the AKS Istio extension, reconcile, and the chain unblocks layer by layer.
 
 The same pattern works for HelmRelease failures (`flux get helmreleases -n osdu-flux`), schema-load Job failures (`kubectl logs job/schema-load -n osdu`), and image substitution failures (`kubectl get cm osdu-image-lock -n osdu-flux -o yaml` shows the resolved values).
+
+helm-controller stores a release in the HelmRelease's own namespace, not in `spec.targetNamespace`, so `helm get`, `helm history`, and `helm list` all want `-n osdu-flux`. Run against the target namespace they exit 1 with `Error: release: not found`, which reads as a missing release rather than a wrong namespace.
 
 ## Worked example: refresh service images on a live cluster
 
@@ -244,6 +273,8 @@ Pods roll one at a time as each `HelmRelease` reconciles. `spi status --watch` s
 
 - `software/stacks/osdu/profiles/core/stack.yaml` -- the layer DAG
 - `software/stacks/osdu/ingress/<mode>/stack.yaml` -- ingress overlay Kustomizations
+- `software/charts/osdu-spi-init/values.yaml` -- the Job resource requests admission accepts
+- `software/charts/osdu-spi-init/Chart.yaml` -- the version Flux repackages on
 - `src/spi/images.py` -- `osdu-image-lock` rendering
 - `src/spi/deploy.py` -- `_finalize_gitops_source`, `_set_source_suspended`
 - `src/spi/guard.py` -- suspend status checks
