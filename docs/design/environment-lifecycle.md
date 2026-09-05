@@ -127,17 +127,16 @@ stack-definition axis. Weekday refreshes preserve those canonicals until the
 future fork-onboarding phase adds selective canonical refresh (ADR-033).
 
 **Reset** (unbuilt) is teardown plus cold provision at the pinned tag: flag, drain,
-snapshot the lock, `spi down`, poll until `az group exists` reports false
-(the CLI's own wait covers acknowledgement only), then `spi up --tag <pin>
---name-suffix <declared>` and the cold-cluster wait with the 155-minute
-schema-load budget. The declared name suffix is what makes recovery work:
-the RG tag that normally carries it dies with the RG, and feeding the suffix
-back keeps resource names and the hostname stable and lets the Key Vault
-soft-delete recovery in `spi up` find the old vault, so its secrets return
-with it (ADR-028). The test-identity ensure step then verifies and repairs
-the acceptance-tester secrets and role assignments rather than assuming loss
-(ADR-029). The rebuilt environment starts with `maintenance` set and opens
-to deploys only after the probes pass.
+snapshot the lock, `spi down`, poll until only the managed identities remain
+in the group (ADR-034), then `spi up --tag <pin>` and the cold-cluster wait
+with the 155-minute schema-load budget. The deploy identity and the
+`spi-name-suffix` tag survive `spi down`, so the client id the forks hold
+never changes, resource names and the hostname stay stable, and the Key
+Vault soft-delete recovery in `spi up` finds the old vault (ADR-028). The
+ensure step then reconciles the identity's federated credentials and the
+service sources to the declaration's `forks:` list and repairs the
+test-caller entitlements (ADR-029, ADR-032). The rebuilt environment starts
+with `maintenance` set and opens to deploys only after the probes pass.
 
 ## Surfaces fork CI consumes
 
@@ -146,7 +145,9 @@ to deploys only after the probes pass.
   flag. Exit 0/2/1 (ADR-030). Implemented; both lifecycle workflows gate on
   it.
 - `spi info --json`: endpoints, partitions, non-secret Azure coordinates,
-  and the `environment` identity block (name, stack version, profile) that
+  the deploy identity's client id with the tenant, subscription, resource
+  group, and cluster (the five values a fork holds; ADR-032), and the
+  `environment` identity block (name, stack version, profile) that
   `spi status --json` publishes from the same deploy record.
   Acceptance secret names come from each service descriptor, and their values
   are fetched separately from Key Vault. In `azure` ingress mode the FQDN
@@ -226,11 +227,14 @@ gh run watch
    bump-PR job are implemented. Still unbuilt: `env-reset`, `env-teardown`,
    the test-identity ensure step, and the pin backstop/drain insertion
    points noted above.
-4. **Onboarding** (unbuilt): `spi onboard`; onboard `osdu-spi-partition`; the
-   template-side deploy, integration-test, and restore jobs under the reserved
-   check names.
-5. **Canonical flips** (unbuilt): `github_repo` on each onboarded service's
-   registry entry, one PR per service (ADR-033).
+4. **Onboarding** (unbuilt): the deploy identity and two Roles in `spi up`,
+   identity retention in `spi down` (ADR-034), `spi onboard`, `forks:` in
+   the declaration with the ensure step; onboard `osdu-spi-partition`; the
+   template-side deploy, integration-test, and restore jobs under the
+   reserved check names.
+5. **Canonical flips** (unbuilt): `spi onboard` records each service's
+   source in the lock; on the shared environment one `forks:` line per
+   service (ADR-033).
 
 ## Related ADRs
 
@@ -240,8 +244,9 @@ gh run watch
 - [ADR-029: Environment lifecycle verbs and the reset boundary](../decisions/029-environment-lifecycle-and-reset-boundary.md)
 - [ADR-030: Machine-readable status and the deploy record](../decisions/030-machine-readable-status-contract.md)
 - [ADR-031: Fork-built images deploy as ephemeral lock pins](../decisions/031-fork-image-deploys-as-ephemeral-pins.md)
-- [ADR-032: Per-fork deploy identity and namespace RBAC](../decisions/032-per-fork-deploy-identity.md)
+- [ADR-032: Environment deploy identity and namespace RBAC](../decisions/032-per-fork-deploy-identity.md)
 - [ADR-033: Canonical image source follows onboarding](../decisions/033-canonical-image-source-follows-onboarding.md)
+- [ADR-034: Managed identities survive `spi down`](../decisions/034-deploy-identity-survives-down.md)
 
 ## Source files
 

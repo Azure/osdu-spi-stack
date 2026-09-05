@@ -28,9 +28,10 @@ Each job authenticates fresh (the OIDC JWT lives ~5 minutes; one
 skews ahead of the cluster contract (ADR-031).
 
 1. **Authenticate.** The deploy and test jobs run in the fork's protected
-   `spi-stack` GitHub environment, the subject of the UAMI's federated
-   credential (ADR-032); `azure/login@v3` uses the fork's `AZURE_CLIENT_ID`
-   and the tenant and subscription variables.
+   `spi-stack` GitHub environment, the subject of the federated credential
+   `spi onboard` added to the environment's deploy identity (ADR-032);
+   `azure/login@v3` uses `AZURE_CLIENT_ID` and the tenant and subscription
+   variables, which are the same for every fork trusting that environment.
 2. **Connect.** `spi connect --resource-group $SPI_STACK_RESOURCE_GROUP
    --cluster $SPI_STACK_CLUSTER` wraps the hardened kubeconfig
    sequence living in `src/spi/azure_infra.py`: `az aks get-credentials`,
@@ -123,23 +124,39 @@ refresh resolves the same or a newer `main` image, so nothing regresses.
 
 | Variable | Set by | Meaning |
 |---|---|---|
-| `AZURE_CLIENT_ID` (secret), `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | `spi onboard` | the fork's UAMI and its home |
-| `SPI_STACK_RESOURCE_GROUP`, `SPI_STACK_CLUSTER` | `spi onboard` | environment coordinates for `spi connect` |
-| `K8S_DEPLOYMENT_NAME`, `K8S_CONTAINER_NAME` | `spi onboard` | verify targets; default to `osdu-<service>` |
+| `AZURE_CLIENT_ID` (secret), `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | `spi onboard`, or by hand from `spi info` | the environment's deploy identity and its home; identical for every fork in an organization, so `--org` sets them once |
+| `SPI_STACK_RESOURCE_GROUP`, `SPI_STACK_CLUSTER` | `spi onboard`, or by hand from `spi info` | environment coordinates for `spi connect` |
+| `K8S_DEPLOYMENT_NAME`, `K8S_CONTAINER_NAME` | operator, rarely | verify targets; default to `osdu-<service>` |
 | `ACCEPTANCE_TEST_DIR` | operator | Maven module path of the suite |
 | `ACCEPTANCE_TEST_SECRET_MAP` | operator | `ENV_VAR=keyvault-secret-name` pairs; an unknown or unresolvable entry fails the job before Maven starts |
 | `ACCEPTANCE_TEST_DEPENDENCIES` | operator | services whose health endpoints gate the suite; also absorbs a sibling's rolling restart |
 
-`spi onboard <service> --repo Azure/osdu-spi-<service>` (unbuilt,
-`src/spi/onboard.py`) provisions the UAMI, its federated credential for the
-fork's protected `spi-stack` environment, and the Azure role assignments
-(ADR-032), stamps the variables above via `gh`, and emits the RoleBinding
-subject line whose stack PR completes cluster access. It is idempotent and
-supports `--dry-run`. Once the
-configuration is present, the template's readiness tooling activates the
-reserved required checks `🚀 Deploy to spi-stack` and `🧪 Integration Tests`
-on the fork; the jobs themselves live in the template's workflows, not in
-this repo.
+`spi onboard <service> --repo <org>/<fork>` (unbuilt, `src/spi/onboard.py`)
+activates one repository against the connected environment. The deploy
+identity, its Azure roles, and the two Roles already exist from `spi up`
+(ADR-032), so activation is three blocks:
+
+| Block | Change | Needs |
+|---|---|---|
+| Azure | one federated credential on `spi-stack-<env>-deployer` for `repo:<org>/<fork>:environment:spi-stack` | write on the identity |
+| Cluster | the service's canonical source set to the fork in `osdu-image-lock` (ADR-033) | the operator's kube context |
+| Repository | the protected `spi-stack` environment and the five values above | admin on the repository, or the organization with `--org` |
+
+Without `--write` the command prints the `az`, `spi`, and `gh` commands for
+each block and changes nothing; the plan is the handoff for whoever holds
+the rights on each side. `--write` applies every block; `--skip-repo` leaves
+the repository block out. Re-running shows each row as existing or missing.
+`spi onboard --list` shows trusted repositories and each service's source;
+`spi onboard --remove <service>` deletes the credential and returns the
+service to community. Schema keeps its ADR-033 precondition: activation
+trusts the repository but refuses the source flip until a paired loader
+image exists, and says so.
+
+Once the five values and the descriptor are present, the template's
+readiness tooling activates the reserved required checks `🚀 Deploy to
+spi-stack` and `🧪 Integration Tests` on the fork; the jobs themselves live
+in the template's workflows, not in this repo. The first run of those jobs
+is the verification: onboard cannot mint the fork's OIDC token itself.
 
 ## Recipes
 
@@ -168,8 +185,9 @@ kubectl get cm osdu-image-lock -n osdu-flux \
 - [ADR-017: Per-deploy image lock](../decisions/017-osdu-image-lock.md)
 - [ADR-030: Machine-readable status and the deploy record](../decisions/030-machine-readable-status-contract.md)
 - [ADR-031: Fork-built images deploy as ephemeral lock pins](../decisions/031-fork-image-deploys-as-ephemeral-pins.md)
-- [ADR-032: Per-fork deploy identity and namespace RBAC](../decisions/032-per-fork-deploy-identity.md)
+- [ADR-032: Environment deploy identity and namespace RBAC](../decisions/032-per-fork-deploy-identity.md)
 - [ADR-033: Canonical image source follows onboarding](../decisions/033-canonical-image-source-follows-onboarding.md)
+- [ADR-034: Managed identities survive `spi down`](../decisions/034-deploy-identity-survives-down.md)
 
 ## Source files
 
