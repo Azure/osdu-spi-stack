@@ -26,7 +26,7 @@ PaaS state.
 | status | `spi status --json` (ADR-030) | seconds | on demand |
 | refresh | `spi reconcile`, then `scripts/wait_for_flux_ready.sh`, then probes | 5 to 20 min healthy | weekday cron |
 | upgrade | `spi up --env shared --tag vNEW --refresh-images` re-run | 20 to 60 min; hours when refreshed images rerun schema-load | `stackVersion` bump merge (ADR-028) |
-| reset | `spi down`, poll until the RG is gone, `spi up --tag <pin>` | 3 to 6 h | Saturday cron |
+| reset | `spi down`, poll until only identities remain (ADR-034), `spi up --tag <pin>` | 3 to 6 h | Saturday cron |
 | teardown | `spi down` | 15 to 45 min | protected manual dispatch |
 
 - **Upgrade is the provision path re-run**, executed with the tag's release
@@ -78,14 +78,13 @@ PaaS state.
   and the sweep still owns. `spi up` preserves the recorded `maintenance`
   value when it rewrites the deploy record, so an upgrade cannot reopen the
   environment before its probes pass.
-- **Test identities belong to the lifecycle.** Acceptance-tester service
-  principals are Entra objects and outlive the RG. The Key Vault returns
-  through the soft-delete recovery in `spi up` because the declaration file
-  persists the environment's name suffix across the RG deletion (ADR-028);
-  without that, a rebuild would derive a new vault name and the old secrets
-  would be unreachable. An idempotent ensure step after each reset verifies
-  and repairs the required secrets and role assignments rather than assuming
-  loss.
+- **Identities belong to the lifecycle.** The deploy identity survives
+  `spi down` in place (ADR-034), so a reset never rotates the client id the
+  forks hold. The Key Vault returns through the soft-delete recovery in
+  `spi up`, and the name suffix survives on the group tag. An idempotent
+  ensure step after each reset reconciles the identity's federated
+  credentials, the service sources, and the test-caller entitlements to the
+  declaration rather than assuming loss.
 - Lifecycle operations serialize under one concurrency group; fork deploys do
   not (ADR-031).
 
@@ -127,6 +126,5 @@ covers the single orphan case it leaves.
 - An upgrade restarts services in place, and its incremental ARM deployments
   can change substrate resources; fork test jobs observe rolling restarts
   during the window, absorbed by their dependency health gate (ADR-031).
-- The reset must wait for actual RG deletion before re-provisioning
-  (`cleanup_azure` acknowledges the delete within 60 s but does not wait for
-  completion).
+- The reset must wait until `spi down` has removed everything but the
+  identities before re-provisioning.

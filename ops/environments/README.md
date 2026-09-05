@@ -70,6 +70,6 @@ already be applied; see `docs/CI_SETUP.md`.
 ## What is still future work
 
 - `env-reset` (cold rebuild) and `env-teardown` (protected manual deletion).
-- Fork onboarding, per-fork identities, and canonical image source flips.
+- `forks:` in the declaration, `spi onboard`, and the ensure step that reconciles the deploy identity's credentials and service sources to it.
 
 See `docs/design/environment-lifecycle.md` for the complete roadmap.

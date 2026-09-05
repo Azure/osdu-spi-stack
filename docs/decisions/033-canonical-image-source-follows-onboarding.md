@@ -16,14 +16,19 @@ per service without touching how deploys work.
 A service's canonical source flips from community GitLab to its fork's GHCR
 `main` image when the fork onboards, one service at a time.
 
-- The flip is one reviewable line: setting `github_repo` on the service's
-  `IMAGE_REGISTRY` entry in `src/spi/images.py`. From then on each canonical
-  resolution path (a first `spi up`, `--refresh-images`, `spi service
-  refresh`) reads the fork's GHCR image; unset, community GitLab stays
-  canonical. A pin's reset is not a resolution path: it restores the target
-  captured when the pin was written (below).
-- The flip lands after the fork's deploy and test gates are active, so the
-  image line the environment runs is the one those gates certify.
+- The flip is recorded in the environment, not in the CLI: `spi onboard`
+  writes the service's source (`community` or `<org>/<fork>`) into the
+  `osdu-image-lock` ConfigMap (`src/spi/pins.py`). From then on each
+  canonical resolution path (`--refresh-images`, `spi service refresh`)
+  reads the fork's GHCR image for that service; absent, community GitLab
+  stays canonical. Declared environments carry the same list as `forks:` in
+  their declaration, and the lifecycle workflows reconcile the lock to it.
+  A pin's reset is not a resolution path: it restores the target captured
+  when the pin was written (below).
+- On the shared environment the flip lands after the fork's deploy and test
+  gates are active, so the image line the environment runs is the one those
+  gates certify. A personal or customer stack follows its own fork from the
+  moment its operator says so.
 - `schema` has a flip precondition its siblings lack: schema-load resolves a
   loader image at the schema service's exact commit (ADR-017), and the fork
   publishes no loader. Schema keeps its community canonical until its fork
@@ -48,6 +53,11 @@ A service's canonical source flips from community GitLab to its fork's GHCR
   before the flip and forward to the fork's `main` after it. The transition
   needs no dedicated mechanism.
 
+Rejected: the flip as a `github_repo` line in `src/spi/images.py`. One
+reviewed line per service, but CLI code ships to every environment, so a
+personal or customer stack could not follow its own fork without a code
+change.
+
 Rejected: community GitLab stays canonical for the fleet permanently. No
 divergence from upstream to track, but the shared environment then never runs
 the image line the forks ship and the deploy gates certify.
@@ -69,7 +79,7 @@ declaration.
   stalls for longer than the retention window while fork builds continue,
   the recorded canonical can age into a version the retention job has
   deleted, and the digest becomes unpullable, not merely untagged.
-- Reversal is the same one line back, with the next refresh restoring the
+- Reversal is `spi onboard --remove`, with the next refresh restoring the
   community image.
-- Which source is canonical is readable from `src/spi/images.py` and from the
-  lock's per-service repository keys, not from operator memory.
+- Which source is canonical is readable from `spi onboard --list` and the
+  lock's per-service keys, not from operator memory.
