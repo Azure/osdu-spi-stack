@@ -173,9 +173,12 @@ phases; source promotion is separate from enabling trust:
 | 3. Cluster trust | Project the observed credential roster and existing source policy into `osdu-image-lock` without changing resolved images or pins | the operator's kube context |
 | 4. Source policy | When requested, validate promotion preconditions, write `spi-source-<service>` on the RG, and update the lock's source projection (ADR-033) | RG tag write and the operator's kube context |
 
-Planning reads the credential roster first and refuses before phase 1 when
-the repository already backs another service or the identity holds twenty
-credentials (ADR-032); neither failure is recoverable in phase 2.
+Planning resolves the repository through the GitHub API and carries its
+canonical casing into every later write, since Entra matches the federated
+subject exactly. It reads the credential roster next and refuses before
+phase 1 when the repository already backs another service or the identity
+holds twenty credentials (ADR-032); neither failure is recoverable in
+phase 2.
 Without `--write` the command prints the `az`, `spi`, and `gh` commands for
 each phase and changes nothing; the plan is the handoff for whoever holds
 the rights on each side. `--write` applies the phases in order. `--skip-repo`
@@ -267,8 +270,8 @@ kubectl get cm osdu-image-lock -n osdu-flux \
 - [ADR-017: Per-deploy image lock](../decisions/017-osdu-image-lock.md)
 - [ADR-030: Machine-readable status and the deploy record](../decisions/030-machine-readable-status-contract.md)
 - [ADR-031: Fork-built images deploy as ephemeral lock pins](../decisions/031-fork-image-deploys-as-ephemeral-pins.md)
-- [ADR-032: Environment deploy identity and namespace RBAC](../decisions/032-per-fork-deploy-identity.md)
-- [ADR-033: Canonical image source follows onboarding](../decisions/033-canonical-image-source-follows-onboarding.md)
+- [ADR-032: Environment deploy identity and namespace RBAC](../decisions/032-environment-deploy-identity.md)
+- [ADR-033: Canonical image source follows onboarding](../decisions/033-explicit-canonical-image-source-policy.md)
 - [ADR-034: Managed identities survive `spi down`](../decisions/034-deploy-identity-survives-down.md)
 
 ## Source files

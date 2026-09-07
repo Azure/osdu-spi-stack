@@ -289,8 +289,8 @@ gh run watch
 - [ADR-029: Environment lifecycle verbs and the reset boundary](../decisions/029-environment-lifecycle-and-reset-boundary.md)
 - [ADR-030: Machine-readable status and the deploy record](../decisions/030-machine-readable-status-contract.md)
 - [ADR-031: Fork-built images deploy as ephemeral lock pins](../decisions/031-fork-image-deploys-as-ephemeral-pins.md)
-- [ADR-032: Environment deploy identity and namespace RBAC](../decisions/032-per-fork-deploy-identity.md)
-- [ADR-033: Canonical image source follows onboarding](../decisions/033-canonical-image-source-follows-onboarding.md)
+- [ADR-032: Environment deploy identity and namespace RBAC](../decisions/032-environment-deploy-identity.md)
+- [ADR-033: Canonical image source follows onboarding](../decisions/033-explicit-canonical-image-source-policy.md)
 - [ADR-034: Managed identities survive `spi down`](../decisions/034-deploy-identity-survives-down.md)
 
 ## Source files

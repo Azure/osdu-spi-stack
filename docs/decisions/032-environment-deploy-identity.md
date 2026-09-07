@@ -43,6 +43,15 @@ config.
   ADR-036 gate admits. `fork_upstream` is excluded: its builds are core-only,
   without the Azure provider. Trust does not select a canonical image source;
   ADR-033 owns that separate policy and its promotion.
+- **Repository names are canonical before they are persisted.** GitHub
+  resolves `<org>/<fork>` case-insensitively but mints the OIDC subject
+  with the repository's stored casing, and Entra matches a federated
+  subject exactly. Onboarding resolves `--repo` through the GitHub API and
+  writes the returned `full_name` into the credential subject, the RG tags,
+  and the lock's roster and `source_repo` fields; those fields compare
+  exactly. A declaration entry matches its repository case-insensitively
+  and is reported as drift, not as a different repository, when only the
+  casing differs.
 - **The roster is keyed by repository and capped by Azure.** Azure keeps
   the issuer and subject pair unique on an identity and allows twenty
   federated credentials per UAMI, so one repository backs exactly one

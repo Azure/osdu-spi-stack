@@ -1,4 +1,4 @@
-# ADR-033: Canonical Image Source Follows Onboarding
+# ADR-033: Explicit Canonical Image Source Policy
 
 ## Context
 
