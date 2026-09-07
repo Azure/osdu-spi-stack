@@ -35,6 +35,7 @@ from .bicep import run_bicep_deployment
 from .bootstrap import (
     create_istio_revision_configmap,
     create_storage_classes,
+    deploy_identity_facts,
     ensure_namespaces,
     install_gateway_api_crds,
 )
@@ -516,7 +517,9 @@ def deploy_azure(
         return
 
     istio_revision = ensure_namespaces()
-    create_istio_revision_configmap(istio_revision)
+    create_istio_revision_configmap(
+        istio_revision, deploy_identity_facts(infra_outputs, config.cluster_name)
+    )
     ensure_secrets()
     create_storage_classes()
     install_gateway_api_crds()

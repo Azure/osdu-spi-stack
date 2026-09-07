@@ -66,6 +66,17 @@ def _wire(
             "AZURE_REGION": "westus3",
         },
     )
+    monkeypatch.setattr(
+        info,
+        "_read_cluster_config",
+        lambda: {
+            "ISTIO_REVISION": "asm-1-30",
+            "DEPLOY_IDENTITY_CLIENT_ID": "deployer-client-id",
+            "DEPLOY_IDENTITY_PRINCIPAL_ID": "deployer-principal-id",
+            "AZURE_SUBSCRIPTION_ID": "subscription-id",
+            "AKS_CLUSTER_NAME": "spi-stack-shared",
+        },
+    )
     names = partitions or ["opendes"]
     values_yaml = "partitions:\n" + "".join(f"  - {name}\n" for name in names)
     values_yaml += f"legalTag: {legal_tag_base or LEGAL_TAG_BASE}\n"
@@ -277,3 +288,29 @@ def test_info_human_header_marks_a_missing_record(monkeypatch):
     result = CliRunner().invoke(cli.app, ["info"])
 
     assert "Environment:   unknown (no deploy record)" in _plain(result.output)
+
+
+def test_info_json_publishes_the_five_deploy_identity_values(monkeypatch):
+    _wire(monkeypatch)
+
+    block = info.collect_info()["deploy_identity"]
+
+    assert block == {
+        "client_id": "deployer-client-id",
+        "tenant_id": "tenant-id",
+        "subscription_id": "subscription-id",
+        "resource_group": "spi-stack-shared",
+        "cluster": "spi-stack-shared",
+    }
+    assert "deployer-principal-id" not in str(block)
+
+
+def test_deploy_identity_block_is_empty_strings_before_bootstrap(monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setattr(info, "_read_cluster_config", lambda: {})
+
+    block = info.collect_info()["deploy_identity"]
+
+    assert block["client_id"] == ""
+    assert block["cluster"] == ""
+    assert block["resource_group"] == "spi-stack-shared"

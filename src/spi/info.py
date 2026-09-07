@@ -85,6 +85,14 @@ def _read_osdu_config() -> dict:
     return data.get("data", {}) or {}
 
 
+def _read_cluster_config() -> dict:
+    """Read the spi-cluster-config ConfigMap the CLI bootstrap writes. Empty if missing."""
+    data = kubectl_json(["get", "configmap", "spi-cluster-config", "-n", "osdu-flux"])
+    if not data:
+        return {}
+    return data.get("data", {}) or {}
+
+
 def _read_flux_extension_values() -> dict:
     """Read Azure metadata injected by the AKS Flux extension."""
     data = kubectl_json(["get", "configmap", "flux-extension-values", "-n", "osdu-flux"])
@@ -322,11 +330,12 @@ def _read_deploy_record():
 def _collect_info() -> dict:
     from .guard import get_suspend_status
 
-    cfg, osdu, azure_ext, init_values, suspended, record = gather_reads(
+    cfg, osdu, azure_ext, cluster_cfg, init_values, suspended, record = gather_reads(
         [
             _read_ingress_config,
             _read_osdu_config,
             _read_flux_extension_values,
+            _read_cluster_config,
             _read_init_values_yaml,
             get_suspend_status,
             _read_deploy_record,
@@ -365,6 +374,15 @@ def _collect_info() -> dict:
             "openid_issuer": (
                 f"https://login.microsoftonline.com/{tenant_id}/v2.0" if tenant_id else ""
             ),
+        },
+        # The five values a trusted repository holds (ADR-032); the client id
+        # is inert until spi onboard adds a federated credential.
+        "deploy_identity": {
+            "client_id": cluster_cfg.get("DEPLOY_IDENTITY_CLIENT_ID", ""),
+            "tenant_id": tenant_id,
+            "subscription_id": cluster_cfg.get("AZURE_SUBSCRIPTION_ID", ""),
+            "resource_group": rg,
+            "cluster": cluster_cfg.get("AKS_CLUSTER_NAME", ""),
         },
         "partitions": [
             {

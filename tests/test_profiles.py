@@ -610,3 +610,35 @@ class TestManagedIstioIngressService:
     @pytest.mark.parametrize("mode", ["dns", "dns-minimal", "ip", "ip-minimal"])
     def test_other_modes_do_not_mutate_addon_service(self, mode):
         assert "spi-ingress-dns-label" not in _declared_names(INGRESS_DIR / mode)
+
+
+class TestForkRbac:
+    """The deploy identity's namespace Roles (ADR-032) ship with the core profile."""
+
+    def test_core_substitutes_the_principal_from_cluster_config(self):
+        item = _kustomization(PROFILES_DIR / "core", "spi-fork-rbac")
+        sources = item["spec"]["postBuild"]["substituteFrom"]
+        assert {"kind": "ConfigMap", "name": "spi-cluster-config", "optional": False} in sources
+        assert {"name": "spi-namespaces"} in item["spec"]["dependsOn"]
+
+    def test_roles_grant_no_write_beyond_the_lock_and_no_secrets(self):
+        import yaml
+
+        docs = list(
+            yaml.safe_load_all(
+                (STACKS.parent.parent / "components/fork-rbac/fork-rbac.yaml").read_text()
+            )
+        )
+        roles = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Role"}
+        bindings = [d for d in docs if d["kind"] == "RoleBinding"]
+        assert set(roles) == {"spi-fork-deployer", "spi-fork-verifier"}
+        for role in roles.values():
+            for rule in role["rules"]:
+                assert "secrets" not in rule["resources"]
+                assert not {"create", "delete", "update"} & set(rule["verbs"])
+                if "patch" in rule["verbs"]:
+                    assert rule["resourceNames"] == ["osdu-image-lock"]
+        for binding in bindings:
+            (subject,) = binding["subjects"]
+            assert subject["kind"] == "User"
+            assert subject["name"] == "${DEPLOY_IDENTITY_PRINCIPAL_ID}"

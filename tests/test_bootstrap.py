@@ -23,6 +23,7 @@ from spi.bootstrap import (
     ISTIO_REVISION_NAMESPACE,
     _detect_istio_revision,
     create_istio_revision_configmap,
+    deploy_identity_facts,
     ensure_namespaces,
     render_istio_revision_configmap,
 )
@@ -40,6 +41,51 @@ def test_render_istio_revision_configmap():
     assert f"name: {ISTIO_REVISION_CONFIGMAP}" in yaml
     assert f"namespace: {ISTIO_REVISION_NAMESPACE}" in yaml
     assert f'{ISTIO_REVISION_KEY}: "asm-1-30"' in yaml
+
+
+def test_render_cluster_config_carries_deploy_identity_facts():
+    facts = deploy_identity_facts(
+        {
+            "deploy_identity_client_id": "client",
+            "deploy_identity_principal_id": "principal",
+            "subscription_id": "sub",
+        },
+        "spi-stack-dks",
+    )
+
+    yaml = render_istio_revision_configmap("asm-1-30", facts)
+
+    assert 'DEPLOY_IDENTITY_CLIENT_ID: "client"' in yaml
+    assert 'DEPLOY_IDENTITY_PRINCIPAL_ID: "principal"' in yaml
+    assert 'AZURE_SUBSCRIPTION_ID: "sub"' in yaml
+    assert 'AKS_CLUSTER_NAME: "spi-stack-dks"' in yaml
+
+
+def test_render_cluster_config_always_declares_every_key():
+    yaml = render_istio_revision_configmap("asm-1-30")
+
+    assert 'DEPLOY_IDENTITY_PRINCIPAL_ID: ""' in yaml
+
+
+def test_refresh_without_facts_keeps_the_live_deploy_identity():
+    live = {
+        "data": {
+            "ISTIO_REVISION": "asm-1-29",
+            "DEPLOY_IDENTITY_CLIENT_ID": "client",
+            "DEPLOY_IDENTITY_PRINCIPAL_ID": "principal",
+            "AZURE_SUBSCRIPTION_ID": "sub",
+            "AKS_CLUSTER_NAME": "spi-stack-dks",
+        }
+    }
+    with (
+        patch("spi.bootstrap.kubectl_json", return_value=live),
+        patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
+    ):
+        create_istio_revision_configmap("asm-1-30")
+
+    applied = apply_yaml.call_args.args[0]
+    assert 'ISTIO_REVISION: "asm-1-30"' in applied
+    assert 'DEPLOY_IDENTITY_PRINCIPAL_ID: "principal"' in applied
 
 
 class TestDetectIstioRevision:
@@ -112,7 +158,7 @@ class TestCreateIstioRevisionConfigmap:
             patch("spi.bootstrap.kubectl_json") as kubectl_json,
             patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
         ):
-            create_istio_revision_configmap("asm-1-29")
+            create_istio_revision_configmap("asm-1-29", {})
 
         kubectl_json.assert_not_called()
         assert f'{ISTIO_REVISION_KEY}: "asm-1-29"' in apply_yaml.call_args.args[0]

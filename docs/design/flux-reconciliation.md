@@ -38,6 +38,7 @@ The CLI is the only writer of `osdu-image-lock`. `spi reconcile --refresh-images
 ```
 L0a spi-namespaces            (no deps)
 L0b spi-nodepools             dependsOn: spi-namespaces           (ADR-018)
+L0c spi-fork-rbac              dependsOn: spi-namespaces           (ADR-032)
 L1  spi-cert-manager          dependsOn: spi-namespaces
     spi-trust-manager         dependsOn: spi-cert-manager
     spi-eck-operator          dependsOn: spi-namespaces

@@ -24,6 +24,30 @@ STORAGE_CLASSES = ["pg-storageclass", "redis-storageclass", "es-storageclass"]
 ISTIO_REVISION_CONFIGMAP = "spi-cluster-config"
 ISTIO_REVISION_NAMESPACE = "osdu-flux"
 ISTIO_REVISION_KEY = "ISTIO_REVISION"
+# Fork RBAC substitutes the principal id; spi info publishes the rest.
+DEPLOY_IDENTITY_KEYS = (
+    "DEPLOY_IDENTITY_CLIENT_ID",
+    "DEPLOY_IDENTITY_PRINCIPAL_ID",
+    "AZURE_SUBSCRIPTION_ID",
+    "AKS_CLUSTER_NAME",
+)
+
+
+def deploy_identity_facts(infra_outputs: dict, cluster_name: str) -> dict[str, str]:
+    """The spi-cluster-config entries that describe the environment deploy identity."""
+    return {
+        "DEPLOY_IDENTITY_CLIENT_ID": infra_outputs.get("deploy_identity_client_id", ""),
+        "DEPLOY_IDENTITY_PRINCIPAL_ID": infra_outputs.get("deploy_identity_principal_id", ""),
+        "AZURE_SUBSCRIPTION_ID": infra_outputs.get("subscription_id", ""),
+        "AKS_CLUSTER_NAME": cluster_name,
+    }
+
+
+def _read_cluster_config() -> dict[str, str]:
+    data = kubectl_json(
+        ["get", "configmap", ISTIO_REVISION_CONFIGMAP, "-n", ISTIO_REVISION_NAMESPACE]
+    )
+    return dict((data or {}).get("data", {}) or {})
 
 
 def _detect_istio_revision() -> str | None:
@@ -72,8 +96,10 @@ metadata:
     return istio_revision
 
 
-def render_istio_revision_configmap(istio_revision: str) -> str:
-    """Render the Flux substitution ConfigMap for the live Istio revision."""
+def render_istio_revision_configmap(
+    istio_revision: str, extra: dict[str, str] | None = None
+) -> str:
+    """Render the Flux substitution ConfigMap: the Istio revision plus deploy identity facts."""
 
     lines = [
         "apiVersion: v1",
@@ -86,12 +112,22 @@ def render_istio_revision_configmap(istio_revision: str) -> str:
         "data:",
         f"  {ISTIO_REVISION_KEY}: {json.dumps(istio_revision)}",
     ]
+    for key in DEPLOY_IDENTITY_KEYS:
+        lines.append(f"  {key}: {json.dumps((extra or {}).get(key, ''))}")
     return "\n".join(lines) + "\n"
 
 
-def create_istio_revision_configmap(istio_revision: str = "") -> None:
-    """Apply the ConfigMap that carries the detected Istio revision for Flux."""
+def create_istio_revision_configmap(
+    istio_revision: str = "", extra: dict[str, str] | None = None
+) -> None:
+    """Apply the ConfigMap that carries the Istio revision and deploy identity facts for Flux.
 
+    A refresh without ``extra`` keeps the identity facts already on the
+    cluster, since ``kubectl apply`` would otherwise drop the omitted keys.
+    """
+
+    if extra is None:
+        extra = _read_cluster_config()
     if not istio_revision:
         detected = _detect_istio_revision()
         if not detected:
@@ -101,7 +137,7 @@ def create_istio_revision_configmap(istio_revision: str = "") -> None:
             )
             return
         istio_revision = detected
-    yaml_content = render_istio_revision_configmap(istio_revision)
+    yaml_content = render_istio_revision_configmap(istio_revision, extra)
     display_yaml(yaml_content, f"ConfigMap: {ISTIO_REVISION_CONFIGMAP}")
     kubectl_apply_yaml(yaml_content, f"apply {ISTIO_REVISION_CONFIGMAP} ConfigMap")
     display_result(f"{ISTIO_REVISION_CONFIGMAP} ConfigMap created")

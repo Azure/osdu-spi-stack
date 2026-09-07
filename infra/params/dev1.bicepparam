@@ -12,6 +12,8 @@ param envName = 'dev1'
 param location = 'eastus2'
 
 param identityName = 'spi-stack-dev1-osdu-identity'
+param deployIdentityName = 'spi-stack-dev1-deployer'
+param clusterName = 'spi-stack-dev1'
 param keyVaultName = 'osdudev1'
 param acrName = 'osdudev1'
 

@@ -1,0 +1,84 @@
+# Namespace RBAC for the environment deploy identity that fork CI federates
+# to (ADR-032). The subject is the identity's principal id, substituted from
+# spi-cluster-config; managed-identity tokens carry no group claims, so only
+# an explicit User subject matches. No create, delete, or secrets verbs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spi-fork-deployer
+  namespace: osdu-flux
+  labels:
+    app.kubernetes.io/managed-by: osdu-spi-stack
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["osdu-image-lock"]
+    verbs: ["patch"]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["source.toolkit.fluxcd.io"]
+    resources: ["gitrepositories"]
+    verbs: ["get"]
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spi-fork-deployer
+  namespace: osdu-flux
+  labels:
+    app.kubernetes.io/managed-by: osdu-spi-stack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spi-fork-deployer
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: ${DEPLOY_IDENTITY_PRINCIPAL_ID}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spi-fork-verifier
+  namespace: osdu
+  labels:
+    app.kubernetes.io/managed-by: osdu-spi-stack
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spi-fork-verifier
+  namespace: osdu
+  labels:
+    app.kubernetes.io/managed-by: osdu-spi-stack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spi-fork-verifier
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: ${DEPLOY_IDENTITY_PRINCIPAL_ID}

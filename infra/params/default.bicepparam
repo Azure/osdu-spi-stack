@@ -13,6 +13,8 @@ param envName = ''
 param location = 'eastus2'
 
 param identityName = 'spi-stack-osdu-identity'
+param deployIdentityName = 'spi-stack-deployer'
+param clusterName = 'spi-stack'
 param keyVaultName = 'osduspistack'
 param acrName = 'osduspistack'
 
