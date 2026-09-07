@@ -173,6 +173,9 @@ phases; source promotion is separate from enabling trust:
 | 3. Cluster trust | Project the observed credential roster and existing source policy into `osdu-image-lock` without changing resolved images or pins | the operator's kube context |
 | 4. Source policy | When requested, validate promotion preconditions, write `spi-source-<service>` on the RG, and update the lock's source projection (ADR-033) | RG tag write and the operator's kube context |
 
+Planning reads the credential roster first and refuses before phase 1 when
+the repository already backs another service or the identity holds twenty
+credentials (ADR-032); neither failure is recoverable in phase 2.
 Without `--write` the command prints the `az`, `spi`, and `gh` commands for
 each phase and changes nothing; the plan is the handoff for whoever holds
 the rights on each side. `--write` applies the phases in order. `--skip-repo`

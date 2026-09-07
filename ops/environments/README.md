@@ -79,7 +79,7 @@ implemented schema above yet:
 | Entry field | Meaning |
 |---|---|
 | `service` | The service being onboarded; unique within the declaration. |
-| `repo` | The `<org>/<fork>` trusted by its `fork-<service>` credential. |
+| `repo` | The `<org>/<fork>` trusted by its `fork-<service>` credential; unique within the declaration, at most twenty entries (ADR-032). |
 | `canonicalSource` | `community` or `fork`, default `community`; trust-only onboarding precedes an explicit promotion. |
 
 The declaration owns both trust and canonical-source policy. A reviewed PR

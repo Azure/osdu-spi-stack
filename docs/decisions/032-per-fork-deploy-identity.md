@@ -43,6 +43,14 @@ config.
   ADR-036 gate admits. `fork_upstream` is excluded: its builds are core-only,
   without the Azure provider. Trust does not select a canonical image source;
   ADR-033 owns that separate policy and its promotion.
+- **The roster is keyed by repository and capped by Azure.** Azure keeps
+  the issuer and subject pair unique on an identity and allows twenty
+  federated credentials per UAMI, so one repository backs exactly one
+  service and an environment trusts at most twenty repositories. `repo` is
+  unique across the roster and the declaration, and planning refuses a
+  second service naming an already trusted repository, or a twenty-first
+  entry, before any phase writes. Growth past the cap is a new decision,
+  since a second identity needs its own RoleBindings, not a retry.
 - **Credential writes are serial per identity.** Onboarding and lifecycle
   reconciliation await each credential create, update, or delete before
   starting the next. Bicep loops use `@batchSize(1)`, matching
