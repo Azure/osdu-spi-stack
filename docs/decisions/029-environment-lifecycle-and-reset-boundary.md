@@ -6,11 +6,11 @@ A standing shared environment accretes state the platform never sheds:
 acceptance runs leave Elasticsearch indices against the single-node shard
 budget (ADR-003), test records in Cosmos, and entitlements groups. That state
 spans two layers with different costs: in-cluster middleware that Flux can
-rebuild in minutes, and Azure PaaS data that only deleting the resource group
-removes. `spi up` provisions both layers on one idempotent path in 50 to 75
-minutes cold, and `spi down` removes the whole RG; the lifecycle needs verbs
-whose semantics, costs, and triggers are fixed rather than improvised per
-incident.
+rebuild in minutes, and Azure PaaS data that goes away only when its
+resources are deleted. `spi up` provisions both layers on one idempotent
+path in 50 to 75 minutes cold, and a rebuild must not take the deploy
+identity with it (ADR-034); the lifecycle needs verbs whose semantics,
+costs, and triggers are fixed rather than improvised per incident.
 
 ## Decision
 
@@ -18,8 +18,7 @@ The environment has five verbs, composed from existing commands, with an
 explicit boundary between them: refresh changes runtime state only; upgrade
 re-runs the provision path and may change substrate and workloads in place
 (the ARM deployments are incremental); reset deletes and recreates the
-substrate, and only that full resource-group rebuild clears both cluster and
-PaaS state.
+substrate, and only that rebuild clears both cluster and PaaS state.
 
 | Verb | Mechanism | Cost | Trigger |
 |---|---|---|---|
@@ -27,7 +26,7 @@ PaaS state.
 | refresh | `spi reconcile`, then `scripts/wait_for_flux_ready.sh`, then probes | 5 to 20 min healthy | weekday cron |
 | upgrade | `spi up --env shared --tag vNEW --refresh-images` re-run | 20 to 60 min; hours when refreshed images rerun schema-load | `stackVersion` bump merge (ADR-028) |
 | reset | `spi down`, poll until only identities remain (ADR-034), `spi up --tag <pin>` | 3 to 6 h | Saturday cron |
-| teardown | `spi down` | 15 to 45 min | protected manual dispatch |
+| teardown | `spi down --purge` | 15 to 45 min | protected manual dispatch |
 
 - **Upgrade is the provision path re-run**, executed with the tag's release
   wheel (ADR-028). Each phase of `deploy_azure()` is idempotent (RG
@@ -44,7 +43,7 @@ PaaS state.
   for the previous revision until it reconciles, so convergence counts only
   once `status.lastAppliedRevision` names the recorded commit. Convergence
   and the probes follow under the still-set `maintenance` flag.
-- **No partial reset exists.** The weekly teardown-and-rebuild at the pinned
+- **No partial reset exists.** The weekly delete-and-rebuild at the pinned
   tag sheds accreted state in both layers and keeps the rebuild path
   continuously proven at the `core` profile, which the nightly smoke (default
   `bare`) does not exercise. Saturday puts the outage where the merge gate is

@@ -47,11 +47,13 @@ whole declaration lives in one reviewed file.
   reviewed PR to `main`; merging a `stackVersion` bump triggers the upgrade
   workflow (ADR-029). The lifecycle workflows read each provisioning
   argument from this file; none is duplicated on a workflow command line.
-- Persisting the suffix in the declaration (fed back through `spi up
-  --name-suffix`) is what survives a reset: the RG tag that normally carries
-  it dies with the RG, and without it a rebuild derives new resource names,
-  a new hostname, and a Key Vault name whose soft-delete recovery can never
-  find the old vault (ADR-029).
+- The declaration carries the suffix as the reviewed record of the
+  environment's identity: a first provision derives resource names, the
+  hostname, and the Key Vault name from it, and so does a rebuild after
+  `spi down --purge`. An ordinary reset takes it from the resource group's
+  `spi-name-suffix` tag, which survives with the group (ADR-034), so those
+  names and the vault's soft-delete recovery (ADR-029) stay stable across
+  rebuilds without operator input.
 - Publishing a release opens the bump PR automatically (a job in
   `.github/workflows/release.yml` under the release App token, so the resulting
   PR triggers checks). Merging stays with a human.

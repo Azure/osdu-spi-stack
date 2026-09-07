@@ -2,13 +2,14 @@
 
 ## Context
 
-The deploy identity's client id (ADR-032) is the one environment coordinate
-held outside the environment: every trusted repository carries it as
-`AZURE_CLIENT_ID`. Everything else a fork needs is read from `spi info` per
-run. `spi down` deletes the resource group, and a managed identity has no
-soft delete, so a rebuild through `down` and `up` would mint a new client id
-and strand every repository. The weekly reset (ADR-029) is exactly that
-rebuild.
+A trusted repository holds five values (ADR-032): `AZURE_CLIENT_ID`,
+`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `SPI_STACK_RESOURCE_GROUP`,
+`SPI_STACK_CLUSTER`. Four are stable across a rebuild: the tenant and
+subscription do not change, and the group and cluster names derive from
+the environment name, so `spi up` recreates them. The client id is the
+exception. Azure mints it when the identity is created, and a managed
+identity has no soft delete, so `down` and `up` strand every repository
+holding the old value. The weekly reset (ADR-029) is exactly that rebuild.
 
 ## Decision
 
@@ -20,7 +21,7 @@ with the group and its tags. `spi down --purge` deletes the whole group.
   managed nodes group; then Cosmos, Service Bus, storage, ACR, Key Vault, NAT
   gateway, public IP; the VNet last, since the cluster holds its subnets
   until it is gone. The command retries until only identities remain. Key
-  Vault soft delete behaves as today, and `spi up` recovers the vault.
+  Vault soft delete is unaffected, and `spi up` recovers the vault.
 - `spi up` on a group that still holds identities adopts them: the ARM
   deployment is incremental, federated credentials are re-declared from the
   roster, and role assignments are re-created on the new cluster and vault.
@@ -46,5 +47,5 @@ reach.
 - `spi down` is slower and not atomic: a failure part way leaves a partial
   group. Both `spi up` and a second `spi down` are idempotent against that.
 - The workload identity survives too, so its client id is stable across
-  rebuilds; nothing depends on that today.
+  rebuilds. No component requires that.
 - Someone who wants the group gone must say `--purge`.

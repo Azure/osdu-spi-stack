@@ -21,10 +21,17 @@ A service's canonical source flips from community GitLab to its fork's GHCR
   `osdu-image-lock` ConfigMap (`src/spi/pins.py`). From then on each
   canonical resolution path (`--refresh-images`, `spi service refresh`)
   reads the fork's GHCR image for that service; absent, community GitLab
-  stays canonical. Declared environments carry the same list as `forks:` in
-  their declaration, and the lifecycle workflows reconcile the lock to it.
-  A pin's reset is not a resolution path: it restores the target captured
-  when the pin was written (below).
+  stays canonical. A pin's reset is not a resolution path: it restores the
+  target captured when the pin was written (below).
+- The durable record is the federated credential on the deploy identity,
+  `fork-<service>` for the repository that service follows, which survives
+  `spi down` (ADR-034). The lock carries a projection of that roster, rebuilt
+  by `spi up` on every provision, since fork CI reads ConfigMaps and cannot
+  read the identity from ARM (ADR-032). An undeclared personal or customer
+  stack keeps following its fork across a rebuild, with no re-onboarding.
+  Declared environments carry the same roster as `forks:` in their
+  declaration, the reviewed record the ensure step reconciles credentials
+  against.
 - On the shared environment the flip lands after the fork's deploy and test
   gates are active, so the image line the environment runs is the one those
   gates certify. A personal or customer stack follows its own fork from the
@@ -83,3 +90,5 @@ declaration.
   community image.
 - Which source is canonical is readable from `spi onboard --list` and the
   lock's per-service keys, not from operator memory.
+- The trusted repositories and each service's source stay readable from the
+  identity's credentials when the cluster is gone.

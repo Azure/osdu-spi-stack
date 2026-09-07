@@ -15,8 +15,10 @@ sequence, what each step asserts, and which recovery path applies.
 ownership-checked `reset --if-run`, and the separate stale sweep
 (`reset --ephemeral --stale-only`) are implemented.
 `spi onboard`, `spi service refresh`, the refresh workflow's backstop step,
-and the fork-side jobs are ahead of the code (phases 1 and 4 of the roadmap
-in [environment-lifecycle.md](environment-lifecycle.md)). Remove the marks as
+the roster-derived pin validation below (`src/spi/pins.py` still enforces the
+`Azure/osdu-spi-*` pattern), and the fork-side jobs are ahead of the code
+(phases 1 and 4 of the roadmap in
+[environment-lifecycle.md](environment-lifecycle.md)). Remove the marks as
 they land.
 
 ## The sequence
@@ -106,12 +108,17 @@ workflow step is unbuilt; the sweep verb exists):
 - `spi service reset --ephemeral --stale-only` sweeps an ephemeral
   pin only when its owning workflow run reports a terminal state or, when
   that state is unreachable, when the pin's age exceeds a threshold longer
-  than any deploy-plus-test budget. The lookup builds a fixed GitHub API URL
-  from the validated `source_repo` (it must match the `Azure/osdu-spi-*`
-  allow-list) and the numeric `run_id`; the fork-written `source_run_url` is
-  display-only and never fetched, since a fork identity controls its value.
-  An ephemeral pin cannot be written without an allow-listed `source_repo`,
-  a commit, and a numeric `run_id`, so the lookup inputs always exist.
+  than any deploy-plus-test budget. An ephemeral pin's `source_repo` must
+  name a repository the environment trusts: one holding a credential on the
+  deploy identity, read from the roster the lock carries. The lookup builds a
+  fixed GitHub API URL from that validated `source_repo` and the numeric
+  `run_id`, so the URL comes only from a repository the environment trusts
+  and never from fork-controlled free text; the fork-written `source_run_url`
+  stays display-only and is never fetched. An ephemeral pin cannot be written
+  without a trusted `source_repo`, a commit, and a numeric `run_id`, so the
+  lookup inputs always exist. The roster is tighter than a name glob: only
+  onboarded repositories qualify, not every repository matching
+  `Azure/osdu-spi-*`.
 - `spi service refresh` (unbuilt) per GitHub-origin service then advances
   the environment to the current retained canonical (ADR-033).
 
@@ -138,8 +145,8 @@ identity, its Azure roles, and the two Roles already exist from `spi up`
 
 | Block | Change | Needs |
 |---|---|---|
-| Azure | one federated credential on `spi-stack-<env>-deployer` for `repo:<org>/<fork>:environment:spi-stack` | write on the identity |
-| Cluster | the service's canonical source set to the fork in `osdu-image-lock` (ADR-033) | the operator's kube context |
+| Azure | the federated credential `fork-<service>` on `spi-stack-<env>-deployer` for `repo:<org>/<fork>:environment:spi-stack` | write on the identity |
+| Cluster | the service's canonical source set to the fork, and the roster projected, in `osdu-image-lock` (ADR-033) | the operator's kube context |
 | Repository | the protected `spi-stack` environment and the five values above | admin on the repository, or the organization with `--org` |
 
 Without `--write` the command prints the `az`, `spi`, and `gh` commands for
@@ -151,6 +158,15 @@ the repository block out. Re-running shows each row as existing or missing.
 service to community. Schema keeps its ADR-033 precondition: activation
 trusts the repository but refuses the source flip until a paired loader
 image exists, and says so.
+
+The identity's credentials are the environment's durable roster: which
+repositories it trusts, and which fork each service follows. They are
+subresources of the identity, so they outlive `spi down` (ADR-034). Fork CI
+holds only AKS Cluster User and Key Vault Secrets User and cannot read the
+identity from ARM, so the roster is projected into `osdu-image-lock`, which
+the fork Role already reads (`configmaps get/list`, ADR-032): `spi onboard`
+writes the projection for the repository it activates, and `spi up` rebuilds
+it from the credentials on every provision.
 
 Once the five values and the descriptor are present, the template's
 readiness tooling activates the reserved required checks `🚀 Deploy to
