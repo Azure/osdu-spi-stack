@@ -17,6 +17,7 @@
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -106,6 +107,8 @@ class FakeAzure:
         if verb[:2] == ("group", "delete"):
             name = cmd[cmd.index("--name") + 1]
             self.groups[name] = self.group_delete_polls_until_gone > 0 and name == RG
+            if name == RG and not self.groups[name]:
+                self.groups[f"{RG}-nodes"] = False
             return self._ok()
         if verb[:2] == ("resource", "delete"):
             assert "--no-wait" in cmd
@@ -151,6 +154,22 @@ class FakeAzure:
 
     def deletes(self):
         return [c[c.index("--ids") + 1] for c in self.calls if c[1:3] == ["resource", "delete"]]
+
+
+def slow_until_first_delete(az, then_seconds):
+    """Keep the clock realistic until the first batch of deletes is out, then jump."""
+    original = az.run_command
+    state = {"deleted": False}
+
+    def wrapped(cmd, **kw):
+        result = original(cmd, **kw)
+        if cmd[1:3] == ["resource", "delete"]:
+            state["deleted"] = True
+        elif cmd[1:3] == ["resource", "list"] and state["deleted"]:
+            az.tick_seconds = then_seconds
+        return result
+
+    return wrapped
 
 
 @pytest.fixture
@@ -476,10 +495,10 @@ class TestTeardownStops:
     def test_the_deadline_reports_the_remaining_inventory_with_its_state(self, az):
         cluster = az.inventory[0]["id"]
         az.delete_failures[cluster] = ["Conflict"] * 50
-        az.tick_seconds = 20 * 60.0
 
-        with pytest.raises(TeardownError, match="deadline reached") as exc:
-            teardown_environment(config())
+        with patch("spi.teardown.run_command", side_effect=slow_until_first_delete(az, 20 * 60.0)):
+            with pytest.raises(TeardownError, match="deadline reached with resources") as exc:
+                teardown_environment(config())
 
         assert cluster in str(exc.value)
         assert "(Succeeded)" in str(exc.value)
@@ -493,8 +512,15 @@ class TestTeardownStops:
                 return subprocess.CompletedProcess(cmd, 0, "true", "")
             return result
 
-        az.tick_seconds = 10 * 60.0
-        with patch("spi.teardown.run_command", side_effect=sticky_nodes):
+        slow = slow_until_first_delete(az, 10 * 60.0)
+
+        def sticky_and_slow(cmd, **kw):
+            result = slow(cmd, **kw)
+            if cmd[1:3] == ["group", "exists"] and f"{RG}-nodes" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, "true", "")
+            return result
+
+        with patch("spi.teardown.run_command", side_effect=sticky_and_slow):
             with pytest.raises(TeardownError, match="nodes group"):
                 teardown_environment(config())
 
@@ -600,6 +626,29 @@ class TestPurge:
             purge_environment(config())
 
         assert seen and 0 < seen[0] <= 45 * 60
+
+    def test_purge_waits_for_the_nodes_group_even_when_the_cluster_went_with_the_group(self, az):
+        self._identities(az)
+        original = az.run_command
+
+        def nodes_linger(cmd, **kw):
+            result = original(cmd, **kw)
+            if cmd[1:3] == ["group", "delete"]:
+                az.groups[f"{RG}-nodes"] = True
+            return result
+
+        az.tick_seconds = 20 * 60.0
+        with patch("spi.teardown.run_command", side_effect=nodes_linger):
+            with pytest.raises(TeardownError, match=f"{RG}-nodes still exists"):
+                purge_environment(config())
+
+        az.prune.assert_not_called()
+
+    def test_no_delete_is_requested_once_the_deadline_has_passed(self, az):
+        from spi.teardown import _remaining
+
+        with pytest.raises(TeardownError, match="deadline reached before deleting x"):
+            _remaining(time.monotonic() - 1, "deleting x")
 
     def test_an_identity_only_group_is_purged_without_touching_kubeconfig(self, az):
         self._identities(az)

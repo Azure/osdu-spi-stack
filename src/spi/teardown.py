@@ -242,6 +242,14 @@ def retained_resources(inventory: Iterable[AzureResource]) -> List[AzureResource
     return [r for r in inventory if r.type in RETAINED_TYPES]
 
 
+def _remaining(deadline: float, action: str) -> float:
+    """Seconds left before the deadline; a state-changing call is not started past it."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TeardownError(f"Teardown deadline reached before {action}")
+    return left
+
+
 def _is_fatal(stderr: str) -> bool:
     return any(marker in stderr for marker in FATAL_ERROR_MARKERS)
 
@@ -253,11 +261,12 @@ def request_delete(resource: AzureResource, deadline: float) -> str:
     dependency, an operation in progress), or "" when it was accepted.
     Terminal refusals raise.
     """
+    timeout = _remaining(deadline, f"deleting {resource.name}")
     result = run_command(
         ["az", "resource", "delete", "--ids", resource.id, "--no-wait"],
         description=f"Delete {resource.type.split('/')[-1]}: {resource.name}",
         check=False,
-        timeout=max(1.0, deadline - time.monotonic()),
+        timeout=timeout,
     )
     if result.returncode == 0:
         return ""
@@ -585,11 +594,12 @@ def remove_external_grants(config: Config) -> List[ExternalGrant]:
 
 
 def _request_group_delete(name: str, deadline: float) -> None:
+    timeout = _remaining(deadline, f"deleting resource group {name}")
     result = run_command(
         ["az", "group", "delete", "--name", name, "--yes", "--no-wait"],
         description=f"Delete resource group: {name}",
         check=False,
-        timeout=max(1.0, deadline - time.monotonic()),
+        timeout=timeout,
     )
     if result.returncode != 0:
         raise TeardownError(f"Purge request failed for {name}: {result.stderr.strip()}")
@@ -625,7 +635,8 @@ def purge_environment(config: Config) -> None:
     for name in targets:
         _request_group_delete(name, deadline)
     console.print(f"  [info]Waiting for Azure to report {', '.join(targets)} gone...[/info]")
-    for name in targets:
+    # The nodes group goes with the cluster, but on Azure's schedule; success waits for it.
+    for name in targets + ([nodes_group] if nodes_group not in targets else []):
         if not wait_for_group_gone(name, deadline):
             raise TeardownError(
                 f"Resource group {name} still exists after the purge deadline; the delete "
