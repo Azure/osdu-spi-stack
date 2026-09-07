@@ -44,5 +44,6 @@ Rejected:
 - Switching modes is a Bicep parameter change plus one Flux reconcile; no hand-edits to Kustomizations.
 - Each mode's surface is self-describing. A reader sees the full topology in one `stack.yaml` plus the overlays it references.
 - `dns` mode introduces a second UAMI and a DNS Zone Contributor role assignment. Both are conditional in `infra/main.bicep` on a non-empty `dnsZoneName` parameter.
+- The DNS-zone assignment can live outside the environment resource group. `spi down` retains it with the identity; `spi down --purge` must remove that assignment before deleting the identity, and refuses to proceed if cleanup cannot be confirmed (ADR-034).
 - `ip` mode is intentionally low-fidelity; endpoints lose HTTPS and middleware UIs (Kibana, Airflow) are not routed. It is documented as debug-only.
 - Adding a fourth mode is adding a fourth subdirectory under `software/stacks/osdu/ingress/` and a fourth enum value; no core Flux surgery.

@@ -15,8 +15,27 @@ holding the old value. The weekly reset (ADR-029) is exactly that rebuild.
 
 `spi down` deletes the resources in the environment group individually and
 leaves `Microsoft.ManagedIdentity/userAssignedIdentities` standing, together
-with the group and its tags. `spi down --purge` deletes the whole group.
+with the group and its tags. `spi down --purge` removes external grants before
+deleting the whole group and its identities.
 
+- Purge inventories out-of-group Azure role assignments for the identities
+  it will delete, using their retained principal IDs and subscription-wide
+  assignment enumeration. It does not depend on the cluster still existing,
+  or assume that the selected ingress mode describes earlier grants.
+  The stack-owned ExternalDNS grant is `DNS Zone Contributor` at DNS-zone
+  scope, with the deterministic assignment name
+  `guid(zone.id, principalId, dnsZoneContributorRoleId)` from
+  `infra/modules/external-dns-role.bicep`. Purge removes that exact assignment
+  by resource ID and confirms its absence before requesting group deletion;
+  the external zone and its resource group are not deletion targets.
+  Discovery failures, missing external-scope permissions, unrecognized
+  external grants, or an unconfirmed removal stop purge with the affected
+  IDs reported and the environment group and identities retained.
+- Ordinary `spi down` keeps out-of-group grants because the identities
+  survive. A later purge discovers those grants from the retained principal
+  IDs, including grants at an earlier DNS zone, and applies the same cleanup
+  precondition. Unrecognized grants require operator cleanup, not a blanket
+  deletion of role assignments on the external scope.
 - Teardown inventories the group before deletion and re-lists it after each
   pass. The deletion plan covers the resource types provisioned by the
   bundled Bicep, including optional resources; an unhandled non-identity
@@ -71,4 +90,8 @@ reach.
   resources and possible charges visible rather than claiming cleanup.
 - The workload identity survives too, so its client id is stable across
   rebuilds. No component requires that.
+- Purge needs permission to discover grants in the deployment subscription
+  and delete stack-owned assignments on external scopes. Resource-group
+  delete permission alone is insufficient for DNS ingress; failure leaves
+  the identity available for cleanup instead of orphaning the assignment.
 - Someone who wants the group gone must say `--purge`.

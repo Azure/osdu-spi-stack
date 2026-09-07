@@ -21,7 +21,7 @@ ahead of the code. Remove the remaining marks as those phases land.
 
 | Layer | Contents | Advances by |
 |---|---|---|
-| Environment identity | RG `spi-stack-shared`, managed identities and credentials, suffix and source-policy tags, declaration locator | Onboarding and declaration reconciliation change intent; only purge deletes the group (ADR-034) |
+| Environment identity | RG `spi-stack-shared`, managed identities and credentials, external DNS grants, suffix and source-policy tags, declaration locator | Onboarding and declaration reconciliation change intent; purge removes external grants before deleting the group (ADR-034) |
 | Substrate | AKS Automatic, PaaS, Flux extension | Reset rebuilds it; an upgrade's incremental ARM pass may also move it in place (ADR-029) |
 | Instance | Flux-managed workloads, `osdu-image-lock`, in-cluster middleware state | Refresh, upgrade, and fork deploys (ADR-031) |
 | Version contract | `ops/environments/shared.yaml` | Reviewed PR (ADR-028) |
@@ -172,7 +172,10 @@ and Key Vault recovery finds the old vault (ADR-028). Bootstrap reconciles
 credentials and source projections; the post-provision ensure step repairs
 test-caller entitlements. The rebuilt environment starts with `maintenance`
 set and opens to deploys only after the probes pass. Protected teardown uses
-`spi down --purge`, which deletes the retained records with the group.
+`spi down --purge`, which discovers external grants from the retained
+principal IDs and removes the stack-owned ExternalDNS zone assignment before
+deleting the group. An unreadable inventory, unrecognized grant, or failed
+removal leaves the identities and group standing (ADR-034).
 
 ## Surfaces fork CI consumes
 
@@ -269,8 +272,10 @@ gh run watch
 4. **Onboarding** (unbuilt): the deploy identity and two Roles in `spi up`,
    identity and RG-tag retention in `spi down` (ADR-034), phased `spi onboard`,
    `forks:` and the declaration locator with pre-resolution intent loading;
-   onboard `osdu-spi-partition` with a community canonical; the template-side
-   deploy, integration-test, and restore jobs under the reserved check names.
+   repository-derived GHCR package validation instead of the Azure-owner
+   restriction; onboard `osdu-spi-partition` with a community canonical; the
+   template-side deploy, integration-test, and restore jobs under the reserved
+   check names.
 5. **Canonical promotions** (unbuilt): explicit per-service source policy in
    RG tags and its lock projection; on the shared environment a reviewed
    `canonicalSource: fork` change after the deploy and test gates pass

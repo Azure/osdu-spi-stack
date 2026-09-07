@@ -17,8 +17,9 @@ ownership-checked `reset --if-run`, and the separate stale sweep
 `spi onboard`, retained source policy, declaration enforcement,
 `spi service refresh`, the refresh workflow's backstop step, the
 roster-derived pin validation below (`src/spi/pins.py` still enforces the
-`Azure/osdu-spi-*` pattern), and the fork-side jobs are ahead of the code
-(phases 1 and 4 of the roadmap in
+`Azure/osdu-spi-*` pattern), repository-derived GHCR package validation
+(`src/spi/images.py` still restricts owners to `azure`), and the fork-side
+jobs are ahead of the code (phases 1 and 4 of the roadmap in
 [environment-lifecycle.md](environment-lifecycle.md)). Remove the marks as
 they land.
 
@@ -45,11 +46,14 @@ skews ahead of the cluster contract (ADR-031).
    job proceeds, exit 2 names the blocker: a convergence failure, the
    `maintenance` flag, or a missing deploy record (ADR-029, ADR-030).
 4. **Deploy.** PR and push events run the same command; the fork build
-   publishes to `ghcr.io/azure/<service>` under the short `SERVICE_NAME`:
+   publishes to `ghcr.io/<lowercase-owner>/<service>`, where the owner comes
+   from the fork repository and `SERVICE` is its short `SERVICE_NAME`
+   (ADR-033):
 
    ```bash
+   IMAGE_OWNER=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
    spi service pin "$SERVICE" \
-     --image "ghcr.io/azure/${SERVICE}@${DIGEST}" \
+     --image "ghcr.io/${IMAGE_OWNER}/${SERVICE}@${DIGEST}" \
      --ephemeral --run-id "$GITHUB_RUN_ID" \
      --source-repo "$GITHUB_REPOSITORY" --source-sha "$GITHUB_SHA" \
      --source-run-url "$RUN_URL"
@@ -138,6 +142,23 @@ refresh resolves the same or a newer `main` image, so nothing regresses.
 | `ACCEPTANCE_TEST_DIR` | operator | Maven module path of the suite |
 | `ACCEPTANCE_TEST_SECRET_MAP` | operator | `ENV_VAR=keyvault-secret-name` pairs; an unknown or unresolvable entry fails the job before Maven starts |
 | `ACCEPTANCE_TEST_DEPENDENCIES` | operator | services whose health endpoints gate the suite; also absorbs a sibling's rolling restart |
+
+The repository-to-package mapping is deterministic: onboarding `partition`
+from `<owner>/<fork>` selects `ghcr.io/<lowercase-owner>/partition`, even
+when the repository basename is not `partition`. The descriptor's
+`SERVICE_NAME` must match the short service identifier. The build publishes
+that public package, the deploy job pins it by digest, and canonical refresh
+resolves its `main` line after promotion. No separate package-path state or
+Azure namespace fallback is involved.
+
+The target implementation removes `GHCR_ALLOWED_OWNERS = ("azure",)` from
+`src/spi/images.py`. `require_ghcr_repository` and its resolution and
+verification callers retain strict GHCR host, path, and digest validation
+without hardcoding an owner. Ephemeral pin validation additionally requires
+the derived package path for the requested service and roster-matching
+`source_repo`; changing only the provenance name check is insufficient.
+Operator pins keep their explicit-image path without requiring onboarding
+(ADR-031).
 
 `spi onboard <service> --repo <org>/<fork>` (unbuilt, `src/spi/onboard.py`)
 activates one repository against the connected environment. The deploy

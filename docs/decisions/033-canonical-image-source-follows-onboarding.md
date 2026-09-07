@@ -25,6 +25,15 @@ selects the fork's GHCR `main` image, one service at a time.
   are authoritative, an unreadable or invalid tag is an error. Both records
   survive `spi down` (ADR-034). A fork source must match the trusted
   repository for that service.
+- A source repository `<owner>/<fork>` maps to the public GHCR package
+  `ghcr.io/<lowercase-owner>/<service>`. `<service>` is the short stack
+  service identifier and the fork descriptor's `SERVICE_NAME`, not the
+  repository basename or the community image name. The fork build, ephemeral
+  pin validation, and canonical resolver use this same mapping, including
+  non-Azure owners. Schema's paired loader is
+  `ghcr.io/<lowercase-owner>/schema-load` at the selected schema commit.
+  An onboarded fork must publish under this convention; a missing or private
+  package fails resolution rather than falling back to an Azure package.
 - `spi onboard --canonical-source fork` promotes the service's trusted fork;
   `--canonical-source community` selects community without revoking trust.
   On an undeclared environment, omitting the option preserves the recorded

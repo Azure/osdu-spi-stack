@@ -144,8 +144,15 @@ The kubeconfig is then read a second time, because `delete-context` edits only t
 Under [ADR-034](../decisions/034-deploy-identity-survives-down.md), ordinary
 `spi down` keeps the environment RG, managed identities, and tags, including
 the suffix, explicit canonical-source policy, and declaration locator.
-`spi down --purge` deletes the group and these retained records. Key Vault
-soft delete and recovery still apply to either path.
+`spi down --purge` deletes the group and these retained records only after
+out-of-group role assignments are handled. It discovers grants using the
+retained identity principal IDs, deletes the stack-owned ExternalDNS
+assignment on the external DNS zone, and confirms its absence before group
+deletion. Missing discovery or deletion permissions, unrecognized grants,
+or a failed removal abort purge while preserving the identities. Ordinary
+`down` keeps those grants, and a later purge works even with no cluster left.
+The external DNS zone and its resource group are never deletion targets.
+Key Vault soft delete and recovery still apply to either path.
 
 The identity-preserving path inventories resources, follows their deletion
 dependencies, and waits within a 45-minute deadline. It includes optional
