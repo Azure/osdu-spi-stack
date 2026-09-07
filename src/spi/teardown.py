@@ -336,7 +336,9 @@ def delete_wave(run: TeardownRun, wave: Wave) -> None:
             )
         if now >= next_check:
             states = {r.id: provisioning_state(r).lower() for r in lingering}
-            stalled = [r for r in lingering if states[r.id] and states[r.id] != "deleting"]
+            # Anything but an explicit Deleting counts as stalled: some types expose
+            # no provisioning state, and a delete request is idempotent.
+            stalled = [r for r in lingering if states[r.id] != "deleting"]
             for rid, reason in _request_deletes(stalled, run.deadline).items():
                 repeats[rid] = repeats.get(rid, 0) + 1 if reason == declines.get(rid) else 1
                 declines[rid] = reason

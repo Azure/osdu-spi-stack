@@ -382,6 +382,20 @@ class TestReadsAndPrune:
 
 
 class TestTeardownStops:
+    def test_a_resource_without_a_provisioning_state_is_still_re_requested(self, az):
+        vault = next(r["id"] for r in az.inventory if "vaults" in r["type"])
+        az.delete_failures[vault] = ["Conflict"] * 10
+        original = az.run_command
+
+        def stateless(cmd, **kw):
+            if cmd[1:3] == ["resource", "show"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return original(cmd, **kw)
+
+        with patch("spi.teardown.run_command", side_effect=stateless):
+            with pytest.raises(TeardownError, match="declined 3 times"):
+                teardown_environment(config())
+
     def test_delete_requests_carry_the_remaining_deadline_as_a_timeout(self, az):
         timeouts = []
         original = az.run_command
