@@ -104,7 +104,8 @@ class FakeAzure:
                     self.groups[RG] = False
             return self._ok("true" if self.groups.get(name) else "false")
         if verb[:2] == ("group", "delete"):
-            self.groups[RG] = self.group_delete_polls_until_gone > 0
+            name = cmd[cmd.index("--name") + 1]
+            self.groups[name] = self.group_delete_polls_until_gone > 0 and name == RG
             return self._ok()
         if verb[:2] == ("resource", "delete"):
             assert "--no-wait" in cmd
@@ -531,9 +532,65 @@ class TestPurge:
         assert az.groups[RG] is False
         az.prune.assert_called_once_with("spi-stack-dev1", server_fqdn=FQDN)
 
+    def test_a_lingering_nodes_group_is_purged_with_the_environment(self, az):
+        self._identities(az)
+        az.inventory = [r for r in full_inventory() if "userAssignedIdentities" in r["type"]]
+        az.groups[f"{RG}-nodes"] = True
+
+        purge_environment(config())
+
+        deleted = [c[c.index("--name") + 1] for c in az.calls if c[1:3] == ["group", "delete"]]
+        assert deleted == [RG, f"{RG}-nodes"]
+        assert az.groups[f"{RG}-nodes"] is False
+
+    def test_an_orphaned_nodes_group_is_purged_when_the_environment_group_is_gone(self, az):
+        az.groups[RG] = False
+        az.groups[f"{RG}-nodes"] = True
+
+        purge_environment(config())
+
+        deleted = [c[c.index("--name") + 1] for c in az.calls if c[1:3] == ["group", "delete"]]
+        assert deleted == [f"{RG}-nodes"]
+
+    def test_a_grant_that_appears_during_purge_stops_it(self, az):
+        self._identities(az)
+        original = az.run_command
+        state = {"deleted": False}
+
+        def sneak(cmd, **kw):
+            result = original(cmd, **kw)
+            if cmd[1:4] == ["role", "assignment", "delete"] and not state["deleted"]:
+                az.grants["ctl-pid"].append(
+                    _grant("ctl-pid", "Reader", f"{SUB}/resourceGroups/elsewhere", "ra-7")
+                )
+                state["deleted"] = True
+            return result
+
+        with patch("spi.teardown.run_command", side_effect=sneak):
+            with pytest.raises(TeardownError, match="appeared outside"):
+                purge_environment(config())
+
+        assert not any(c[1:3] == ["group", "delete"] for c in az.calls)
+
+    def test_the_group_delete_request_is_bounded_by_the_deadline(self, az):
+        self._identities(az)
+        seen = []
+        original = az.run_command
+
+        def capture(cmd, **kw):
+            if cmd[1:3] == ["group", "delete"]:
+                seen.append(kw.get("timeout"))
+            return original(cmd, **kw)
+
+        with patch("spi.teardown.run_command", side_effect=capture):
+            purge_environment(config())
+
+        assert seen and 0 < seen[0] <= 45 * 60
+
     def test_an_identity_only_group_is_purged_without_touching_kubeconfig(self, az):
         self._identities(az)
         az.inventory = [r for r in full_inventory() if "userAssignedIdentities" in r["type"]]
+        az.groups[f"{RG}-nodes"] = False
 
         purge_environment(config())
 

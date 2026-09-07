@@ -332,7 +332,7 @@ def delete_wave(run: TeardownRun, wave: Wave) -> None:
         if now >= run.deadline:
             raise TeardownError(
                 "Teardown deadline reached with resources remaining:\n  "
-                + "\n  ".join(f"{r.id} ({provisioning_state(r) or 'unknown'})" for r in lingering)
+                + _describe_with_state(lingering)
             )
         if now >= next_check:
             states = {r.id: provisioning_state(r).lower() for r in lingering}
@@ -353,6 +353,10 @@ def delete_wave(run: TeardownRun, wave: Wave) -> None:
 
 def _describe(resources: Iterable[AzureResource]) -> str:
     return "\n  ".join(f"{r.type}  {r.name}" for r in resources)
+
+
+def _describe_with_state(resources: Iterable[AzureResource]) -> str:
+    return "\n  ".join(f"{r.id} ({provisioning_state(r) or 'unknown'})" for r in resources)
 
 
 def _cluster_api_server(config: Config) -> str:
@@ -414,7 +418,7 @@ def teardown_environment(config: Config) -> List[AzureResource]:
         if time.monotonic() >= run.deadline:
             raise TeardownError(
                 "Teardown deadline reached with resources remaining:\n  "
-                + _describe(r for r in run.inventory if r.type not in RETAINED_TYPES)
+                + _describe_with_state(r for r in run.inventory if r.type not in RETAINED_TYPES)
             )
         for index, wave in enumerate(DELETION_PLAN):
             if index == 1:
@@ -548,7 +552,15 @@ def remove_external_grants(config: Config) -> List[ExternalGrant]:
     removed_ids = {g.id for g in grants}
     still: List[ExternalGrant] = []
     for backoff in (*RETRY_BACKOFF_SECONDS, None):
-        still = [g for g in discover_external_grants(config) if g.id in removed_ids]
+        current = discover_external_grants(config)
+        new = [g for g in current if g.id not in removed_ids]
+        if new:
+            raise TeardownError(
+                "Role assignments appeared outside the environment during purge; "
+                "remove them before purging:\n  "
+                + "\n  ".join(f"{g.role} at {g.scope} ({g.id})" for g in new)
+            )
+        still = [g for g in current if g.id in removed_ids]
         if not still or backoff is None:
             break
         time.sleep(backoff)  # RBAC reads are eventually consistent
@@ -559,35 +571,53 @@ def remove_external_grants(config: Config) -> List[ExternalGrant]:
     return grants
 
 
+def _request_group_delete(name: str, deadline: float) -> None:
+    result = run_command(
+        ["az", "group", "delete", "--name", name, "--yes", "--no-wait"],
+        description=f"Delete resource group: {name}",
+        check=False,
+        timeout=max(1.0, deadline - time.monotonic()),
+    )
+    if result.returncode != 0:
+        raise TeardownError(f"Purge request failed for {name}: {result.stderr.strip()}")
+
+
 def purge_environment(config: Config) -> None:
-    """Delete the whole group, identities included, after external grants are gone."""
+    """Delete the whole group, identities included, after external grants are gone.
+
+    The managed nodes group normally goes with the cluster, but a cluster
+    already deleted by an earlier `down` can leave it behind with the
+    grants purge treated as in-environment, so it is a purge target too.
+    """
     rg = config.resource_group
+    nodes_group = config.node_resource_group
     console.print(f"\n[bold]Purging {rg} (identities and group will be deleted)...[/bold]")
-    if not group_exists(rg):
+    deadline = time.monotonic() + TEARDOWN_DEADLINE_SECONDS
+    targets: List[str] = []
+    had_cluster = False
+    api_server = ""
+    if group_exists(rg):
+        had_cluster = any(r.type == CLUSTER_TYPE for r in list_group_resources(rg))
+        api_server = _cluster_api_server(config) if had_cluster else ""
+        removed = remove_external_grants(config)
+        if removed:
+            console.print(f"  [info]Removed {len(removed)} external role assignment(s)[/info]")
+        targets.append(rg)
+    if not had_cluster and group_exists(nodes_group):
+        targets.append(nodes_group)
+    if not targets:
         display_result(f"Resource group {rg} does not exist; nothing to purge")
         return
 
-    deadline = time.monotonic() + TEARDOWN_DEADLINE_SECONDS
-    had_cluster = any(r.type == CLUSTER_TYPE for r in list_group_resources(rg))
-    api_server = _cluster_api_server(config) if had_cluster else ""
-    removed = remove_external_grants(config)
-    if removed:
-        console.print(f"  [info]Removed {len(removed)} external role assignment(s)[/info]")
-
-    result = run_command(
-        ["az", "group", "delete", "--name", rg, "--yes", "--no-wait"],
-        description=f"Delete resource group: {rg}",
-        check=False,
-    )
-    if result.returncode != 0:
-        raise TeardownError(f"Purge request failed for {rg}: {result.stderr.strip()}")
-
-    console.print(f"  [info]Waiting for Azure to report {rg} gone...[/info]")
-    if not wait_for_group_gone(rg, deadline):
-        raise TeardownError(
-            f"Resource group {rg} still exists after the purge deadline; the delete was "
-            f"accepted but has not completed. Verify with: az group exists --name {rg}"
-        )
+    for name in targets:
+        _request_group_delete(name, deadline)
+    console.print(f"  [info]Waiting for Azure to report {', '.join(targets)} gone...[/info]")
+    for name in targets:
+        if not wait_for_group_gone(name, deadline):
+            raise TeardownError(
+                f"Resource group {name} still exists after the purge deadline; the delete "
+                f"was accepted but has not completed. Verify with: az group exists --name {name}"
+            )
     if had_cluster:
         prune_kube_context(config.cluster_name, server_fqdn=api_server)
     display_result(f"Resource group {rg} deleted")

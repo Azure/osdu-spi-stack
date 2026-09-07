@@ -172,7 +172,9 @@ confirms its absence, allowing for RBAC replication lag. Any other external gran
 stops the purge with the assignment IDs listed and the group intact. Purge
 then waits for Azure to report the group gone within the same 45-minute
 deadline and exits nonzero naming the group when the accepted delete has not
-completed. The external DNS zone and its resource group are never deletion
+completed. A managed nodes group left behind by a cluster an earlier `down`
+already deleted is purged with the environment group, since its grants were
+treated as in-environment. The external DNS zone and its resource group are never deletion
 targets.
 
 Cluster names repeat across subscriptions: `spi up --env dev1` run in two subscriptions builds two `spi-stack-dev1` clusters, and both write the same context name. `spi down` therefore reads the cluster's API server FQDN before deleting anything, and prunes the context only when the kubeconfig entry points at that server; tearing one down leaves the other's credentials alone. A lookup that comes back empty, from a cluster already deleted or one that never finished creating, leaves the kubeconfig untouched and says which check failed.
