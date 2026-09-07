@@ -764,3 +764,22 @@ class TestRunCommandTimeout:
 
         assert result.returncode == 124
         assert "timed out" in result.stderr
+
+
+class TestEveryAzureCallIsBounded:
+    def test_no_az_call_runs_without_a_timeout(self, az):
+        missing = []
+        original = az.run_command
+
+        def check(cmd, **kw):
+            if not kw.get("timeout"):
+                missing.append(cmd[:3])
+            return original(cmd, **kw)
+
+        with patch("spi.teardown.run_command", side_effect=check):
+            teardown_environment(config())
+            az.identities = [{"name": "spi-stack-dev1-ctl-id", "principalId": "ctl-pid"}]
+            az.groups[RG] = True
+            purge_environment(config())
+
+        assert missing == []

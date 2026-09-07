@@ -37,6 +37,8 @@ POLL_INTERVAL_SECONDS = 15
 RETRY_BACKOFF_SECONDS = (20, 40, 60)
 READ_RETRY_BACKOFF_SECONDS = (5, 15, 30)
 MAX_PARALLEL_REQUESTS = 8
+# Cap on any single read or small write, so a hung CLI call cannot stall the deadline loop.
+CALL_TIMEOUT_SECONDS = 120
 MAX_PASSES = 5
 # A delete request declined this many times with the same reason is not transient.
 MAX_IDENTICAL_DECLINES = 3
@@ -107,6 +109,7 @@ def _detach_nat_gateways(run: TeardownRun) -> None:
         description=f"List virtual networks in {run.config.resource_group}",
         display=False,
         check=False,
+        timeout=CALL_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
         raise TeardownError(
@@ -131,6 +134,7 @@ def _detach_nat_gateways(run: TeardownRun) -> None:
                 ],
                 description=f"Detach NAT gateway from subnet {subnet.get('name', '')}",
                 check=False,
+                timeout=CALL_TIMEOUT_SECONDS,
             )
             if detach.returncode != 0:
                 raise TeardownError(
@@ -186,7 +190,9 @@ def _read(cmd: List[str], description: str):
     """A read that fails is retried briefly; a throttled or dropped call is not a verdict."""
     result = None
     for backoff in (*READ_RETRY_BACKOFF_SECONDS, None):
-        result = run_command(cmd, description=description, display=False, check=False)
+        result = run_command(
+            cmd, description=description, display=False, check=False, timeout=CALL_TIMEOUT_SECONDS
+        )
         if result.returncode == 0 or _is_fatal(result.stderr) or backoff is None:
             break
         time.sleep(backoff)
@@ -307,6 +313,7 @@ def provisioning_state(resource: AzureResource) -> str:
         description=f"Read state of {resource.name}",
         display=False,
         check=False,
+        timeout=CALL_TIMEOUT_SECONDS,
     )
     return result.stdout.strip() if result.returncode == 0 else ""
 
@@ -379,6 +386,7 @@ def _cluster_api_server(config: Config) -> str:
         description=f"Look up API server for {config.cluster_name}",
         display=False,
         check=False,
+        timeout=CALL_TIMEOUT_SECONDS,
     )
     return result.stdout.strip() if result.returncode == 0 else ""
 
@@ -488,6 +496,7 @@ def discover_external_grants(config: Config) -> List[ExternalGrant]:
         description=f"List managed identities in {config.resource_group}",
         display=False,
         check=False,
+        timeout=CALL_TIMEOUT_SECONDS,
     )
     if listed.returncode != 0:
         raise TeardownError(
@@ -503,6 +512,7 @@ def discover_external_grants(config: Config) -> List[ExternalGrant]:
             description=f"Discover role assignments for {identity.get('name', principal_id)}",
             display=False,
             check=False,
+            timeout=CALL_TIMEOUT_SECONDS,
         )
         if result.returncode != 0:
             raise TeardownError(
@@ -548,6 +558,7 @@ def remove_external_grants(config: Config) -> List[ExternalGrant]:
             ["az", "role", "assignment", "delete", "--ids", grant.id],
             description=f"Remove {grant.role} from {grant.scope.rsplit('/', 1)[-1]}",
             check=False,
+            timeout=CALL_TIMEOUT_SECONDS,
         )
         if removed.returncode != 0:
             raise TeardownError(f"Could not remove {grant.id}: {removed.stderr.strip()}")
