@@ -73,6 +73,7 @@ def _wire(
             "ISTIO_REVISION": "asm-1-30",
             "DEPLOY_IDENTITY_CLIENT_ID": "deployer-client-id",
             "DEPLOY_IDENTITY_PRINCIPAL_ID": "deployer-principal-id",
+            "AZURE_TENANT_ID": "tenant-id",
             "AZURE_SUBSCRIPTION_ID": "subscription-id",
             "AZURE_RESOURCE_GROUP": "spi-stack-shared",
             "AKS_CLUSTER_NAME": "spi-stack-shared",
@@ -135,6 +136,7 @@ def test_openid_issuer_is_published_explicitly(monkeypatch):
 
 def test_openid_issuer_empty_until_tenant_known(monkeypatch):
     _wire(monkeypatch, osdu_config={})
+    monkeypatch.setattr(info, "_read_cluster_config", lambda: {})
 
     result = info.collect_info()
 
@@ -346,3 +348,13 @@ def test_info_fails_when_the_cluster_config_is_unreadable(monkeypatch):
     assert result.exit_code == 1
     assert "forbidden" in result.output
     assert "{" not in result.output
+
+
+def test_tenant_comes_from_cluster_config_when_osdu_config_is_unreadable(monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setattr(info, "_read_osdu_config", lambda: {})
+
+    result = info.collect_info()
+
+    assert result["deploy_identity"]["tenant_id"] == "tenant-id"
+    assert result["azure"]["tenant_id"] == "tenant-id"

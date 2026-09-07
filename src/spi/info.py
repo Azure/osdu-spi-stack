@@ -353,7 +353,9 @@ def _collect_info() -> dict:
     partitions = _parse_partitions_from_values_yaml(init_values)
     partition_rows = _build_partitions_rows(partitions, env)
     legal_tag_base = _legal_tag_base_from_values_yaml(init_values)
-    tenant_id = osdu.get("AZURE_TENANT_ID", "")
+    # cluster-config is the failure-aware source for the repository contract;
+    # osdu-config covers environments provisioned before it carried the tenant.
+    tenant_id = cluster_cfg.get("AZURE_TENANT_ID", "") or osdu.get("AZURE_TENANT_ID", "")
     seeded = gather_reads([partial(_legal_tag_seeded, name) for name in partitions])
 
     info = {

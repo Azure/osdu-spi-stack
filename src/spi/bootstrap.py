@@ -28,6 +28,7 @@ ISTIO_REVISION_KEY = "ISTIO_REVISION"
 DEPLOY_IDENTITY_KEYS = (
     "DEPLOY_IDENTITY_CLIENT_ID",
     "DEPLOY_IDENTITY_PRINCIPAL_ID",
+    "AZURE_TENANT_ID",
     "AZURE_SUBSCRIPTION_ID",
     "AZURE_RESOURCE_GROUP",
     "AKS_CLUSTER_NAME",
@@ -41,6 +42,7 @@ def deploy_identity_facts(
     return {
         "DEPLOY_IDENTITY_CLIENT_ID": infra_outputs.get("deploy_identity_client_id", ""),
         "DEPLOY_IDENTITY_PRINCIPAL_ID": infra_outputs.get("deploy_identity_principal_id", ""),
+        "AZURE_TENANT_ID": infra_outputs.get("tenant_id", ""),
         "AZURE_SUBSCRIPTION_ID": infra_outputs.get("subscription_id", ""),
         "AZURE_RESOURCE_GROUP": resource_group,
         "AKS_CLUSTER_NAME": cluster_name,
@@ -140,8 +142,8 @@ def render_istio_revision_configmap(
         "data:",
         f"  {ISTIO_REVISION_KEY}: {json.dumps(istio_revision)}",
     ]
-    # An absent key leaves Flux's ${...} placeholder unsubstituted, a binding
-    # to nobody; an empty value would make the RoleBinding subject invalid.
+    # An absent key lets fork-rbac's ${...:=default} bind nobody; an empty
+    # value would substitute to "" and make the RoleBinding subject invalid.
     for key in DEPLOY_IDENTITY_KEYS:
         value = (extra or {}).get(key, "")
         if value:

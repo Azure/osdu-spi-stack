@@ -641,4 +641,6 @@ class TestForkRbac:
         for binding in bindings:
             (subject,) = binding["subjects"]
             assert subject["kind"] == "User"
-            assert subject["name"] == "${DEPLOY_IDENTITY_PRINCIPAL_ID}"
+            assert subject["name"] == (
+                "${DEPLOY_IDENTITY_PRINCIPAL_ID:=spi-deploy-identity-unprovisioned}"
+            )
