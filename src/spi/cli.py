@@ -672,6 +672,7 @@ def info(
 
     ctx = verify_spi_cluster()
 
+    from .bootstrap import ClusterConfigError
     from .deploy_record import DeployRecordError
     from .info import render_info
 
@@ -679,7 +680,7 @@ def info(
         console.print(f"  [dim]Cluster context: {ctx}[/dim]")
     try:
         render_info(show_secrets=show_secrets, show_apis=show_apis, output_json=output_json)
-    except DeployRecordError as exc:
+    except (ClusterConfigError, DeployRecordError) as exc:
         if output_json:
             typer.echo(str(exc), err=True)
         else:

@@ -94,7 +94,8 @@ config.
     lock write (ADR-031); `gitrepositories` get for the guard's fingerprint
     check; `helmreleases` get/list.
   - `spi-fork-verifier` in `osdu`: `deployments` get/list/watch, `pods`
-    get/list, `pods/log` get, `events` list, `configmaps` get/list.
+    get/list, `pods/log` get, `events` list, `configmaps` get/list, `jobs`
+    get for the legal-tag observation `spi info --json` reports.
   No create or delete on anything, and no Kubernetes `secrets` verb in either
   namespace: acceptance secrets come from Key Vault.
 - **Onboarding plans by default.** `spi onboard` prints the `az`, `spi`, and

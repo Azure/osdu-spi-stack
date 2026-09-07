@@ -30,6 +30,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .azure_infra import _cosmos_sql_name, _sb_name, _storage_name
+from .bootstrap import read_cluster_config
 from .config import BASE_NAME
 from .console import console
 from .deploy_record import environment_facts, read_deploy_record
@@ -83,6 +84,16 @@ def _read_osdu_config() -> dict:
     if not data:
         return {}
     return data.get("data", {}) or {}
+
+
+def _read_cluster_config() -> dict:
+    """The spi-cluster-config data, or empty when absent.
+
+    A read failure raises, as for the deploy record: the deploy identity
+    values are a contract for trusted repositories, and publishing them
+    empty over a transient failure would hand a workflow a false fact.
+    """
+    return read_cluster_config()
 
 
 def _read_flux_extension_values() -> dict:
@@ -322,11 +333,12 @@ def _read_deploy_record():
 def _collect_info() -> dict:
     from .guard import get_suspend_status
 
-    cfg, osdu, azure_ext, init_values, suspended, record = gather_reads(
+    cfg, osdu, azure_ext, cluster_cfg, init_values, suspended, record = gather_reads(
         [
             _read_ingress_config,
             _read_osdu_config,
             _read_flux_extension_values,
+            _read_cluster_config,
             _read_init_values_yaml,
             get_suspend_status,
             _read_deploy_record,
@@ -334,12 +346,16 @@ def _collect_info() -> dict:
     )
     mode, base, endpoints, middleware = _compute_endpoints(cfg)
 
-    rg = azure_ext.get("AZURE_RESOURCE_GROUP", "")
+    # The Flux extension ConfigMap is absent on some clusters; the CLI's own
+    # cluster config carries the same value.
+    rg = azure_ext.get("AZURE_RESOURCE_GROUP", "") or cluster_cfg.get("AZURE_RESOURCE_GROUP", "")
     env = _env_from_resource_group(rg)
     partitions = _parse_partitions_from_values_yaml(init_values)
     partition_rows = _build_partitions_rows(partitions, env)
     legal_tag_base = _legal_tag_base_from_values_yaml(init_values)
-    tenant_id = osdu.get("AZURE_TENANT_ID", "")
+    # cluster-config is the failure-aware source for the repository contract;
+    # osdu-config covers environments provisioned before it carried the tenant.
+    tenant_id = cluster_cfg.get("AZURE_TENANT_ID", "") or osdu.get("AZURE_TENANT_ID", "")
     seeded = gather_reads([partial(_legal_tag_seeded, name) for name in partitions])
 
     info = {
@@ -365,6 +381,15 @@ def _collect_info() -> dict:
             "openid_issuer": (
                 f"https://login.microsoftonline.com/{tenant_id}/v2.0" if tenant_id else ""
             ),
+        },
+        # The five values a trusted repository holds (ADR-032); the client id
+        # is inert until spi onboard adds a federated credential.
+        "deploy_identity": {
+            "client_id": cluster_cfg.get("DEPLOY_IDENTITY_CLIENT_ID", ""),
+            "tenant_id": tenant_id,
+            "subscription_id": cluster_cfg.get("AZURE_SUBSCRIPTION_ID", ""),
+            "resource_group": rg,
+            "cluster": cluster_cfg.get("AKS_CLUSTER_NAME", ""),
         },
         "partitions": [
             {
