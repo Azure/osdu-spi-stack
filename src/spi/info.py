@@ -343,7 +343,9 @@ def _collect_info() -> dict:
     )
     mode, base, endpoints, middleware = _compute_endpoints(cfg)
 
-    rg = azure_ext.get("AZURE_RESOURCE_GROUP", "")
+    # The Flux extension ConfigMap is absent on some clusters; the CLI's own
+    # cluster config carries the same value.
+    rg = azure_ext.get("AZURE_RESOURCE_GROUP", "") or cluster_cfg.get("AZURE_RESOURCE_GROUP", "")
     env = _env_from_resource_group(rg)
     partitions = _parse_partitions_from_values_yaml(init_values)
     partition_rows = _build_partitions_rows(partitions, env)

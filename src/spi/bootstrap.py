@@ -29,16 +29,20 @@ DEPLOY_IDENTITY_KEYS = (
     "DEPLOY_IDENTITY_CLIENT_ID",
     "DEPLOY_IDENTITY_PRINCIPAL_ID",
     "AZURE_SUBSCRIPTION_ID",
+    "AZURE_RESOURCE_GROUP",
     "AKS_CLUSTER_NAME",
 )
 
 
-def deploy_identity_facts(infra_outputs: dict, cluster_name: str) -> dict[str, str]:
+def deploy_identity_facts(
+    infra_outputs: dict, cluster_name: str, resource_group: str
+) -> dict[str, str]:
     """The spi-cluster-config entries that describe the environment deploy identity."""
     return {
         "DEPLOY_IDENTITY_CLIENT_ID": infra_outputs.get("deploy_identity_client_id", ""),
         "DEPLOY_IDENTITY_PRINCIPAL_ID": infra_outputs.get("deploy_identity_principal_id", ""),
         "AZURE_SUBSCRIPTION_ID": infra_outputs.get("subscription_id", ""),
+        "AZURE_RESOURCE_GROUP": resource_group,
         "AKS_CLUSTER_NAME": cluster_name,
     }
 

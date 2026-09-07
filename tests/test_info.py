@@ -74,6 +74,7 @@ def _wire(
             "DEPLOY_IDENTITY_CLIENT_ID": "deployer-client-id",
             "DEPLOY_IDENTITY_PRINCIPAL_ID": "deployer-principal-id",
             "AZURE_SUBSCRIPTION_ID": "subscription-id",
+            "AZURE_RESOURCE_GROUP": "spi-stack-shared",
             "AKS_CLUSTER_NAME": "spi-stack-shared",
         },
     )
@@ -314,3 +315,13 @@ def test_deploy_identity_block_is_empty_strings_before_bootstrap(monkeypatch):
     assert block["client_id"] == ""
     assert block["cluster"] == ""
     assert block["resource_group"] == "spi-stack-shared"
+
+
+def test_resource_group_falls_back_to_cluster_config_without_flux_extension(monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setattr(info, "_read_flux_extension_values", lambda: {})
+
+    result = info.collect_info()
+
+    assert result["azure"]["resource_group"] == "spi-stack-shared"
+    assert result["deploy_identity"]["resource_group"] == "spi-stack-shared"

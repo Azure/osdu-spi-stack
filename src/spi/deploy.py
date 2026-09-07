@@ -518,7 +518,8 @@ def deploy_azure(
 
     istio_revision = ensure_namespaces()
     create_istio_revision_configmap(
-        istio_revision, deploy_identity_facts(infra_outputs, config.cluster_name)
+        istio_revision,
+        deploy_identity_facts(infra_outputs, config.cluster_name, config.resource_group),
     )
     ensure_secrets()
     create_storage_classes()

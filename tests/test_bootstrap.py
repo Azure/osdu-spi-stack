@@ -51,10 +51,12 @@ def test_render_cluster_config_carries_deploy_identity_facts():
             "subscription_id": "sub",
         },
         "spi-stack-dks",
+        "spi-stack-dks",
     )
 
     yaml = render_istio_revision_configmap("asm-1-30", facts)
 
+    assert 'AZURE_RESOURCE_GROUP: "spi-stack-dks"' in yaml
     assert 'DEPLOY_IDENTITY_CLIENT_ID: "client"' in yaml
     assert 'DEPLOY_IDENTITY_PRINCIPAL_ID: "principal"' in yaml
     assert 'AZURE_SUBSCRIPTION_ID: "sub"' in yaml
