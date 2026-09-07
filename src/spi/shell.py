@@ -172,8 +172,13 @@ def run_command(
     display: bool = True,
     description: Optional[str] = None,
     check: bool = True,
+    timeout: Optional[float] = None,
 ) -> subprocess.CompletedProcess:
-    """Run a command and display it in a formatted panel."""
+    """Run a command and display it in a formatted panel.
+
+    ``timeout`` kills the child when it expires; the result then carries
+    returncode 124 and the reason on stderr, like any other failed launch.
+    """
     formatted_parts = []
     if cmd_list:
         formatted_parts.append(cmd_list[0])
@@ -204,7 +209,11 @@ def run_command(
         command_syntax = Syntax(formatted_cmd, "bash", theme="monokai", line_numbers=False)
         console.print(Panel(command_syntax, title=title, border_style=style))
 
-    result = run_process(cmd_list, capture_output=capture_output, text=text)
+    try:
+        result = run_process(cmd_list, capture_output=capture_output, text=text, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        reason = f"{cmd_list[0]}: timed out after {timeout:.0f}s"
+        result = subprocess.CompletedProcess(cmd_list, 124, stdout="", stderr=reason)
 
     if check and result.returncode != 0:
         if result.stderr and result.stderr.strip():

@@ -22,6 +22,7 @@ deletes the whole group.
 """
 
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -53,7 +54,8 @@ FATAL_ERROR_MARKERS = (
 )
 
 DNS_ZONE_CONTRIBUTOR = "DNS Zone Contributor"
-DNS_ZONE_SCOPE_MARKER = "/providers/microsoft.network/dnszones/"
+# The zone itself, not a record set beneath it.
+DNS_ZONE_SCOPE = re.compile(r"/providers/microsoft\.network/dnszones/[^/]+$")
 
 
 class TeardownError(RuntimeError):
@@ -171,7 +173,6 @@ DELETION_PLAN: Sequence[Wave] = (
         "Microsoft.Insights/actionGroups",
         "Microsoft.Insights/components",
         "Microsoft.OperationalInsights/workspaces",
-        after=_confirm_nodes_group_gone,
     ),
     _wave("Microsoft.Network/natGateways", before=_detach_nat_gateways),
     _wave("Microsoft.Network/publicIPAddresses"),
@@ -239,7 +240,7 @@ def _is_fatal(stderr: str) -> bool:
     return any(marker in stderr for marker in FATAL_ERROR_MARKERS)
 
 
-def request_delete(resource: AzureResource) -> str:
+def request_delete(resource: AzureResource, deadline: float) -> str:
     """Ask Azure to delete one resource; the inventory poll confirms completion.
 
     Returns the decline reason when Azure would not take the request (a
@@ -250,6 +251,7 @@ def request_delete(resource: AzureResource) -> str:
         ["az", "resource", "delete", "--ids", resource.id, "--no-wait"],
         description=f"Delete {resource.type.split('/')[-1]}: {resource.name}",
         check=False,
+        timeout=max(1.0, deadline - time.monotonic()),
     )
     if result.returncode == 0:
         return ""
@@ -260,12 +262,13 @@ def request_delete(resource: AzureResource) -> str:
     return reason
 
 
-def _request_deletes(resources: Sequence[AzureResource]) -> dict:
+def _request_deletes(resources: Sequence[AzureResource], deadline: float) -> dict:
     """Request every delete concurrently and return the decline reasons by id.
 
     Threads rather than trusting `--no-wait`: the CLI still blocks on
     long-running deletes such as AKS and Cosmos, and the point is to have
-    Azure work on all of them at once. Every request is issued before a
+    Azure work on all of them at once, each bounded by the run deadline so
+    a blocked CLI call cannot outlive it. Every request is issued before a
     fatal refusal is raised, so one refused resource does not leave the
     rest of the wave unrequested.
     """
@@ -274,7 +277,7 @@ def _request_deletes(resources: Sequence[AzureResource]) -> dict:
         return declines
     fatal: Optional[TeardownError] = None
     with ThreadPoolExecutor(max_workers=min(len(resources), MAX_PARALLEL_REQUESTS)) as pool:
-        futures = {pool.submit(request_delete, r): r for r in resources}
+        futures = {pool.submit(request_delete, r, deadline): r for r in resources}
         for future in as_completed(futures):
             try:
                 reason = future.result()
@@ -316,7 +319,7 @@ def delete_wave(run: TeardownRun, wave: Wave) -> None:
     repeatedly with the same reason stops the run.
     """
     targets = [r for r in run.inventory if r.type in wave.types]
-    declines = _request_deletes(targets)
+    declines = _request_deletes(targets, run.deadline)
     repeats: dict = {rid: 1 for rid in declines}
     attempt = 0
     next_check = time.monotonic() + RETRY_BACKOFF_SECONDS[0]
@@ -334,7 +337,7 @@ def delete_wave(run: TeardownRun, wave: Wave) -> None:
         if now >= next_check:
             states = {r.id: provisioning_state(r).lower() for r in lingering}
             stalled = [r for r in lingering if states[r.id] and states[r.id] != "deleting"]
-            for rid, reason in _request_deletes(stalled).items():
+            for rid, reason in _request_deletes(stalled, run.deadline).items():
                 repeats[rid] = repeats.get(rid, 0) + 1 if reason == declines.get(rid) else 1
                 declines[rid] = reason
                 if repeats[rid] >= MAX_IDENTICAL_DECLINES:
@@ -413,7 +416,11 @@ def teardown_environment(config: Config) -> List[AzureResource]:
                 "Teardown deadline reached with resources remaining:\n  "
                 + _describe(r for r in run.inventory if r.type not in RETAINED_TYPES)
             )
-        for wave in DELETION_PLAN:
+        for index, wave in enumerate(DELETION_PLAN):
+            if index == 1:
+                # Network teardown needs the cluster's nodes out of the VNet,
+                # whether or not this pass deleted the cluster itself.
+                _confirm_nodes_group_gone(run)
             if not any(r.type in wave.types for r in run.inventory):
                 continue
             if wave.before:
@@ -431,6 +438,7 @@ def teardown_environment(config: Config) -> List[AzureResource]:
     leftovers = [r for r in run.inventory if r.type not in RETAINED_TYPES]
     if leftovers:
         raise TeardownError("Resources remain after teardown:\n  " + _describe(leftovers))
+    _confirm_nodes_group_gone(run)
     retained = retained_resources(run.inventory)
     display_result(f"Resource group {rg} holds only managed identities")
     for identity in retained:
@@ -515,7 +523,7 @@ def is_stack_owned(grant: ExternalGrant, config: Config) -> bool:
     return (
         grant.identity_name == config.external_dns_identity_name
         and grant.role == DNS_ZONE_CONTRIBUTOR
-        and DNS_ZONE_SCOPE_MARKER in grant.scope.lower()
+        and DNS_ZONE_SCOPE.search(grant.scope.lower()) is not None
     )
 
 

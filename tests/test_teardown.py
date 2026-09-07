@@ -273,8 +273,32 @@ class TestOrdinaryTeardown:
         assert teardown_environment(config()) == []
         assert az.deletes() == []
 
+    def test_a_lingering_nodes_group_blocks_a_resumed_network_teardown(self, az):
+        """The cluster is gone but its nodes group is not: wait, do not delete the VNet."""
+        az.inventory = [
+            r
+            for r in full_inventory()
+            if "Microsoft.Network" in r["type"] or "userAssignedIdentities" in r["type"]
+        ]
+        az.groups[f"{RG}-nodes"] = True
+        az.tick_seconds = 10 * 60.0
+
+        with pytest.raises(TeardownError, match="nodes group"):
+            teardown_environment(config())
+
+        assert az.deletes() == []
+
+    def test_identities_only_is_not_success_while_the_nodes_group_exists(self, az):
+        az.inventory = [r for r in full_inventory() if "userAssignedIdentities" in r["type"]]
+        az.groups[f"{RG}-nodes"] = True
+        az.tick_seconds = 10 * 60.0
+
+        with pytest.raises(TeardownError, match="nodes group"):
+            teardown_environment(config())
+
     def test_an_already_torn_down_group_is_idempotent(self, az):
         az.inventory = [r for r in full_inventory() if "userAssignedIdentities" in r["type"]]
+        az.groups[f"{RG}-nodes"] = False
 
         retained = teardown_environment(config())
 
@@ -357,6 +381,20 @@ class TestReadsAndPrune:
 
 
 class TestTeardownStops:
+    def test_delete_requests_carry_the_remaining_deadline_as_a_timeout(self, az):
+        timeouts = []
+        original = az.run_command
+
+        def capture(cmd, **kw):
+            if cmd[1:3] == ["resource", "delete"]:
+                timeouts.append(kw.get("timeout"))
+            return original(cmd, **kw)
+
+        with patch("spi.teardown.run_command", side_effect=capture):
+            teardown_environment(config())
+
+        assert timeouts and all(0 < t <= 45 * 60 for t in timeouts)
+
     def test_a_request_declined_repeatedly_with_the_same_reason_stops_the_run(self, az):
         vault = next(r["id"] for r in az.inventory if "vaults" in r["type"])
         az.delete_failures[vault] = ["Conflict: vault is being purged"] * 10
@@ -563,6 +601,9 @@ class TestPurge:
             ExternalGrant("i", f"{SUB}/resourceGroups/dns-rg", "DNS Zone Contributor", "p", dns),
             cfg,
         )
+        assert not is_stack_owned(
+            ExternalGrant("i", f"{ZONE}/A/www", "DNS Zone Contributor", "p", dns), cfg
+        )
 
     def test_a_zone_grant_held_by_another_identity_stops_the_purge(self, az):
         self._identities(az)
@@ -636,3 +677,19 @@ class TestCli:
             result = CliRunner().invoke(app, ["down", "--env", "dev1"])
         assert result.exit_code == 1
         assert "plan gap: x" in result.output
+
+
+class TestRunCommandTimeout:
+    def test_an_expired_timeout_is_reported_as_a_failed_result(self):
+        from spi.shell import run_command
+
+        with patch(
+            "spi.shell.run_process",
+            side_effect=subprocess.TimeoutExpired(cmd=["az"], timeout=3),
+        ):
+            result = run_command(
+                ["az", "resource", "delete"], display=False, check=False, timeout=3
+            )
+
+        assert result.returncode == 124
+        assert "timed out" in result.stderr
