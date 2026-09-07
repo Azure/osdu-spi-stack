@@ -1,17 +1,13 @@
 <!DOCTYPE html>
 <!--
-  Infographic poster template.
-  HOW TO USE: copy this file, keep <style> + <svg id="icons"> sprite intact,
-  replace everything inside <div class="poster"> ... </div> with your content.
-  Set the poster height to match what you will render (default 1024).
-  Render:  bash scripts/render.sh your.html your.png 1536x1024
-  Theme a block by adding an accent class: a-blue a-green a-teal a-purple a-orange a-red a-navy
-  Use an icon:  <svg class="icon"><use href="#rocket"/></svg>   (see sprite for names)
+  Editable source for environment-lifecycle.png.
+  Render in a headless browser at 1536x1280 CSS pixels with device scale 2
+  for a 3072x2560 PNG. Keep the poster height and export viewport aligned.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Infographic</title>
+<title>OSDU SPI Environment Lifecycle</title>
 <style>
   :root{
     --ink:#1f2a37; --muted:#64748b; --line:#e6ebf1;
@@ -175,7 +171,7 @@
 </defs></svg>
 
 <!-- ================== POSTER (replace content below) ================== -->
-<div class="poster theme-osdu" style="height:1210px;">
+<div class="poster theme-osdu" style="height:1280px;">
 
   <!-- masthead + BLUF -->
   <div class="masthead">
@@ -196,14 +192,14 @@
       </div>
       <div>
         <h1 class="mh-title">The Backing Environment</h1>
-        <p class="mh-sub">How osdu-spi-stack becomes the shared deploy and test target for the osdu-spi service forks. One environment, version-pinned, self-refreshing, rebuilt weekly. Design only: ADRs 028-033 plus two design docs; implementation follows in phases.</p>
+        <p class="mh-sub">The shared deploy and test target for the osdu-spi service forks. One environment, version-pinned, with a weekly substrate rebuild. Target lifecycle: ADRs 028-034. Versioning and refresh are built; onboarding and reset follow in phases.</p>
       </div>
     </div>
     <div class="bluf">
       <div class="bluf-h">Bottom Line Up Front</div>
       <div class="bluf-item"><svg class="icon"><use href="#check"/></svg><span>One shared environment, pinned to a release tag, backs every fork's deploy and test gates.</span></div>
       <div class="bluf-item"><svg class="icon"><use href="#check"/></svg><span>A PR borrows one service by pinning its image, proves it, and puts the canonical back.</span></div>
-      <div class="bluf-item"><svg class="icon"><use href="#check"/></svg><span>Weekday refresh proves it serving; Saturday rebuilds it from nothing at the pin.</span></div>
+      <div class="bluf-item"><svg class="icon"><use href="#check"/></svg><span>Weekday refresh proves it serving; Saturday rebuilds substrate while identity and policy survive.</span></div>
       <div class="bluf-item"><svg class="icon"><use href="#check"/></svg><span>Almost everything rides seams the stack already has: the image lock and suspended GitOps.</span></div>
     </div>
   </div>
@@ -213,7 +209,7 @@
     <div class="panel a-blue">
       <div class="p-head"><span class="p-num">1</span> The Contract</div>
       <div class="p-body">
-        <div class="note a-blue"><svg class="icon"><use href="#doc"/></svg><span><span class="b">ops/environments/shared.yaml</span> · stackVersion vX.Y.Z · one reviewed line in git</span></div>
+        <div class="note a-blue"><svg class="icon"><use href="#doc"/></svg><span><span class="b">ops/environments/shared.yaml</span> · reviewed stackVersion, trust roster, and source policy</span></div>
         <div class="flow">
           <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#tag"/></svg></div><div class="fs-title">Release</div><div class="fs-sub">v* tag published</div></div>
           <div class="flow-arrow"><svg class="icon"><use href="#arrow-right"/></svg></div>
@@ -231,7 +227,7 @@
         <div class="feat"><div class="feat-badge"><svg class="icon"><use href="#tag"/></svg></div>
           <div><div class="feat-title">Stack definition</div><div class="feat-text">Release tag, pinned by the contract file; moves only by reviewed PR.</div></div></div>
         <div class="feat"><div class="feat-badge"><svg class="icon"><use href="#database"/></svg></div>
-          <div><div class="feat-title">Canonical images</div><div class="feat-text">osdu-image-lock; advance on refresh. Source flips GitLab to fork GHCR as each service onboards.</div></div></div>
+          <div><div class="feat-title">Canonical images</div><div class="feat-text">Lock projects explicit RG source policy. Trust alone keeps community; promotion selects fork GHCR.</div></div></div>
         <div class="feat"><div class="feat-badge"><svg class="icon"><use href="#flask"/></svg></div>
           <div><div class="feat-title">Ephemeral pins</div><div class="feat-text">A PR's image under test; transient overlay, swept when stale.</div></div></div>
       </div>
@@ -279,11 +275,11 @@
       <div class="p-head"><span class="p-num">5</span> Identity</div>
       <div class="p-body">
         <div class="feat"><div class="feat-badge"><svg class="icon"><use href="#key"/></svg></div>
-          <div><div class="feat-title">Per-fork managed identity</div><div class="feat-text">Federated credential bound to the fork's protected deploy environment; per-repo revocation.</div></div></div>
+          <div><div class="feat-title">One environment deploy identity</div><div class="feat-text">spi up provisions the UAMI; protected-environment credentials activate repositories.</div></div></div>
         <div class="feat"><div class="feat-badge"><svg class="icon"><use href="#shield-check"/></svg></div>
-          <div><div class="feat-title">Two namespace roles</div><div class="feat-text">Explicit subjects, reads split from a lock-scoped write; no create, delete, or secrets verbs.</div></div></div>
+          <div><div class="feat-title">Two namespace roles</div><div class="feat-text">One principal via cluster config; reads plus lock-scoped patch. No create, delete, or secrets verbs.</div></div></div>
         <div class="feat"><div class="feat-badge"><svg class="icon"><use href="#rocket"/></svg></div>
-          <div><div class="feat-title">One-command onboarding</div><div class="feat-text">spi onboard provisions identity and stamps fork variables; idempotent.</div></div></div>
+          <div><div class="feat-title">Phased onboarding</div><div class="feat-text">Plan, protect repo, enable trust, project state; explicit source promotion comes last.</div></div></div>
       </div>
     </div>
   </div>
@@ -297,9 +293,9 @@
           <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#bolt"/></svg></div><div class="fs-title">Per PR · minutes</div><div class="fs-sub">pin, prove, restore; only that service moves</div></div>
           <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#clock"/></svg></div><div class="fs-title">Weekdays 05:00</div><div class="fs-sub">refresh: sweep, converge, probe before the first fork job</div></div>
           <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#tag"/></svg></div><div class="fs-title">On release</div><div class="fs-sub">bump PR, merge, spi up at the new tag</div></div>
-          <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#refresh"/></svg></div><div class="fs-title">Saturday 06:00</div><div class="fs-sub">full rebuild at the pin, 3-6 h; sheds all accreted state</div></div>
+          <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#refresh"/></svg></div><div class="fs-title">Saturday 06:00</div><div class="fs-sub">rebuild substrate at the pin, 3-6 h; keep identities and RG tags</div></div>
         </div>
-        <div class="note a-purple"><svg class="icon"><use href="#info"/></svg><span><span class="b">The reset boundary:</span> refresh touches runtime state, upgrade may change substrate in place, only the full RG rebuild clears both cluster and PaaS state.</span></div>
+        <div class="note a-purple"><svg class="icon"><use href="#info"/></svg><span><span class="b">The reset boundary:</span> bounded spi down clears cluster and PaaS state, retaining identities and RG tags. Only spi down --purge deletes the group.</span></div>
       </div>
     </div>
 
@@ -319,7 +315,7 @@
   <!-- takeaway -->
   <div class="takeaway">
     <svg class="icon"><use href="#idea"/></svg>
-    <span><span class="tk-label">Takeaway:</span> Evidence before merge. A fork PR proves itself against a known environment version, then leaves no trace behind.</span>
+    <span><span class="tk-label">Takeaway:</span> Evidence before merge. A fork PR proves its image against a known environment version, then restores its captured canonical image.</span>
   </div>
 
 </div>

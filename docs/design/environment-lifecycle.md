@@ -11,17 +11,18 @@ an incident is how a 20-minute refresh becomes a 4-hour rebuild.
 
 **Status.** `env-upgrade` and `env-refresh` are implemented and described
 below as built. `env-reset` and `env-teardown`, the backstop's workflow step,
-the drain, and the test-identity ensure step remain unbuilt; those sections still
-describe the target mechanism ahead of the code. Remove the remaining marks
-as those phases land.
+the drain, onboarding-intent reconciliation, and the test-identity ensure
+step remain unbuilt; those sections still describe the target mechanism
+ahead of the code. Remove the remaining marks as those phases land.
 
 ![The backing environment at a glance](../diagrams/environment-lifecycle.png)
 
-## Three lifetimes
+## Four lifetimes
 
 | Layer | Contents | Advances by |
 |---|---|---|
-| Substrate | RG `spi-stack-shared`, AKS Automatic, PaaS, Flux extension | Reset rebuilds it; an upgrade's incremental ARM pass may also move it in place (ADR-029) |
+| Environment identity | RG `spi-stack-shared`, managed identities and credentials, external DNS grants, suffix and source-policy tags, declaration locator | Onboarding and declaration reconciliation change intent; purge removes external grants before deleting the group (ADR-034) |
+| Substrate | AKS Automatic, PaaS, Flux extension | Reset rebuilds it; an upgrade's incremental ARM pass may also move it in place (ADR-029) |
 | Instance | Flux-managed workloads, `osdu-image-lock`, in-cluster middleware state | Refresh, upgrade, and fork deploys (ADR-031) |
 | Version contract | `ops/environments/shared.yaml` | Reviewed PR (ADR-028) |
 
@@ -126,18 +127,55 @@ pass moves canonical images during an upgrade, but the bump pins only the
 stack-definition axis. Weekday refreshes preserve those canonicals until the
 future fork-onboarding phase adds selective canonical refresh (ADR-033).
 
-**Reset** (unbuilt) is teardown plus cold provision at the pinned tag: flag, drain,
-snapshot the lock, `spi down`, poll until `az group exists` reports false
-(the CLI's own wait covers acknowledgement only), then `spi up --tag <pin>
---name-suffix <declared>` and the cold-cluster wait with the 155-minute
-schema-load budget. The declared name suffix is what makes recovery work:
-the RG tag that normally carries it dies with the RG, and feeding the suffix
-back keeps resource names and the hostname stable and lets the Key Vault
-soft-delete recovery in `spi up` find the old vault, so its secrets return
-with it (ADR-028). The test-identity ensure step then verifies and repairs
-the acceptance-tester secrets and role assignments rather than assuming loss
-(ADR-029). The rebuilt environment starts with `maintenance` set and opens
-to deploys only after the probes pass.
+**Onboarding intent** (unbuilt) is loaded from the reviewed declaration before
+refresh or upgrade resolves an image. `forks:` owns trust and
+`canonicalSource`; retained credentials and `spi-source-<service>` tags
+cannot override it. First declared provision takes
+`spi up --declaration <owner>/<repo>:<path>`. The CLI reads that file on
+`main`, takes its provisioning fields and fork intent, and rejects
+conflicting explicit flags before provisioning or image resolution. It
+persists the locator in the RG's `spi-environment-declaration` tag when the
+group is created. With an existing locator, an omitted option reuses it and
+a conflicting locator is refused.
+
+The planned `env-upgrade.yml` handoff carries the locator through the same
+jobs that already carry the declaration's individual fields:
+
+| Surface | Planned wiring |
+|---|---|
+| `declare` job | Export `declaration_locator` as `${{ github.repository }}:$DECLARATION_PATH` alongside the validated declaration fields read from `main`. |
+| `provision` job | Set `DECLARATION_LOCATOR` from `needs.declare.outputs.declaration_locator` and append `--declaration "$DECLARATION_LOCATOR"` to the `spi up` argument array. |
+| Release gate | Raise `LIFECYCLE_CLI_MIN_VERSION` to the first release supporting `--declaration` and `forks:` before activating this wiring; install that declaration's exact release wheel as before. |
+| Reset workflow | Use the same declaration input for re-provisioning; the retained locator must agree rather than supplying competing intent. |
+
+This handoff is unbuilt with onboarding; the implemented workflow and recipe
+below still pass individual fields and cannot establish declaration
+ownership. The ensure path checks repository protection before enabling
+credentials, serializes credential writes per identity, reconciles source
+tags, and repairs the lock's separate trust and source projections before
+refresh. During `spi up`, durable-record reconciliation and projection happen
+at bootstrap, using intent loaded before image resolution. It is not a
+post-provision step that first corrects an obsolete image source.
+
+**Reset** (unbuilt) is deletion plus cold provision at the pinned tag: load and
+validate the declaration, flag, drain, snapshot the lock, then `spi down`.
+The command has a 45-minute deadline and reports success only after the group
+contains identities alone and the managed nodes group is gone (ADR-034).
+A failed or timed-out delete stops reset; a re-run resumes from the reported
+remaining inventory. Only after completion does `spi up --tag <pin>` resolve
+the declaration's desired sources and start the cold provision and converge
+wait. The retained roster is not used as a substitute for that declaration.
+
+The deploy identity, suffix, source-policy tags, and declaration locator
+survive deletion, so repository client IDs and resource names stay stable,
+and Key Vault recovery finds the old vault (ADR-028). Bootstrap reconciles
+credentials and source projections; the post-provision ensure step repairs
+test-caller entitlements. The rebuilt environment starts with `maintenance`
+set and opens to deploys only after the probes pass. Protected teardown uses
+`spi down --purge`, which discovers external grants from the retained
+principal IDs and removes the stack-owned ExternalDNS zone assignment before
+deleting the group. An unreadable inventory, unrecognized grant, or failed
+removal leaves the identities and group standing (ADR-034).
 
 ## Surfaces fork CI consumes
 
@@ -146,7 +184,9 @@ to deploys only after the probes pass.
   flag. Exit 0/2/1 (ADR-030). Implemented; both lifecycle workflows gate on
   it.
 - `spi info --json`: endpoints, partitions, non-secret Azure coordinates,
-  and the `environment` identity block (name, stack version, profile) that
+  the deploy identity's client id with the tenant, subscription, resource
+  group, and cluster (the five values a fork holds; ADR-032), and the
+  `environment` identity block (name, stack version, profile) that
   `spi status --json` publishes from the same deploy record.
   Acceptance secret names come from each service descriptor, and their values
   are fetched separately from Key Vault. In `azure` ingress mode the FQDN
@@ -194,7 +234,10 @@ where every Kustomization is still Ready for the revision being replaced.
 
 This recipe is provision-only: the fresh environment holds `maintenance`
 (ADR-029) until the `env-refresh` workflow, or its manual dispatch, runs the
-probes and clears it.
+probes and clears it. Once declaration-aware onboarding is implemented, this
+invocation also passes
+`--declaration Azure/osdu-spi-stack:ops/environments/shared.yaml`; the
+installed release must support that option and the planned handoff above.
 
 Check why the environment is not ready:
 
@@ -226,11 +269,17 @@ gh run watch
    bump-PR job are implemented. Still unbuilt: `env-reset`, `env-teardown`,
    the test-identity ensure step, and the pin backstop/drain insertion
    points noted above.
-4. **Onboarding** (unbuilt): `spi onboard`; onboard `osdu-spi-partition`; the
+4. **Onboarding** (unbuilt): the deploy identity and two Roles in `spi up`,
+   identity and RG-tag retention in `spi down` (ADR-034), phased `spi onboard`,
+   `forks:` and the declaration locator with pre-resolution intent loading;
+   repository-derived GHCR package validation instead of the Azure-owner
+   restriction; onboard `osdu-spi-partition` with a community canonical; the
    template-side deploy, integration-test, and restore jobs under the reserved
    check names.
-5. **Canonical flips** (unbuilt): `github_repo` on each onboarded service's
-   registry entry, one PR per service (ADR-033).
+5. **Canonical promotions** (unbuilt): explicit per-service source policy in
+   RG tags and its lock projection; on the shared environment a reviewed
+   `canonicalSource: fork` change after the deploy and test gates pass
+   (ADR-033).
 
 ## Related ADRs
 
@@ -240,8 +289,9 @@ gh run watch
 - [ADR-029: Environment lifecycle verbs and the reset boundary](../decisions/029-environment-lifecycle-and-reset-boundary.md)
 - [ADR-030: Machine-readable status and the deploy record](../decisions/030-machine-readable-status-contract.md)
 - [ADR-031: Fork-built images deploy as ephemeral lock pins](../decisions/031-fork-image-deploys-as-ephemeral-pins.md)
-- [ADR-032: Per-fork deploy identity and namespace RBAC](../decisions/032-per-fork-deploy-identity.md)
-- [ADR-033: Canonical image source follows onboarding](../decisions/033-canonical-image-source-follows-onboarding.md)
+- [ADR-032: Environment deploy identity and namespace RBAC](../decisions/032-environment-deploy-identity.md)
+- [ADR-033: Canonical image source follows onboarding](../decisions/033-explicit-canonical-image-source-policy.md)
+- [ADR-034: Managed identities survive `spi down`](../decisions/034-deploy-identity-survives-down.md)
 
 ## Source files
 

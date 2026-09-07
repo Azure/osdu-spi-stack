@@ -70,6 +70,39 @@ already be applied; see `docs/CI_SETUP.md`.
 ## What is still future work
 
 - `env-reset` (cold rebuild) and `env-teardown` (protected manual deletion).
-- Fork onboarding, per-fork identities, and canonical image source flips.
+- `forks:` in the declaration, `spi onboard`, and intent reconciliation
+  before image resolution (ADR-032, ADR-033).
+
+The planned `forks:` entry has three fields; this is not accepted by the
+implemented schema above yet:
+
+| Entry field | Meaning |
+|---|---|
+| `service` | The service being onboarded; unique within the declaration. `forks:` is valid only with `profile: core`. |
+| `repo` | The `<org>/<fork>` trusted by its `fork-<service>` credential; unique within the declaration, at most twenty entries (ADR-032). |
+| `canonicalSource` | `community` or `fork`, default `community`; trust-only onboarding precedes an explicit promotion. |
+
+The declaration owns both trust and canonical-source policy. A reviewed PR
+adds or removes an entry, changes a repository, or promotes a source before
+`spi onboard` may apply that intent. Conflicting imperative requests are
+refused; they do not create temporary overrides for the next lifecycle run
+to undo.
+
+The planned first-provision input is
+`spi up --declaration <owner>/<repo>:<path>`, for example the locator
+`Azure/osdu-spi-stack:ops/environments/shared.yaml`. The CLI loads the
+reviewed file on `main`, not a copy bundled in the release wheel, and takes
+its provisioning fields and fork intent; conflicting explicit flags are
+refused. It records the locator in the retained RG tag
+`spi-environment-declaration`. Later runs reuse that tag when the option is
+omitted and reject a conflicting locator or an unreadable or invalid file.
+Without an input or retained locator, a stack is undeclared.
+
+The planned `env-upgrade` wiring exports `declaration_locator` from its
+`declare` job and passes it to `spi up --declaration` in `provision`, gated
+on a release that supports the option. This is part of onboarding, not an
+argument accepted by the implemented CLI. Source intent is loaded before
+image resolution. Credentials, `spi-source-<service>` RG tags, and lock
+projections are reconciled copies, not competing owners.
 
 See `docs/design/environment-lifecycle.md` for the complete roadmap.
