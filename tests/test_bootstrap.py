@@ -68,10 +68,12 @@ def test_render_cluster_config_carries_deploy_identity_facts():
     assert 'AKS_CLUSTER_NAME: "spi-stack-dks"' in yaml
 
 
-def test_render_cluster_config_always_declares_every_key():
+def test_render_cluster_config_omits_unknown_identity_keys():
+    """An empty subject would break the fork RoleBinding on a pre-identity environment."""
     yaml = render_istio_revision_configmap("asm-1-30")
 
-    assert 'DEPLOY_IDENTITY_PRINCIPAL_ID: ""' in yaml
+    assert "DEPLOY_IDENTITY" not in yaml
+    assert '""' not in yaml
 
 
 def test_refresh_without_facts_keeps_the_live_deploy_identity():
@@ -112,7 +114,9 @@ def test_refresh_treats_an_absent_configmap_as_empty_facts():
     ):
         create_istio_revision_configmap("asm-1-30")
 
-    assert 'DEPLOY_IDENTITY_PRINCIPAL_ID: ""' in apply_yaml.call_args.args[0]
+    applied = apply_yaml.call_args.args[0]
+    assert 'ISTIO_REVISION: "asm-1-30"' in applied
+    assert "DEPLOY_IDENTITY" not in applied
 
 
 class TestDetectIstioRevision:

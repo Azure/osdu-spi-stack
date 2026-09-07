@@ -140,8 +140,12 @@ def render_istio_revision_configmap(
         "data:",
         f"  {ISTIO_REVISION_KEY}: {json.dumps(istio_revision)}",
     ]
+    # An absent key leaves Flux's ${...} placeholder unsubstituted, a binding
+    # to nobody; an empty value would make the RoleBinding subject invalid.
     for key in DEPLOY_IDENTITY_KEYS:
-        lines.append(f"  {key}: {json.dumps((extra or {}).get(key, ''))}")
+        value = (extra or {}).get(key, "")
+        if value:
+            lines.append(f"  {key}: {json.dumps(value)}")
     return "\n".join(lines) + "\n"
 
 

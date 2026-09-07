@@ -1,7 +1,9 @@
 # Namespace RBAC for the environment deploy identity that fork CI federates
 # to (ADR-032). The subject is the identity's principal id, substituted from
 # spi-cluster-config; managed-identity tokens carry no group claims, so only
-# an explicit User subject matches. No create, delete, or secrets verbs.
+# an explicit User subject matches. On an environment provisioned before the
+# identity existed the placeholder stays literal and binds nobody until the
+# next spi up. No create, delete, or secrets verbs.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -66,6 +68,9 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
