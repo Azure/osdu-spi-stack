@@ -35,6 +35,7 @@ POLL_INTERVAL_SECONDS = 15
 RETRY_BACKOFF_SECONDS = (10, 20, 40, 60)
 
 RETAINED_TYPES = frozenset({"microsoft.managedidentity/userassignedidentities"})
+CLUSTER_TYPE = "microsoft.containerservice/managedclusters"
 
 # Azure reports these as terminal failures; retrying cannot change the outcome.
 FATAL_ERROR_MARKERS = ("AuthorizationFailed", "LinkedAuthorizationFailed", "ScopeLocked")
@@ -76,6 +77,7 @@ class TeardownRun:
     config: Config
     deadline: float
     api_server: str = ""
+    had_cluster: bool = False
     inventory: List[AzureResource] = field(default_factory=list)
 
 
@@ -130,27 +132,32 @@ def _confirm_nodes_group_gone(run: TeardownRun) -> None:
             f"Managed nodes group {nodes_group} still exists after the cluster delete; "
             "network teardown cannot start while it holds node resources."
         )
-    prune_kube_context(run.config.cluster_name, server_fqdn=run.api_server)
+    if run.had_cluster:
+        prune_kube_context(run.config.cluster_name, server_fqdn=run.api_server)
 
 
-# Order matters: each wave is confirmed gone before the next starts. The
-# types are what infra/*.bicep provisions plus what Azure adds beside them
-# (Event Grid system topics on storage accounts, smart detection rules and
-# their action group on Application Insights). A type missing here blocks
+# The first wave holds everything without a dependency on anything else in
+# the group, so its deletes run concurrently. Only the network chain needs
+# ordering, and only after the cluster's nodes have left the VNet. The types
+# are what infra/*.bicep provisions plus what Azure adds beside them (Event
+# Grid system topics on storage accounts, smart detection rules and their
+# action group on Application Insights). A type missing here blocks
 # teardown rather than being deleted blindly.
 DELETION_PLAN: Sequence[Wave] = (
-    _wave("Microsoft.ContainerService/managedClusters", after=_confirm_nodes_group_gone),
-    _wave("Microsoft.EventGrid/systemTopics"),
     _wave(
+        "Microsoft.ContainerService/managedClusters",
+        "Microsoft.EventGrid/systemTopics",
         "Microsoft.DocumentDB/databaseAccounts",
         "Microsoft.ServiceBus/namespaces",
         "Microsoft.Storage/storageAccounts",
         "Microsoft.ContainerRegistry/registries",
         "Microsoft.KeyVault/vaults",
+        "Microsoft.AlertsManagement/smartDetectorAlertRules",
+        "Microsoft.Insights/actionGroups",
+        "Microsoft.Insights/components",
+        "Microsoft.OperationalInsights/workspaces",
+        after=_confirm_nodes_group_gone,
     ),
-    _wave("Microsoft.AlertsManagement/smartDetectorAlertRules", "Microsoft.Insights/actionGroups"),
-    _wave("Microsoft.Insights/components"),
-    _wave("Microsoft.OperationalInsights/workspaces"),
     _wave("Microsoft.Network/natGateways", before=_detach_nat_gateways),
     _wave("Microsoft.Network/publicIPAddresses"),
     _wave("Microsoft.Network/virtualNetworks"),
@@ -211,40 +218,76 @@ def _is_fatal(stderr: str) -> bool:
     return any(marker in stderr for marker in FATAL_ERROR_MARKERS)
 
 
-def delete_resource(resource: AzureResource, deadline: float) -> None:
-    """Delete one resource, retrying transient and dependency failures with backoff."""
+def request_delete(resource: AzureResource) -> bool:
+    """Ask Azure to delete one resource without waiting; the inventory poll confirms.
+
+    Returns False when Azure declined the request for a reason worth retrying
+    (a dependency or an operation in progress). Terminal refusals raise.
+    """
+    result = run_command(
+        ["az", "resource", "delete", "--ids", resource.id, "--no-wait"],
+        description=f"Delete {resource.type.split('/')[-1]}: {resource.name}",
+        check=False,
+    )
+    if result.returncode == 0:
+        return True
+    reason = result.stderr.strip()
+    if _is_fatal(reason):
+        raise TeardownError(f"Delete refused for {resource.id}: {reason}")
+    console.print(f"  [warning]Delete not accepted for {resource.name}: {reason}[/warning]")
+    return False
+
+
+def provisioning_state(resource: AzureResource) -> str:
+    result = run_command(
+        [
+            "az",
+            "resource",
+            "show",
+            "--ids",
+            resource.id,
+            "--query",
+            "properties.provisioningState",
+            "-o",
+            "tsv",
+        ],
+        description=f"Read state of {resource.name}",
+        display=False,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def delete_wave(run: TeardownRun, wave: Wave) -> None:
+    """Fire the wave's deletes together, then poll until the inventory shows them gone.
+
+    A resource that is still present and no longer reports ``Deleting`` had
+    its delete fail behind the accepted request, so it is asked for again
+    with backoff until the deadline.
+    """
+    targets = [r for r in run.inventory if r.type in wave.types]
+    for resource in targets:
+        request_delete(resource)
     attempt = 0
-    while True:
-        result = run_command(
-            ["az", "resource", "delete", "--ids", resource.id],
-            description=f"Delete {resource.type.split('/')[-1]}: {resource.name}",
-            check=False,
-        )
-        if result.returncode == 0:
-            return
-        reason = result.stderr.strip()
-        if _is_fatal(reason):
-            raise TeardownError(f"Delete refused for {resource.id}: {reason}")
-        backoff = RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)]
-        if time.monotonic() + backoff >= deadline:
-            raise TeardownError(f"Delete did not complete for {resource.id}: {reason}")
-        console.print(f"  [warning]Delete failed, retrying in {backoff}s: {reason}[/warning]")
-        time.sleep(backoff)
-        attempt += 1
-
-
-def _wait_wave_gone(run: TeardownRun, wave: Wave) -> None:
-    """Deletion acceptance is not completion; the inventory decides."""
+    next_check = time.monotonic() + RETRY_BACKOFF_SECONDS[0]
     while True:
         run.inventory = list_group_resources(run.config.resource_group)
         lingering = [r for r in run.inventory if r.type in wave.types]
         if not lingering:
             return
-        if time.monotonic() >= run.deadline:
+        now = time.monotonic()
+        if now >= run.deadline:
             raise TeardownError(
                 "Teardown deadline reached with resources remaining:\n  "
-                + "\n  ".join(r.id for r in lingering)
+                + "\n  ".join(f"{r.id} ({provisioning_state(r) or 'unknown'})" for r in lingering)
             )
+        if now >= next_check:
+            stalled = [r for r in lingering if provisioning_state(r).lower() != "deleting"]
+            for resource in stalled:
+                request_delete(resource)
+            attempt += 1
+            backoff = RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)]
+            next_check = now + backoff
         time.sleep(POLL_INTERVAL_SECONDS)
 
 
@@ -274,12 +317,24 @@ def _cluster_api_server(config: Config) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def _check_plan_covers(inventory: Iterable[AzureResource]) -> None:
+    unhandled = unhandled_resources(inventory)
+    if unhandled:
+        raise TeardownError(
+            "Resource group holds resources the teardown plan does not cover; "
+            "they were left in place:\n  " + _describe(unhandled)
+        )
+
+
 def teardown_environment(config: Config) -> List[AzureResource]:
     """Delete everything in the group except managed identities.
 
-    Returns the retained resources. Raises ``TeardownError`` when the group
-    holds a resource type the plan does not cover, when a delete is refused,
-    or when the deadline passes with resources remaining.
+    The plan runs in passes: a resource Azure adds while an earlier wave is
+    in flight (an Event Grid system topic on a storage account, for example)
+    is picked up by the next pass. Returns the retained resources. Raises
+    ``TeardownError`` when the group holds a resource type the plan does not
+    cover, when a delete is refused, when a pass makes no progress, or when
+    the deadline passes with resources remaining.
     """
     rg = config.resource_group
     console.print(f"\n[bold]Tearing down {rg} (managed identities are kept)...[/bold]")
@@ -289,29 +344,34 @@ def teardown_environment(config: Config) -> List[AzureResource]:
 
     run = TeardownRun(config=config, deadline=time.monotonic() + TEARDOWN_DEADLINE_SECONDS)
     run.inventory = list_group_resources(rg)
-    unhandled = unhandled_resources(run.inventory)
-    if unhandled:
-        raise TeardownError(
-            "Resource group holds resources the teardown plan does not cover; "
-            "nothing was deleted:\n  " + _describe(unhandled)
-        )
+    _check_plan_covers(run.inventory)
+    run.had_cluster = any(r.type == CLUSTER_TYPE for r in run.inventory)
+    run.api_server = _cluster_api_server(config) if run.had_cluster else ""
 
-    run.api_server = _cluster_api_server(config)
-    for wave in DELETION_PLAN:
-        targets = [r for r in run.inventory if r.type in wave.types]
-        if not targets:
-            continue
-        if wave.before:
-            wave.before(run)
-        for resource in targets:
-            delete_resource(resource, run.deadline)
-        _wait_wave_gone(run, wave)
-        if wave.after:
-            wave.after(run)
-
-    leftovers = [r for r in run.inventory if r.type not in RETAINED_TYPES]
-    if leftovers:
-        raise TeardownError("Resources remain after teardown:\n  " + _describe(leftovers))
+    while True:
+        pending = {r.id for r in run.inventory if r.type not in RETAINED_TYPES}
+        if not pending:
+            break
+        for wave in DELETION_PLAN:
+            if not any(r.type in wave.types for r in run.inventory):
+                continue
+            if wave.before:
+                wave.before(run)
+            delete_wave(run, wave)
+            if wave.after:
+                wave.after(run)
+        run.inventory = list_group_resources(rg)
+        _check_plan_covers(run.inventory)
+        remaining = {r.id for r in run.inventory if r.type not in RETAINED_TYPES}
+        if remaining and remaining >= pending:
+            raise TeardownError(
+                "Teardown made no progress; resources remain:\n  "
+                + _describe(r for r in run.inventory if r.id in remaining)
+            )
+        if remaining:
+            console.print(
+                "  [info]New resources appeared during teardown; running another pass[/info]"
+            )
 
     retained = retained_resources(run.inventory)
     display_result(f"Resource group {rg} holds only managed identities")

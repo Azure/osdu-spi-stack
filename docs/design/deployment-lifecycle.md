@@ -131,31 +131,36 @@ spi down --env <env> --purge   # the whole group goes
 Ordinary `spi down` keeps the environment resource group, its tags, and its
 managed identities, so a rebuild never rotates the deploy identity's client
 id ([ADR-034](../decisions/034-deploy-identity-survives-down.md)). Everything
-else in the group is deleted individually, in dependency order, from a live
-inventory (`az resource list`) rather than from an assumed shape:
+else in the group is deleted from a live inventory (`az resource list`)
+rather than from an assumed shape, in two stages:
 
-1. The AKS cluster. Teardown then waits until Azure reports the managed
-   nodes group (`<cluster>-nodes`) gone, and prunes the kubeconfig entries
-   at that point, since the cluster is confirmed dead.
-2. Event Grid system topics, which Azure creates beside storage accounts.
-3. Cosmos DB accounts, Service Bus, storage accounts, ACR, and Key Vault.
-   The Key Vault enters soft-delete; the next `spi up --env <env>` recovers
-   it in Phase 1 step 8.
-4. The smart detection alert rule and action group Azure adds beside
-   Application Insights, then the component, then its Log Analytics
-   workspace, when the telemetry option provisioned them.
-5. The NAT gateway, after its subnet associations are detached, then its
-   public IP, then the VNet.
+1. Everything without an in-group dependency is requested at once with
+   `az resource delete --no-wait`: the AKS cluster, Cosmos DB accounts,
+   Service Bus, storage accounts, ACR, Key Vault, the Event Grid system
+   topics Azure creates beside storage accounts, and the telemetry
+   resources when that option provisioned them. Azure runs these deletes
+   concurrently, so the stage takes as long as its slowest member, usually
+   the cluster or the largest Cosmos account. The Key Vault enters
+   soft-delete; the next `spi up --env <env>` recovers it in Phase 1 step 8.
+   Once the inventory shows the stage gone, teardown waits until Azure
+   reports the managed nodes group (`<cluster>-nodes`) gone too, then
+   prunes the kubeconfig entries, since the cluster is confirmed dead.
+2. The network chain, which Azure does enforce an order on: subnet NAT
+   associations are detached, then the NAT gateway, its public IP, and the
+   VNet go one after another.
 
-Each wave is confirmed gone by a fresh inventory before the next starts;
-delete acceptance is not completion. The whole run has a 45-minute deadline.
-Transient and dependency failures are retried with backoff; authorization
-failures and resource locks stop the run at once with the resource named. A
-resource type the plan does not cover stops the run before anything is
-deleted, listing the offending resources, because a Bicep change that adds a
-resource type also adds a teardown obligation (`tests/test_teardown.py` checks
-the plan against `infra/`). Success means the final inventory holds only
-managed identities; anything else exits nonzero with the remaining list, and
+Delete acceptance is not completion; a fresh inventory decides when a stage
+is done, and the plan runs in passes so a resource Azure adds while a stage
+is in flight is picked up by the next pass. The whole run has a 45-minute
+deadline. A resource that is still present and no longer reports `Deleting`
+had its delete fail behind the accepted request, so it is requested again
+with backoff. Authorization failures and resource locks stop the run at once
+with the resource named. A resource type the plan does not cover stops the
+run before anything is deleted, listing the offending resources, because a
+Bicep change that adds a resource type also adds a teardown obligation
+(`tests/test_teardown.py` checks the plan against `infra/`). Success means
+the final inventory holds only managed identities; anything else exits
+nonzero with the remaining list and each resource's provisioning state, and
 reset does not proceed to `spi up`. A second `spi down` on a partially torn
 down group picks up where the first stopped.
 

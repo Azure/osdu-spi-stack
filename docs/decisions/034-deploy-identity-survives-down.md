@@ -44,12 +44,13 @@ deleting the whole group and its identities.
   bundled Bicep, including optional resources; an unhandled non-identity
   resource blocks the plan rather than being ignored or deleted blindly.
   An unreadable inventory is a failure, not an empty group.
-- AKS is deleted first, and its cluster and managed nodes group must be gone
-  before network teardown. Cosmos, Service Bus, storage, ACR, and Key Vault
-  follow; optional Application Insights is removed before its Log Analytics
-  workspace. Subnet associations are detached before deleting the NAT
-  gateway, then its public IP, with the VNet last. Key Vault soft delete is
-  unaffected, and `spi up` recovers the vault.
+- Resources with no in-group dependency (AKS, Cosmos, Service Bus, storage,
+  ACR, Key Vault, optional telemetry) are requested together and deleted
+  concurrently, as `az group delete` would. The cluster and its managed
+  nodes group must be gone before network teardown. Subnet associations are
+  detached before deleting the NAT gateway, then its public IP, with the
+  VNet last. Key Vault soft delete is unaffected, and `spi up` recovers the
+  vault.
 - The command waits for completion within a 45-minute deadline. Only
   transient or dependency failures are retried, with backoff; authorization,
   resource locks, and unhandled resource types fail with the affected IDs

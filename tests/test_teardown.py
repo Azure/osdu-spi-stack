@@ -39,7 +39,11 @@ FQDN = "spi-stack-dev1-a1b2c3d4.hcp.eastus.azmk8s.io"
 
 
 def _res(rtype: str, name: str) -> dict:
-    return {"id": f"{SUB}/resourceGroups/{RG}/providers/{rtype}/{name}", "type": rtype, "name": name}
+    return {
+        "id": f"{SUB}/resourceGroups/{RG}/providers/{rtype}/{name}",
+        "type": rtype,
+        "name": name,
+    }
 
 
 def full_inventory() -> list:
@@ -75,6 +79,13 @@ class FakeAzure:
         self.calls = []
         self.group_delete_polls_until_gone = 0
         self.prune = None
+        self.deleting = set()
+        self.clock = 0.0
+        self.tick_seconds = 5.0
+
+    def monotonic(self):
+        self.clock += self.tick_seconds
+        return self.clock
 
     def _ok(self, stdout=""):
         return subprocess.CompletedProcess(["az"], 0, stdout, "")
@@ -95,18 +106,26 @@ class FakeAzure:
         if verb[:2] == ("group", "delete"):
             self.groups[RG] = self.group_delete_polls_until_gone > 0
             return self._ok()
-        if verb[:2] == ("resource", "list"):
-            return self._ok(json.dumps(self.inventory))
         if verb[:2] == ("resource", "delete"):
+            assert "--no-wait" in cmd
             rid = cmd[cmd.index("--ids") + 1]
             pending = self.delete_failures.get(rid)
             if pending:
                 stderr = pending.pop(0)
                 return self._fail(stderr)
-            self.inventory = [r for r in self.inventory if r["id"] != rid]
-            if rid.lower().endswith("/managedclusters/spi-stack-dev1"):
-                self.groups[f"{RG}-nodes"] = False
+            self.deleting.add(rid)
             return self._ok()
+        if verb[:2] == ("resource", "show"):
+            rid = cmd[cmd.index("--ids") + 1]
+            return self._ok("Deleting" if rid in self.deleting else "Succeeded")
+        if verb[:2] == ("resource", "list"):
+            # Accepted deletes land by the next inventory read.
+            for rid in list(self.deleting):
+                self.inventory = [r for r in self.inventory if r["id"] != rid]
+                if rid.lower().endswith("/managedclusters/spi-stack-dev1"):
+                    self.groups[f"{RG}-nodes"] = False
+            self.deleting.clear()
+            return self._ok(json.dumps(self.inventory))
         if verb[:2] == ("aks", "show"):
             return self._ok(f"{FQDN}\n")
         if verb == ("network", "vnet", "list"):
@@ -139,6 +158,7 @@ def az():
     with (
         patch("spi.teardown.run_command", side_effect=fake.run_command),
         patch("spi.teardown.time.sleep"),
+        patch("spi.teardown.time.monotonic", side_effect=fake.monotonic),
         patch("spi.teardown.prune_kube_context") as prune,
         patch("spi.teardown.display_result"),
     ):
@@ -186,43 +206,63 @@ class TestOrdinaryTeardown:
         assert {r["type"].lower() for r in az.inventory} == RETAINED_TYPES
         assert az.groups[RG] is True
 
-    def test_deletion_follows_the_dependency_order(self, az):
+    def test_independent_resources_are_requested_together_then_the_network_chain(self, az):
         teardown_environment(config())
 
         order = [rid.split("/providers/")[1].split("/")[1].lower() for rid in az.deletes()]
         first = {t: order.index(t) for t in dict.fromkeys(order)}
         last = {t: len(order) - 1 - order[::-1].index(t) for t in dict.fromkeys(order)}
-        assert last["managedclusters"] < first["systemtopics"]
-        assert last["systemtopics"] < first["storageaccounts"]
-        assert last["storageaccounts"] < first["natgateways"]
+        independent = {
+            "managedclusters",
+            "systemtopics",
+            "databaseaccounts",
+            "namespaces",
+            "storageaccounts",
+            "registries",
+            "vaults",
+        }
+        assert max(last[t] for t in independent) < first["natgateways"]
         assert last["natgateways"] < first["publicipaddresses"]
         assert last["publicipaddresses"] < first["virtualnetworks"]
+        # No inventory read sits between the independent deletes: they were fired as one batch.
+        delete_positions = [i for i, c in enumerate(az.calls) if c[1:3] == ["resource", "delete"]]
+        batch = delete_positions[: len(independent) + 1]
+        assert batch == list(range(batch[0], batch[0] + len(batch)))
 
     def test_the_context_is_pruned_once_the_nodes_group_is_gone(self, az):
         teardown_environment(config())
 
         az.prune.assert_called_once_with("spi-stack-dev1", server_fqdn=FQDN)
-        prune_at = next(
+        nodes_check = next(
             i
             for i, c in enumerate(az.calls)
             if c[1:3] == ["group", "exists"] and f"{RG}-nodes" in c
         )
-        first_paas_delete = next(
+        cluster_delete = next(
             i
             for i, c in enumerate(az.calls)
-            if c[1:3] == ["resource", "delete"] and "managedClusters" not in c[-1]
+            if c[1:3] == ["resource", "delete"] and "managedClusters" in c[4]
         )
-        assert prune_at < first_paas_delete
+        first_network_delete = next(
+            i
+            for i, c in enumerate(az.calls)
+            if c[1:3] == ["resource", "delete"] and "natGateways" in c[4]
+        )
+        assert cluster_delete < nodes_check < first_network_delete
 
     def test_nat_gateway_is_detached_from_subnets_before_deletion(self, az):
-        subnet_id = f"{SUB}/resourceGroups/{RG}/providers/Microsoft.Network/virtualNetworks/v/subnets/aks"
+        subnet_id = (
+            f"{SUB}/resourceGroups/{RG}/providers/Microsoft.Network/virtualNetworks/v/subnets/aks"
+        )
         az.subnets = [{"id": subnet_id, "name": "aks", "natGateway": {"id": "natgw"}}]
 
         teardown_environment(config())
 
         detach = next(i for i, c in enumerate(az.calls) if c[1:4] == ["network", "vnet", "subnet"])
         natgw_delete = next(
-            i for i, c in enumerate(az.calls) if c[1:3] == ["resource", "delete"] and "natGateways" in c[-1]
+            i
+            for i, c in enumerate(az.calls)
+            if c[1:3] == ["resource", "delete"] and "natGateways" in c[4]
         )
         assert detach < natgw_delete
         assert az.subnets[0]["natGateway"] is None
@@ -240,6 +280,30 @@ class TestOrdinaryTeardown:
 
         assert len(retained) == 3
         assert az.deletes() == []
+        az.prune.assert_not_called()
+
+    def test_a_resource_that_appears_mid_run_is_caught_by_the_next_pass(self, az):
+        """Azure adds an Event Grid system topic beside a storage account on its own."""
+        topic = _res("Microsoft.EventGrid/systemTopics", "late-topic")
+        original = az.run_command
+        state = {"added": False}
+
+        def add_topic_after_natgw(cmd, **kw):
+            if (
+                cmd[1:3] == ["resource", "delete"]
+                and "natGateways" in cmd[4]
+                and not state["added"]
+            ):
+                az.inventory.append(topic)
+                state["added"] = True
+            return original(cmd, **kw)
+
+        with patch("spi.teardown.run_command", side_effect=add_topic_after_natgw):
+            retained = teardown_environment(config())
+
+        assert len(retained) == 3
+        assert topic["id"] in az.deletes()
+        assert {r["type"].lower() for r in az.inventory} == RETAINED_TYPES
 
 
 class TestTeardownStops:
@@ -273,24 +337,26 @@ class TestTeardownStops:
         assert az.deletes().count(cluster) == 1
         az.prune.assert_not_called()
 
-    def test_a_transient_failure_is_retried_with_backoff(self, az):
+    def test_a_declined_request_is_asked_again_once_the_resource_is_not_deleting(self, az):
         cluster = az.inventory[0]["id"]
         az.delete_failures[cluster] = ["Conflict: operation in progress"]
 
-        with patch("spi.teardown.time.sleep") as sleep:
-            teardown_environment(config())
+        teardown_environment(config())
 
         assert az.deletes().count(cluster) == 2
-        assert sleep.call_args_list[0].args == (10,)
+        shows = [c for c in az.calls if c[1:3] == ["resource", "show"]]
+        assert shows and shows[0][4].endswith("/managedClusters/spi-stack-dev1")
 
-    def test_the_deadline_stops_retries_with_the_remaining_inventory(self, az):
+    def test_the_deadline_reports_the_remaining_inventory_with_its_state(self, az):
         cluster = az.inventory[0]["id"]
         az.delete_failures[cluster] = ["Conflict"] * 50
+        az.tick_seconds = 20 * 60.0
 
-        clock = iter([0.0] + [1.0] * 5 + [45 * 60.0] * 50)
-        with patch("spi.teardown.time.monotonic", side_effect=lambda: next(clock)):
-            with pytest.raises(TeardownError, match="did not complete"):
-                teardown_environment(config())
+        with pytest.raises(TeardownError, match="deadline reached") as exc:
+            teardown_environment(config())
+
+        assert cluster in str(exc.value)
+        assert "(Succeeded)" in str(exc.value)
 
     def test_a_lingering_nodes_group_blocks_network_teardown(self, az):
         original = az.run_command
@@ -301,11 +367,8 @@ class TestTeardownStops:
                 return subprocess.CompletedProcess(cmd, 0, "true", "")
             return result
 
-        clock = iter([0.0] * 6 + [45 * 60.0] * 50)
-        with (
-            patch("spi.teardown.run_command", side_effect=sticky_nodes),
-            patch("spi.teardown.time.monotonic", side_effect=lambda: next(clock)),
-        ):
+        az.tick_seconds = 10 * 60.0
+        with patch("spi.teardown.run_command", side_effect=sticky_nodes):
             with pytest.raises(TeardownError, match="nodes group"):
                 teardown_environment(config())
 
@@ -313,8 +376,12 @@ class TestTeardownStops:
 
 
 def _grant(pid, role, scope, gid="ra-1"):
-    return {"id": f"{scope}/providers/Microsoft.Authorization/roleAssignments/{gid}",
-            "roleDefinitionName": role, "scope": scope, "principalId": pid}
+    return {
+        "id": f"{scope}/providers/Microsoft.Authorization/roleAssignments/{gid}",
+        "roleDefinitionName": role,
+        "scope": scope,
+        "principalId": pid,
+    }
 
 
 ZONE = f"{SUB}/resourceGroups/dns-rg/providers/Microsoft.Network/dnsZones/example.com"
@@ -384,11 +451,10 @@ class TestPurge:
     def test_an_accepted_but_incomplete_delete_is_a_failure(self, az):
         self._identities(az)
         az.group_delete_polls_until_gone = 10_000
+        az.tick_seconds = 20 * 60.0
 
-        clock = iter([0.0] * 3 + [45 * 60.0] * 50)
-        with patch("spi.teardown.time.monotonic", side_effect=lambda: next(clock)):
-            with pytest.raises(TeardownError, match="still exists"):
-                purge_environment(config())
+        with pytest.raises(TeardownError, match="still exists"):
+            purge_environment(config())
 
         az.prune.assert_not_called()
 
