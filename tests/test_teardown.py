@@ -674,6 +674,15 @@ class TestPurge:
         assert not any(c[1:4] == ["role", "assignment", "delete"] for c in az.calls)
         assert az.groups[RG] is True
 
+    def test_an_identity_without_a_principal_id_stops_the_purge(self, az):
+        self._identities(az)
+        az.identities.append({"name": "spi-stack-dev1-odd", "principalId": None})
+
+        with pytest.raises(TeardownError, match="no principal id"):
+            purge_environment(config())
+
+        assert not any(c[1:3] == ["group", "delete"] for c in az.calls)
+
     def test_grant_discovery_failure_stops_the_purge(self, az):
         self._identities(az)
         original = az.run_command

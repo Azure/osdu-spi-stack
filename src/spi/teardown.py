@@ -515,7 +515,10 @@ def discover_external_grants(config: Config) -> List[ExternalGrant]:
     for identity in json.loads(listed.stdout or "[]"):
         principal_id = identity.get("principalId") or ""
         if not principal_id:
-            continue
+            raise TeardownError(
+                f"Identity {identity.get('name', '?')} reports no principal id; its role "
+                "assignments cannot be discovered, so purge stops."
+            )
         result = run_command(
             ["az", "role", "assignment", "list", "--all", "--assignee", principal_id, "-o", "json"],
             description=f"Discover role assignments for {identity.get('name', principal_id)}",
