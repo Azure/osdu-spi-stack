@@ -159,8 +159,9 @@ post-provision step that first corrects an obsolete image source.
 
 **Reset** (unbuilt) is deletion plus cold provision at the pinned tag: load and
 validate the declaration, flag, drain, snapshot the lock, then `spi down`.
-The command has a 45-minute deadline and reports success only after the group
-contains identities alone and the managed nodes group is gone (ADR-034).
+The command (built) has a 45-minute deadline and reports success only after
+the group contains identities alone and the managed nodes group is gone
+(ADR-034).
 A failed or timed-out delete stops reset; a re-run resumes from the reported
 remaining inventory. Only after completion does `spi up --tag <pin>` resolve
 the declaration's desired sources and start the cold provision and converge
@@ -269,8 +270,9 @@ gh run watch
    bump-PR job are implemented. Still unbuilt: `env-reset`, `env-teardown`,
    the test-identity ensure step, and the pin backstop/drain insertion
    points noted above.
-4. **Onboarding** (unbuilt): the deploy identity and two Roles in `spi up`,
-   identity and RG-tag retention in `spi down` (ADR-034), phased `spi onboard`,
+4. **Onboarding** (in progress): the deploy identity and two Roles in `spi up`
+   and identity and RG-tag retention in `spi down` (ADR-034) are built. Still
+   unbuilt: phased `spi onboard`,
    `forks:` and the declaration locator with pre-resolution intent loading;
    repository-derived GHCR package validation instead of the Azure-owner
    restriction; onboard `osdu-spi-partition` with a community canonical; the

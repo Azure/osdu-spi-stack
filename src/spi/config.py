@@ -125,6 +125,11 @@ class Config(BaseModel):
         return f" --env {self.env}" if self.env else ""
 
     @property
+    def node_resource_group(self) -> str:
+        """The managed nodes group AKS creates; the name is fixed in infra/aks.bicep."""
+        return f"{self.cluster_name}-nodes"
+
+    @property
     def primary_partition(self) -> str:
         """First data partition hosts the system database."""
         return self.data_partitions[0]

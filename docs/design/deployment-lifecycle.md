@@ -123,54 +123,56 @@ spi reconcile --refresh-images # re-resolve osdu-image-lock and reconcile servic
 
 ## Phase 4: Teardown
 
-**Status.** The command below describes implemented resource-group deletion.
-Identity-preserving `spi down` and the `--purge` option are unbuilt; ADR-034
-defines their target contract, distinguished below.
-
 ```bash
-spi down --env <env>
+spi down --env <env>           # resources go, managed identities stay
+spi down --env <env> --purge   # the whole group goes
 ```
 
-This deletes the resource group, which removes the AKS cluster, every PaaS resource it provisioned, and the role assignments scoped at the resource group. The Key Vault enters soft-delete; the next `spi up --env <env>` recovers it in Phase 1 step 8.
+Ordinary `spi down` keeps the environment resource group, its tags, and its
+managed identities, so a rebuild never rotates the deploy identity's client
+id ([ADR-034](../decisions/034-deploy-identity-survives-down.md)). Everything
+else in the group is deleted individually, in dependency order, from a live
+inventory (`az resource list`) rather than from an assumed shape:
 
-Once Azure reports the resource group gone, `spi down` prunes the kubeconfig entries the Phase 1 `az aks get-credentials` merged in. `az group delete --no-wait` returns on acceptance rather than completion, and an accepted delete can still fail, so acceptance alone is not enough to strip a cluster's credentials. Deletion that outruns the 60-second acknowledgement window leaves the context in place and says so.
+1. The AKS cluster. Teardown then waits until Azure reports the managed
+   nodes group (`<cluster>-nodes`) gone, and prunes the kubeconfig entries
+   at that point, since the cluster is confirmed dead.
+2. Event Grid system topics, which Azure creates beside storage accounts.
+3. Cosmos DB accounts, Service Bus, storage accounts, ACR, and Key Vault.
+   The Key Vault enters soft-delete; the next `spi up --env <env>` recovers
+   it in Phase 1 step 8.
+4. The smart detection alert rule and action group Azure adds beside
+   Application Insights, then the component, then its Log Analytics
+   workspace, when the telemetry option provisioned them.
+5. The NAT gateway, after its subnet associations are detached, then its
+   public IP, then the VNet.
 
-Cluster names repeat across subscriptions: `spi up --env dev1` run in two subscriptions builds two `spi-stack-dev1` clusters, and both write the same context name. `spi down` therefore reads the cluster's API server FQDN before deleting the resource group, and prunes the context only when the kubeconfig entry points at that server; tearing one down leaves the other's credentials alone. A lookup that comes back empty, from a cluster already deleted or one that never finished creating, leaves the kubeconfig untouched and says which check failed.
+Each wave is confirmed gone by a fresh inventory before the next starts;
+delete acceptance is not completion. The whole run has a 45-minute deadline.
+Transient and dependency failures are retried with backoff; authorization
+failures and resource locks stop the run at once with the resource named. A
+resource type the plan does not cover stops the run before anything is
+deleted, listing the offending resources, because a Bicep change that adds a
+resource type also adds a teardown obligation (`tests/test_teardown.py` checks
+the plan against `infra/`). Success means the final inventory holds only
+managed identities; anything else exits nonzero with the remaining list, and
+reset does not proceed to `spi up`. A second `spi down` on a partially torn
+down group picks up where the first stopped.
+
+`spi down --purge` deletes the group and its identities. Before requesting
+the group delete it discovers the identities' role assignments outside the
+environment (the group and its managed nodes group), removes the stack-owned
+`DNS Zone Contributor` assignment on the external DNS zone, and confirms its
+absence. Any other external grant, a discovery failure, or a failed removal
+stops the purge with the assignment IDs listed and the group intact. Purge
+then waits for Azure to report the group gone within the same 45-minute
+deadline and exits nonzero naming the group when the accepted delete has not
+completed. The external DNS zone and its resource group are never deletion
+targets.
+
+Cluster names repeat across subscriptions: `spi up --env dev1` run in two subscriptions builds two `spi-stack-dev1` clusters, and both write the same context name. `spi down` therefore reads the cluster's API server FQDN before deleting anything, and prunes the context only when the kubeconfig entry points at that server; tearing one down leaves the other's credentials alone. A lookup that comes back empty, from a cluster already deleted or one that never finished creating, leaves the kubeconfig untouched and says which check failed.
 
 The kubeconfig is then read a second time, because `delete-context` edits only the file holding the winning entry and a multi-file `KUBECONFIG` can surface a shadowed context of the same name. That post-delete view decides the rest: the cluster and user entries go only when no context that survived references them, so a kubeconfig shared with another cluster stays intact, and `current-context`, which `delete-context` leaves naming the entry it removed, is cleared only when nothing took that name's place. `spi down` requires only `az`, so a machine without kubectl skips the prune instead of failing the teardown. The two kubeconfig reads are silent; the command panels report what teardown changes, and every entry it removes gets one.
-
-### Identity-preserving teardown (unbuilt)
-
-Under [ADR-034](../decisions/034-deploy-identity-survives-down.md), ordinary
-`spi down` keeps the environment RG, managed identities, and tags, including
-the suffix, explicit canonical-source policy, and declaration locator.
-`spi down --purge` deletes the group and these retained records only after
-out-of-group role assignments are handled. It discovers grants using the
-retained identity principal IDs, deletes the stack-owned ExternalDNS
-assignment on the external DNS zone, and confirms its absence before group
-deletion. It then polls until Azure reports the group gone, within the same
-45-minute deadline as the identity-preserving path, and exits nonzero naming
-the group when the accepted delete has not completed; the `--no-wait`
-acceptance of the implemented `down` is not success here. Missing discovery
-or deletion permissions, unrecognized grants, or a failed removal abort purge
-while preserving the identities. Ordinary
-`down` keeps those grants, and a later purge works even with no cluster left.
-The external DNS zone and its resource group are never deletion targets.
-Key Vault soft delete and recovery still apply to either path.
-
-The identity-preserving path inventories resources, follows their deletion
-dependencies, and waits within a 45-minute deadline. It includes optional
-telemetry resources and detaches subnet NAT associations before removing
-the gateway and public IP. It succeeds only after a fresh inventory contains
-identities alone and the managed nodes group is confirmed gone. A permanent
-failure or deadline expiry reports the remaining resources and exits nonzero;
-reset does not proceed to `spi up`.
-
-Kubeconfig cleanup on this path uses confirmed cluster deletion rather than
-environment RG disappearance, retaining the API-server fingerprint and
-shared-entry safeguards above. The next `spi up` loads source policy from
-the declaration or retained RG tags before image resolution, not from the
-mere presence of a fork credential.
 
 ## Worked example: `spi up --env dev1`, what you should see
 
