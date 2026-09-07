@@ -109,17 +109,17 @@ workflow step is unbuilt; the sweep verb exists):
 - `spi service reset --ephemeral --stale-only` sweeps an ephemeral
   pin only when its owning workflow run reports a terminal state or, when
   that state is unreachable, when the pin's age exceeds a threshold longer
-  than any deploy-plus-test budget. An ephemeral pin's `source_repo` must
-  name a repository the environment trusts: one holding a credential on the
-  deploy identity, read from the roster the lock carries. The lookup builds a
-  fixed GitHub API URL from that validated `source_repo` and the numeric
-  `run_id`, so the URL comes only from a repository the environment trusts
-  and never from fork-controlled free text; the fork-written `source_run_url`
-  stays display-only and is never fetched. An ephemeral pin cannot be written
-  without a trusted `source_repo`, a commit, and a numeric `run_id`, so the
-  lookup inputs always exist. The roster is tighter than a name glob: only
-  onboarded repositories qualify, not every repository matching
-  `Azure/osdu-spi-*`.
+  than any deploy-plus-test budget. The CLI requires `source_repo` to match
+  the lock's projected credential roster and requires a commit and numeric
+  `run_id` when writing an ephemeral pin. That membership check validates
+  claimed provenance against the projected configuration, not the caller's
+  authenticated repository: ADR-032 grants trusted writers patch access to
+  the whole lock, including both the roster and pin annotation.
+  The lookup independently enforces `<owner>/<repo>` path syntax and a
+  numeric `run_id` under the fixed GitHub API host; `source_run_url` stays
+  display-only and is never fetched. Roster membership replaces the
+  `Azure/osdu-spi-*` naming convention for personal and customer forks, but
+  does not prove that only onboarded repositories can be lookup targets.
 - `spi service refresh` (unbuilt) per GitHub-origin service then advances
   the environment to the current retained canonical (ADR-033).
 
@@ -169,6 +169,12 @@ reports what completed and what remains; re-running re-reads state and
 repairs drift. Failure recovery does not roll back by deleting pre-existing
 trust, and a failed prerequisite does not advance promotion. The operation
 is resumable, not a transaction across GitHub, ARM, and Kubernetes.
+
+Credential reconciliation is serial per deploy identity: await a write
+before issuing the next, including removals. A provider conflict from a
+competing invocation causes bounded backoff and an observed-roster re-read.
+Neither onboarding nor the lifecycle ensure path fans out credential writes
+(ADR-032).
 
 On an undeclared environment, onboarding preserves the source tag, or uses
 community when it is absent. `--canonical-source fork` explicitly selects

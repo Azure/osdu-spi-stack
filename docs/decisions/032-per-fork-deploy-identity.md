@@ -43,15 +43,27 @@ config.
   ADR-036 gate admits. `fork_upstream` is excluded: its builds are core-only,
   without the Azure provider. Trust does not select a canonical image source;
   ADR-033 owns that separate policy and its promotion.
+- **Credential writes are serial per identity.** Onboarding and lifecycle
+  reconciliation await each credential create, update, or delete before
+  starting the next. Bicep loops use `@batchSize(1)`, matching
+  `infra/modules/identity.bicep`; CLI reconciliation uses an ordered loop.
+  The Managed Identity RP rejects concurrent writes on one UAMI. Conflicts
+  from competing invocations trigger bounded backoff and a roster re-read,
+  not parallel retries or an unbounded reconciliation loop.
 - **Declared intent wins.** Declared environments record `service`, `repo`,
-  and `canonicalSource` per entry in `forks:`. The retained RG tag
-  `spi-environment-declaration` identifies the reviewed declaration on
-  `main`. `spi onboard` reads it and refuses an addition, removal, repository
-  change, or source choice that disagrees with it; the declaration changes
-  through a reviewed PR first. Lifecycle runs load that intent before image
-  resolution and reconcile the credentials and source policy from it, not
-  from a stale retained roster. An unreadable declaration blocks mutation;
-  it does not turn a declared environment into an undeclared one.
+  and `canonicalSource` per entry in `forks:`. The first declared provision
+  takes `spi up --declaration <owner>/<repo>:<path>`, loads the reviewed file
+  on `main` before image resolution, and records that locator in the RG tag
+  `spi-environment-declaration`. The declaration supplies provisioning
+  fields as well as fork intent; conflicting explicit flags are refused.
+  Later `spi up` runs can read the retained locator when the option is
+  omitted, and an explicitly supplied locator must match it. `spi onboard`
+  reads it and refuses an addition, removal, repository change, or source
+  choice that disagrees with it; the declaration changes through a reviewed
+  PR first. Lifecycle runs reconcile credentials and source policy from
+  that intent, not from a stale retained roster. An unreadable declaration
+  blocks mutation; it does not turn a declared environment into an
+  undeclared one.
 - **Explicit-subject RBAC, reads split from writes.** Two Roles in the
   platform manifests carry the verbs; their RoleBindings name the deploy
   identity's principal id as a `User` subject, substituted from
@@ -120,8 +132,10 @@ carry.
   separate writable lock objects with scoped authorization, mediated writes,
   or separate environments. Another identity with the same lock permission
   adds attribution, not isolation.
-- One principal in the cluster audit log for every fork. Which repository
-  acted is read from the pin annotation, not from the subject.
+- One principal in the cluster audit log for every fork. The pin annotation
+  records claimed repository provenance, not independently authenticated
+  attribution; a trusted writer can change both the pin and roster
+  projection in the lock.
 - The five values are identical across an organization's forks, so a
   customer sets them once at organization level; a personal stack's operator
   runs one command per fork against their own environment.

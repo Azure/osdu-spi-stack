@@ -130,13 +130,31 @@ future fork-onboarding phase adds selective canonical refresh (ADR-033).
 **Onboarding intent** (unbuilt) is loaded from the reviewed declaration before
 refresh or upgrade resolves an image. `forks:` owns trust and
 `canonicalSource`; retained credentials and `spi-source-<service>` tags
-cannot override it. First provision records the declaration's repository
-and path in the RG's `spi-environment-declaration` tag. Later runs require
-that locator to agree with the supplied declaration. The ensure path checks
-repository protection before enabling credentials, reconciles source tags,
-and repairs the lock's separate trust and source projections before refresh.
-During `spi up`, durable-record reconciliation and projection happen at
-bootstrap, using the intent loaded before image resolution. It is not a
+cannot override it. First declared provision takes
+`spi up --declaration <owner>/<repo>:<path>`. The CLI reads that file on
+`main`, takes its provisioning fields and fork intent, and rejects
+conflicting explicit flags before provisioning or image resolution. It
+persists the locator in the RG's `spi-environment-declaration` tag when the
+group is created. With an existing locator, an omitted option reuses it and
+a conflicting locator is refused.
+
+The planned `env-upgrade.yml` handoff carries the locator through the same
+jobs that already carry the declaration's individual fields:
+
+| Surface | Planned wiring |
+|---|---|
+| `declare` job | Export `declaration_locator` as `${{ github.repository }}:$DECLARATION_PATH` alongside the validated declaration fields read from `main`. |
+| `provision` job | Set `DECLARATION_LOCATOR` from `needs.declare.outputs.declaration_locator` and append `--declaration "$DECLARATION_LOCATOR"` to the `spi up` argument array. |
+| Release gate | Raise `LIFECYCLE_CLI_MIN_VERSION` to the first release supporting `--declaration` and `forks:` before activating this wiring; install that declaration's exact release wheel as before. |
+| Reset workflow | Use the same declaration input for re-provisioning; the retained locator must agree rather than supplying competing intent. |
+
+This handoff is unbuilt with onboarding; the implemented workflow and recipe
+below still pass individual fields and cannot establish declaration
+ownership. The ensure path checks repository protection before enabling
+credentials, serializes credential writes per identity, reconciles source
+tags, and repairs the lock's separate trust and source projections before
+refresh. During `spi up`, durable-record reconciliation and projection happen
+at bootstrap, using intent loaded before image resolution. It is not a
 post-provision step that first corrects an obsolete image source.
 
 **Reset** (unbuilt) is deletion plus cold provision at the pinned tag: load and
@@ -213,7 +231,10 @@ where every Kustomization is still Ready for the revision being replaced.
 
 This recipe is provision-only: the fresh environment holds `maintenance`
 (ADR-029) until the `env-refresh` workflow, or its manual dispatch, runs the
-probes and clears it.
+probes and clears it. Once declaration-aware onboarding is implemented, this
+invocation also passes
+`--declaration Azure/osdu-spi-stack:ops/environments/shared.yaml`; the
+installed release must support that option and the planned handoff above.
 
 Check why the environment is not ready:
 

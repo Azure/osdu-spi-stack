@@ -88,13 +88,21 @@ adds or removes an entry, changes a repository, or promotes a source before
 refused; they do not create temporary overrides for the next lifecycle run
 to undo.
 
-First provision records `<owner>/<repo>:<path>` in the retained RG tag
-`spi-environment-declaration`, for example
-`Azure/osdu-spi-stack:ops/environments/shared.yaml`. The locator identifies
-the reviewed file on `main`, not a copy bundled in the release wheel.
-Lifecycle workflows and onboarding require it to agree with the supplied
-declaration and fail if the file is unreadable or invalid. `spi up` loads
-that intent before resolving images. Credentials, `spi-source-<service>`
-RG tags, and lock projections are reconciled copies, not competing owners.
+The planned first-provision input is
+`spi up --declaration <owner>/<repo>:<path>`, for example the locator
+`Azure/osdu-spi-stack:ops/environments/shared.yaml`. The CLI loads the
+reviewed file on `main`, not a copy bundled in the release wheel, and takes
+its provisioning fields and fork intent; conflicting explicit flags are
+refused. It records the locator in the retained RG tag
+`spi-environment-declaration`. Later runs reuse that tag when the option is
+omitted and reject a conflicting locator or an unreadable or invalid file.
+Without an input or retained locator, a stack is undeclared.
+
+The planned `env-upgrade` wiring exports `declaration_locator` from its
+`declare` job and passes it to `spi up --declaration` in `provision`, gated
+on a release that supports the option. This is part of onboarding, not an
+argument accepted by the implemented CLI. Source intent is loaded before
+image resolution. Credentials, `spi-source-<service>` RG tags, and lock
+projections are reconciled copies, not competing owners.
 
 See `docs/design/environment-lifecycle.md` for the complete roadmap.
