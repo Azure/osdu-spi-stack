@@ -500,7 +500,8 @@ def purge_environment(config: Config) -> None:
         return
 
     deadline = time.monotonic() + TEARDOWN_DEADLINE_SECONDS
-    api_server = _cluster_api_server(config)
+    had_cluster = any(r.type == CLUSTER_TYPE for r in list_group_resources(rg))
+    api_server = _cluster_api_server(config) if had_cluster else ""
     removed = remove_external_grants(config)
     if removed:
         console.print(f"  [info]Removed {len(removed)} external role assignment(s)[/info]")
@@ -519,5 +520,6 @@ def purge_environment(config: Config) -> None:
             f"Resource group {rg} still exists after the purge deadline; the delete was "
             f"accepted but has not completed. Verify with: az group exists --name {rg}"
         )
-    prune_kube_context(config.cluster_name, server_fqdn=api_server)
+    if had_cluster:
+        prune_kube_context(config.cluster_name, server_fqdn=api_server)
     display_result(f"Resource group {rg} deleted")

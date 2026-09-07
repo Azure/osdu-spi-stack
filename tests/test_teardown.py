@@ -420,6 +420,15 @@ class TestPurge:
         assert az.groups[RG] is False
         az.prune.assert_called_once_with("spi-stack-dev1", server_fqdn=FQDN)
 
+    def test_an_identity_only_group_is_purged_without_touching_kubeconfig(self, az):
+        self._identities(az)
+        az.inventory = [r for r in full_inventory() if "userAssignedIdentities" in r["type"]]
+
+        purge_environment(config())
+
+        assert az.groups[RG] is False
+        az.prune.assert_not_called()
+
     def test_a_foreign_external_grant_stops_the_purge(self, az):
         self._identities(az)
         az.grants["ctl-pid"].append(
