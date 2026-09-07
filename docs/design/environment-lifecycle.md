@@ -159,9 +159,9 @@ post-provision step that first corrects an obsolete image source.
 
 **Reset** (unbuilt) is deletion plus cold provision at the pinned tag: load and
 validate the declaration, flag, drain, snapshot the lock, then `spi down`.
-The command (built) has a 45-minute deadline and reports success only after
-the group contains identities alone and the managed nodes group is gone
-(ADR-034).
+`spi down` itself is built: it has a 45-minute deadline and reports success
+only after the group contains identities alone and the managed nodes group
+is gone (ADR-034).
 A failed or timed-out delete stops reset; a re-run resumes from the reported
 remaining inventory. Only after completion does `spi up --tag <pin>` resolve
 the declaration's desired sources and start the cold provision and converge

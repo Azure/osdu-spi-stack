@@ -264,8 +264,8 @@ def gather_reads(calls: Sequence[Callable[[], Any]]) -> List[Any]:
     Results and exceptions resolve in call order, so a caller's error
     precedence does not depend on which query finished first.
 
-    Only for reads: concurrent writes would interleave the Rich panels that
-    show the operator what is changing.
+    Only for reads: the Rich console serialises panels, but concurrent
+    writes would show them in an order that does not match execution.
     """
     if len(calls) < 2:
         return [call() for call in calls]

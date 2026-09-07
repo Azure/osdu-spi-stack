@@ -166,9 +166,9 @@ down group picks up where the first stopped.
 
 `spi down --purge` deletes the group and its identities. Before requesting
 the group delete it discovers the identities' role assignments outside the
-environment (the group and its managed nodes group), removes the stack-owned
-`DNS Zone Contributor` assignment on the external DNS zone, and confirms its
-absence. Any other external grant, a discovery failure, or a failed removal
+environment (the group and its managed nodes group), removes the ExternalDNS
+identity's `DNS Zone Contributor` assignment on the external DNS zone, and
+confirms its absence, allowing for RBAC replication lag. Any other external grant, a discovery failure, or a failed removal
 stops the purge with the assignment IDs listed and the group intact. Purge
 then waits for Azure to report the group gone within the same 45-minute
 deadline and exits nonzero naming the group when the accepted delete has not

@@ -306,7 +306,80 @@ class TestOrdinaryTeardown:
         assert {r["type"].lower() for r in az.inventory} == RETAINED_TYPES
 
 
+class TestReadsAndPrune:
+    def test_a_transient_inventory_failure_is_retried(self, az):
+        original = az.run_command
+        flaky = {"left": 2}
+
+        def throttled(cmd, **kw):
+            if cmd[1:3] == ["resource", "list"] and flaky["left"]:
+                flaky["left"] -= 1
+                return subprocess.CompletedProcess(cmd, 1, "", "TooManyRequests")
+            return original(cmd, **kw)
+
+        with patch("spi.teardown.run_command", side_effect=throttled):
+            retained = teardown_environment(config())
+
+        assert len(retained) == 3
+
+    def test_an_unreadable_api_server_reaches_the_prune_as_empty(self, az):
+        original = az.run_command
+
+        def no_aks(cmd, **kw):
+            if cmd[1:3] == ["aks", "show"]:
+                return subprocess.CompletedProcess(cmd, 1, "", "ResourceNotFound")
+            return original(cmd, **kw)
+
+        with patch("spi.teardown.run_command", side_effect=no_aks):
+            teardown_environment(config())
+
+        az.prune.assert_called_once_with("spi-stack-dev1", server_fqdn="")
+
+    def test_the_prune_runs_once_even_when_a_second_pass_is_needed(self, az):
+        topic = _res("Microsoft.EventGrid/systemTopics", "late-topic")
+        original = az.run_command
+        state = {"added": False}
+
+        def add_topic(cmd, **kw):
+            if (
+                cmd[1:3] == ["resource", "delete"]
+                and "natGateways" in cmd[4]
+                and not state["added"]
+            ):
+                az.inventory.append(topic)
+                state["added"] = True
+            return original(cmd, **kw)
+
+        with patch("spi.teardown.run_command", side_effect=add_topic):
+            teardown_environment(config())
+
+        az.prune.assert_called_once()
+
+
 class TestTeardownStops:
+    def test_a_request_declined_repeatedly_with_the_same_reason_stops_the_run(self, az):
+        vault = next(r["id"] for r in az.inventory if "vaults" in r["type"])
+        az.delete_failures[vault] = ["Conflict: vault is being purged"] * 10
+
+        with pytest.raises(TeardownError, match="declined 3 times"):
+            teardown_environment(config())
+
+        assert az.deletes().count(vault) == 3
+
+    def test_a_fatal_refusal_still_requests_the_rest_of_the_wave(self, az):
+        cluster = az.inventory[0]["id"]
+        az.delete_failures[cluster] = ["AuthorizationFailed"]
+
+        with pytest.raises(TeardownError, match="Delete refused"):
+            teardown_environment(config())
+
+        first_wave = [
+            r["id"]
+            for r in full_inventory()
+            if "userAssignedIdentities" not in r["type"] and "Microsoft.Network" not in r["type"]
+        ]
+        assert set(first_wave) <= set(az.deletes())
+
     def test_an_unplanned_resource_type_blocks_before_any_delete(self, az):
         az.inventory.append(_res("Microsoft.Web/sites", "mystery"))
 
@@ -476,14 +549,49 @@ class TestPurge:
         assert not _in_environment(f"{SUB}/resourceGroups/spi-stack-dev1-other", cfg)
         assert not _in_environment(ZONE, cfg)
 
-    def test_only_dns_zone_contributor_at_a_zone_is_stack_owned(self):
+    def test_only_the_external_dns_identity_zone_grant_is_stack_owned(self):
         from spi.teardown import is_stack_owned
 
-        assert is_stack_owned(ExternalGrant("i", ZONE, "DNS Zone Contributor", "p"))
-        assert not is_stack_owned(ExternalGrant("i", ZONE, "Contributor", "p"))
+        cfg = config()
+        dns = cfg.external_dns_identity_name
+        assert is_stack_owned(ExternalGrant("i", ZONE, "DNS Zone Contributor", "p", dns), cfg)
+        assert not is_stack_owned(ExternalGrant("i", ZONE, "Contributor", "p", dns), cfg)
         assert not is_stack_owned(
-            ExternalGrant("i", f"{SUB}/resourceGroups/dns-rg", "DNS Zone Contributor", "p")
+            ExternalGrant("i", ZONE, "DNS Zone Contributor", "p", "spi-stack-dev1-ctl-id"), cfg
         )
+        assert not is_stack_owned(
+            ExternalGrant("i", f"{SUB}/resourceGroups/dns-rg", "DNS Zone Contributor", "p", dns),
+            cfg,
+        )
+
+    def test_a_zone_grant_held_by_another_identity_stops_the_purge(self, az):
+        self._identities(az)
+        az.grants["ctl-pid"].append(_grant("ctl-pid", "DNS Zone Contributor", ZONE, "ra-8"))
+
+        with pytest.raises(TeardownError, match="did not create"):
+            purge_environment(config())
+
+        assert not any(c[1:4] == ["role", "assignment", "delete"] for c in az.calls)
+
+    def test_removal_confirmation_tolerates_rbac_replication_lag(self, az):
+        self._identities(az)
+        original = az.run_command
+        stale_reads = {"left": 2}
+
+        def lagging(cmd, **kw):
+            if cmd[1:4] == ["role", "assignment", "delete"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if cmd[1:4] == ["role", "assignment", "list"] and stale_reads["left"]:
+                stale_reads["left"] -= 1
+                return original(cmd, **kw)
+            if cmd[1:4] == ["role", "assignment", "list"]:
+                az.grants["dns-pid"] = []
+            return original(cmd, **kw)
+
+        with patch("spi.teardown.run_command", side_effect=lagging):
+            purge_environment(config())
+
+        assert az.groups[RG] is False
 
 
 class TestCli:
