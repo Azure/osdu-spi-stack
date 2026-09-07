@@ -27,7 +27,10 @@ deleting the whole group and its identities.
   `guid(zone.id, principalId, dnsZoneContributorRoleId)` from
   `infra/modules/external-dns-role.bicep`. Purge removes that exact assignment
   by resource ID and confirms its absence before requesting group deletion;
-  the external zone and its resource group are not deletion targets.
+  the external zone and its resource group are not deletion targets. Purge
+  then waits for Azure to report the group gone within the same 45-minute
+  deadline as teardown; an accepted delete that has not completed exits
+  nonzero naming the group, since acceptance is not completion.
   Discovery failures, missing external-scope permissions, unrecognized
   external grants, or an unconfirmed removal stop purge with the affected
   IDs reported and the environment group and identities retained.

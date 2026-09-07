@@ -99,7 +99,11 @@ config.
   namespace: acceptance secrets come from Key Vault.
 - **Onboarding plans by default.** `spi onboard` prints the `az`, `spi`, and
   `gh` commands it would run, grouped by the system they touch, and changes
-  nothing until `--write`. The phases establish repository protection, enable
+  nothing until `--write`. It requires the `core` profile, read from the
+  environment block `spi info --json` publishes: `minimal` and `bare`
+  deploy no OSDU services (ADR-021), so trust granted there has no deploy
+  target, and the refusal happens before phase 1 writes. A declaration
+  pairing `forks:` with another profile is invalid. The phases establish repository protection, enable
   trust, and then apply source policy and cluster projections. `--skip-repo`
   omits GitHub writes, not the read-only protection precondition; missing or
   unreadable rules block activation. `--org` places the five values at

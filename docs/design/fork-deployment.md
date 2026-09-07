@@ -173,7 +173,10 @@ phases; source promotion is separate from enabling trust:
 | 3. Cluster trust | Project the observed credential roster and existing source policy into `osdu-image-lock` without changing resolved images or pins | the operator's kube context |
 | 4. Source policy | When requested, validate promotion preconditions, write `spi-source-<service>` on the RG, and update the lock's source projection (ADR-033) | RG tag write and the operator's kube context |
 
-Planning resolves the repository through the GitHub API and carries its
+Planning first reads the environment profile from `spi info --json` and
+refuses anything but `core`, since `minimal` and `bare` deploy no OSDU
+services and no lock for phase 3 to project into (ADR-032). It then
+resolves the repository through the GitHub API and carries its
 canonical casing into every later write, since Entra matches the federated
 subject exactly. It reads the credential roster next and refuses before
 phase 1 when the repository already backs another service or the identity

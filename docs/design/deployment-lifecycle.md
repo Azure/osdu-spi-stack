@@ -148,8 +148,12 @@ the suffix, explicit canonical-source policy, and declaration locator.
 out-of-group role assignments are handled. It discovers grants using the
 retained identity principal IDs, deletes the stack-owned ExternalDNS
 assignment on the external DNS zone, and confirms its absence before group
-deletion. Missing discovery or deletion permissions, unrecognized grants,
-or a failed removal abort purge while preserving the identities. Ordinary
+deletion. It then polls until Azure reports the group gone, within the same
+45-minute deadline as the identity-preserving path, and exits nonzero naming
+the group when the accepted delete has not completed; the `--no-wait`
+acceptance of the implemented `down` is not success here. Missing discovery
+or deletion permissions, unrecognized grants, or a failed removal abort purge
+while preserving the identities. Ordinary
 `down` keeps those grants, and a later purge works even with no cluster left.
 The external DNS zone and its resource group are never deletion targets.
 Key Vault soft delete and recovery still apply to either path.
