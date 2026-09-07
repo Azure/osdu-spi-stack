@@ -30,6 +30,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .azure_infra import _cosmos_sql_name, _sb_name, _storage_name
+from .bootstrap import read_cluster_config
 from .config import BASE_NAME
 from .console import console
 from .deploy_record import environment_facts, read_deploy_record
@@ -86,11 +87,13 @@ def _read_osdu_config() -> dict:
 
 
 def _read_cluster_config() -> dict:
-    """Read the spi-cluster-config ConfigMap the CLI bootstrap writes. Empty if missing."""
-    data = kubectl_json(["get", "configmap", "spi-cluster-config", "-n", "osdu-flux"])
-    if not data:
-        return {}
-    return data.get("data", {}) or {}
+    """The spi-cluster-config data, or empty when absent.
+
+    A read failure raises, as for the deploy record: the deploy identity
+    values are a contract for trusted repositories, and publishing them
+    empty over a transient failure would hand a workflow a false fact.
+    """
+    return read_cluster_config()
 
 
 def _read_flux_extension_values() -> dict:

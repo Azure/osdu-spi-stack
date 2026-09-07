@@ -325,3 +325,24 @@ def test_resource_group_falls_back_to_cluster_config_without_flux_extension(monk
 
     assert result["azure"]["resource_group"] == "spi-stack-shared"
     assert result["deploy_identity"]["resource_group"] == "spi-stack-shared"
+
+
+def test_info_fails_when_the_cluster_config_is_unreadable(monkeypatch):
+    """Empty deploy-identity values mean an unprovisioned identity; a read
+    failure is not that, so info exits 1 rather than publishing false values."""
+    from spi.bootstrap import ClusterConfigError
+
+    _wire(monkeypatch)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    def unreadable():
+        raise ClusterConfigError("Could not read spi-cluster-config: forbidden")
+
+    monkeypatch.setattr(info, "read_cluster_config", unreadable)
+    monkeypatch.setattr(info, "_read_cluster_config", lambda: info.read_cluster_config())
+
+    result = CliRunner().invoke(cli.app, ["info", "--json"])
+
+    assert result.exit_code == 1
+    assert "forbidden" in result.output
+    assert "{" not in result.output

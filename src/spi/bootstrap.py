@@ -51,7 +51,7 @@ class ClusterConfigError(RuntimeError):
     """The live spi-cluster-config could not be read, as opposed to not existing."""
 
 
-def _read_cluster_config() -> dict[str, str]:
+def read_cluster_config() -> dict[str, str]:
     """Live spi-cluster-config data; empty when absent, an error on any other failure."""
     result = run_process(
         [
@@ -160,7 +160,7 @@ def create_istio_revision_configmap(
 
     if extra is None:
         try:
-            extra = _read_cluster_config()
+            extra = read_cluster_config()
         except ClusterConfigError as exc:
             console.print(
                 f"[warning]{exc}; leaving the existing {ISTIO_REVISION_CONFIGMAP} "
