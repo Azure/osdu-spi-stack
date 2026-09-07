@@ -14,8 +14,9 @@ sequence, what each step asserts, and which recovery path applies.
 **Status.** `spi service pin --image --ephemeral`, `verify`, the
 ownership-checked `reset --if-run`, and the separate stale sweep
 (`reset --ephemeral --stale-only`) are implemented.
-`spi onboard`, `spi service refresh`, the refresh workflow's backstop step,
-the roster-derived pin validation below (`src/spi/pins.py` still enforces the
+`spi onboard`, retained source policy, declaration enforcement,
+`spi service refresh`, the refresh workflow's backstop step, the
+roster-derived pin validation below (`src/spi/pins.py` still enforces the
 `Azure/osdu-spi-*` pattern), and the fork-side jobs are ahead of the code
 (phases 1 and 4 of the roadmap in
 [environment-lifecycle.md](environment-lifecycle.md)). Remove the marks as
@@ -141,38 +142,73 @@ refresh resolves the same or a newer `main` image, so nothing regresses.
 `spi onboard <service> --repo <org>/<fork>` (unbuilt, `src/spi/onboard.py`)
 activates one repository against the connected environment. The deploy
 identity, its Azure roles, and the two Roles already exist from `spi up`
-(ADR-032), so activation is three blocks:
+(ADR-032). The plan groups commands by system and numbers these execution
+phases; source promotion is separate from enabling trust:
 
-| Block | Change | Needs |
+| Phase | Change | Needs |
 |---|---|---|
-| Azure | the federated credential `fork-<service>` on `spi-stack-<env>-deployer` for `repo:<org>/<fork>:environment:spi-stack` | write on the identity |
-| Cluster | the service's canonical source set to the fork, and the roster projected, in `osdu-image-lock` (ADR-033) | the operator's kube context |
-| Repository | the protected `spi-stack` environment and the five values above | admin on the repository, or the organization with `--org` |
+| 1. Repository protection | Create or repair the protected `spi-stack` environment and its required rules, then stamp the five values | repository admin for environment rules; organization admin for organization values with `--org` |
+| 2. Azure trust | Enable `fork-<service>` on `spi-stack-<env>-deployer` for `repo:<org>/<fork>:environment:spi-stack`, after reading back the required protection rules | write on the identity and read access to repository rules |
+| 3. Cluster trust | Project the observed credential roster and existing source policy into `osdu-image-lock` without changing resolved images or pins | the operator's kube context |
+| 4. Source policy | When requested, validate promotion preconditions, write `spi-source-<service>` on the RG, and update the lock's source projection (ADR-033) | RG tag write and the operator's kube context |
 
 Without `--write` the command prints the `az`, `spi`, and `gh` commands for
-each block and changes nothing; the plan is the handoff for whoever holds
-the rights on each side. `--write` applies every block; `--skip-repo` leaves
-the repository block out. Re-running shows each row as existing or missing.
-`spi onboard --list` shows trusted repositories and each service's source;
-`spi onboard --remove <service>` deletes the credential and returns the
-service to community. Schema keeps its ADR-033 precondition: activation
-trusts the repository but refuses the source flip until a paired loader
-image exists, and says so.
+each phase and changes nothing; the plan is the handoff for whoever holds
+the rights on each side. `--write` applies the phases in order. `--skip-repo`
+omits repository writes but still reads and requires the protection rules
+before enabling trust; missing or unreadable rules stop activation. Merely
+finding an environment named `spi-stack` does not satisfy the precondition:
+GitHub can create a referenced environment without protection rules.
 
-The identity's credentials are the environment's durable roster: which
-repositories it trusts, and which fork each service follows. They are
-subresources of the identity, so they outlive `spi down` (ADR-034). Fork CI
-holds only AKS Cluster User and Key Vault Secrets User and cannot read the
-identity from ARM, so the roster is projected into `osdu-image-lock`, which
-the fork Role already reads (`configmaps get/list`, ADR-032): `spi onboard`
-writes the projection for the repository it activates, and `spi up` rebuilds
-it from the credentials on every provision.
+The plan compares credential issuer, subject and audience, repository
+protection rules, readable values, source tags, and lock projections. Rows
+are correct, drifted, missing, or unverified. GitHub does not return secret
+values, so a present `AZURE_CLIENT_ID` secret remains unverified until
+re-stamped or proved by a workflow run. A failed phase exits nonzero and
+reports what completed and what remains; re-running re-reads state and
+repairs drift. Failure recovery does not roll back by deleting pre-existing
+trust, and a failed prerequisite does not advance promotion. The operation
+is resumable, not a transaction across GitHub, ARM, and Kubernetes.
 
-Once the five values and the descriptor are present, the template's
+On an undeclared environment, onboarding preserves the source tag, or uses
+community when it is absent. `--canonical-source fork` explicitly selects
+the service's trusted fork; `--canonical-source community` selects community
+without removing trust. Schema's promotion requires the paired loader at the
+selected schema commit. A missing loader refuses promotion without changing
+the durable community policy; trust-only onboarding still works. A loader
+published later does not itself trigger promotion.
+
+The retained `spi-environment-declaration` RG tag identifies a declared
+environment (ADR-032). Onboarding loads that reviewed file from `main` and
+requires the requested service, repository, removal, and source to match;
+an omitted source option takes the declaration's `canonicalSource`.
+Conflicting intent is refused before writes, naming the file to change
+through a reviewed PR. An unreadable declaration is an error, not permission
+to use undeclared mode. Shared onboarding first declares a community source,
+then enables and proves the fork jobs; a later reviewed change promotes it.
+
+`spi onboard --list` reports trust, canonical-source policy, declaration
+ownership, and projection drift separately. `spi onboard --remove <service>`
+records community, deletes the credential, and updates the lock projections;
+it requires removal from the declaration first when one owns the environment.
+Interrupted removal reports the unfinished phases and can be re-run.
+
+The credentials persist trust; `spi-source-<service>` RG tags persist source
+policy, including community for a trusted repository. Both outlive
+`spi down` (ADR-034). Fork CI cannot read these ARM records, so the lock
+carries their separate projections. `spi up` loads authoritative intent
+before resolving images, reconciles its durable records, then rebuilds the
+projections during bootstrap. A standing environment changes its resolved
+image only on refresh; policy changes and projection repairs preserve active
+pins and their captured restore targets.
+
+Once trust, the five values, and the descriptor are present, the template's
 readiness tooling activates the reserved required checks `🚀 Deploy to
 spi-stack` and `🧪 Integration Tests` on the fork; the jobs themselves live
 in the template's workflows, not in this repo. The first run of those jobs
-is the verification: onboard cannot mint the fork's OIDC token itself.
+is the verification: onboard cannot mint the fork's OIDC token itself. The
+shared environment's source promotion follows a successful deploy and test
+run with those gates active.
 
 ## Recipes
 

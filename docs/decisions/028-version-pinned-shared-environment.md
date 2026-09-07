@@ -43,10 +43,13 @@ whole declaration lives in one reviewed file.
   it exists, and the deploy record keeps the resolved commit for audit.
 - `ops/environments/shared.yaml` declares the environment: name,
   `stackVersion`, profile, location, ingress mode, image branch, and the
-  environment's five-character name suffix. It advances only through a
-  reviewed PR to `main`; merging a `stackVersion` bump triggers the upgrade
-  workflow (ADR-029). The lifecycle workflows read each provisioning
-  argument from this file; none is duplicated on a workflow command line.
+  environment's five-character name suffix, plus the `forks:` trust roster
+  and each entry's `canonicalSource` policy (ADR-032, ADR-033). It advances
+  only through a reviewed PR to `main`; merging a `stackVersion` bump
+  triggers the upgrade workflow (ADR-029). The lifecycle workflows read each
+  provisioning argument from this file; none is duplicated on a workflow
+  command line. The retained RG declaration locator identifies this owner,
+  so an imperative onboard cannot override the reviewed intent.
 - The declaration carries the suffix as the reviewed record of the
   environment's identity: a first provision derives resource names, the
   hostname, and the Key Vault name from it, and so does a rebuild after

@@ -13,35 +13,56 @@ per service without touching how deploys work.
 
 ## Decision
 
-A service's canonical source flips from community GitLab to its fork's GHCR
-`main` image when the fork onboards, one service at a time.
+A repository can be trusted for deploys while its service remains on the
+community canonical. Onboarding establishes trust; explicit source promotion
+selects the fork's GHCR `main` image, one service at a time.
 
-- The flip is recorded in the environment, not in the CLI: `spi onboard`
-  writes the service's source (`community` or `<org>/<fork>`) into the
-  `osdu-image-lock` ConfigMap (`src/spi/pins.py`). From then on each
-  canonical resolution path (`--refresh-images`, `spi service refresh`)
-  reads the fork's GHCR image for that service; absent, community GitLab
-  stays canonical. A pin's reset is not a resolution path: it restores the
-  target captured when the pin was written (below).
-- The durable record is the federated credential on the deploy identity,
-  `fork-<service>` for the repository that service follows, which survives
-  `spi down` (ADR-034). The lock carries a projection of that roster, rebuilt
-  by `spi up` on every provision, since fork CI reads ConfigMaps and cannot
-  read the identity from ARM (ADR-032). An undeclared personal or customer
-  stack keeps following its fork across a rebuild, with no re-onboarding.
-  Declared environments carry the same roster as `forks:` in their
-  declaration, the reviewed record the ensure step reconciles credentials
-  against.
-- On the shared environment the flip lands after the fork's deploy and test
-  gates are active, so the image line the environment runs is the one those
-  gates certify. A personal or customer stack follows its own fork from the
-  moment its operator says so.
+- Trust and source policy have separate durable records. The deploy
+  identity's `fork-<service>` credential names the trusted repository
+  (ADR-032). The resource-group tag `spi-source-<service>` records
+  `community` or `<org>/<fork>` as that service's canonical source. A missing
+  source tag means community, even when a credential exists. When these tags
+  are authoritative, an unreadable or invalid tag is an error. Both records
+  survive `spi down` (ADR-034). A fork source must match the trusted
+  repository for that service.
+- `spi onboard --canonical-source fork` promotes the service's trusted fork;
+  `--canonical-source community` selects community without revoking trust.
+  On an undeclared environment, omitting the option preserves the recorded
+  source, defaulting to community for a new service. Source-policy writes
+  merge only the owned tags and preserve the suffix, declaration locator,
+  and unrelated tags.
+- Declared environments carry `service`, `repo`, and `canonicalSource`
+  (`community` or `fork`, default `community`) in each `forks:` entry.
+  The declaration is authoritative; RG tags and credentials are reconciled
+  copies. An omitted CLI source option takes the declared value, and a
+  conflicting option is refused (ADR-032). Removing an entry selects
+  community and revokes its credential. On an undeclared stack the retained
+  tags and credentials are authoritative instead.
+- `spi up` loads the declaration or retained source tags before resolving
+  images. It does not derive source policy from credential presence, or wait
+  for a post-provision ensure step to replace obsolete sources. The
+  `osdu-image-lock` ConfigMap (`src/spi/pins.py`) carries separate projections
+  of the trusted-repository roster and source policy, rebuilt at bootstrap
+  after their durable records are reconciled. Fork CI can read this
+  ConfigMap but cannot read the identity from ARM (ADR-032).
+- Canonical resolution through `spi reconcile --refresh-images` or
+  `spi service refresh` reads the lock's source projection; lifecycle
+  workflows reconcile it to durable intent before refreshing. Changing the
+  policy alone does not rewrite a resolved image or an active pin. A first
+  provision resolves the desired sources; an existing image changes on the
+  next explicit refresh. A pin's reset restores its captured target (below).
+- On the shared environment promotion follows a successful fork deploy and
+  test run with the required gates active; the reviewed `canonicalSource`
+  change records that promotion. A personal or customer operator selects
+  the source explicitly. Trust-only onboarding does not require promotion.
 - `schema` has a flip precondition its siblings lack: schema-load resolves a
   loader image at the schema service's exact commit (ADR-017), and the fork
   publishes no loader. Schema keeps its community canonical until its fork
-  publishes a paired `schema-load` image at the same commit; flipping it
-  earlier would leave every refresh unable to resolve the loader and the
-  environment stuck in maintenance.
+  publishes a paired `schema-load` image at the same commit and promotion
+  is requested. Trust can be enabled without a loader. A refused promotion
+  leaves the durable source as community, so a rebuild cannot infer a flip
+  from the retained credential. Publishing a loader alone does not promote
+  the service.
 - The weekday refresh re-resolves GitHub-origin canonicals (ADR-029), and
   that cadence matters against GHCR retention: continued fork builds move
   `main-snapshot` to newer package versions, and the retention job then
@@ -69,8 +90,12 @@ Rejected: community GitLab stays canonical for the fleet permanently. No
 divergence from upstream to track, but the shared environment then never runs
 the image line the forks ship and the deploy gates certify.
 
+Rejected: infer canonical source from the credential roster. One durable
+record, but it cannot represent a repository trusted for testing while its
+service remains on the community image.
+
 Rejected: flip the fleet in one change. Uniform behavior across services, but
-it couples eight onboarding schedules to the slowest fork.
+it couples eight promotion schedules to the slowest fork.
 
 Rejected: dual-source fallback per service (GHCR first, GitLab when absent).
 Resilient to a missing fork image, but two possible answers for one canonical
@@ -86,9 +111,14 @@ declaration.
   stalls for longer than the retention window while fork builds continue,
   the recorded canonical can age into a version the retention job has
   deleted, and the digest becomes unpullable, not merely untagged.
-- Reversal is `spi onboard --remove`, with the next refresh restoring the
-  community image.
+- Source reversal is `spi onboard --canonical-source community`; removal
+  also revokes trust. `--remove` records community before deleting the
+  credential, then updates the lock projections. Partial failure is reported
+  and the operation is re-runnable. Declared changes require the matching
+  reviewed declaration first. The next refresh resolves the community image;
+  active pins retain their captured restore targets.
 - Which source is canonical is readable from `spi onboard --list` and the
   lock's per-service keys, not from operator memory.
-- The trusted repositories and each service's source stay readable from the
-  identity's credentials when the cluster is gone.
+- The credentials show trust and the RG tags show source policy when the
+  cluster is gone, including the trusted-but-community state. Maintaining two
+  durable records requires drift reporting and resumable reconciliation.

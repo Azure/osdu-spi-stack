@@ -17,22 +17,42 @@ holding the old value. The weekly reset (ADR-029) is exactly that rebuild.
 leaves `Microsoft.ManagedIdentity/userAssignedIdentities` standing, together
 with the group and its tags. `spi down --purge` deletes the whole group.
 
-- Deletion order in `src/spi/azure_infra.py`: AKS first, which removes the
-  managed nodes group; then Cosmos, Service Bus, storage, ACR, Key Vault, NAT
-  gateway, public IP; the VNet last, since the cluster holds its subnets
-  until it is gone. The command retries until only identities remain. Key
-  Vault soft delete is unaffected, and `spi up` recovers the vault.
+- Teardown inventories the group before deletion and re-lists it after each
+  pass. The deletion plan covers the resource types provisioned by the
+  bundled Bicep, including optional resources; an unhandled non-identity
+  resource blocks the plan rather than being ignored or deleted blindly.
+  An unreadable inventory is a failure, not an empty group.
+- AKS is deleted first, and its cluster and managed nodes group must be gone
+  before network teardown. Cosmos, Service Bus, storage, ACR, and Key Vault
+  follow; optional Application Insights is removed before its Log Analytics
+  workspace. Subnet associations are detached before deleting the NAT
+  gateway, then its public IP, with the VNet last. Key Vault soft delete is
+  unaffected, and `spi up` recovers the vault.
+- The command waits for completion within a 45-minute deadline. Only
+  transient or dependency failures are retried, with backoff; authorization,
+  resource locks, and unhandled resource types fail with the affected IDs
+  and reasons. Deadline expiry exits nonzero with the remaining inventory.
+  Success requires a fresh inventory containing only managed identities and
+  confirmation that the managed nodes group is gone; delete acceptance is
+  not completion. Reset never provisions after a failed or timed-out delete.
 - `spi up` on a group that still holds identities adopts them: the ARM
-  deployment is incremental, federated credentials are re-declared from the
-  roster, and role assignments are re-created on the new cluster and vault.
-- The `spi-name-suffix` tag survives with the group, so a reset no longer
-  feeds the declared suffix back by hand (ADR-028).
+  deployment is incremental and role assignments are re-created on the new
+  cluster and vault. Before image resolution it loads source intent from the
+  reviewed declaration, or from the retained RG tags for an undeclared
+  environment (ADR-033). Credentials and source projections are reconciled
+  during bootstrap, not left for a post-provision repair.
+- The `spi-name-suffix`, `spi-source-<service>`, and
+  `spi-environment-declaration` tags survive with the group. A reset retains
+  names, source choices, and the declared-environment boundary without
+  operator input (ADR-028, ADR-033).
 - The reset sequence in `docs/design/environment-lifecycle.md` waits until
-  only identities remain instead of until the group is gone.
+  the identity-only inventory and managed nodes group deletion are confirmed
+  instead of until the environment group is gone.
 
 Rejected: a separate persistent identity resource group. Survives `az group
-delete` with no deletion logic, but adds a second group per environment to
-name, tag, sweep-exclude, and explain, for one object.
+delete` without a custom deletion graph, but adds a second environment group
+and separates the retained identity from the suffix and source-policy tags.
+Keeping one group accepts ownership of dependency-aware teardown instead.
 
 Rejected: re-stamp the new client id into every repository after a reset.
 Keeps `down` simple, but pushes an environment value into N repositories on
@@ -46,6 +66,9 @@ reach.
   a reset.
 - `spi down` is slower and not atomic: a failure part way leaves a partial
   group. Both `spi up` and a second `spi down` are idempotent against that.
+- Provisioning a new resource type adds a teardown obligation. The Bicep
+  inventory and deletion plan must stay aligned; a bounded failure leaves
+  resources and possible charges visible rather than claiming cleanup.
 - The workload identity survives too, so its client id is stable across
   rebuilds. No component requires that.
 - Someone who wants the group gone must say `--purge`.

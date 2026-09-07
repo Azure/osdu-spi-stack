@@ -123,6 +123,10 @@ spi reconcile --refresh-images # re-resolve osdu-image-lock and reconcile servic
 
 ## Phase 4: Teardown
 
+**Status.** The command below describes implemented resource-group deletion.
+Identity-preserving `spi down` and the `--purge` option are unbuilt; ADR-034
+defines their target contract, distinguished below.
+
 ```bash
 spi down --env <env>
 ```
@@ -134,6 +138,28 @@ Once Azure reports the resource group gone, `spi down` prunes the kubeconfig ent
 Cluster names repeat across subscriptions: `spi up --env dev1` run in two subscriptions builds two `spi-stack-dev1` clusters, and both write the same context name. `spi down` therefore reads the cluster's API server FQDN before deleting the resource group, and prunes the context only when the kubeconfig entry points at that server; tearing one down leaves the other's credentials alone. A lookup that comes back empty, from a cluster already deleted or one that never finished creating, leaves the kubeconfig untouched and says which check failed.
 
 The kubeconfig is then read a second time, because `delete-context` edits only the file holding the winning entry and a multi-file `KUBECONFIG` can surface a shadowed context of the same name. That post-delete view decides the rest: the cluster and user entries go only when no context that survived references them, so a kubeconfig shared with another cluster stays intact, and `current-context`, which `delete-context` leaves naming the entry it removed, is cleared only when nothing took that name's place. `spi down` requires only `az`, so a machine without kubectl skips the prune instead of failing the teardown. The two kubeconfig reads are silent; the command panels report what teardown changes, and every entry it removes gets one.
+
+### Identity-preserving teardown (unbuilt)
+
+Under [ADR-034](../decisions/034-deploy-identity-survives-down.md), ordinary
+`spi down` keeps the environment RG, managed identities, and tags, including
+the suffix, explicit canonical-source policy, and declaration locator.
+`spi down --purge` deletes the group and these retained records. Key Vault
+soft delete and recovery still apply to either path.
+
+The identity-preserving path inventories resources, follows their deletion
+dependencies, and waits within a 45-minute deadline. It includes optional
+telemetry resources and detaches subnet NAT associations before removing
+the gateway and public IP. It succeeds only after a fresh inventory contains
+identities alone and the managed nodes group is confirmed gone. A permanent
+failure or deadline expiry reports the remaining resources and exits nonzero;
+reset does not proceed to `spi up`.
+
+Kubeconfig cleanup on this path uses confirmed cluster deletion rather than
+environment RG disappearance, retaining the API-server fingerprint and
+shared-entry safeguards above. The next `spi up` loads source policy from
+the declaration or retained RG tags before image resolution, not from the
+mere presence of a fork credential.
 
 ## Worked example: `spi up --env dev1`, what you should see
 

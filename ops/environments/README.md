@@ -70,6 +70,31 @@ already be applied; see `docs/CI_SETUP.md`.
 ## What is still future work
 
 - `env-reset` (cold rebuild) and `env-teardown` (protected manual deletion).
-- `forks:` in the declaration, `spi onboard`, and the ensure step that reconciles the deploy identity's credentials and service sources to it.
+- `forks:` in the declaration, `spi onboard`, and intent reconciliation
+  before image resolution (ADR-032, ADR-033).
+
+The planned `forks:` entry has three fields; this is not accepted by the
+implemented schema above yet:
+
+| Entry field | Meaning |
+|---|---|
+| `service` | The service being onboarded; unique within the declaration. |
+| `repo` | The `<org>/<fork>` trusted by its `fork-<service>` credential. |
+| `canonicalSource` | `community` or `fork`, default `community`; trust-only onboarding precedes an explicit promotion. |
+
+The declaration owns both trust and canonical-source policy. A reviewed PR
+adds or removes an entry, changes a repository, or promotes a source before
+`spi onboard` may apply that intent. Conflicting imperative requests are
+refused; they do not create temporary overrides for the next lifecycle run
+to undo.
+
+First provision records `<owner>/<repo>:<path>` in the retained RG tag
+`spi-environment-declaration`, for example
+`Azure/osdu-spi-stack:ops/environments/shared.yaml`. The locator identifies
+the reviewed file on `main`, not a copy bundled in the release wheel.
+Lifecycle workflows and onboarding require it to agree with the supplied
+declaration and fail if the file is unreadable or invalid. `spi up` loads
+that intent before resolving images. Credentials, `spi-source-<service>`
+RG tags, and lock projections are reconciled copies, not competing owners.
 
 See `docs/design/environment-lifecycle.md` for the complete roadmap.

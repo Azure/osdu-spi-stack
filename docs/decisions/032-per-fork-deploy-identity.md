@@ -37,12 +37,21 @@ config.
   adds one federated credential for `repo:<org>/<fork>:environment:spi-stack`
   (`src/spi/onboard.py`). The credential list on the identity is the roster
   of trusted repositories; deleting one credential revokes one repository.
-  The deploy and test jobs run in that protected environment; its protection
-  rules restrict entry to `main`, `fork_integration`, and the PR runs the
-  template's ADR-036 gate admits. `fork_upstream` is excluded: its builds are
-  core-only, without the Azure provider. Declared environments record the
-  roster as `forks:` in `ops/environments/<env>.yaml`, and the lifecycle
-  workflows reconcile the identity's credentials to it.
+  The protected environment and its required rules are established before
+  the credential is enabled. The deploy and test jobs run there; its rules
+  restrict entry to `main`, `fork_integration`, and the PR runs the template's
+  ADR-036 gate admits. `fork_upstream` is excluded: its builds are core-only,
+  without the Azure provider. Trust does not select a canonical image source;
+  ADR-033 owns that separate policy and its promotion.
+- **Declared intent wins.** Declared environments record `service`, `repo`,
+  and `canonicalSource` per entry in `forks:`. The retained RG tag
+  `spi-environment-declaration` identifies the reviewed declaration on
+  `main`. `spi onboard` reads it and refuses an addition, removal, repository
+  change, or source choice that disagrees with it; the declaration changes
+  through a reviewed PR first. Lifecycle runs load that intent before image
+  resolution and reconcile the credentials and source policy from it, not
+  from a stale retained roster. An unreadable declaration blocks mutation;
+  it does not turn a declared environment into an undeclared one.
 - **Explicit-subject RBAC, reads split from writes.** Two Roles in the
   platform manifests carry the verbs; their RoleBindings name the deploy
   identity's principal id as a `User` subject, substituted from
@@ -61,11 +70,15 @@ config.
   namespace: acceptance secrets come from Key Vault.
 - **Onboarding plans by default.** `spi onboard` prints the `az`, `spi`, and
   `gh` commands it would run, grouped by the system they touch, and changes
-  nothing until `--write`. `--skip-repo` leaves the repository block out for
-  operators who do not let the CLI touch GitHub; `--org` places the five
-  values at organization level once. Re-running reports each row as existing
-  or missing, which is the drift check. Command mechanics live in
-  `docs/design/fork-deployment.md`.
+  nothing until `--write`. The phases establish repository protection, enable
+  trust, and then apply source policy and cluster projections. `--skip-repo`
+  omits GitHub writes, not the read-only protection precondition; missing or
+  unreadable rules block activation. `--org` places the five values at
+  organization level once. Re-running compares values and rules, reporting
+  rows as correct, drifted, missing, or unverified. An interrupted apply
+  exits nonzero, names completed and pending phases, and resumes from
+  observed state; a failed prerequisite never advances source promotion.
+  Command mechanics live in `docs/design/fork-deployment.md`.
 - **CI passes the guard, never bypasses it.** Fork jobs acquire their
   kubeconfig through the CLI, which yields a context the guard's fingerprint
   check accepts; `SPI_SKIP_GUARD` stays out of CI.
@@ -103,8 +116,10 @@ carry.
   any trusted repository can rewrite a sibling service's lock entry, and the
   CLI's validation is convention rather than authorization. That is accepted
   for a single-trust-level environment; pin provenance and the template's
-  trust gating are the compensating controls, and a second deploy identity
-  per trust level is the escalation if a fleet ever spans trust levels.
+  trust gating are the compensating controls. Separate trust levels require
+  separate writable lock objects with scoped authorization, mediated writes,
+  or separate environments. Another identity with the same lock permission
+  adds attribution, not isolation.
 - One principal in the cluster audit log for every fork. Which repository
   acted is read from the pin annotation, not from the subject.
 - The five values are identical across an organization's forks, so a

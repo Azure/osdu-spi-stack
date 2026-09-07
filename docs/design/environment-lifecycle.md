@@ -11,17 +11,18 @@ an incident is how a 20-minute refresh becomes a 4-hour rebuild.
 
 **Status.** `env-upgrade` and `env-refresh` are implemented and described
 below as built. `env-reset` and `env-teardown`, the backstop's workflow step,
-the drain, and the test-identity ensure step remain unbuilt; those sections still
-describe the target mechanism ahead of the code. Remove the remaining marks
-as those phases land.
+the drain, onboarding-intent reconciliation, and the test-identity ensure
+step remain unbuilt; those sections still describe the target mechanism
+ahead of the code. Remove the remaining marks as those phases land.
 
 ![The backing environment at a glance](../diagrams/environment-lifecycle.png)
 
-## Three lifetimes
+## Four lifetimes
 
 | Layer | Contents | Advances by |
 |---|---|---|
-| Substrate | RG `spi-stack-shared`, AKS Automatic, PaaS, Flux extension | Reset rebuilds it; an upgrade's incremental ARM pass may also move it in place (ADR-029) |
+| Environment identity | RG `spi-stack-shared`, managed identities and credentials, suffix and source-policy tags, declaration locator | Onboarding and declaration reconciliation change intent; only purge deletes the group (ADR-034) |
+| Substrate | AKS Automatic, PaaS, Flux extension | Reset rebuilds it; an upgrade's incremental ARM pass may also move it in place (ADR-029) |
 | Instance | Flux-managed workloads, `osdu-image-lock`, in-cluster middleware state | Refresh, upgrade, and fork deploys (ADR-031) |
 | Version contract | `ops/environments/shared.yaml` | Reviewed PR (ADR-028) |
 
@@ -126,17 +127,34 @@ pass moves canonical images during an upgrade, but the bump pins only the
 stack-definition axis. Weekday refreshes preserve those canonicals until the
 future fork-onboarding phase adds selective canonical refresh (ADR-033).
 
-**Reset** (unbuilt) is teardown plus cold provision at the pinned tag: flag, drain,
-snapshot the lock, `spi down`, poll until only the managed identities remain
-in the group (ADR-034), then `spi up --tag <pin>` and the cold-cluster wait
-with the 155-minute schema-load budget. The deploy identity and the
-`spi-name-suffix` tag survive `spi down`, so the client id the forks hold
-never changes, resource names and the hostname stay stable, and the Key
-Vault soft-delete recovery in `spi up` finds the old vault (ADR-028). The
-ensure step then reconciles the identity's federated credentials and the
-service sources to the declaration's `forks:` list and repairs the
-test-caller entitlements (ADR-029, ADR-032). The rebuilt environment starts
-with `maintenance` set and opens to deploys only after the probes pass.
+**Onboarding intent** (unbuilt) is loaded from the reviewed declaration before
+refresh or upgrade resolves an image. `forks:` owns trust and
+`canonicalSource`; retained credentials and `spi-source-<service>` tags
+cannot override it. First provision records the declaration's repository
+and path in the RG's `spi-environment-declaration` tag. Later runs require
+that locator to agree with the supplied declaration. The ensure path checks
+repository protection before enabling credentials, reconciles source tags,
+and repairs the lock's separate trust and source projections before refresh.
+During `spi up`, durable-record reconciliation and projection happen at
+bootstrap, using the intent loaded before image resolution. It is not a
+post-provision step that first corrects an obsolete image source.
+
+**Reset** (unbuilt) is deletion plus cold provision at the pinned tag: load and
+validate the declaration, flag, drain, snapshot the lock, then `spi down`.
+The command has a 45-minute deadline and reports success only after the group
+contains identities alone and the managed nodes group is gone (ADR-034).
+A failed or timed-out delete stops reset; a re-run resumes from the reported
+remaining inventory. Only after completion does `spi up --tag <pin>` resolve
+the declaration's desired sources and start the cold provision and converge
+wait. The retained roster is not used as a substitute for that declaration.
+
+The deploy identity, suffix, source-policy tags, and declaration locator
+survive deletion, so repository client IDs and resource names stay stable,
+and Key Vault recovery finds the old vault (ADR-028). Bootstrap reconciles
+credentials and source projections; the post-provision ensure step repairs
+test-caller entitlements. The rebuilt environment starts with `maintenance`
+set and opens to deploys only after the probes pass. Protected teardown uses
+`spi down --purge`, which deletes the retained records with the group.
 
 ## Surfaces fork CI consumes
 
@@ -228,13 +246,14 @@ gh run watch
    the test-identity ensure step, and the pin backstop/drain insertion
    points noted above.
 4. **Onboarding** (unbuilt): the deploy identity and two Roles in `spi up`,
-   identity retention in `spi down` (ADR-034), `spi onboard`, `forks:` in
-   the declaration with the ensure step; onboard `osdu-spi-partition`; the
-   template-side deploy, integration-test, and restore jobs under the
-   reserved check names.
-5. **Canonical flips** (unbuilt): `spi onboard` records each service's
-   source in the lock; on the shared environment one `forks:` line per
-   service (ADR-033).
+   identity and RG-tag retention in `spi down` (ADR-034), phased `spi onboard`,
+   `forks:` and the declaration locator with pre-resolution intent loading;
+   onboard `osdu-spi-partition` with a community canonical; the template-side
+   deploy, integration-test, and restore jobs under the reserved check names.
+5. **Canonical promotions** (unbuilt): explicit per-service source policy in
+   RG tags and its lock projection; on the shared environment a reviewed
+   `canonicalSource: fork` change after the deploy and test gates pass
+   (ADR-033).
 
 ## Related ADRs
 
