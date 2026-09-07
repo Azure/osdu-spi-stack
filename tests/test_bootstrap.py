@@ -10,6 +10,7 @@ injection and a missing ConfigMap stalls every layer above namespaces.
 Both the detection and the paths that write the ConfigMap are covered here.
 """
 
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -29,6 +30,10 @@ from spi.bootstrap import (
 )
 from spi.images import ResolvedImage
 from spi.status import StatusError
+
+
+def _proc(returncode: int, stdout: str, stderr: str = "") -> SimpleNamespace:
+    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 def _deploy_list(*names: str) -> dict:
@@ -80,7 +85,7 @@ def test_refresh_without_facts_keeps_the_live_deploy_identity():
         }
     }
     with (
-        patch("spi.bootstrap.kubectl_json", return_value=live),
+        patch("spi.bootstrap.run_process", return_value=_proc(0, json.dumps(live))),
         patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
     ):
         create_istio_revision_configmap("asm-1-30")
@@ -88,6 +93,26 @@ def test_refresh_without_facts_keeps_the_live_deploy_identity():
     applied = apply_yaml.call_args.args[0]
     assert 'ISTIO_REVISION: "asm-1-30"' in applied
     assert 'DEPLOY_IDENTITY_PRINCIPAL_ID: "principal"' in applied
+
+
+def test_refresh_leaves_configmap_alone_when_the_read_fails():
+    with (
+        patch("spi.bootstrap.run_process", return_value=_proc(1, "", "Unauthorized")),
+        patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
+    ):
+        create_istio_revision_configmap("asm-1-30")
+
+    apply_yaml.assert_not_called()
+
+
+def test_refresh_treats_an_absent_configmap_as_empty_facts():
+    with (
+        patch("spi.bootstrap.run_process", return_value=_proc(0, "")),
+        patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
+    ):
+        create_istio_revision_configmap("asm-1-30")
+
+    assert 'DEPLOY_IDENTITY_PRINCIPAL_ID: ""' in apply_yaml.call_args.args[0]
 
 
 class TestDetectIstioRevision:
@@ -147,6 +172,7 @@ class TestCreateIstioRevisionConfigmap:
     def test_applies_detected_revision_when_called_without_argument(self):
         with (
             patch("spi.bootstrap.kubectl_json", return_value=_deploy_list("istiod-asm-1-31")),
+            patch("spi.bootstrap.run_process", return_value=_proc(0, "")),
             patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
         ):
             create_istio_revision_configmap()
@@ -168,6 +194,7 @@ class TestCreateIstioRevisionConfigmap:
     def test_aborts_without_applying_when_detection_fails(self):
         with (
             patch("spi.bootstrap.kubectl_json", return_value=None),
+            patch("spi.bootstrap.run_process", return_value=_proc(0, "")),
             patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
         ):
             create_istio_revision_configmap()

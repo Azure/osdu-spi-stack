@@ -47,11 +47,35 @@ def deploy_identity_facts(
     }
 
 
+class ClusterConfigError(RuntimeError):
+    """The live spi-cluster-config could not be read, as opposed to not existing."""
+
+
 def _read_cluster_config() -> dict[str, str]:
-    data = kubectl_json(
-        ["get", "configmap", ISTIO_REVISION_CONFIGMAP, "-n", ISTIO_REVISION_NAMESPACE]
+    """Live spi-cluster-config data; empty when absent, an error on any other failure."""
+    result = run_process(
+        [
+            "kubectl",
+            "get",
+            "configmap",
+            ISTIO_REVISION_CONFIGMAP,
+            "-n",
+            ISTIO_REVISION_NAMESPACE,
+            "--ignore-not-found",
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
-    return dict((data or {}).get("data", {}) or {})
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or "kubectl failed"
+        raise ClusterConfigError(f"Could not read {ISTIO_REVISION_CONFIGMAP}: {detail}")
+    if not result.stdout.strip():
+        return {}
+    return dict(json.loads(result.stdout).get("data", {}) or {})
 
 
 def _detect_istio_revision() -> str | None:
@@ -131,7 +155,14 @@ def create_istio_revision_configmap(
     """
 
     if extra is None:
-        extra = _read_cluster_config()
+        try:
+            extra = _read_cluster_config()
+        except ClusterConfigError as exc:
+            console.print(
+                f"[warning]{exc}; leaving the existing {ISTIO_REVISION_CONFIGMAP} "
+                "ConfigMap unchanged.[/warning]"
+            )
+            return
     if not istio_revision:
         detected = _detect_istio_revision()
         if not detected:
