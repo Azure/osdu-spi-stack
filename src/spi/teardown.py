@@ -23,6 +23,7 @@ deletes the whole group.
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, List, Optional, Sequence
 
@@ -238,6 +239,16 @@ def request_delete(resource: AzureResource) -> bool:
     return False
 
 
+def _request_deletes(resources: Sequence[AzureResource]) -> None:
+    """One thread per resource: `az resource delete --no-wait` still blocks on
+    long-running deletes such as AKS and Cosmos, and the point is to have Azure
+    work on all of them at once."""
+    if not resources:
+        return
+    with ThreadPoolExecutor(max_workers=len(resources)) as pool:
+        list(pool.map(request_delete, resources))
+
+
 def provisioning_state(resource: AzureResource) -> str:
     result = run_command(
         [
@@ -266,8 +277,7 @@ def delete_wave(run: TeardownRun, wave: Wave) -> None:
     with backoff until the deadline.
     """
     targets = [r for r in run.inventory if r.type in wave.types]
-    for resource in targets:
-        request_delete(resource)
+    _request_deletes(targets)
     attempt = 0
     next_check = time.monotonic() + RETRY_BACKOFF_SECONDS[0]
     while True:
@@ -283,8 +293,7 @@ def delete_wave(run: TeardownRun, wave: Wave) -> None:
             )
         if now >= next_check:
             stalled = [r for r in lingering if provisioning_state(r).lower() != "deleting"]
-            for resource in stalled:
-                request_delete(resource)
+            _request_deletes(stalled)
             attempt += 1
             backoff = RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)]
             next_check = now + backoff
