@@ -168,6 +168,22 @@ def _resolve_image_lock(image_branch: str) -> dict[str, ResolvedImage]:
     return resolved
 
 
+def _project_trusted_repos(config: Config) -> None:
+    """Carry the deploy identity's roster into the lock a rebuilt cluster lacks."""
+
+    if config.profile is not Profile.CORE:
+        return
+    from .onboard import sync_projection_from_identity
+
+    trusted = sync_projection_from_identity(config.deploy_identity_name, config.resource_group)
+    if trusted:
+        console.print(
+            "  [dim]Trusted repositories: "
+            + ", ".join(f"{svc} from {repo}" for svc, repo in sorted(trusted.items()))
+            + "[/dim]"
+        )
+
+
 def _ensure_image_lock(
     config: Config,
     refresh_images: bool | None,
@@ -525,6 +541,7 @@ def deploy_azure(
     create_storage_classes()
     install_gateway_api_crds()
     _ensure_image_lock(config, refresh_images, image_branch, resolved_images)
+    _project_trusted_repos(config)
     _create_osdu_config(config, infra_outputs)
     _create_istio_auth(config, infra_outputs)
     _create_spi_init_values(config)

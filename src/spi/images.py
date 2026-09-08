@@ -29,7 +29,6 @@ from typing import Iterable, Mapping
 GITLAB_HOST = "https://community.opengroup.org"
 GHCR_HOST = "ghcr.io"
 # Fork deploys may pin only images published under these GHCR owners.
-GHCR_ALLOWED_OWNERS = ("azure",)
 DEFAULT_IMAGE_BRANCH = "master"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"
@@ -464,15 +463,20 @@ def ghcr_index_child_digests(repository: str, digest: str) -> tuple[str, ...]:
 
 
 def require_ghcr_repository(repository: str) -> None:
-    """Enforce the GHCR owner allow-list on a pin's repository."""
+    """Require a pin's repository to be a GHCR package, ``ghcr.io/<owner>/<name>``."""
 
     parts = repository.lower().split("/")
-    if len(parts) < 3 or parts[0] != GHCR_HOST or parts[1] not in GHCR_ALLOWED_OWNERS:
-        allowed = ", ".join(f"{GHCR_HOST}/{owner}" for owner in GHCR_ALLOWED_OWNERS)
+    if len(parts) < 3 or parts[0] != GHCR_HOST or not all(parts[1:]):
         raise ImageResolutionError(
-            f"repository {repository!r} is not an allow-listed fork image source; "
-            f"expected an image under {allowed}"
+            f"repository {repository!r} is not a GHCR package; expected {GHCR_HOST}/<owner>/<name>"
         )
+
+
+def fork_package_repository(source_repo: str, service: str) -> str:
+    """The GHCR package a fork of ``source_repo`` publishes for ``service``."""
+
+    owner = source_repo.split("/", 1)[0].lower()
+    return f"{GHCR_HOST}/{owner}/{service}"
 
 
 def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> None:

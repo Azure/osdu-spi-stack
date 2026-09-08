@@ -137,10 +137,16 @@ def _deploy_record(maintenance=False) -> DeployRecord:
     )
 
 
-def _lock(data=None, pins_annotation="", resource_version="1"):
+# The roster an onboarded environment projects; ephemeral pins are checked against it.
+_TRUSTED = {"schema": "Azure/osdu-spi-schema", "storage": "Azure/osdu-spi-storage"}
+
+
+def _lock(data=None, pins_annotation="", resource_version="1", trusted=_TRUSTED):
     annotations = {}
     if pins_annotation:
         annotations[pins.PINS_ANNOTATION] = pins_annotation
+    if trusted:
+        annotations[pins.TRUSTED_REPOS_ANNOTATION] = json.dumps(trusted, sort_keys=True)
     return {
         "metadata": {"annotations": annotations, "resourceVersion": resource_version},
         "data": data or {},
@@ -1207,13 +1213,13 @@ class TestParseImageDigestRef:
         with pytest.raises(ImageResolutionError, match="missing repository path"):
             parse_image_digest_ref(f"storage@{_GHCR_DIGEST}")
 
-    def test_ghcr_owner_allow_list(self):
+    def test_ghcr_repository_shape(self):
         require_ghcr_repository("ghcr.io/azure/storage")
-        require_ghcr_repository("ghcr.io/Azure/storage")
-        with pytest.raises(ImageResolutionError, match="allow-listed"):
-            require_ghcr_repository("ghcr.io/evil/storage")
-        with pytest.raises(ImageResolutionError, match="allow-listed"):
+        require_ghcr_repository("ghcr.io/Acme/storage")
+        with pytest.raises(ImageResolutionError, match="not a GHCR package"):
             require_ghcr_repository("docker.io/azure/storage")
+        with pytest.raises(ImageResolutionError, match="not a GHCR package"):
+            require_ghcr_repository("ghcr.io/storage")
 
 
 class TestPinServiceImage:
@@ -1244,10 +1250,24 @@ class TestPinServiceImage:
         assert calls["manifest_checks"] == []
         assert calls["patch"] is None
 
-    def test_disallowed_owner_rejected(self, monkeypatch):
+    def test_operator_pin_accepts_any_ghcr_owner(self, monkeypatch):
+        """An operator pin names its image explicitly and needs no onboarding."""
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage"), trusted={}))
+        pin = pin_service_image("storage", f"ghcr.io/acme/storage@{_GHCR_DIGEST}")
+        assert pin.repository == "ghcr.io/acme/storage"
+        assert calls["patch"] is not None
+
+    def test_ephemeral_pin_must_use_the_forks_package(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
-        with pytest.raises(PinError, match="allow-listed"):
-            pin_service_image("storage", f"ghcr.io/evil/storage@{_GHCR_DIGEST}")
+        with pytest.raises(PinError, match="must use the fork's package ghcr.io/azure/storage"):
+            pin_service_image(
+                "storage",
+                f"ghcr.io/evil/storage@{_GHCR_DIGEST}",
+                ephemeral=True,
+                run_id="1",
+                source_repo="Azure/osdu-spi-storage",
+                source_sha="b" * 40,
+            )
         assert calls["patch"] is None
 
     def test_ephemeral_requires_full_provenance(self, monkeypatch):
@@ -1278,15 +1298,51 @@ class TestPinServiceImage:
                 source_sha="b" * 40,
             )
 
-    def test_source_repo_must_be_an_allow_listed_fork(self, monkeypatch):
+    def test_source_repo_must_be_the_trusted_repository(self, monkeypatch):
+        """The roster projected on the lock decides, and it compares exactly."""
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
-        with pytest.raises(PinError, match="allow-listed fork repository"):
+        with pytest.raises(PinError, match="not the repository trusted for storage"):
+            pin_service_image(
+                "storage",
+                f"ghcr.io/evil/storage@{_GHCR_DIGEST}",
+                ephemeral=True,
+                run_id="1",
+                source_repo="Evil/osdu-spi-storage",
+                source_sha="b" * 40,
+            )
+        with pytest.raises(PinError, match="not the repository trusted for storage"):
             pin_service_image(
                 "storage",
                 _GHCR_IMAGE,
                 ephemeral=True,
                 run_id="1",
-                source_repo="evil/osdu-spi-storage",
+                source_repo="azure/osdu-spi-storage",
+                source_sha="b" * 40,
+            )
+        assert calls["patch"] is None
+
+    def test_source_repo_syntax_checked_before_reads(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        with pytest.raises(PinError, match="must be <owner>/<repo>"):
+            pin_service_image(
+                "storage",
+                _GHCR_IMAGE,
+                ephemeral=True,
+                run_id="1",
+                source_repo="../evil",
+                source_sha="b" * 40,
+            )
+        assert calls["patch"] is None
+
+    def test_ephemeral_pin_refused_when_nothing_is_trusted(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage"), trusted={}))
+        with pytest.raises(PinError, match="No repository is trusted for storage"):
+            pin_service_image(
+                "storage",
+                _GHCR_IMAGE,
+                ephemeral=True,
+                run_id="1",
+                source_repo="Azure/osdu-spi-storage",
                 source_sha="b" * 40,
             )
         assert calls["patch"] is None
@@ -1807,13 +1863,17 @@ class _FakeHttpResponse:
 
 
 class TestGithubRunStatus:
-    def test_disallowed_source_repo_is_never_fetched(self, monkeypatch):
+    def test_malformed_source_repo_is_never_fetched(self, monkeypatch):
+        """Membership was proved against the roster at pin time; the lookup
+        still refuses anything that could escape the repos path."""
+
         def fail_urlopen(*args, **kwargs):
-            pytest.fail("a repository outside the allow-list must not be fetched")
+            pytest.fail("a malformed repository path must not be fetched")
 
         monkeypatch.setattr(pins.urllib.request, "urlopen", fail_urlopen)
-        assert pins._github_run_status("evil/osdu-spi-storage", "123") is None
-        assert pins._github_run_status("Azure/other-repo", "123") is None
+        assert pins._github_run_status("../actions", "123") is None
+        assert pins._github_run_status("Azure/osdu-spi-storage/..", "123") is None
+        assert pins._github_run_status("Azure/osdu-spi-storage?x=1", "123") is None
         assert pins._github_run_status("Azure/osdu-spi-storage", "not-a-number") is None
 
     def test_missing_run_reads_as_unreachable(self, monkeypatch):
