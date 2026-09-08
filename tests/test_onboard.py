@@ -34,6 +34,7 @@ from spi.onboard import (
     list_trust,
     plan_onboard,
     plan_remove,
+    render_plan,
 )
 from spi.pins import TRUSTED_REPOS_ANNOTATION, apply_image_lock
 
@@ -517,6 +518,15 @@ class TestPlanning:
         plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition", skip_repo=True)
         assert plan.steps == []
         assert _states(plan.rows)["spi-stack environment on Acme/osdu-spi-partition"] == "missing"
+
+    def test_a_blocked_skip_repo_plan_renders_the_warning_not_success(self, world, capsys):
+        plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition", skip_repo=True)
+
+        render_plan(plan)
+
+        out = capsys.readouterr().out
+        assert "Trust steps are withheld" in out
+        assert "Nothing to change" not in out
 
     def test_skip_repo_leaves_github_out_but_still_reports_protection(self, world):
         world.protect("Acme/osdu-spi-partition")

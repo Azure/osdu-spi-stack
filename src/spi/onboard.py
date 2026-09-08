@@ -819,6 +819,13 @@ def render_plan(plan: Plan) -> None:
         "[/bold]  (plan; pass --write to apply)"
     )
     render_rows(plan.rows, "Observed state")
+    assert plan.protection is not None
+    if plan.skip_repo and not plan.protection.satisfied:
+        console.print(
+            "\n[warning]Trust steps are withheld until the repository owner establishes "
+            f"the {DEPLOY_ENVIRONMENT} environment rules; re-run afterwards.[/warning]"
+        )
+        return
     if not plan.steps:
         console.print("[success]Nothing to change; every row is correct or unverified.[/success]")
         return
@@ -830,16 +837,10 @@ def render_plan(plan: Plan) -> None:
         script = "\n".join(f"# {step.description}\n{_quote(step.argv)}" for step in steps)
         console.print(Syntax(script, "bash", theme="monokai", word_wrap=True))
     if plan.skip_repo:
-        assert plan.protection is not None
         console.print(
             "\n[dim]--skip-repo: GitHub values are left to the repository's owner; the "
             f"{DEPLOY_ENVIRONMENT} environment rules are still required before trust.[/dim]"
         )
-        if not plan.protection.satisfied:
-            console.print(
-                "[warning]Trust steps are withheld until the repository owner establishes "
-                f"the {DEPLOY_ENVIRONMENT} environment rules; re-run afterwards.[/warning]"
-            )
 
 
 # ---------------------------------------------------------------------------
