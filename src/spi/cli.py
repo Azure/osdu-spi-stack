@@ -701,6 +701,85 @@ def info(
 
 
 @app.command()
+def onboard(
+    service: Optional[str] = typer.Argument(
+        None, help="Service the repository builds, for example partition"
+    ),
+    repo: Optional[str] = typer.Option(
+        None, "--repo", help="Fork repository as <owner>/<name>; optional once trusted"
+    ),
+    write: bool = typer.Option(False, "--write", help="Apply the plan; default prints it"),
+    skip_repo: bool = typer.Option(
+        False,
+        "--skip-repo",
+        help="Leave the spi-stack environment rules, secrets and variables to the repository owner",
+    ),
+    org: Optional[str] = typer.Option(
+        None, "--org", help="Stamp the five values at this GitHub organization instead"
+    ),
+    list_trusted: bool = typer.Option(False, "--list", help="Show trusted repositories"),
+    remove: bool = typer.Option(False, "--remove", help="Revoke the service's repository"),
+):
+    """Trust a fork repository to deploy against the connected environment."""
+    from . import onboard as _onboard
+
+    if list_trusted and (service or repo or remove or write or org or skip_repo):
+        raise typer.BadParameter("--list takes no other options", param_hint="--list")
+    if remove and (repo or org or skip_repo):
+        raise typer.BadParameter(
+            "--remove takes only the service and --write", param_hint="--remove"
+        )
+    if org and skip_repo:
+        raise typer.BadParameter(
+            "--org stamps GitHub values, which --skip-repo leaves alone", param_hint="--org"
+        )
+    if not list_trusted and not service:
+        raise typer.BadParameter("name the service to onboard", param_hint="SERVICE")
+
+    ctx = verify_spi_cluster()
+    console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+
+    from .bootstrap import ClusterConfigError
+    from .deploy_record import DeployRecordError
+
+    try:
+        target = _onboard.load_target()
+        if list_trusted:
+            rows = _onboard.list_trust(target)
+            if rows:
+                _onboard.render_rows(rows, f"Trusted repositories on {target.env or 'environment'}")
+            else:
+                console.print("[info]No repository is trusted on this environment yet.[/info]")
+            return
+        assert service is not None
+        if remove:
+            plan = _onboard.plan_remove(target, service)
+        else:
+            plan = _onboard.plan_onboard(
+                target,
+                service,
+                (repo or "").strip(),
+                org=(org or "").strip(),
+                skip_repo=skip_repo,
+            )
+        if not write:
+            _onboard.render_plan(plan)
+            return
+        rows = _onboard.apply_plan(plan)
+        if remove:
+            _onboard.render_rows(rows, f"Trust removed for {service}")
+            return
+        _onboard.render_rows(rows, f"{service} onboarded from {plan.repo}")
+        console.print(
+            "\n[info]The first workflow run in the fork's spi-stack environment proves the "
+            "credential; onboard cannot mint the fork's OIDC token itself.[/info]"
+        )
+    except (_onboard.OnboardError, PinError, ClusterConfigError, DeployRecordError) as exc:
+        console.print(f"\n[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def status(
     watch: bool = typer.Option(False, "--watch", "-w", help="Continuous refresh"),
     output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
