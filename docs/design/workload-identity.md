@@ -156,10 +156,10 @@ Start with configuration and conditions, without printing tokens:
 
 ```bash
 kubectl get serviceaccount workload-identity-sa -n osdu -o yaml
-kubectl get deployment osdu-partition -n osdu -o yaml
+kubectl get deployment partition -n osdu -o yaml
 kubectl get requestauthentication spi-osdu-jwt-authn -n osdu -o yaml
 kubectl get envoyfilter spi-osdu-identity-filter -n osdu -o yaml
-kubectl logs deployment/osdu-partition -n osdu -c osdu-partition --tail=50
+kubectl logs deployment/partition -n osdu -c partition --tail=50
 ```
 
 Inspect proxy logs as needed, but do not assume default proxy logging emits a
