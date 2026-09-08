@@ -789,6 +789,7 @@ def _write_credential(plan: Plan, build: Callable[[Plan], Optional[Step]]) -> No
     """
 
     for attempt, delay in enumerate((*CONFLICT_BACKOFF_SECONDS, None)):
+        plan.roster = read_roster(plan.target)
         step = build(plan)
         if step is None:
             return
@@ -803,7 +804,6 @@ def _write_credential(plan: Plan, build: Callable[[Plan], Optional[Step]]) -> No
             f"(attempt {attempt + 1}/{len(CONFLICT_BACKOFF_SECONDS)})[/warning]"
         )
         time.sleep(delay)
-        plan.roster = read_roster(plan.target)
 
 
 def _is_conflict(stderr: str) -> bool:
@@ -837,6 +837,17 @@ def project_roster(
     except PinError as exc:
         raise OnboardError(str(exc)) from exc
     return written
+
+
+def _reconcile_projection(plan: Plan) -> None:
+    """Cluster phase: read both sides fresh, project if they differ, read again."""
+
+    plan.roster = read_roster(plan.target)
+    plan.projection = read_projection()
+    if plan.projection != roster_repos(plan.roster):
+        project_roster(plan.target)
+        plan.projection = read_projection()
+    plan.roster = read_roster(plan.target)
 
 
 def apply_plan(plan: Plan) -> list[Row]:
@@ -881,9 +892,7 @@ def apply_plan(plan: Plan) -> list[Row]:
     completed.append("azure")
 
     try:
-        if plan.projection != _desired_projection(plan):
-            project_roster(plan.target)
-        plan.projection = read_projection()
+        _reconcile_projection(plan)
     except (OnboardError, PinError) as exc:
         raise fail(exc, "cluster") from None
     completed.append("cluster")
@@ -1003,11 +1012,8 @@ def apply_remove(plan: Plan) -> list[Row]:
         raise OnboardError(
             f"{exc}\nCompleted: nothing. Pending: azure, cluster. Re-run to resume."
         ) from None
-    desired = roster_repos(plan.roster)
     try:
-        if plan.projection != desired:
-            project_roster(plan.target)
-        plan.projection = read_projection()
+        _reconcile_projection(plan)
     except (OnboardError, PinError) as exc:
         raise OnboardError(
             f"{exc}\nCompleted: azure. Pending: cluster. Re-run to resume."
@@ -1015,7 +1021,7 @@ def apply_remove(plan: Plan) -> list[Row]:
     plan.steps = []
     plan.rows = [
         Row("azure", plan.credential_name, "correct", "absent"),
-        _projection_row(desired, plan.projection),
+        _projection_row(roster_repos(plan.roster), plan.projection),
     ]
     return plan.rows
 
