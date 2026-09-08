@@ -71,6 +71,7 @@ class FakeWorld:
             "metadata": {"annotations": {}, "resourceVersion": "1"},
             "data": {"PARTITION_IMAGE": "x"},
         }
+        self.org_visibility: dict[str, str] = {}
         self.writes: list[list[str]] = []
         self.failures: dict[str, str] = {}
         self.lock_writes = 0
@@ -117,7 +118,13 @@ class FakeWorld:
             return self._gh_api(argv)
         if argv[:3] == ["gh", "variable", "list"]:
             where = argv[4]
-            payload = [{"name": k, "value": v} for k, v in self.variables.get(where, {}).items()]
+            payload = []
+            for k, v in self.variables.get(where, {}).items():
+                entry = {"name": k, "value": v}
+                if argv[3] == "--org":
+                    assert argv[-1] == "name,value,visibility", argv
+                    entry["visibility"] = self.org_visibility.get(k, "all")
+                payload.append(entry)
             return _ok(argv, payload)
         if argv[:3] == ["gh", "secret", "list"]:
             where = argv[4]
@@ -410,6 +417,16 @@ class TestPlanning:
         assert all("--org" in argv and "Acme" in argv for argv in value_steps)
         assert all("--visibility" in argv for argv in value_steps)
         assert _states(plan.rows)["AZURE_CLIENT_ID on Acme"] == "missing"
+
+    def test_an_org_variable_the_fork_cannot_see_is_drift(self, world):
+        world.stamp("Acme")
+        world.org_visibility["SPI_STACK_CLUSTER"] = "selected"
+        plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition", org="Acme")
+        row = next(r for r in plan.rows if r.item == "SPI_STACK_CLUSTER on Acme")
+        assert (row.state, row.detail) == ("drifted", "is 'spi-stack-dev1 (visibility selected)'")
+        assert _states(plan.rows)["SPI_STACK_RESOURCE_GROUP on Acme"] == "correct"
+        sets = [s.argv[3] for s in plan.steps if s.argv[:3] == ["gh", "variable", "set"]]
+        assert sets == ["SPI_STACK_CLUSTER"]
 
     def test_skip_repo_leaves_github_out_but_still_reports_protection(self, world):
         plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition", skip_repo=True)
@@ -754,6 +771,13 @@ class TestCli:
         for extra in (["--org", "Acme"], ["--skip-repo"]):
             result, *_ = self._run(["onboard", "--list", *extra])
             assert result.exit_code != 0, extra
+
+    def test_org_and_skip_repo_contradict(self):
+        result, plan, *_ = self._run(
+            ["onboard", "partition", "--repo", "a/b", "--org", "a", "--skip-repo"]
+        )
+        assert result.exit_code != 0
+        plan.assert_not_called()
 
     def test_a_service_is_required_outside_list(self):
         result, *_ = self._run(["onboard"])

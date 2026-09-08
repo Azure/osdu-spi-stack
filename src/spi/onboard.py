@@ -361,8 +361,9 @@ def read_values(repo: str, org: str) -> dict[str, Optional[str]]:
     """
 
     scope = ["--org", org] if org else ["--repo", repo]
+    fields = "name,value,visibility" if org else "name,value"
     variables = _read_json(
-        ["gh", "variable", "list", *scope, "--json", "name,value"],
+        ["gh", "variable", "list", *scope, "--json", fields],
         f"variables on {org or repo}",
     )
     secrets = _read_json(
@@ -373,7 +374,11 @@ def read_values(repo: str, org: str) -> dict[str, Optional[str]]:
     }
     for entry in variables or []:
         if isinstance(entry, dict) and entry.get("name") in VARIABLE_NAMES:
-            observed[str(entry["name"])] = str(entry.get("value", ""))
+            value = str(entry.get("value", ""))
+            # An organization value the fork cannot read is drift, not a match.
+            if org and str(entry.get("visibility", "all")).lower() != "all":
+                value = f"{value} (visibility {entry.get('visibility')})"
+            observed[str(entry["name"])] = value
     for entry in secrets or []:
         if isinstance(entry, dict) and entry.get("name") == CLIENT_ID_SECRET:
             observed[CLIENT_ID_SECRET] = ""

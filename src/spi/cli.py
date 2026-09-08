@@ -727,6 +727,10 @@ def onboard(
         raise typer.BadParameter(
             "--remove takes only the service and --write", param_hint="--remove"
         )
+    if org and skip_repo:
+        raise typer.BadParameter(
+            "--org stamps GitHub values, which --skip-repo leaves alone", param_hint="--org"
+        )
     if not list_trusted and not service:
         raise typer.BadParameter("name the service to onboard", param_hint="SERVICE")
     if not list_trusted and (repo is not None and not repo.strip()):
