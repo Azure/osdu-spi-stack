@@ -4,8 +4,8 @@ This page fixes the prose for the repo's documentation: what it sounds like,
 what it cites, and what a reviewer rejects. It governs ADRs
 ([`decisions/`](decisions/)), design docs ([`design/`](design/)), and
 [`architecture.md`](architecture.md). Structural rules stay with each genre:
-ADR process in [decisions/README.md](decisions/README.md), the design-doc
-template in [design/README.md](design/README.md).
+ADR process in [decisions/README.md](decisions/README.md), design-doc
+structure and maintenance in [design/README.md](design/README.md).
 
 House exemplars: [ADR-012](decisions/012-ingress-profiles.md),
 [ADR-017](decisions/017-osdu-image-lock.md),
@@ -104,7 +104,7 @@ frontmatter, no status line, no dates.
 ## Design docs
 
 A design doc is a living document, updated in place as the code evolves
-([design/README.md](design/README.md) holds the section template and
+([design/README.md](design/README.md) holds the structure guidance and
 lifecycle).
 
 - **Status-marked present tense replaces the ADR durability rule.** A living

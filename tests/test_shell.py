@@ -168,11 +168,29 @@ def test_run_process_forwards_kwargs_to_subprocess():
         mock.patch("spi.shell.prepare_command", return_value=["kubectl", "get"]) as prepare,
         mock.patch("spi.shell.subprocess.run", return_value=completed) as run,
     ):
-        result = run_process(["kubectl", "get"], capture_output=True, text=True, timeout=10)
+        result = run_process(["kubectl", "get"], capture_output=True, text=True)
 
     assert result is completed
     prepare.assert_called_once_with(["kubectl", "get"])
-    run.assert_called_once_with(["kubectl", "get"], capture_output=True, text=True, timeout=10)
+    run.assert_called_once_with(["kubectl", "get"], capture_output=True, text=True)
+
+
+def test_run_process_with_a_timeout_owns_the_child_so_it_can_kill_the_tree():
+    proc = mock.MagicMock()
+    proc.__enter__.return_value = proc
+    proc.communicate.return_value = ("out", "")
+    proc.returncode = 0
+    with (
+        mock.patch("spi.shell.prepare_command", return_value=["kubectl", "get"]),
+        mock.patch("spi.shell.subprocess.Popen", return_value=proc) as popen,
+        mock.patch("spi.shell.subprocess.run") as run,
+    ):
+        result = run_process(["kubectl", "get"], capture_output=True, text=True, timeout=10)
+
+    run.assert_not_called()
+    popen.assert_called_once()
+    proc.communicate.assert_called_once_with(timeout=10)
+    assert result.returncode == 0 and result.stdout == "out"
 
 
 def test_gather_reads_returns_results_in_call_order():

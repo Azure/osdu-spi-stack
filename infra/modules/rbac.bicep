@@ -20,6 +20,12 @@ param deployerPrincipalType string = 'ServicePrincipal'
 @description('Principal ID of the AKS kubelet identity; an empty string omits its AcrPull grant.')
 param kubeletIdentityObjectId string = ''
 
+@description('Principal ID of the deploy identity fork CI federates to.')
+param forkDeployerPrincipalId string
+
+@description('Existing AKS cluster whose kubeconfig the deploy identity may fetch.')
+param clusterName string
+
 @description('Existing Key Vault whose secrets the workload identity reads.')
 param keyVaultName string
 
@@ -43,6 +49,7 @@ var roleIds = {
   serviceBusDataSender: '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39'
   serviceBusDataReceiver: '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0'
   acrPull: '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+  aksClusterUser: '4abbcc35-e782-43d8-92c5-2d3f1bd2253f'
 }
 
 // main.bicep orders this module after the modules that create these resources.
@@ -52,6 +59,10 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: acrName
+}
+
+resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' existing = {
+  name: clusterName
 }
 
 resource commonStorage 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
@@ -85,6 +96,28 @@ resource deployerKeyVaultSecretsOfficerAssignment 'Microsoft.Authorization/roleA
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.keyVaultSecretsOfficer)
     principalId: deployerPrincipalId
     principalType: deployerPrincipalType
+  }
+}
+
+// Cluster User only fetches a kubeconfig; what the deploy identity may do
+// inside the cluster is the two namespace Roles in software/components/fork-rbac.
+resource forkDeployerClusterUserAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: aksCluster
+  name: guid(aksCluster.id, forkDeployerPrincipalId, roleIds.aksClusterUser)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.aksClusterUser)
+    principalId: forkDeployerPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource forkDeployerKeyVaultSecretsUserAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: keyVault
+  name: guid(keyVault.id, forkDeployerPrincipalId, roleIds.keyVaultSecretsUser)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.keyVaultSecretsUser)
+    principalId: forkDeployerPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 

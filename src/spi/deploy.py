@@ -35,6 +35,7 @@ from .bicep import run_bicep_deployment
 from .bootstrap import (
     create_istio_revision_configmap,
     create_storage_classes,
+    deploy_identity_facts,
     ensure_namespaces,
     install_gateway_api_crds,
 )
@@ -56,7 +57,7 @@ from .ingress import (
 from .paths import INFRA_ROOT
 from .pins import ServicePin, apply_image_lock, apply_schema_load_backfill, describe_pin, read_lock
 from .secrets import ensure_secrets, get_or_create_seed
-from .shell import kubectl_apply_yaml, prune_kube_context, run_command, run_process
+from .shell import kubectl_apply_yaml, run_command, run_process
 from .templates import (
     istio_auth_resources,
     osdu_config_configmap,
@@ -165,6 +166,22 @@ def _resolve_image_lock(image_branch: str) -> dict[str, ResolvedImage]:
         )
 
     return resolved
+
+
+def _project_trusted_repos(config: Config) -> None:
+    """Carry the deploy identity's roster into the lock a rebuilt cluster lacks."""
+
+    if config.profile is not Profile.CORE:
+        return
+    from .onboard import sync_projection_from_identity
+
+    trusted = sync_projection_from_identity(config.deploy_identity_name, config.resource_group)
+    if trusted:
+        console.print(
+            "  [dim]Trusted repositories: "
+            + ", ".join(f"{svc} from {repo}" for svc, repo in sorted(trusted.items()))
+            + "[/dim]"
+        )
 
 
 def _ensure_image_lock(
@@ -516,11 +533,15 @@ def deploy_azure(
         return
 
     istio_revision = ensure_namespaces()
-    create_istio_revision_configmap(istio_revision)
+    create_istio_revision_configmap(
+        istio_revision,
+        deploy_identity_facts(infra_outputs, config.cluster_name, config.resource_group),
+    )
     ensure_secrets()
     create_storage_classes()
     install_gateway_api_crds()
     _ensure_image_lock(config, refresh_images, image_branch, resolved_images)
+    _project_trusted_repos(config)
     _create_osdu_config(config, infra_outputs)
     _create_istio_auth(config, infra_outputs)
     _create_spi_init_values(config)
@@ -569,78 +590,3 @@ def deploy_azure(
     )
 
     _finalize_gitops_source(config)
-
-
-def _cluster_api_server(config: Config) -> str:
-    """The API server FQDN of the cluster about to be deleted, or "".
-
-    The FQDN proves a kubeconfig context belongs to this cluster rather than
-    a same-named one in another subscription; empty means the cluster is
-    gone and the prune leaves the kubeconfig alone. `privateFqdn` comes first
-    because `az aks get-credentials` wrote that form for a private cluster.
-    """
-    result = run_command(
-        [
-            "az",
-            "aks",
-            "show",
-            "--resource-group",
-            config.resource_group,
-            "--name",
-            config.cluster_name,
-            "--query",
-            "privateFqdn || fqdn",
-            "--output",
-            "tsv",
-        ],
-        description=f"Look up API server for {config.cluster_name}",
-        display=False,
-        check=False,
-    )
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
-
-
-def cleanup_azure(config: Config) -> None:
-    """Delete Azure resource group and all resources.
-
-    The kubeconfig entries `spi up` merged in point at a cluster that is
-    about to stop answering, so they are pruned on the way out. The prune
-    waits for Azure to report the resource group gone; `--no-wait` returns on
-    acceptance, and an accepted delete can still fail afterwards.
-    """
-    console.print("\n[bold]Cleaning up Azure resources...[/bold]")
-    api_server = _cluster_api_server(config)
-    result = run_command(
-        ["az", "group", "delete", "--name", config.resource_group, "--yes", "--no-wait"],
-        description=f"Delete resource group: {config.resource_group}",
-        check=False,
-    )
-    if result.returncode != 0:
-        console.print(f"[error]Azure cleanup request failed for {config.resource_group}.[/error]")
-        raise typer.Exit(code=1)
-
-    console.print("  [info]Waiting briefly for Azure to acknowledge the deletion...[/info]")
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        exists = run_command(
-            ["az", "group", "exists", "--name", config.resource_group],
-            description=f"Check resource group status: {config.resource_group}",
-            display=False,
-            check=False,
-        )
-        if exists.returncode == 0 and exists.stdout.strip().lower() == "false":
-            prune_kube_context(config.cluster_name, server_fqdn=api_server)
-            display_result(f"Resource group {config.resource_group} deleted")
-            return
-        time.sleep(10)
-
-    display_result("Cleanup accepted by Azure; deletion is continuing in the background")
-    console.print(
-        f"  [warning]Verify later with: az group exists --name {config.resource_group}[/warning]"
-    )
-    console.print(
-        f"  [warning]kubeconfig context {config.cluster_name} is left in place until the "
-        f"deletion is confirmed[/warning]"
-    )

@@ -54,6 +54,15 @@ spec:
             matchLabels:
               {{- include "osdu-spi-service.selectorLabels" . | nindent 14 }}
       {{- end }}
+      {{- if .Values.hostAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  {{- include "osdu-spi-service.selectorLabels" . | nindent 18 }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

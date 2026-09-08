@@ -76,6 +76,14 @@ redisTls: false
 
 topologySpread: true
 
+# -- Required podAntiAffinity keeping replicas off the same host (critical services).
+hostAntiAffinity: false
+
+podDisruptionBudget:
+  # -- Guards against voluntary disruption on top of hostAntiAffinity.
+  enabled: false
+  minAvailable: 1
+
 # -- Set by values override when nodepool isolation is enabled.
 nodeSelector: {}
 tolerations: []

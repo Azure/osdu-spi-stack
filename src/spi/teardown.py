@@ -1,0 +1,675 @@
+# Copyright 2026, Microsoft
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Identity-preserving teardown of an environment resource group.
+
+``spi down`` deletes the group's resources individually, in dependency
+order, and leaves the managed identities standing with the group and its
+tags, so a rebuild never rotates the deploy identity's client id.
+``spi down --purge`` removes the identities' out-of-group grants and then
+deletes the whole group.
+"""
+
+import json
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from typing import Callable, Iterable, List, Optional, Sequence
+
+from .config import Config
+from .console import console, display_result
+from .shell import prune_kube_context, run_command
+
+TEARDOWN_DEADLINE_SECONDS = 45 * 60
+POLL_INTERVAL_SECONDS = 15
+RETRY_BACKOFF_SECONDS = (20, 40, 60)
+READ_RETRY_BACKOFF_SECONDS = (5, 15, 30)
+# Wide enough that every long-running delete in a multi-partition group starts at once.
+MAX_PARALLEL_REQUESTS = 16
+# Cap on any single read or small write, so a hung CLI call cannot stall the deadline loop.
+CALL_TIMEOUT_SECONDS = 120
+MAX_PASSES = 5
+# A delete request declined this many times with the same reason is not transient.
+MAX_IDENTICAL_DECLINES = 3
+
+RETAINED_TYPES = frozenset({"microsoft.managedidentity/userassignedidentities"})
+CLUSTER_TYPE = "microsoft.containerservice/managedclusters"
+
+# Azure reports these as terminal failures; retrying cannot change the outcome.
+FATAL_ERROR_MARKERS = (
+    "AuthorizationFailed",
+    "LinkedAuthorizationFailed",
+    "ScopeLocked",
+    "ExpiredAuthenticationToken",
+    "InvalidAuthenticationToken",
+)
+
+DNS_ZONE_CONTRIBUTOR = "DNS Zone Contributor"
+# The zone itself, not a record set beneath it.
+DNS_ZONE_SCOPE = re.compile(r"/providers/microsoft\.network/dnszones/[^/]+$")
+
+
+class TeardownError(RuntimeError):
+    """Teardown stopped before the group reached its target state."""
+
+
+@dataclass(frozen=True)
+class AzureResource:
+    id: str
+    type: str
+    name: str
+
+    @staticmethod
+    def from_json(item: dict) -> "AzureResource":
+        return AzureResource(
+            id=item.get("id", ""),
+            type=item.get("type", "").lower(),
+            name=item.get("name", ""),
+        )
+
+
+@dataclass(frozen=True)
+class Wave:
+    """Resource types deleted together, after every earlier wave is gone."""
+
+    types: frozenset
+    before: Optional[Callable[["TeardownRun"], None]] = None
+    after: Optional[Callable[["TeardownRun"], None]] = None
+
+
+@dataclass
+class TeardownRun:
+    config: Config
+    deadline: float
+    api_server: str = ""
+    had_cluster: bool = False
+    context_pruned: bool = False
+    inventory: List[AzureResource] = field(default_factory=list)
+
+
+def _wave(*types: str, **hooks) -> Wave:
+    return Wave(types=frozenset(t.lower() for t in types), **hooks)
+
+
+def _detach_nat_gateways(run: TeardownRun) -> None:
+    """Azure refuses to delete a NAT gateway that a subnet still references."""
+    result = run_command(
+        ["az", "network", "vnet", "list", "-g", run.config.resource_group, "-o", "json"],
+        description=f"List virtual networks in {run.config.resource_group}",
+        display=False,
+        check=False,
+        timeout=CALL_TIMEOUT_SECONDS,
+    )
+    if result.returncode != 0:
+        raise TeardownError(
+            f"Could not list virtual networks in {run.config.resource_group}: "
+            f"{result.stderr.strip()}"
+        )
+    for vnet in json.loads(result.stdout or "[]"):
+        for subnet in vnet.get("subnets") or []:
+            if not subnet.get("natGateway"):
+                continue
+            detach = run_command(
+                [
+                    "az",
+                    "network",
+                    "vnet",
+                    "subnet",
+                    "update",
+                    "--ids",
+                    subnet["id"],
+                    "--remove",
+                    "natGateway",
+                ],
+                description=f"Detach NAT gateway from subnet {subnet.get('name', '')}",
+                check=False,
+                timeout=CALL_TIMEOUT_SECONDS,
+            )
+            if detach.returncode != 0:
+                raise TeardownError(
+                    f"Could not detach the NAT gateway from {subnet['id']}: {detach.stderr.strip()}"
+                )
+
+
+def _confirm_nodes_group_gone(run: TeardownRun) -> None:
+    """The managed nodes group lags the cluster delete; network teardown waits for it."""
+    nodes_group = run.config.node_resource_group
+    if group_exists(nodes_group):
+        console.print(f"  [info]Waiting for managed nodes group {nodes_group} to be gone...[/info]")
+        if not wait_for_group_gone(nodes_group, run.deadline):
+            raise TeardownError(
+                f"Managed nodes group {nodes_group} still exists; network teardown cannot "
+                "start while it holds node resources."
+            )
+    if run.had_cluster and not run.context_pruned:
+        prune_kube_context(run.config.cluster_name, server_fqdn=run.api_server)
+        run.context_pruned = True
+
+
+# The first wave holds everything without a dependency on anything else in
+# the group, so its deletes run concurrently. Only the network chain needs
+# ordering, and only after the cluster's nodes have left the VNet. The types
+# are what infra/*.bicep provisions plus what Azure adds beside them (Event
+# Grid system topics on storage accounts, smart detection rules and their
+# action group on Application Insights). A type missing here blocks
+# teardown rather than being deleted blindly.
+DELETION_PLAN: Sequence[Wave] = (
+    _wave(
+        "Microsoft.ContainerService/managedClusters",
+        "Microsoft.EventGrid/systemTopics",
+        "Microsoft.DocumentDB/databaseAccounts",
+        "Microsoft.ServiceBus/namespaces",
+        "Microsoft.Storage/storageAccounts",
+        "Microsoft.ContainerRegistry/registries",
+        "Microsoft.KeyVault/vaults",
+        "Microsoft.AlertsManagement/smartDetectorAlertRules",
+        "Microsoft.Insights/actionGroups",
+        "Microsoft.Insights/components",
+        "Microsoft.OperationalInsights/workspaces",
+    ),
+    _wave("Microsoft.Network/natGateways", before=_detach_nat_gateways),
+    _wave("Microsoft.Network/publicIPAddresses"),
+    _wave("Microsoft.Network/virtualNetworks"),
+)
+
+HANDLED_TYPES = RETAINED_TYPES.union(*(wave.types for wave in DELETION_PLAN))
+
+
+def _read(cmd: List[str], description: str):
+    """A read that fails is retried briefly; a throttled or dropped call is not a verdict."""
+    result = None
+    for backoff in (*READ_RETRY_BACKOFF_SECONDS, None):
+        result = run_command(
+            cmd, description=description, display=False, check=False, timeout=CALL_TIMEOUT_SECONDS
+        )
+        if result.returncode == 0 or _is_fatal(result.stderr) or backoff is None:
+            break
+        time.sleep(backoff)
+    return result
+
+
+def group_exists(name: str) -> bool:
+    result = _read(
+        ["az", "group", "exists", "--name", name], f"Check resource group status: {name}"
+    )
+    if result.returncode != 0:
+        raise TeardownError(f"Could not check resource group {name}: {result.stderr.strip()}")
+    return result.stdout.strip().lower() == "true"
+
+
+def wait_for_group_gone(name: str, deadline: float) -> bool:
+    while True:
+        if not group_exists(name):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
+def list_group_resources(resource_group: str) -> List[AzureResource]:
+    """An unreadable inventory is a failure, never an empty group."""
+    result = _read(
+        ["az", "resource", "list", "--resource-group", resource_group, "-o", "json"],
+        f"Inventory resource group: {resource_group}",
+    )
+    if result.returncode != 0:
+        raise TeardownError(
+            f"Could not inventory resource group {resource_group}: {result.stderr.strip()}"
+        )
+    try:
+        items = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise TeardownError(f"Unreadable inventory for {resource_group}: {exc}") from exc
+    return [AzureResource.from_json(item) for item in items]
+
+
+def unhandled_resources(inventory: Iterable[AzureResource]) -> List[AzureResource]:
+    return [r for r in inventory if r.type not in HANDLED_TYPES]
+
+
+def retained_resources(inventory: Iterable[AzureResource]) -> List[AzureResource]:
+    return [r for r in inventory if r.type in RETAINED_TYPES]
+
+
+def _remaining(deadline: float, action: str) -> float:
+    """Seconds left before the deadline; a state-changing call is not started past it."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TeardownError(f"Teardown deadline reached before {action}")
+    return left
+
+
+def _is_fatal(stderr: str) -> bool:
+    return any(marker in stderr for marker in FATAL_ERROR_MARKERS)
+
+
+def request_delete(resource: AzureResource, deadline: float) -> str:
+    """Ask Azure to delete one resource; the inventory poll confirms completion.
+
+    Returns the decline reason when Azure would not take the request (a
+    dependency, an operation in progress), or "" when it was accepted.
+    Terminal refusals raise.
+    """
+    timeout = _remaining(deadline, f"deleting {resource.name}")
+    result = run_command(
+        ["az", "resource", "delete", "--ids", resource.id, "--no-wait"],
+        description=f"Delete {resource.type.split('/')[-1]}: {resource.name}",
+        check=False,
+        timeout=timeout,
+    )
+    if result.returncode == 0:
+        return ""
+    reason = result.stderr.strip()
+    if _is_fatal(reason):
+        raise TeardownError(f"Delete refused for {resource.id}: {reason}")
+    console.print(f"  [warning]Delete not accepted for {resource.name}: {reason}[/warning]")
+    return reason
+
+
+def _request_deletes(resources: Sequence[AzureResource], deadline: float) -> dict:
+    """Request every delete concurrently and return the decline reasons by id.
+
+    Threads rather than trusting `--no-wait`: the CLI still blocks on
+    long-running deletes such as AKS and Cosmos, and the point is to have
+    Azure work on all of them at once, each bounded by the run deadline so
+    a blocked CLI call cannot outlive it. Every request is issued before a
+    fatal refusal is raised, so one refused resource does not leave the
+    rest of the wave unrequested.
+    """
+    declines: dict = {}
+    if not resources:
+        return declines
+    fatal: Optional[TeardownError] = None
+    with ThreadPoolExecutor(max_workers=min(len(resources), MAX_PARALLEL_REQUESTS)) as pool:
+        futures = {pool.submit(request_delete, r, deadline): r for r in resources}
+        for future in as_completed(futures):
+            try:
+                reason = future.result()
+            except TeardownError as exc:
+                fatal = fatal or exc
+                continue
+            if reason:
+                declines[futures[future].id] = reason
+    if fatal:
+        raise fatal
+    return declines
+
+
+def provisioning_state(resource: AzureResource) -> str:
+    result = run_command(
+        [
+            "az",
+            "resource",
+            "show",
+            "--ids",
+            resource.id,
+            "--query",
+            "properties.provisioningState",
+            "-o",
+            "tsv",
+        ],
+        description=f"Read state of {resource.name}",
+        display=False,
+        check=False,
+        timeout=CALL_TIMEOUT_SECONDS,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def delete_wave(run: TeardownRun, wave: Wave) -> None:
+    """Fire the wave's deletes together, then poll until the inventory shows them gone.
+
+    A resource that is still present and reports a state other than
+    ``Deleting`` is asked for again with backoff; a request declined
+    repeatedly with the same reason stops the run.
+    """
+    targets = [r for r in run.inventory if r.type in wave.types]
+    declines = _request_deletes(targets, run.deadline)
+    repeats: dict = {rid: 1 for rid in declines}
+    attempt = 0
+    next_check = time.monotonic() + RETRY_BACKOFF_SECONDS[0]
+    while True:
+        run.inventory = list_group_resources(run.config.resource_group)
+        lingering = [r for r in run.inventory if r.type in wave.types]
+        if not lingering:
+            return
+        now = time.monotonic()
+        if now >= run.deadline:
+            raise TeardownError(
+                "Teardown deadline reached with resources remaining:\n  "
+                + _describe_with_state(lingering)
+            )
+        if now >= next_check:
+            states = {r.id: provisioning_state(r).lower() for r in lingering}
+            # Anything but an explicit Deleting counts as stalled: some types expose
+            # no provisioning state, and a delete request is idempotent.
+            stalled = [r for r in lingering if states[r.id] != "deleting"]
+            for rid, reason in _request_deletes(stalled, run.deadline).items():
+                repeats[rid] = repeats.get(rid, 0) + 1 if reason == declines.get(rid) else 1
+                declines[rid] = reason
+                if repeats[rid] >= MAX_IDENTICAL_DECLINES:
+                    raise TeardownError(
+                        f"Delete declined {repeats[rid]} times for {rid} with the same "
+                        f"reason: {reason}"
+                    )
+            attempt += 1
+            backoff = RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)]
+            next_check = now + backoff
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
+def _describe(resources: Iterable[AzureResource]) -> str:
+    return "\n  ".join(f"{r.type}  {r.name}" for r in resources)
+
+
+def _describe_with_state(resources: Iterable[AzureResource]) -> str:
+    return "\n  ".join(f"{r.id} ({provisioning_state(r) or 'unknown'})" for r in resources)
+
+
+def _cluster_api_server(config: Config) -> str:
+    result = _read(
+        [
+            "az",
+            "aks",
+            "show",
+            "--resource-group",
+            config.resource_group,
+            "--name",
+            config.cluster_name,
+            "--query",
+            "privateFqdn || fqdn",
+            "--output",
+            "tsv",
+        ],
+        f"Look up API server for {config.cluster_name}",
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _check_plan_covers(inventory: Iterable[AzureResource]) -> None:
+    unhandled = unhandled_resources(inventory)
+    if unhandled:
+        raise TeardownError(
+            "Resource group holds resources the teardown plan does not cover; "
+            "they were left in place:\n  " + _describe(unhandled)
+        )
+
+
+def teardown_environment(config: Config) -> List[AzureResource]:
+    """Delete everything in the group except managed identities.
+
+    The plan runs in passes: a resource Azure adds while an earlier wave is
+    in flight (an Event Grid system topic on a storage account, for example)
+    is picked up by the next pass. Returns the retained resources. Raises
+    ``TeardownError`` when the group holds a resource type the plan does not
+    cover, when a delete is refused, when a pass makes no progress, or when
+    the deadline passes with resources remaining.
+    """
+    rg = config.resource_group
+    console.print(f"\n[bold]Tearing down {rg} (managed identities are kept)...[/bold]")
+    if not group_exists(rg):
+        display_result(f"Resource group {rg} does not exist; nothing to tear down")
+        return []
+
+    run = TeardownRun(config=config, deadline=time.monotonic() + TEARDOWN_DEADLINE_SECONDS)
+    run.inventory = list_group_resources(rg)
+    _check_plan_covers(run.inventory)
+    run.had_cluster = any(r.type == CLUSTER_TYPE for r in run.inventory)
+    run.api_server = _cluster_api_server(config) if run.had_cluster else ""
+
+    try:
+        _run_passes(run)
+    except TeardownError:
+        _prune_if_cluster_gone(run)
+        raise
+
+    leftovers = [r for r in run.inventory if r.type not in RETAINED_TYPES]
+    if leftovers:
+        raise TeardownError("Resources remain after teardown:\n  " + _describe(leftovers))
+    _confirm_nodes_group_gone(run)
+    retained = retained_resources(run.inventory)
+    display_result(f"Resource group {rg} holds only managed identities")
+    for identity in retained:
+        console.print(f"  [dim]retained {identity.name}[/dim]")
+    return retained
+
+
+def _prune_if_cluster_gone(run: TeardownRun) -> None:
+    """A failed pass must not strand the kubeconfig entry: once the cluster and its
+    nodes group are gone the fingerprint read at the start is the last chance to
+    match it, because a rerun finds no cluster to read one from."""
+    if not run.had_cluster or run.context_pruned:
+        return
+    try:
+        inventory = list_group_resources(run.config.resource_group)
+        if any(r.type == CLUSTER_TYPE for r in inventory):
+            return
+        if group_exists(run.config.node_resource_group):
+            return
+    except TeardownError:
+        return
+    prune_kube_context(run.config.cluster_name, server_fqdn=run.api_server)
+    run.context_pruned = True
+
+
+def _run_passes(run: TeardownRun) -> None:
+    rg = run.config.resource_group
+    for _ in range(MAX_PASSES):
+        if not any(r.type not in RETAINED_TYPES for r in run.inventory):
+            break
+        if time.monotonic() >= run.deadline:
+            raise TeardownError(
+                "Teardown deadline reached with resources remaining:\n  "
+                + _describe_with_state(r for r in run.inventory if r.type not in RETAINED_TYPES)
+            )
+        for index, wave in enumerate(DELETION_PLAN):
+            if index == 1:
+                # Network teardown needs the cluster's nodes out of the VNet,
+                # whether or not this pass deleted the cluster itself.
+                _confirm_nodes_group_gone(run)
+            if not any(r.type in wave.types for r in run.inventory):
+                continue
+            if wave.before:
+                wave.before(run)
+            delete_wave(run, wave)
+            if wave.after:
+                wave.after(run)
+        run.inventory = list_group_resources(rg)
+        _check_plan_covers(run.inventory)
+        if any(r.type not in RETAINED_TYPES for r in run.inventory):
+            console.print(
+                "  [info]New resources appeared during teardown; running another pass[/info]"
+            )
+
+
+@dataclass(frozen=True)
+class ExternalGrant:
+    id: str
+    scope: str
+    role: str
+    principal_id: str
+    identity_name: str = ""
+
+
+def _in_environment(scope: str, config: Config) -> bool:
+    """Grants inside the group or its managed nodes group die with those groups."""
+    lowered = scope.lower()
+    for group in (config.resource_group, config.node_resource_group):
+        marker = f"/resourcegroups/{group.lower()}"
+        if lowered.endswith(marker) or f"{marker}/" in lowered:
+            return True
+    return False
+
+
+def discover_external_grants(config: Config) -> List[ExternalGrant]:
+    """Role assignments the group's identities hold outside the environment."""
+    listed = run_command(
+        [
+            "az",
+            "identity",
+            "list",
+            "--resource-group",
+            config.resource_group,
+            "--query",
+            "[].{name:name, principalId:principalId}",
+            "-o",
+            "json",
+        ],
+        description=f"List managed identities in {config.resource_group}",
+        display=False,
+        check=False,
+        timeout=CALL_TIMEOUT_SECONDS,
+    )
+    if listed.returncode != 0:
+        raise TeardownError(
+            f"Could not list identities in {config.resource_group}: {listed.stderr.strip()}"
+        )
+    grants: List[ExternalGrant] = []
+    for identity in json.loads(listed.stdout or "[]"):
+        principal_id = identity.get("principalId") or ""
+        if not principal_id:
+            raise TeardownError(
+                f"Identity {identity.get('name', '?')} reports no principal id; its role "
+                "assignments cannot be discovered, so purge stops."
+            )
+        result = run_command(
+            ["az", "role", "assignment", "list", "--all", "--assignee", principal_id, "-o", "json"],
+            description=f"Discover role assignments for {identity.get('name', principal_id)}",
+            display=False,
+            check=False,
+            timeout=CALL_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            raise TeardownError(
+                f"Could not discover role assignments for {principal_id}: {result.stderr.strip()}"
+            )
+        for item in json.loads(result.stdout or "[]"):
+            scope = item.get("scope", "")
+            if _in_environment(scope, config):
+                continue
+            grants.append(
+                ExternalGrant(
+                    id=item.get("id", ""),
+                    scope=scope,
+                    role=item.get("roleDefinitionName", ""),
+                    principal_id=principal_id,
+                    identity_name=identity.get("name", ""),
+                )
+            )
+    return grants
+
+
+def is_stack_owned(grant: ExternalGrant, config: Config) -> bool:
+    """The only external grant the stack creates: ExternalDNS's zone contributor role."""
+    return (
+        grant.identity_name == config.external_dns_identity_name
+        and grant.role == DNS_ZONE_CONTRIBUTOR
+        and DNS_ZONE_SCOPE.search(grant.scope.lower()) is not None
+    )
+
+
+def remove_external_grants(config: Config) -> List[ExternalGrant]:
+    """Remove the stack-owned external grants; anything else stops the purge."""
+    grants = discover_external_grants(config)
+    foreign = [g for g in grants if not is_stack_owned(g, config)]
+    if foreign:
+        raise TeardownError(
+            "Identities hold role assignments outside the environment that the stack "
+            "did not create; remove them before purging:\n  "
+            + "\n  ".join(f"{g.role} at {g.scope} ({g.id})" for g in foreign)
+        )
+    for grant in grants:
+        removed = run_command(
+            ["az", "role", "assignment", "delete", "--ids", grant.id],
+            description=f"Remove {grant.role} from {grant.scope.rsplit('/', 1)[-1]}",
+            check=False,
+            timeout=CALL_TIMEOUT_SECONDS,
+        )
+        if removed.returncode != 0:
+            raise TeardownError(f"Could not remove {grant.id}: {removed.stderr.strip()}")
+    removed_ids = {g.id for g in grants}
+    still: List[ExternalGrant] = []
+    for backoff in (*RETRY_BACKOFF_SECONDS, None):
+        current = discover_external_grants(config)
+        new = [g for g in current if g.id not in removed_ids]
+        if new:
+            raise TeardownError(
+                "Role assignments appeared outside the environment during purge; "
+                "remove them before purging:\n  "
+                + "\n  ".join(f"{g.role} at {g.scope} ({g.id})" for g in new)
+            )
+        still = [g for g in current if g.id in removed_ids]
+        if not still or backoff is None:
+            break
+        time.sleep(backoff)  # RBAC reads are eventually consistent
+    if still:
+        raise TeardownError(
+            "Role assignments still present after removal:\n  " + "\n  ".join(g.id for g in still)
+        )
+    return grants
+
+
+def _request_group_delete(name: str, deadline: float) -> None:
+    timeout = _remaining(deadline, f"deleting resource group {name}")
+    result = run_command(
+        ["az", "group", "delete", "--name", name, "--yes", "--no-wait"],
+        description=f"Delete resource group: {name}",
+        check=False,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise TeardownError(f"Purge request failed for {name}: {result.stderr.strip()}")
+
+
+def purge_environment(config: Config) -> None:
+    """Delete the whole group, identities included, after external grants are gone.
+
+    The managed nodes group normally goes with the cluster, but a cluster
+    already deleted by an earlier `down` can leave it behind with the
+    grants purge treated as in-environment, so it is a purge target too.
+    """
+    rg = config.resource_group
+    nodes_group = config.node_resource_group
+    console.print(f"\n[bold]Purging {rg} (identities and group will be deleted)...[/bold]")
+    deadline = time.monotonic() + TEARDOWN_DEADLINE_SECONDS
+    targets: List[str] = []
+    had_cluster = False
+    api_server = ""
+    if group_exists(rg):
+        had_cluster = any(r.type == CLUSTER_TYPE for r in list_group_resources(rg))
+        api_server = _cluster_api_server(config) if had_cluster else ""
+        removed = remove_external_grants(config)
+        if removed:
+            console.print(f"  [info]Removed {len(removed)} external role assignment(s)[/info]")
+        targets.append(rg)
+    if not had_cluster and group_exists(nodes_group):
+        targets.append(nodes_group)
+    if not targets:
+        display_result(f"Resource group {rg} does not exist; nothing to purge")
+        return
+
+    for name in targets:
+        _request_group_delete(name, deadline)
+    console.print(f"  [info]Waiting for Azure to report {', '.join(targets)} gone...[/info]")
+    # The nodes group goes with the cluster, but on Azure's schedule; success waits for it.
+    for name in targets + ([nodes_group] if nodes_group not in targets else []):
+        if not wait_for_group_gone(name, deadline):
+            raise TeardownError(
+                f"Resource group {name} still exists after the purge deadline; the delete "
+                f"was accepted but has not completed. Verify with: az group exists --name {name}"
+            )
+    if had_cluster:
+        prune_kube_context(config.cluster_name, server_fqdn=api_server)
+    display_result(f"Resource group {rg} deleted")

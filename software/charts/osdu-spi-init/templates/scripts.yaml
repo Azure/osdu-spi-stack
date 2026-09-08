@@ -178,18 +178,14 @@ data:
   init_entitlements.py: |
     """Seed entitlements root groups for a partition.
 
-    Flow:
-      1. Wait for entitlements /info to return 200.
-      2. Wait for GET /partitions/<PARTITION> to return 200 (partition-init
-         for this partition must have landed first).
-      3. Acquire a bearer token via Workload Identity.
-      4. POST /api/entitlements/v2/tenant-provisioning with
-         data-partition-id: <PARTITION>. This creates users.data.root and
-         sibling root groups, adding the caller's appid as OWNER.
-      5. Treat 200 and 409 as success.
+    Partition creation and the entitlements partition cache converge
+    asynchronously. Retry tenant provisioning while entitlements reports that
+    the partition is not valid, then treat 200 and 409 as success.
     """
     import os
     import sys
+    import time
+    import urllib.error
     import urllib.request
 
     sys.path.insert(0, "/scripts")
@@ -200,13 +196,11 @@ data:
     ENTITLEMENTS_HOST = os.environ.get(
         "ENTITLEMENTS_HOST", "http://entitlements.osdu.svc.cluster.local"
     )
-    PARTITION_HOST = os.environ.get(
-        "PARTITION_HOST", "http://partition.osdu.svc.cluster.local"
-    )
 
     INFO_URL = f"{ENTITLEMENTS_HOST}/api/entitlements/v2/info"
-    PARTITION_GET_URL = f"{PARTITION_HOST}/api/partition/v1/partitions/{PARTITION}"
     POST_URL = f"{ENTITLEMENTS_HOST}/api/entitlements/v2/tenant-provisioning"
+    PROVISION_ATTEMPTS = 150
+    RETRY_DELAY = 2.0
 
 
     def main() -> int:
@@ -215,42 +209,44 @@ data:
         if not wait_for_status(INFO_URL, {200}, attempts=600, delay=2.0):
             return 1
 
-        # partition-init runs in parallel; wait until the record exists. A
-        # 401/403 still means it does; the GET requires auth.
-        if not wait_for_status(
-            PARTITION_GET_URL, {200, 401, 403}, attempts=300, delay=2.0
-        ):
-            return 1
-
         print("  Acquiring bearer token via Workload Identity...")
         token = get_token()
 
-        req = urllib.request.Request(
-            POST_URL,
-            data=b"",
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Authorization": f"Bearer {token}",
-                "data-partition-id": PARTITION,
-            },
-        )
-        try:
-            resp = urllib.request.urlopen(req, timeout=120)
-            code = resp.getcode()
-            print(f"  POST {POST_URL} -> {code}")
-            print(resp.read().decode(errors="replace"))
-        except urllib.error.HTTPError as e:
-            code = e.code
-            payload = e.read().decode(errors="replace")
+        for attempt in range(1, PROVISION_ATTEMPTS + 1):
+            req = urllib.request.Request(
+                POST_URL,
+                data=b"",
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {token}",
+                    "data-partition-id": PARTITION,
+                },
+            )
+            try:
+                resp = urllib.request.urlopen(req, timeout=120)
+                code = resp.getcode()
+                payload = resp.read().decode(errors="replace")
+            except urllib.error.HTTPError as e:
+                code = e.code
+                payload = e.read().decode(errors="replace")
+
             print(f"  POST {POST_URL} -> {code}")
             print(payload)
+            if code == 200:
+                return 0
             if code == 409:
                 print("  Tenant already provisioned; treating as success.")
                 return 0
+            if code == 403 and "Invalid data partition id" in payload:
+                if attempt < PROVISION_ATTEMPTS:
+                    print("  Partition is not visible to entitlements yet; retrying...")
+                    time.sleep(RETRY_DELAY)
+                    continue
             return 1
-        return 0 if code == 200 else 1
+
+        return 1
 
 
     if __name__ == "__main__":

@@ -679,6 +679,8 @@ def _build_bicep_params(
         "envName": config.env,
         "location": config.location,
         "identityName": config.identity_name,
+        "deployIdentityName": config.deploy_identity_name,
+        "clusterName": config.cluster_name,
         "externalDnsIdentityName": config.external_dns_identity_name,
         "keyVaultName": config.keyvault_name,
         "acrName": config.acr_name,
@@ -775,6 +777,8 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "identity_client_id": bicep_outputs.get("identityClientId", ""),
         "identity_principal_id": bicep_outputs.get("identityPrincipalId", ""),
+        "deploy_identity_client_id": bicep_outputs.get("deployIdentityClientId", ""),
+        "deploy_identity_principal_id": bicep_outputs.get("deployIdentityPrincipalId", ""),
         "identity_id": bicep_outputs.get("identityResourceId", ""),
         "keyvault_uri": bicep_outputs.get("keyvaultUri", ""),
         "keyvault_id": bicep_outputs.get("keyvaultId", ""),

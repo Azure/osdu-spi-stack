@@ -49,6 +49,32 @@ spec:
   timeout: 5m
 
 ---
+# Layer 0c: Fork RBAC (deploy identity Roles, ADR-032)
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-fork-rbac
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "0"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-namespaces
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/fork-rbac
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-cluster-config
+        optional: false
+  prune: true
+  wait: true
+  timeout: 5m
+
+---
 # Layer 1a: cert-manager
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
