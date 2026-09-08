@@ -149,6 +149,10 @@ The JSON spec at `docs/branch-protection.json` enforces:
   is the owner's own PR, where GitHub never counts the author's approval and
   `@Azure/azure-global-energy` is the only code owner left. Swap the user for a
   team when a second maintainer arrives.
+- `allow_fork_syncing` applies only when `lock_branch` is `true`, which it is
+  not, so GitHub normalizes it to `false` on every apply and the spec records
+  `false` to stay reproducible. It has no bearing on forks opening pull requests
+  against this repo; `allow_forking` on the repository governs that.
 - `enforce_admins: false` is deliberate, and gives the second escape hatch: a
   code owner who elevates to admin merges without a review, and the elevation
   is recorded. That audit trail is the reason this path stays open to the team
