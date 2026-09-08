@@ -24,6 +24,9 @@ spec:
         name: osdu-spi-stack-system
   values:
     replicaCount: 2
+    hostAntiAffinity: true
+    podDisruptionBudget:
+      enabled: true
     image:
       repository: ${LEGAL_IMAGE_REPOSITORY}
       tag: "${LEGAL_IMAGE_TAG}"
