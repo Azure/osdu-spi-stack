@@ -108,11 +108,12 @@ follow-up could tighten this to a parent `spi-ci-sandbox` RG and have
 
 ## Branch protection on `main`
 
-Applied via `gh api`:
+Applied via `gh api`. The spec carries `{owner_name}` as the bypass principal
+rather than a hard-coded account, so substitute it on the way in:
 
 ```bash
-gh api -X PUT repos/Azure/osdu-spi-stack/branches/main/protection \
-  --input docs/branch-protection.json
+sed 's/{owner_name}/<github-username>/' docs/branch-protection.json \
+  | gh api -X PUT repos/Azure/osdu-spi-stack/branches/main/protection --input -
 ```
 
 The JSON spec at `docs/branch-protection.json` enforces:
