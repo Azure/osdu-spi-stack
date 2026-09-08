@@ -14,9 +14,9 @@
      writing the change. Delete this section if the diff raises nothing. -->
 
 <!--
-Add your own heading when the change has an argument these do not fit, and delete
-any section with nothing real in it. An empty section trains readers to skip the
-filled ones.
+Add your own heading when the change has an argument these do not fit. Delete the
+Notes section when it has nothing real in it. An empty section trains readers to skip
+the filled ones.
 
 The PR title determines release impact via release-please:
 feat -> minor, breaking ! -> major, anything else -> patch.
