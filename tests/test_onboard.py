@@ -358,6 +358,18 @@ class TestPlanning:
         assert states[f"{TRUSTED_REPOS_ANNOTATION} on osdu-image-lock"] == "correct"
         assert [s.argv[:3] for s in plan.steps] == [["gh", "secret", "set"]]
 
+    def test_a_rerun_without_repo_still_resolves_the_stored_casing(self, world):
+        """A hand-made credential with the wrong casing cannot authenticate;
+        the rerun must see GitHub's casing and plan the repair."""
+        world.protect("Acme/osdu-spi-partition")
+        world.trust("partition", "acme/osdu-spi-partition")
+
+        plan = plan_onboard(target(), "partition", "")
+
+        assert plan.repo == "Acme/osdu-spi-partition"
+        assert _states(plan.rows)["fork-partition on spi-stack-dev1-deployer"] == "drifted"
+        assert "update" in next(s.argv for s in plan.steps if s.phase == "azure")
+
     def test_drift_is_named_per_row(self, world):
         world.protect("Acme/osdu-spi-partition", branches=("main",))
         world.stamp("Acme/osdu-spi-partition", dict(VALUES, SPI_STACK_CLUSTER="old-cluster"))

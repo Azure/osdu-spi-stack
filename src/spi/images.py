@@ -461,11 +461,20 @@ def ghcr_index_child_digests(repository: str, digest: str) -> tuple[str, ...]:
     )
 
 
+# One path component of a distribution repository name (lowercase alphanumerics
+# joined by single separators), which keeps URL-reserved characters out.
+_REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
+
+
 def require_ghcr_repository(repository: str) -> None:
     """Require a pin's repository to be a GHCR package, ``ghcr.io/<owner>/<name>``."""
 
     parts = repository.lower().split("/")
-    if len(parts) != 3 or parts[0] != GHCR_HOST or not all(parts[1:]):
+    if (
+        len(parts) != 3
+        or parts[0] != GHCR_HOST
+        or not all(_REPOSITORY_COMPONENT_RE.match(part) for part in parts[1:])
+    ):
         raise ImageResolutionError(
             f"repository {repository!r} is not a GHCR package; expected {GHCR_HOST}/<owner>/<name>"
         )

@@ -674,7 +674,8 @@ def plan_onboard(
     if repo_spec:
         repo = resolve_repository(repo_spec)
     elif existing is not None and existing.repo:
-        repo = existing.repo
+        # A hand-made credential may carry the wrong casing; GitHub decides.
+        repo = resolve_repository(existing.repo)
     else:
         raise OnboardError(f"{service} is not trusted yet; pass --repo <owner>/<fork>.")
 

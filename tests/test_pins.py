@@ -1222,6 +1222,10 @@ class TestParseImageDigestRef:
             require_ghcr_repository("ghcr.io/storage")
         with pytest.raises(ImageResolutionError, match="not a GHCR package"):
             require_ghcr_repository("ghcr.io/acme/other/storage")
+        for bad in ("ghcr.io/acme/storage?redirect=", "ghcr.io/acme/st%2Forage", "ghcr.io/acme/-x"):
+            with pytest.raises(ImageResolutionError, match="not a GHCR package"):
+                require_ghcr_repository(bad)
+        require_ghcr_repository("ghcr.io/acme-corp/crs-conversion_v2.1")
 
 
 class TestPinServiceImage:
