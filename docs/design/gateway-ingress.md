@@ -34,8 +34,10 @@ the cluster's certificate controller.
 
 ## Azure-assigned hostname
 
-For `--env dev1 --location westus3`, the default hostname is
-`spi-stack-dev1-ingress.westus3.cloudapp.azure.com`.
+For `--env dev1 --location westus3` with naming suffix `ab12c`, the hostname
+is `dev1-ingress-ab12c.westus3.cloudapp.azure.com`. The suffix is the one
+persisted in the resource group's `spi-name-suffix` tag; only a legacy
+deployment without a suffix keeps the older `spi-stack-dev1-ingress` label.
 
 The `spi-ingress-dns-label` Kustomization applies a partial Service manifest
 that owns only the DNS-label annotation. The Azure cloud controller assigns the

@@ -245,8 +245,9 @@ Canonical schema and schema-load images resolve to the same SHA. If the registry
 loader image, resolution fails before replacing the lock. `spi-osdu-schema-load`
 substitutes the loader image and uses `force: true` so a changed Job template
 can be recreated. `spi reconcile` attempts to backfill older locks missing
-loader keys before requesting reconciliation. Resolution failures in that
-backfill warn and continue, so inspect the lock if substitution remains blocked.
+loader keys before requesting reconciliation. A resolution failure in that
+backfill exits with an error before any reconciliation is requested; the lock
+is left as it was.
 
 The lock records the resolved set for one environment. It does not guarantee
 future registry retention or make a fresh resolution choose the same images.
