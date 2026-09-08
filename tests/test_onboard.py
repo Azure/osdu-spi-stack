@@ -690,6 +690,16 @@ class TestApplying:
             "storage": "Acme/osdu-spi-storage",
         }
 
+    def test_a_repository_claimed_by_another_service_mid_run_is_refused(self, world):
+        world.protect("Acme/osdu-spi-partition")
+        plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition")
+        world.trust("storage", "Acme/osdu-spi-partition")
+
+        with pytest.raises(OnboardError, match="already backs storage"):
+            apply_plan(plan)
+
+        assert [c["name"] for c in world.credentials] == ["fork-storage"]
+
     def test_the_projection_keeps_other_services_and_the_pins_annotation(self, world):
         world.protect("Acme/osdu-spi-partition")
         world.trust("storage", "Acme/osdu-spi-storage")
@@ -816,6 +826,25 @@ class TestListAndRemove:
 
         assert set(_states(rows).values()) == {"correct"}
         assert world.projection() == {"storage": "Acme/osdu-spi-storage"}
+
+    def test_removal_reports_a_credential_recreated_mid_run(self, world, monkeypatch):
+        world.trust("partition", "Acme/osdu-spi-partition")
+        world.project({"partition": "Acme/osdu-spi-partition"})
+        plan = plan_remove(target(), "partition")
+        real = world.run_command
+
+        def competitor(argv, **kwargs):
+            result = real(argv, **kwargs)
+            if argv[:4] == ["az", "identity", "federated-credential", "delete"]:
+                world.trust("partition", "Acme/osdu-spi-partition")
+            return result
+
+        monkeypatch.setattr(onboard, "run_command", competitor)
+
+        rows = apply_remove(plan)
+
+        assert _states(rows)["fork-partition"] == "drifted"
+        assert world.projection() == {"partition": "Acme/osdu-spi-partition"}
 
     def test_removing_an_untrusted_service_is_a_no_op(self, world):
         plan = plan_remove(target(), "partition")

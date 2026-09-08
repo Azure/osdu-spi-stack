@@ -864,6 +864,8 @@ def _write_credential(plan: Plan, build: Callable[[Plan], Optional[Step]]) -> No
 
     for attempt, delay in enumerate((*CONFLICT_BACKOFF_SECONDS, None)):
         plan.roster = read_roster(plan.target)
+        if plan.repo:
+            _refuse_before_writes(plan)
         step = build(plan)
         if step is None:
             return
@@ -1094,8 +1096,11 @@ def apply_remove(plan: Plan) -> list[Row]:
             f"{exc}\nCompleted: azure. Pending: cluster. Re-run to resume."
         ) from None
     plan.steps = []
+    recreated = plan.existing_credential()
     plan.rows = [
-        Row("azure", plan.credential_name, "correct", "absent"),
+        Row("azure", plan.credential_name, "correct", "absent")
+        if recreated is None
+        else Row("azure", plan.credential_name, "drifted", f"recreated for {recreated.repo}"),
         _projection_row(roster_repos(plan.roster), plan.projection),
     ]
     return plan.rows
