@@ -12,14 +12,15 @@ them). When a deploy misbehaves, the operator debugging it needs the exact
 sequence, what each step asserts, and which recovery path applies.
 
 **Status.** `spi service pin --image --ephemeral`, `verify`, the
-ownership-checked `reset --if-run`, and the separate stale sweep
-(`reset --ephemeral --stale-only`) are implemented.
-`spi onboard`, retained source policy, declaration enforcement,
-`spi service refresh`, the refresh workflow's backstop step, the
-roster-derived pin validation below (`src/spi/pins.py` still enforces the
-`Azure/osdu-spi-*` pattern), repository-derived GHCR package validation
-(`src/spi/images.py` still restricts owners to `azure`), and the fork-side
-jobs are ahead of the code (phases 1 and 4 of the roadmap in
+ownership-checked `reset --if-run`, the separate stale sweep
+(`reset --ephemeral --stale-only`), and the trust path of `spi onboard`
+(phases 1 to 3 below, `--list` and `--remove` for trust and projection,
+roster-derived pin validation, repository-derived GHCR package validation)
+are implemented.
+Phase 4 source policy (`--canonical-source`, the `spi-source-<service>`
+tags), declaration enforcement, `spi service refresh`, the refresh
+workflow's backstop step, and the fork-side jobs are ahead of the code
+(phases 4 and 5 of the roadmap in
 [environment-lifecycle.md](environment-lifecycle.md)). Remove the marks as
 they land.
 
@@ -151,16 +152,15 @@ that public package, the deploy job pins it by digest, and canonical refresh
 resolves its `main` line after promotion. No separate package-path state or
 Azure namespace fallback is involved.
 
-The target implementation removes `GHCR_ALLOWED_OWNERS = ("azure",)` from
-`src/spi/images.py`. `require_ghcr_repository` and its resolution and
-verification callers retain strict GHCR host, path, and digest validation
-without hardcoding an owner. Ephemeral pin validation additionally requires
-the derived package path for the requested service and roster-matching
-`source_repo`; changing only the provenance name check is insufficient.
-Operator pins keep their explicit-image path without requiring onboarding
-(ADR-031).
+`require_ghcr_repository` in `src/spi/images.py` checks GHCR host, path,
+and digest shape without naming an owner. An ephemeral pin additionally
+must use the package derived from its `source_repo` for the requested
+service, and that `source_repo` must equal, case included, the repository
+the lock's roster projection (`spi-stack.osdu.dev/trusted-repos`) records
+for the service. Operator pins keep their explicit-image path without
+requiring onboarding (ADR-031).
 
-`spi onboard <service> --repo <org>/<fork>` (unbuilt, `src/spi/onboard.py`)
+`spi onboard <service> --repo <org>/<fork>` (`src/spi/onboard.py`)
 activates one repository against the connected environment. The deploy
 identity, its Azure roles, and the two Roles already exist from `spi up`
 (ADR-032). The plan groups commands by system and numbers these execution
@@ -182,8 +182,8 @@ subject exactly. It reads the credential roster next and refuses before
 phase 1 when the repository already backs another service or the identity
 holds twenty credentials (ADR-032); neither failure is recoverable in
 phase 2.
-Without `--write` the command prints the `az`, `spi`, and `gh` commands for
-each phase and changes nothing; the plan is the handoff for whoever holds
+Without `--write` the command prints the `gh`, `az`, and `kubectl` commands
+for each phase and changes nothing; the plan is the handoff for whoever holds
 the rights on each side. `--write` applies the phases in order. `--skip-repo`
 omits repository writes but still reads and requires the protection rules
 before enabling trust; missing or unreadable rules stop activation. Merely
@@ -280,6 +280,6 @@ kubectl get cm osdu-image-lock -n osdu-flux \
 ## Source files
 
 - `src/spi/pins.py`, `src/spi/images.py`, `src/spi/cli.py`, `src/spi/guard.py`
-- `src/spi/onboard.py` (planned)
+- `src/spi/onboard.py`
 - `software/charts/osdu-spi-service/templates/deployment.yaml`
 - The fork-side jobs: `Azure/osdu-spi` `.github/template-workflows/`

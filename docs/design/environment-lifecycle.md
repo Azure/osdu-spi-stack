@@ -270,12 +270,13 @@ gh run watch
    bump-PR job are implemented. Still unbuilt: `env-reset`, `env-teardown`,
    the test-identity ensure step, and the pin backstop/drain insertion
    points noted above.
-4. **Onboarding** (in progress): the deploy identity and two Roles in `spi up`
-   and identity and RG-tag retention in `spi down` (ADR-034) are built. Still
-   unbuilt: phased `spi onboard`,
+4. **Onboarding** (in progress): the deploy identity and two Roles in `spi up`,
+   identity and RG-tag retention in `spi down` (ADR-034), and the trust path
+   of `spi onboard` (repository protection, the five values, the federated
+   credential, the roster projection with roster-derived pin validation) are
+   built. Still unbuilt: `--canonical-source` and the source-policy phase,
    `forks:` and the declaration locator with pre-resolution intent loading;
-   repository-derived GHCR package validation instead of the Azure-owner
-   restriction; onboard `osdu-spi-partition` with a community canonical; the
+   onboard `osdu-spi-partition` with a community canonical; the
    template-side deploy, integration-test, and restore jobs under the reserved
    check names.
 5. **Canonical promotions** (unbuilt): explicit per-service source policy in
