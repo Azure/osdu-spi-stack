@@ -46,7 +46,8 @@ corrected files. Run it before every PR; run individual tools from
   versions from (`feat` minor, breaking `!` major, anything else patch);
   the `pr-title` check enforces it.
   PR descriptions follow the shape in `CONTRIBUTING.md`: why first, then what
-  changed, then honest validation results.
+  changed, then notes on anything a reader would stop and question. No
+  validation checklist; CI results are already on the pull request.
 - **Branches** are named `<type>/<short-name>`, for example `feat/add-redis-component`.
 - **Code**: ruff line length 100 with import sorting; keep `ty` clean.
 - **Local Helm charts**: bump `version` in `Chart.yaml` with any change under
