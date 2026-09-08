@@ -1,159 +1,120 @@
-# Flux Reconciliation
+# Flux reconciliation
 
-**What this explains.** How the layer DAG composes, how `dependsOn` gates work in practice, how the `osdu-image-lock` ConfigMap drives service updates through Flux post-build substitution, and what suspend and resume actually do.
+Flux applies workload configuration from Git. OSDU service image tags are a
+separate input, supplied by the CLI through `osdu-flux/osdu-image-lock`.
+Changing either input can change the running environment.
 
-**Why it matters.** Flux owns everything inside the cluster after the CLI hands off. When a layer is stuck or a service does not pick up a new image, the answer is in this loop, not in the CLI.
+**Suspending the Git source stops fetching new commits, not reconciliation
+against the cached commit.** Kustomizations, HelmReleases, and operators can
+continue working while the source is suspended.
 
-> **Companion docs.** [Deployment lifecycle](deployment-lifecycle.md) covers timing and what the CLI does before Flux. [Bicep architecture](bicep-architecture.md) covers what produces the `fluxConfigurations` resource that activates this loop.
+## Git configuration and runtime inputs
 
-## The two reconciliation loops
+`infra/flux.bicep` installs the AKS Flux extension and configures the
+`osdu-spi-stack-system` Git source in `osdu-flux`. The extension's controllers
+remain in protected `flux-system`; SPI-owned objects do not. When resumed, the
+source polls every ten minutes.
+Two root Kustomizations consume that source:
 
-![Flux reconciliation loops](../diagrams/flux-reconciliation.png)
+| Root | Path | Responsibility |
+|---|---|---|
+| `stack` | `software/stacks/osdu/profiles/<profile>` | Operators, middleware, OSDU services, initialization |
+| `ingress` | `software/stacks/osdu/ingress/<mode>` for `core` | Certificates, DNS controller where needed, TLS overlays, routes |
 
-Two loops keep the cluster converged. They run independently and idle in lockstep with the suspend state on the `GitRepository`.
+`minimal` selects `<mode>-minimal` without OSDU API routes. `bare` selects empty
+stack and ingress trees. These path combinations are derived in
+`infra/flux.bicep`, not selected independently by the operator.
 
-### Infrastructure loop (from Git)
+OSDU HelmReleases use the local `software/charts/osdu-spi-service` chart from
+the Git source. Middleware HelmReleases can use external chart repositories.
+Suspending Git therefore does not freeze every upstream chart or controller.
 
-Changes to this repository flow through the Flux `GitRepository` source. The source-controller polls the remote on a 10-minute interval (when not suspended) and caches the latest revision. The two top-level Kustomizations (`stack` and `ingress`) reconcile from that cache; their child Kustomizations reconcile in dependency order.
+The CLI owns several inputs outside Git: `osdu-config` in `osdu`, and
+`spi-cluster-config`, `spi-ingress-config`, `spi-init-values`, and
+`osdu-image-lock` in `osdu-flux`. `spi-cluster-config` carries the detected
+Istio revision used by namespace substitution.
+The checked-in `osdu-config-placeholder.yaml` is comments only, not a second
+ConfigMap. Editing it does not change live configuration.
 
-Changes that flow through this loop:
+## Dependency ordering
 
-- A new Kustomization added under `software/stacks/osdu/profiles/<profile>/`.
-- A profile or ingress-mode swap. Both are Bicep parameters on `infra/flux.bicep`; the resulting parameter change re-deploys `flux.bicep`, which re-applies the `fluxConfigurations` resource with the new Kustomization paths.
-- A chart version bump in any `HelmRelease`.
-- An edit to the `osdu-config` ConfigMap that's checked into Git (the runtime `osdu-config` written by the CLI is a separate ConfigMap with `app.kubernetes.io/managed-by: osdu-spi-stack`).
+The core profile uses `dependsOn` to wait for named Kustomizations to report
+Ready. With `wait: true`, a Kustomization also waits for health checks on its
+applied resources. Layer labels help group the dashboard; they do not impose
+additional ordering.
 
-### Service update loop (from `osdu-image-lock`)
+| Kustomization | Direct dependencies |
+|---|---|
+| `spi-namespaces` | None |
+| `spi-nodepools`, `spi-fork-rbac` | Namespaces |
+| `spi-cert-manager`, `spi-eck-operator`, `spi-cnpg-operator`, `spi-helm-sources` | Namespaces |
+| `spi-gateway` (empty inventory handoff) | Namespaces |
+| `spi-trust-manager` | cert-manager |
+| `spi-elasticsearch` | ECK, NodePools |
+| `spi-redis` | cert-manager, NodePools, shared Helm sources |
+| `spi-postgresql` | CNPG, NodePools |
+| `spi-airflow` | PostgreSQL |
+| `spi-osdu-config` | Namespaces |
+| `spi-bootstrap` | trust-manager, Elasticsearch, Redis, OSDU config |
+| `spi-osdu-services` | Bootstrap, NodePools |
+| `spi-osdu-init` | Core services |
+| `spi-osdu-schema-load`, `spi-osdu-legal` | Initialization |
+| `spi-osdu-reference` | Core services, schema load |
 
-OSDU service images move on a different cadence than the repo. Per [ADR-017](../decisions/017-osdu-image-lock.md), the first `spi up` against a cluster queries the OSDU community GitLab registry for the newest immutable SHA tag per service, renders the result into a `osdu-image-lock` ConfigMap in `osdu-flux`, and applies it. A re-run against a cluster that holds a lock preserves it; only an explicit `--refresh-images` re-resolves. An explicit `--no-refresh-images` fails closed when a core deployment has no lock yet.
+Names are shortened in the dependency column; the full definitions are in
+[`stack.yaml`](../../software/stacks/osdu/profiles/core/stack.yaml). Ingress
+adds dependencies defined in its selected profile. For example, TLS routes
+depend on the gateway certificate layer as well as service readiness.
 
-The service Kustomizations under `software/stacks/osdu/profiles/core/` carry `postBuild.substituteFrom` blocks that reference `osdu-image-lock`. When Flux reconciles those Kustomizations, the `${PARTITION_IMAGE_REPOSITORY}` and `${PARTITION_IMAGE_TAG}` expressions in the rendered YAML expand against the live ConfigMap. Updating the lock and reconciling the Kustomization triggers a rolling update.
+Legal-tag seeding is a non-gating branch: reference services wait for schema
+load, without depending on `spi-osdu-legal`. Fork RBAC is also independent of
+the middleware and service readiness chain.
 
-The CLI is the only writer of `osdu-image-lock`. `spi reconcile --refresh-images` re-resolves and re-applies the lock, then forces a reconcile on the service Kustomizations. `spi service pin <name> --mr <iid>` overwrites one service's lock entries with the image an OSDU merge-request pipeline built, recording provenance and the canonical image in a lock annotation ([ADR-017](../decisions/017-osdu-image-lock.md)); `spi service reset` restores the canonical entries. Both refresh paths render the lock with active pins overlaid, so a refresh or a re-run `spi up` never reverts a pin. Nothing else moves service image tags.
+A downstream error may name only its direct dependency. Follow that dependency
+upstream rather than assuming the last blocked service is the root cause.
 
-## The layer DAG (core profile)
+## Inventory ownership
 
-`software/stacks/osdu/profiles/core/stack.yaml` declares every Kustomization with explicit `dependsOn`. The result is the ordering shown in [deployment-lifecycle.md](deployment-lifecycle.md#phase-2-flux-reconciliation):
+Each Kubernetes object has one Flux inventory owner. The selected ingress
+tree owns the Gateway under `spi-gateway-tls` in both HTTP and TLS modes.
+The old `spi-gateway` Kustomization renders an empty handoff directory with
+`prune: false` and `deletionPolicy: Orphan`; its continued presence does not
+mean two owners still render the Gateway.
 
-```
-L0a spi-namespaces            (no deps)
-L0b spi-nodepools             dependsOn: spi-namespaces           (ADR-018)
-L0c spi-fork-rbac              dependsOn: spi-namespaces           (ADR-032)
-L1  spi-cert-manager          dependsOn: spi-namespaces
-    spi-trust-manager         dependsOn: spi-cert-manager
-    spi-eck-operator          dependsOn: spi-namespaces
-    spi-cnpg-operator         dependsOn: spi-namespaces
-    spi-helm-sources          dependsOn: spi-namespaces           (ADR-025)
-    spi-gateway               dependsOn: spi-namespaces           (renders nothing; inventory handoff, ADR-025)
-L2  spi-elasticsearch         dependsOn: spi-eck-operator, spi-nodepools
-    spi-redis                 dependsOn: spi-cert-manager, spi-nodepools, spi-helm-sources
-    spi-postgresql            dependsOn: spi-cnpg-operator, spi-nodepools
-L3  spi-airflow               dependsOn: spi-postgresql
-L4a spi-osdu-config           dependsOn: spi-namespaces
-L4b spi-bootstrap             dependsOn: spi-trust-manager, spi-elasticsearch, spi-redis, spi-osdu-config
-L5  spi-osdu-services         dependsOn: spi-bootstrap, spi-nodepools
-L5a spi-osdu-init             dependsOn: spi-osdu-services        (ADR-015)
-L5b spi-osdu-schema-load      dependsOn: spi-osdu-init            (ADR-013)
-L5c spi-osdu-legal            dependsOn: spi-osdu-init            (ADR-015, non-gating)
-L6  spi-osdu-reference        dependsOn: spi-osdu-services, spi-osdu-schema-load
-```
+The `bitnami` HelmRepository has its own `spi-helm-sources` owner, shared by
+Redis and ExternalDNS. Moving or deleting an inventory without a handoff can
+delete objects already applied by another owner. Follow
+[ADR-025](../decisions/025-single-flux-inventory-owner.md), rather than renaming
+or removing those handoff Kustomizations in one rollout.
 
-The `ingress` Kustomization (`software/stacks/osdu/ingress/<mode>/stack.yaml`) attaches additional Kustomizations at L1 (the mode's Gateway owner, cert issuers, and ExternalDNS for `dns`) and L6 (HTTPRoutes). The active Gateway owner lives in the ingress tree because its listeners are mode-specific and exactly one Kustomization may render and prune the object. See [ADR-025](../decisions/025-single-flux-inventory-owner.md) and [gateway-ingress](gateway-ingress.md).
+## Diagnosing a blocked rollout
 
-## How `dependsOn` actually gates
-
-A Kustomization with `wait: true` (every Kustomization in the SPI stack uses this) reports `Ready=True` only after every resource it applies passes its health check. A downstream Kustomization with `dependsOn: [...]` does not start until every named upstream reports `Ready=True`.
-
-Two gotchas worth knowing:
-
-1. **`wait: true` is per-layer slow.** A slow operator delays everything behind it. Per-layer `timeout` is tuned in `stack.yaml` (15 min for Elasticsearch, Airflow, and the init Jobs, 30 min for the OSDU service and reference layers, 70 min for the legal bootstrap, 155 min for schema-load, which tracks the Job's `activeDeadlineSeconds` plus headroom). Bumping a timeout is a real change; bump it deliberately, not reflexively.
-2. **Cross-Kustomization dependencies are not transitive.** L5 dependsOn L4b but not L1; if L1 breaks, L5 reports its own gate as unmet (L4b never went Ready), not "L1 broken." Trace the chain upward to find the root.
-
-When debugging a stuck layer:
+These commands read the current cluster:
 
 ```bash
+spi status
 flux get kustomizations -n osdu-flux
-spi status                                # grouped by layer, easier on the eye
-kubectl describe kustomization spi-elasticsearch -n osdu-flux
+flux get helmreleases -n osdu-flux
+kubectl describe kustomization spi-osdu-services -n osdu-flux
 ```
 
-The `Conditions:` block on the Kustomization names the upstream that has not gone Ready (`dependency not ready`) or the in-layer resource that failed its health check.
+If the service Kustomization reports that `spi-bootstrap` is not ready, inspect
+that Kustomization next. If bootstrap is waiting for Elasticsearch, inspect
+`spi-elasticsearch` and the Elasticsearch resources in `platform`. A
+`HealthCheckFailed` condition differs from a missing source artifact, an invalid
+manifest, or an image-pull failure; use the named resource's conditions and logs
+to distinguish them.
 
-## `postBuild.substituteFrom` for service images
+For initialization failures:
 
-The service Kustomizations look roughly like:
-
-```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: spi-osdu-services
-spec:
-  path: ./software/stacks/osdu/services
-  dependsOn:
-    - name: spi-bootstrap
-  wait: true
-  postBuild:
-    substituteFrom:
-      - kind: ConfigMap
-        name: osdu-image-lock
-        namespace: osdu-flux
+```bash
+kubectl get jobs -n osdu
+kubectl logs job/schema-load -n osdu
 ```
 
-When Flux fetches the manifests under `./software/stacks/osdu/services/`, it expands every `${...}` reference in the rendered YAML against the ConfigMap. Each per-service `HelmRelease` carries values like:
-
-```yaml
-spec:
-  values:
-    image:
-      repository: ${PARTITION_IMAGE_REPOSITORY}
-      tag: ${PARTITION_IMAGE_TAG}
-```
-
-So changing the ConfigMap changes the resolved image on the next reconcile. The lock is the entire pin surface; no service YAML has a static image tag.
-
-## `postBuild.substituteFrom` for the cluster Istio revision
-
-`spi-namespaces` uses the same mechanism for one value: the managed Istio revision that labels the `osdu` namespace. The revision is a property of the cluster (`istiod-asm-1-30` in `aks-istio-system`), not of the repository, so `software/components/namespaces/namespaces.yaml` carries `istio.io/rev: ${ISTIO_REVISION}` and the Kustomization substitutes it from `osdu-flux/spi-cluster-config`.
-
-The CLI owns that ConfigMap. `spi up` writes it during the Kubernetes bootstrap, before Flux is installed, and every `spi reconcile` (including `--resume`) re-detects the live revision and re-applies it. That keeps clusters bootstrapped by an older CLI, and clusters whose AKS Istio revision was upgraded after the last deploy, on the correct value before any new commit is applied.
-
-The substitution is not marked `optional`. A missing ConfigMap fails `spi-namespaces` with `substitute from ConfigMap ... not found` and blocks the layers above it, which is the intended outcome: the alternative is labelling `osdu` with a guessed revision, which disables sidecar injection silently and surfaces much later as `app-id=` empty (see [workload identity](workload-identity.md)). Recovery is `spi reconcile`.
-
-## Suspend and resume
-
-`spi up` ends with `kubectl patch gitrepository/osdu-spi-stack-system --type=merge -p '{"spec":{"suspend":true}}'`. This stops the source-controller from polling and stops Flux from auto-applying new revisions. It does **not** stop downstream Kustomizations from reconciling against the cached revision; Phase 2 runs to completion exactly as ADR-014 promises.
-
-| Command | Effect | Suspended after? |
-|---|---|---|
-| `spi reconcile` | One-shot reconcile (annotates the source + stack Kustomization with `reconcile.fluxcd.io/requestedAt`), and resets any `HelmRelease` stalled on `RetriesExceeded` | yes (unchanged) |
-| `spi reconcile --suspend` | Set `spec.suspend: true` if not already | yes |
-| `spi reconcile --resume` | Set `spec.suspend: false` (Flux resumes 10-min polling) | no |
-| `spi reconcile --refresh-images` | Re-resolve `osdu-image-lock`, re-apply (active pins overlaid), then reconcile service Kustomizations | yes (unchanged) |
-| `spi service pin <name> --mr <iid>` | Overwrite one service's lock entries with an MR pipeline image, then reconcile its consumers in dependency order | yes (unchanged) |
-| `spi service reset <name>` | Restore the pinned service's canonical lock entries, then reconcile its consumers | yes (unchanged) |
-
-`spi status` and `spi info` both show a yellow `SUSPENDED` banner when the source is pinned.
-
-`spi up --tag vX.Y.Z` pins the `GitRepository` to an immutable release tag
-instead of a branch (`infra/flux.bicep`'s `repositoryRef` emits `{tag:
-...}` rather than `{branch: ...}`); the CLI verifies
-`status.artifact.revision` names that tag's resolved commit before suspending,
-so the deploy record's `resolvedCommit` never names a different ref. When a
-tag deployment creates the `spi-deploy-record` ConfigMap
-(`src/spi/deploy_record.py`), it writes `maintenance: true`, a second,
-independent gate on top of `suspend`: `spi status --json`'s `deployable`
-field is `false` while maintenance is set, even once every Kustomization is
-`Ready`. An existing record keeps its current maintenance value instead.
-The lifecycle workflows (`env-upgrade`, `env-refresh`) quiesce a standing
-environment with an explicit `spi maintenance set` before mutation, not
-as a side effect of `spi up --tag`. Once maintenance is set, only a lifecycle
-workflow clears it, and only after its own Flux-readiness wait and gateway
-probes pass. A hand-run `spi up --tag` against a standing healthy environment
-therefore mutates it without a readiness wait or gateway probes while leaving
-`maintenance: false` and `deployable: true`; see
-[environment-lifecycle.md](environment-lifecycle.md) for the full contract
-and [ADR-029](../decisions/029-environment-lifecycle-and-reset-boundary.md).
+Timeouts are defined per Kustomization. Increasing a timeout can accommodate a
+slow rollout, but will not fix a missing Secret, bad image reference, or invalid
+manifest.
 
 ## Stalled HelmReleases
 
@@ -181,7 +142,7 @@ separately.
 
 `spi status` renders any stalled release as `Stalled` rather than
 `InstallFailed`, which distinguishes an exhausted controller from a service
-that is genuinely failing to start, and captions the table per cause:
+that is failing to start, and captions the table per cause:
 `RetriesExceeded` points at `spi reconcile`, a terminal stall says a reset
 repeats the same failure. `spi reconcile` annotates each `RetriesExceeded`
 release with `reconcile.fluxcd.io/requestedAt`, `resetAt`, and `forceAt` at
@@ -191,7 +152,7 @@ helm-controller ignores `resetAt` and `forceAt` unless they match
 that fails for any reason other than the type being absent aborts the command
 rather than reporting a reset that never happened.
 
-## Jobs are patched, not replaced
+## Immutable Job templates
 
 A Job's pod template is immutable, so anything that changes it after the Job
 exists is a difference Helm can only close by patching, and the patch is
@@ -218,66 +179,171 @@ patching them. `osdu-spi-init` cannot borrow that: `spi info` and `spi status`
 read its Jobs as the evidence that bootstrap ran
 ([ADR-015](../decisions/015-partition-entitlements-bootstrap.md)).
 
-## Worked example: debug a stuck service
+helm-controller stores release history in `osdu-flux`, even when workloads
+run in `platform` or `osdu`. Use `helm get`, `helm history`, and `helm list`
+with `-n osdu-flux`; the target namespace reports a missing release.
 
-Symptom: `spi-osdu-services` reports `Ready=False` after the timeout.
+## Refreshing service images
 
-```bash
-$ flux get kustomizations -n osdu-flux | grep osdu
-spi-osdu-services    False   1m   ... dependency not ready
-spi-osdu-init        False   1m   ... blocked
-spi-osdu-schema-load False   1m   ... blocked
-spi-bootstrap        False   12m  ... HealthCheckFailed: redis-disable-mtls
+The first core deployment resolves an image lock; a retry preserves it unless
+`--refresh-images` is explicit. `--no-refresh-images` fails when no lock exists.
+Canonical resolution uses the community GitLab registry. Per-service fork
+canonical-source promotion remains unbuilt; see
+[environment lifecycle](environment-lifecycle.md).
+
+The image lock covers 14 images, including the schema loader. Repository, tag, and digest values
+are substituted into HelmRelease manifests during a service Kustomization
+reconcile. For example:
+
+```yaml
+# Excerpt from the spi-osdu-services Kustomization.
+postBuild:
+  substituteFrom:
+    - kind: ConfigMap
+      name: osdu-image-lock
 ```
 
-The chain: `spi-osdu-services` waits on `spi-bootstrap`, which failed its health check on the Redis `DestinationRule`. Drill into that Kustomization:
-
-```bash
-$ kubectl describe kustomization spi-bootstrap -n osdu-flux
-... Status: ReconciliationFailed
-... Message: networking.istio.io/v1beta1/DestinationRule/osdu/redis-disable-mtls:
-   redis-disable-mtls not found
+```yaml
+# Excerpt from the partition HelmRelease.
+image:
+  repository: ${PARTITION_IMAGE_REPOSITORY}
+  tag: "${PARTITION_IMAGE_TAG}"
+  digest: "${PARTITION_IMAGE_DIGEST}"
 ```
 
-The Istio CRD has not registered yet, or the namespace is wrong. `kubectl get crd | grep istio` confirms. Fix the upstream Gateway owner (`spi-gateway-tls`, declared by the selected ingress tree) or the AKS Istio extension, reconcile, and the chain unblocks layer by layer.
+The ConfigMap and consuming Kustomization are both in `osdu-flux`; there is
+no `namespace` field in this `substituteFrom` entry. The service chart renders
+`repository@digest` when a digest exists and falls back to `repository:tag` for
+older entries. Schema-load consumes the composed `SCHEMA_LOAD_IMAGE_REF`.
 
-The same pattern works for HelmRelease failures (`flux get helmreleases -n osdu-flux`), schema-load Job failures (`kubectl logs job/schema-load -n osdu`), and image substitution failures (`kubectl get cm osdu-image-lock -n osdu-flux -o yaml` shows the resolved values).
-
-helm-controller stores a release in the HelmRelease's own namespace, not in `spec.targetNamespace`, so `helm get`, `helm history`, and `helm list` all want `-n osdu-flux`. Run against the target namespace they exit 1 with `Error: release: not found`, which reads as a missing release rather than a wrong namespace.
-
-## Worked example: refresh service images on a live cluster
+**This command changes deployed service images and can cause rolling updates:**
 
 ```bash
-$ uv run spi reconcile --refresh-images
-[CLI]   resolving OSDU community registry...
-[CLI]   resolved 13 images (PARTITION_IMAGE_TAG=ab12cd34..., ...)
-[CLI]   kubectl apply -f -  (osdu-image-lock)
-[Flux]  reconciling kustomization spi-osdu-services
-[Flux]  HelmRelease partition upgraded
+spi reconcile --refresh-images
+spi status --watch
 ```
 
-Pods roll one at a time as each `HelmRelease` reconciles. `spi status --watch` shows the progression.
+It resolves canonical registry tags, preserves active service pins, and applies
+the image lock. It then reconciles and waits in order for the present core
+Kustomizations: services, schema load, and reference services. Layers absent
+from `bare` or `minimal` are skipped. The command does not rotate credentials
+or synchronize Key Vault values.
 
-## Related ADRs
+Each CLI wait uses a 40-minute timeout, shorter than the schema loader's own
+deadline. A CLI wait timeout does not itself stop the Job or Flux reconciliation;
+inspect their conditions before treating it as a failed load.
 
-- [ADR-007](../decisions/007-layered-kustomization-ordering.md) -- Layered Flux Kustomization Ordering
-- [ADR-009](../decisions/009-flux-cd-for-gitops.md) -- Flux CD + AKS GitOps Extension
-- [ADR-013](../decisions/013-schema-load-flux-job.md) -- Schema Load via a Flux-Managed Job
-- [ADR-014](../decisions/014-suspend-gitops-after-deploy.md) -- Suspend GitOps After Deploy
-- [ADR-015](../decisions/015-partition-entitlements-bootstrap.md) -- Partition, Entitlements, and Legal Bootstrap
-- [ADR-017](../decisions/017-osdu-image-lock.md) -- Per-Deploy Image Lock
-- [ADR-018](../decisions/018-karpenter-nodepool-authoring.md) -- Karpenter NodePool Authoring
-- [ADR-028](../decisions/028-version-pinned-shared-environment.md) -- Version-Pinned Shared Backing Environment
-- [ADR-029](../decisions/029-environment-lifecycle-and-reset-boundary.md) -- Environment Lifecycle Verbs and the Reset Boundary
+Canonical schema and schema-load images resolve to the same SHA. If the registry has no matching
+loader image, resolution fails before replacing the lock. `spi-osdu-schema-load`
+substitutes the loader image and uses `force: true` so a changed Job template
+can be recreated. `spi reconcile` attempts to backfill older locks missing
+loader keys before requesting reconciliation. Resolution failures in that
+backfill warn and continue, so inspect the lock if substitution remains blocked.
 
-## Source files
+The lock records the resolved set for one environment. It does not guarantee
+future registry retention or make a fresh resolution choose the same images.
 
-- `software/stacks/osdu/profiles/core/stack.yaml` -- the layer DAG
-- `software/stacks/osdu/ingress/<mode>/stack.yaml` -- ingress overlay Kustomizations
-- `software/charts/osdu-spi-init/values.yaml` -- the Job resource requests admission accepts
-- `software/charts/osdu-spi-init/Chart.yaml` -- the version Flux repackages on
-- `src/spi/images.py` -- `osdu-image-lock` rendering
-- `src/spi/deploy.py` -- `_finalize_gitops_source`, `_set_source_suspended`
-- `src/spi/guard.py` -- suspend status checks
-- `src/spi/status.py` -- the layer-grouped dashboard
-- `src/spi/deploy_record.py` -- the `maintenance` flag and stack version record
+## Service image pins
+
+`spi service pin --mr` selects an OSDU merge-request pipeline image;
+`--image` accepts an explicit GHCR digest. Pin provenance and the canonical image are recorded in the
+`spi-stack.osdu.dev/pins` JSON annotation on `osdu-image-lock`. `spi up` and
+image refresh preserve those overrides; unreadable pin state aborts the
+overwrite rather than silently removing a pin.
+
+Inspect pins without changing images:
+
+```bash
+spi service list
+```
+
+The following commands change images and trigger reconciliation. Replace the
+placeholder with a merge-request IID from the schema service's OSDU GitLab
+project, not a GitHub PR number:
+
+```bash
+spi service pin schema --mr <mr-iid>
+spi service reset schema
+```
+
+Schema pins include the matching loader image when the MR pipeline built it.
+Otherwise the CLI warns and retains or restores the canonical loader; it does
+not silently keep a loader pinned by an older MR. Reset restores the recorded
+canonical image; if that record is missing, the CLI reports that a subsequent
+`spi reconcile --refresh-images` is required.
+
+For fork CI, `--ephemeral` records the owning run and source provenance.
+`spi service verify` checks the rollout and running image digest;
+`spi service reset --if-run` restores only a pin still owned by that run.
+The stale-pin sweep and `spi onboard` trust path exist; the scheduled backstop
+and canonical-source promotion remain unbuilt. Ephemeral pins require a
+repository matching the lock's trusted roster and its derived GHCR package.
+Follow [fork deployment](fork-deployment.md) for required metadata, refusal
+codes, and trust activation.
+
+## Fetching a new Git revision
+
+`spi up` resumes the source, reconciles it, verifies the requested branch or
+tag artifact, then suspends it and writes the deploy record. An unavailable or
+wrong-ref artifact fails deployment. The standalone reconcile command has a
+different boundary: `spi reconcile` annotates the source and selected Kustomizations
+with `reconcile.fluxcd.io/requestedAt`, but does not temporarily resume the
+source. Do not rely on that command to fetch a new commit while suspended.
+
+| Command | Current behavior |
+|---|---|
+| `spi reconcile` | Refresh cluster configuration, attempt loader-key backfill, reset `RetriesExceeded` HelmReleases, and request reconciliation; leave source suspension unchanged |
+| `spi reconcile --resume` | Refresh cluster configuration, attempt loader-key backfill, then set the source's `spec.suspend` to `false` |
+| `spi reconcile --suspend` | Set the Git source's `spec.suspend` to `true` |
+| `spi reconcile --refresh-images` | Refresh cluster configuration and the image lock, preserve pins, reset `RetriesExceeded` HelmReleases, reconcile dependent layers in order; leave suspension unchanged |
+
+To intentionally fetch the tracked branch, use this sequence. **Resuming allows
+new commits to begin applying; it is not an atomic update to one chosen SHA.**
+
+```bash
+spi reconcile --resume
+flux reconcile source git osdu-spi-stack-system -n osdu-flux
+kubectl get gitrepository osdu-spi-stack-system -n osdu-flux \
+  -o jsonpath='{.status.artifact.revision}{"\n"}'
+```
+
+Confirm the reported revision is the one you expect, then stop further polling:
+
+```bash
+spi reconcile --suspend
+spi reconcile
+spi status --watch
+```
+
+If the fetch fails, suspend again before diagnosing it unless you intend to
+leave automatic updates enabled. The cached artifact can continue reconciling
+after suspension. To follow the branch continuously, leave the source resumed.
+
+### Release tags and maintenance
+
+`spi up --tag <release>` selects an immutable release tag instead of a branch.
+Resuming that source fetches its configured tag; it does not switch to `main`.
+A new tag deployment records `maintenance: true`, while an existing deploy
+record retains its maintenance value. Source suspension and maintenance are
+independent: suspension stops Git fetching, and maintenance blocks the
+`spi status --json` deployable verdict even when workloads are Ready.
+
+The shared lifecycle workflows explicitly set maintenance before mutation and
+clear it after Flux readiness and gateway probes pass. A hand-run `spi up
+--tag` against an existing record does not establish that maintenance gate for
+the operator. Use the [environment lifecycle](environment-lifecycle.md) contract
+when updating the shared environment.
+
+## Decisions and implementation
+
+- [ADR-007](../decisions/007-layered-kustomization-ordering.md): dependency ordering.
+- [ADR-014](../decisions/014-suspend-gitops-after-deploy.md): intended default suspension and update behavior.
+- [ADR-017](../decisions/017-osdu-image-lock.md): service image lock.
+- [ADR-019](../decisions/019-osdu-flux-gitops-namespace.md): SPI-owned objects outside the controller namespace.
+- [Flux activation](../../infra/flux.bicep): source and root Kustomizations.
+- [Core stack](../../software/stacks/osdu/profiles/core/stack.yaml) and [ingress profiles](../../software/stacks/osdu/ingress/): dependencies.
+- [CLI](../../src/spi/cli.py) and [deployment](../../src/spi/deploy.py): reconcile commands and initial suspension.
+- [Images](../../src/spi/images.py): image-lock membership, resolution, and keys.
+- [Pins](../../src/spi/pins.py): MR and fork image selection, verification, provenance, and reset.
+- [Deploy record](../../src/spi/deploy_record.py): revision and maintenance state.
+- [Init chart](../../software/charts/osdu-spi-init/): Job requests and Helm upgrade behavior.

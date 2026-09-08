@@ -168,6 +168,9 @@ Run `spi --help` or `spi <command> --help` for the complete command reference.
   and service pins
 - [Gateway and ingress](docs/design/gateway-ingress.md): hostname, TLS, and routing modes
 - [Workload Identity](docs/design/workload-identity.md): identity and Azure RBAC flow
+- [Design guides](docs/design/README.md): subsystem ownership, diagnostics, and limitations
+- [Environment lifecycle](docs/design/environment-lifecycle.md): shared version, maintenance, and upgrades
+- [Fork deployment](docs/design/fork-deployment.md): pin, verify, and restore fork images
 - [Architecture decisions](docs/decisions/): governing decisions and trade-offs
 
 ## Development and Support
