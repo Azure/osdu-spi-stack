@@ -7,13 +7,17 @@
 <!-- Bullet list of meaningful changes. Skip trivia. Commit messages carry the detail. -->
 -
 
-## Validation
+## Notes
 
-- [ ] CI is green (lint, typecheck, test, manifests, bicep-whatif)
-- [ ] Review threads resolved
-- [ ] Docs and ADRs updated if behavior changed
+<!-- Only what a reader would otherwise stop and question: why a line looks the way
+     it does, what it costs, how it behaves later. Write about the change, not about
+     writing the change. Delete this section if the diff raises nothing. -->
 
 <!--
+Add your own heading when the change has an argument these do not fit. Delete the
+Notes section when it has nothing real in it. An empty section trains readers to skip
+the filled ones.
+
 The PR title determines release impact via release-please:
 feat -> minor, breaking ! -> major, anything else -> patch.
 -->

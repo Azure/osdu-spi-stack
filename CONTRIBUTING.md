@@ -129,15 +129,26 @@ The `pr-title` required check enforces this; editing the title re-runs it.
 The description is the durable record of why a change happened; squash-merge
 keeps only the title in history. Structure it in three parts:
 
-1. **Why**: the problem or measurement that motivated the change, with the
+1. **Summary**: the problem or measurement that motivated the change, with the
    number or named artifact that demonstrates it. A reviewer should
    understand the motivation before reading any diff.
-2. **What changed**: grouped by concern rather than by file, one line each.
+2. **Changes**: grouped by concern rather than by file, one line each.
    Do not restate the diff.
-3. **Validation**: which checks ran and their results, reported honestly.
-   A check that could not run is listed with the reason, never omitted.
+3. **Notes**: only what a reader would otherwise stop and question, such as why
+   a line looks the way it does, what it costs, or how it behaves later. Delete
+   the section when the diff raises nothing.
 
-Keep the whole description under roughly 20 lines.
+Write about the change, not about writing the change. An alternative you
+rejected belongs here only when the diff looks wrong without it; a decision log
+does not. State an open risk as system behavior rather than as a caveat about
+yourself: "the switch first runs Monday and logs failures instead of failing a
+check" tells the reader what to do, "I could not verify this" does not.
+
+Do not add a validation checklist. CI results are already on the pull request.
+Name a check only when how it was proven is the interesting part, such as a
+real-environment repro or a check that could not run and why.
+
+Length follows the change; most descriptions land near 300 words.
 
 ## Validation Before Submitting
 
