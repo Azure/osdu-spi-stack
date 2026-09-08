@@ -320,6 +320,43 @@ def test_entitlements_init_retries_until_partition_is_visible(init_scripts, monk
     assert capsys.readouterr().out.count("Partition is not visible to entitlements yet") == 2
 
 
+def test_entitlements_init_fails_fast_on_unrelated_forbidden(init_scripts, monkeypatch, capsys):
+    monkeypatch.setenv("PARTITION", "opendes")
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "test-token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+
+    namespace: dict[str, object] = {"__name__": "init_entitlements_test"}
+    exec(init_scripts["init_entitlements.py"], namespace)
+    time_module = namespace["time"]
+    assert isinstance(time_module, types.ModuleType)
+    sleeps: list[float] = []
+    monkeypatch.setattr(time_module, "sleep", lambda seconds: sleeps.append(seconds))
+
+    requests = []
+
+    def urlopen(req, timeout):
+        requests.append(req)
+        raise urllib.error.HTTPError(
+            req.full_url,
+            403,
+            "error",
+            email.message.Message(),
+            io.BytesIO(b'{"message":"Access denied"}'),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    main = cast(Callable[[], int], namespace["main"])
+    assert main() == 1
+    assert len(requests) == 1
+    assert "Partition is not visible to entitlements yet" not in capsys.readouterr().out
+    assert sleeps == []
+
+
 # The properties init_legal.py POSTs. Pinned to the script itself by
 # test_legal_init_accepts_an_existing_tag_that_matches, so a change to
 # tag_body() cannot leave the verification fixtures agreeing with nothing.
