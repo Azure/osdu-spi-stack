@@ -118,6 +118,10 @@ manifest.
 
 ## Stalled HelmReleases
 
+Symptom: `flux get helmreleases -n osdu-flux` shows `Ready=False` with
+`Stalled=True` and reason `RetriesExceeded`, and `spi status` renders the
+release as `Stalled`; its dependents sit at `DependencyNotReady`.
+
 A `HelmRelease` that exhausts `install.remediation.retries` is marked
 `Stalled=True` with reason `RetriesExceeded`, and helm-controller stops
 retrying it. Neither the `interval` nor a re-apply of the unchanged manifest
@@ -153,6 +157,10 @@ that fails for any reason other than the type being absent aborts the command
 rather than reporting a reset that never happened.
 
 ## Immutable Job templates
+
+Symptom: `osdu-spi-init` or `osdu-spi-legal` holds at `RollbackFailed`, the
+Helm error names a Job `spec.template` field as `field is immutable`, and `spi
+reconcile` leaves it there.
 
 A Job's pod template is immutable, so anything that changes it after the Job
 exists is a difference Helm can only close by patching, and the patch is
@@ -296,6 +304,10 @@ source. Do not rely on that command to fetch a new commit while suspended.
 | `spi reconcile --resume` | Refresh cluster configuration, attempt loader-key backfill, then set the source's `spec.suspend` to `false` |
 | `spi reconcile --suspend` | Set the Git source's `spec.suspend` to `true` |
 | `spi reconcile --refresh-images` | Refresh cluster configuration and the image lock, preserve pins, reset `RetriesExceeded` HelmReleases, reconcile dependent layers in order; leave suspension unchanged |
+
+`--suspend` and `--resume` exclude each other, and neither combines with
+`--refresh-images`; the CLI rejects those combinations before touching the
+cluster.
 
 To intentionally fetch the tracked branch, use this sequence. **Resuming allows
 new commits to begin applying; it is not an atomic update to one chosen SHA.**

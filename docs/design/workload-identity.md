@@ -75,13 +75,17 @@ RoleBindings use its principal ID from `spi-cluster-config`.
 Those Roles permit image-lock patches and workload reads, without granting
 Kubernetes Secret access or writes to the deploy record and maintenance flag.
 A trusted writer can patch the whole lock, so this does not isolate one
-service's image keys from another's. Initial provisioning adds no repository
-federated credential. `spi onboard` plans trust activation, and `--write`
-applies repository protection, the five connection values, federation, and the
-lock's trusted-repository projection. `spi up` rebuilds that projection from
-retained identity credentials. Canonical-source promotion and declaration
-enforcement remain unbuilt. `spi info --json` publishes the deploy client ID. See [ADR-032](../decisions/032-environment-deploy-identity.md)
-and [fork deployment](fork-deployment.md) for the access contract.
+service's image keys from another's. `spi info --json` publishes the deploy
+client ID.
+
+Trust for a fork repository is a separate step. Initial provisioning adds no
+repository federated credential. `spi onboard` plans trust activation, and
+`--write` applies repository protection, the five connection values,
+federation, and the lock's trusted-repository projection; `spi up` rebuilds
+that projection from retained identity credentials. Canonical-source promotion
+and declaration enforcement remain unbuilt. See
+[ADR-032](../decisions/032-environment-deploy-identity.md) and
+[fork deployment](fork-deployment.md) for the access contract.
 
 Ordinary `spi down` retains these managed identities; `--purge` removes them
 after external-grant cleanup ([ADR-034](../decisions/034-deploy-identity-survives-down.md)).

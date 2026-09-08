@@ -99,6 +99,11 @@ crs-conversion, and crs-catalog. Their configuration lives in
 [`services/`](../software/stacks/osdu/services/) and
 [`services-reference/`](../software/stacks/osdu/services-reference/).
 
+![Partition and entitlements sit upstream of legal, schema, and storage; search, indexer, file, and workflow depend on storage; reference services stand alone](diagrams/service-dependencies.png)
+
+Those runtime call dependencies are separate from the Flux rollout order,
+which the [Flux guide](design/flux-reconciliation.md#dependency-ordering) owns.
+
 ## Environment and partition isolation
 
 `--env` identifies an environment's resource group and cluster, for example
