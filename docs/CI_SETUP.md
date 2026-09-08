@@ -146,9 +146,11 @@ The JSON spec at `docs/branch-protection.json` enforces:
   is the owner's own PR, where GitHub never counts the author's approval and
   `@Azure/azure-global-energy` is the only code owner left. Swap the user for a
   team when a second maintainer arrives.
-- `enforce_admins: false` leaves a broader escape hatch for anyone holding
-  admin. When the team grows, set to `true`; the bypass list above stays
-  narrower and is the one to keep.
+- `enforce_admins: false` is deliberate, and gives the second escape hatch: a
+  code owner who elevates to admin merges without a review, and the elevation
+  is recorded. That audit trail is the reason this path stays open to the team
+  while the bypass list above, which leaves no such record, stays limited to a
+  single account.
 - `require_code_owner_reviews: true` is still useful in a solo configuration:
   it keeps the CODEOWNERS file honored if additional reviewers are added
   later.
