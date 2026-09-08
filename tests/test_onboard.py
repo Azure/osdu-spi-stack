@@ -576,7 +576,9 @@ class TestApplying:
 
         assert [c["name"] for c in world.credentials] == ["fork-partition"]
 
-    def test_a_competitor_landing_mid_apply_is_reported_correct_not_drifted(self, world):
+    def test_a_competitor_landing_mid_apply_is_reported_correct_not_drifted(
+        self, world, monkeypatch
+    ):
         world.protect("Acme/osdu-spi-partition")
         plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition")
         real = world.run_command
@@ -587,8 +589,7 @@ class TestApplying:
                 world.trust("storage", "Acme/osdu-spi-storage")
             return result
 
-        world.run_command = competitor
-        onboard.run_command = competitor
+        monkeypatch.setattr(onboard, "run_command", competitor)
 
         rows = apply_plan(plan)
 
@@ -706,7 +707,7 @@ class TestListAndRemove:
         assert world.projection() == {"storage": "Acme/osdu-spi-storage"}
         assert _states(rows)["fork-partition"] == "correct"
 
-    def test_removal_reports_a_credential_added_mid_run_as_correct(self, world):
+    def test_removal_reports_a_credential_added_mid_run_as_correct(self, world, monkeypatch):
         world.trust("partition", "Acme/osdu-spi-partition")
         world.project({"partition": "Acme/osdu-spi-partition"})
         plan = plan_remove(target(), "partition")
@@ -718,7 +719,7 @@ class TestListAndRemove:
                 world.trust("storage", "Acme/osdu-spi-storage")
             return result
 
-        onboard.run_command = competitor
+        monkeypatch.setattr(onboard, "run_command", competitor)
 
         rows = apply_remove(plan)
 
