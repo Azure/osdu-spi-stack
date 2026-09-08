@@ -69,7 +69,7 @@ Profiles select Kubernetes workloads, not a smaller Azure resource estate.
 | `core` | The middleware substrate plus OSDU services, partition/entitlements initialization, schema loading, and reference APIs |
 
 `minimal` selects an ingress tree ending in `-minimal`; its `ip` combination
-has no ingress routes or Gateway. Moving back to `bare` removes middleware
+renders the Gateway and its LoadBalancer but no routes. Moving back to `bare` removes middleware
 workloads and Redis volumes, but operator CRDs can remain. See
 [ADR-021](decisions/021-middleware-only-minimal-profile.md).
 
@@ -91,7 +91,11 @@ The receiving sidecar validates the bearer token and projects the identity
 headers expected by the Azure-provider service. Services resolve
 partition-specific backends through the partition service. Asynchronous indexing
 uses Service Bus: indexer-queue consumes events and invokes indexer, which writes
-to Elasticsearch.
+to Elasticsearch. With the default community image that path is not
+operational: indexer-queue's subscription client builds a Service Bus
+connection string and reads `DISABLED`, so records-changed indexing needs a
+Workload-Identity-capable replacement image
+([ADR-005](decisions/005-workload-identity.md)).
 
 The core service set is partition, entitlements, legal, schema, storage, search,
 indexer, indexer-queue, file, and workflow. The reference APIs are unit,

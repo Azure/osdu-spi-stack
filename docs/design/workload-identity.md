@@ -45,8 +45,9 @@ per-partition Storage assignments are for blobs.
 
 Cosmos SQL and Gremlin Data Contributor grants are Cosmos-native assignments,
 declared in the partition and Gremlin modules. They do not appear in
-`az role assignment` output. The kubelet identity receives a separate AcrPull
-grant because container pulls do not use the pod's Workload Identity.
+`az role assignment` output. Container pulls use the kubelet identity, not the
+pod's Workload Identity; `rbac.bicep` can grant it AcrPull, but the CLI passes
+no `kubeletIdentityObjectId`, so `spi up` creates no such grant.
 
 These assignments simplify provisioning, but do not isolate one OSDU service's
 Azure access from another's. The cluster control-plane identity used for
@@ -56,9 +57,12 @@ federated to its `foundation/external-dns` ServiceAccount and granted DNS access
 Cosmos and Service Bus disable local authentication; Storage disables
 shared-key access. Key and connection-string entries retained for partition
 compatibility contain `DISABLED`, not usable credentials. Images whose clients
-still require keys or SAS cannot operate against that data plane. The
-infrastructure does not add a fallback for them: it requires
-Workload-Identity-capable images ([ADR-023](../decisions/023-entra-only-data-plane.md)).
+still require keys or SAS cannot operate against that data plane; the default
+community indexer-queue is the known case, since its subscription client builds
+a Service Bus connection string regardless of the Workload Identity flag
+([ADR-005](../decisions/005-workload-identity.md)). The infrastructure does not
+add a fallback for them: it requires Workload-Identity-capable images
+([ADR-023](../decisions/023-entra-only-data-plane.md)).
 
 Middleware passwords and Airflow signing material remain stored in Kubernetes
 Secrets and Key Vault. [Secret lifecycle](secret-lifecycle.md) describes those

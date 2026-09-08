@@ -1,8 +1,9 @@
 # Gateway and ingress
 
 `--ingress-mode` selects how clients reach the cluster. For `core`, all modes use the managed Istio gateway; they differ in hostnames,
-certificates, DNS management, and routes. `minimal` with `ip` and every `bare`
-deployment have no ingress. The default is `azure`.
+certificates, DNS management, and routes. `minimal` with `ip` renders the
+Gateway and LoadBalancer without routes; every `bare` deployment has no
+ingress. The default is `azure`.
 
 | Mode | Address | Edge TLS | Use |
 |---|---|---|---|
@@ -86,8 +87,9 @@ multiple zones as a complete deployment path until that input handling is fixed.
 The `ip` profile creates OSDU API routes on the HTTP listener without hostname
 matching. It does not add ingress certificates, ExternalDNS, or middleware UI
 routes. Use port-forwarding for middleware access rather than treating this as
-a production exposure mode. That describes `core`: `minimal` with `ip` has
-no ingress, and `bare` selects an empty ingress tree regardless of mode.
+a production exposure mode. That describes `core`: `minimal` with `ip` keeps
+the base Gateway and its LoadBalancer but renders no routes, and `bare`
+selects an empty ingress tree regardless of mode.
 
 ## Choosing or changing a mode
 

@@ -11,7 +11,7 @@ the client-side and Kubernetes work between them.
 | Entrypoint | Owns | Needs before deployment |
 |---|---|---|
 | `infra/aks.bicep` | AKS Automatic, managed Istio configuration, VNet/subnets, NAT gateway, cluster control-plane identity and network role | Resource group |
-| `infra/main.bicep` | OSDU and deploy identities, Key Vault metadata, ACR, Gremlin, common Storage, per-partition resources, RBAC; optional ExternalDNS and Application Insights | AKS OIDC issuer, kubelet identity, deployer principal |
+| `infra/main.bicep` | OSDU and deploy identities, Key Vault metadata, ACR, Gremlin, common Storage, per-partition resources, RBAC; optional ExternalDNS and Application Insights | AKS OIDC issuer, deployer principal |
 | `infra/flux.bicep` | AKS Flux extension and Git configuration with `stack` and `ingress` Kustomizations | Cluster and Kubernetes bootstrap inputs |
 
 The split follows deployment dependencies, not fixed duration targets. The AKS
@@ -35,7 +35,7 @@ records the resource-provider and template boundaries.
 | `cosmos-gremlin.bicep` | Shared entitlements graph and Cosmos-native data-plane role |
 | `storage-common.bicep` | Shared blob/table Storage account |
 | `partition.bicep` | One partition's Cosmos SQL data and role, Service Bus, Storage, metadata and `DISABLED` credential placeholders |
-| `rbac.bicep` | Workload resource access, deployer Key Vault access, and kubelet image-pull access |
+| `rbac.bicep` | Workload resource access and deployer Key Vault access; a kubelet AcrPull grant the CLI does not enable |
 | `external-dns-identity.bicep`, `external-dns-role.bicep` | Conditional DNS identity and role in the DNS zone's resource group |
 
 `main.bicep` loops over `dataPartitions` to deploy partition modules. It also
