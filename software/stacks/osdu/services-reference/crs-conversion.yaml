@@ -32,6 +32,10 @@ spec:
         operator: Equal
         value: "osdu"
         effect: NoSchedule
+      - key: kubernetes.azure.com/scalesetpriority
+        operator: Equal
+        value: "spot"
+        effect: NoSchedule
     probes:
       liveness:
         path: /api/crs/converter/actuator/health
