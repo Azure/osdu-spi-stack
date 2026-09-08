@@ -354,7 +354,12 @@ def read_projection() -> dict[str, str]:
             "The osdu-image-lock ConfigMap is missing; the cluster has not finished "
             "its first spi up, so there is nothing to project the roster into."
         )
-    return decode_trusted_repos(lock)
+    try:
+        return decode_trusted_repos(lock)
+    except PinError as exc:
+        # The identity is authoritative; a corrupt projection is drift to overwrite.
+        console.print(f"  [warning]{exc}[/warning]")
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -571,8 +576,14 @@ def _desired_projection(plan: Plan) -> dict[str, str]:
 
 
 def _refuse_before_writes(plan: Plan) -> None:
+    owner = plan.repo.split("/", 1)[0]
+    if plan.org and plan.org.lower() != owner.lower():
+        raise OnboardError(
+            f"--org {plan.org} does not own {plan.repo}; organization values are only "
+            f"visible to that organization's repositories."
+        )
     for cred in plan.roster:
-        if cred.repo == plan.repo and cred.name != plan.credential_name:
+        if cred.repo.lower() == plan.repo.lower() and cred.name != plan.credential_name:
             raise OnboardError(
                 f"{plan.repo} already backs {cred.service or cred.name}; one repository "
                 "backs one service. Remove that credential first."
@@ -582,6 +593,14 @@ def _refuse_before_writes(plan: Plan) -> None:
             f"{plan.target.identity_name} already holds {MAX_CREDENTIALS} federated "
             "credentials, the Azure maximum; a larger roster is a new decision."
         )
+
+
+def _require_known_service(service: str) -> None:
+    if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
+        known = ", ".join(
+            sorted(name for name in IMAGE_REGISTRY if name != SCHEMA_LOAD_SERVICE_NAME)
+        )
+        raise OnboardError(f"Unknown service {service!r}. Known services: {known}")
 
 
 def plan_onboard(
@@ -595,11 +614,7 @@ def plan_onboard(
     """Read every side and build the plan; raises before any phase could write."""
 
     require_target(target)
-    if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
-        known = ", ".join(
-            sorted(name for name in IMAGE_REGISTRY if name != SCHEMA_LOAD_SERVICE_NAME)
-        )
-        raise OnboardError(f"Unknown service {service!r}. Known services: {known}")
+    _require_known_service(service)
     if shutil.which("gh") is None:
         raise OnboardError("gh is required to read repository state; install the GitHub CLI.")
 
@@ -756,7 +771,7 @@ def apply_plan(plan: Plan) -> list[Row]:
                 _run_step(step)
                 if step.argv[:3] == ["gh", "secret", "set"]:
                     stamped.add(step.argv[3])
-        except OnboardError as exc:
+        except (OnboardError, PinError) as exc:
             raise fail(exc, "repository") from None
         completed.append("repository")
 
@@ -771,7 +786,7 @@ def apply_plan(plan: Plan) -> list[Row]:
         if credential is not None:
             _run_step(credential)
         plan.roster = read_roster(plan.target)
-    except OnboardError as exc:
+    except (OnboardError, PinError) as exc:
         raise fail(exc, "azure") from None
     completed.append("azure")
 
@@ -780,7 +795,7 @@ def apply_plan(plan: Plan) -> list[Row]:
         if plan.projection != desired:
             project_roster(desired)
         plan.projection = read_projection()
-    except OnboardError as exc:
+    except (OnboardError, PinError) as exc:
         raise fail(exc, "cluster") from None
     completed.append("cluster")
 
@@ -827,6 +842,7 @@ def list_trust(target: Target) -> list[Row]:
 
 def plan_remove(target: Target, service: str) -> Plan:
     require_target(target)
+    _require_known_service(service)
     roster = read_roster(target)
     plan = Plan(
         target=target,

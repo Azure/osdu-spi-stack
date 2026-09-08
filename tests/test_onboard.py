@@ -265,6 +265,20 @@ class TestRefusalsBeforeWrites:
         with pytest.raises(OnboardError, match="already backs storage"):
             plan_onboard(target(), "partition", "acme/osdu-spi-partition")
 
+    def test_the_refusal_ignores_casing_on_hand_made_credentials(self, world):
+        world.trust("storage", "acme/OSDU-SPI-PARTITION")
+        with pytest.raises(OnboardError, match="already backs storage"):
+            plan_onboard(target(), "partition", "acme/osdu-spi-partition")
+
+    def test_org_must_own_the_repository(self, world):
+        with pytest.raises(OnboardError, match="--org Other does not own"):
+            plan_onboard(target(), "partition", "acme/osdu-spi-partition", org="Other")
+        assert world.writes == []
+
+    def test_remove_refuses_an_unknown_service(self, world):
+        with pytest.raises(OnboardError, match="Unknown service 'partiton'"):
+            plan_remove(target(), "partiton")
+
     def test_the_twenty_first_credential_is_refused(self, world):
         for i in range(MAX_CREDENTIALS):
             world.trust(f"svc{i}", f"Acme/fork{i}")
@@ -359,6 +373,16 @@ class TestPlanning:
         assert _states(plan.rows)["spi-stack environment on Acme/osdu-spi-partition"] == "missing"
         assert not any("AZURE_CLIENT_ID" in row.item for row in plan.rows)
 
+    def test_a_corrupt_projection_is_drift_the_identity_overwrites(self, world):
+        world.protect("Acme/osdu-spi-partition")
+        world.lock["metadata"]["annotations"][TRUSTED_REPOS_ANNOTATION] = "{not json"
+
+        plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition")
+        assert _states(plan.rows)[f"{TRUSTED_REPOS_ANNOTATION} on osdu-image-lock"] == "missing"
+        apply_plan(plan)
+
+        assert world.projection() == {"partition": "Acme/osdu-spi-partition"}
+
     def test_a_missing_lock_is_an_error_not_an_empty_projection(self, world):
         world.lock = None
         with pytest.raises(OnboardError, match="osdu-image-lock ConfigMap is missing"):
@@ -373,6 +397,13 @@ class TestApplying:
 
         kinds = [" ".join(w[:3]) for w in world.writes]
         assert kinds[0] == "gh api --method"
+        assert world.writes[0][-4:] == [
+            "-F",
+            "deployment_branch_policy[protected_branches]=false",
+            "-F",
+            "deployment_branch_policy[custom_branch_policies]=true",
+        ]
+        assert all("--repo" in w and "Acme/osdu-spi-partition" in w for w in world.writes[3:8])
         assert kinds.index("az identity federated-credential") > kinds.index("gh variable set")
         assert world.environments["Acme/osdu-spi-partition"]["branches"] == [
             "main",
@@ -502,13 +533,31 @@ class TestListAndRemove:
 
 class TestBootstrapProjection:
     def test_spi_up_rebuilds_the_projection_from_the_identity(self, world):
+        from spi.config import Config
+        from spi.deploy import _project_trusted_repos
+
         world.trust("partition", "Acme/osdu-spi-partition")
 
-        trusted = onboard.sync_projection_from_identity(IDENTITY, RG)
+        _project_trusted_repos(Config.from_env("dev1"))
 
-        assert trusted == {"partition": "Acme/osdu-spi-partition"}
-        assert world.projection() == trusted
+        assert world.projection() == {"partition": "Acme/osdu-spi-partition"}
         assert world.lock_writes == 1
+
+    def test_only_core_clusters_carry_a_lock_to_project_into(self, world):
+        from spi.config import Config, Profile
+        from spi.deploy import _project_trusted_repos
+
+        world.lock = None
+        _project_trusted_repos(Config.from_env("dev1", profile=Profile.MINIMAL))
+        assert world.lock_writes == 0
+
+    def test_a_corrupt_projection_is_rewritten_at_bootstrap(self, world):
+        world.trust("partition", "Acme/osdu-spi-partition")
+        world.lock["metadata"]["annotations"][TRUSTED_REPOS_ANNOTATION] = "[]"
+
+        onboard.sync_projection_from_identity(IDENTITY, RG)
+
+        assert world.projection() == {"partition": "Acme/osdu-spi-partition"}
 
     def test_a_lock_refresh_carries_the_projection_forward(self, world, monkeypatch):
         world.project({"partition": "Acme/osdu-spi-partition"})

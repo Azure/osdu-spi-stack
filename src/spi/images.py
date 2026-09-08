@@ -28,7 +28,6 @@ from typing import Iterable, Mapping
 
 GITLAB_HOST = "https://community.opengroup.org"
 GHCR_HOST = "ghcr.io"
-# Fork deploys may pin only images published under these GHCR owners.
 DEFAULT_IMAGE_BRANCH = "master"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"

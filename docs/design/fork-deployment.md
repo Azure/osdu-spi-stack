@@ -201,9 +201,9 @@ is resumable, not a transaction across GitHub, ARM, and Kubernetes.
 
 Credential reconciliation is serial per deploy identity: await a write
 before issuing the next, including removals. A provider conflict from a
-competing invocation causes bounded backoff and an observed-roster re-read.
-Neither onboarding nor the lifecycle ensure path fans out credential writes
-(ADR-032).
+competing invocation is reported as a failed phase today; the re-run
+re-reads the roster and repairs from it. Neither onboarding nor the
+lifecycle ensure path fans out credential writes (ADR-032).
 
 On an undeclared environment, onboarding preserves the source tag, or uses
 community when it is absent. `--canonical-source fork` explicitly selects
