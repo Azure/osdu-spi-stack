@@ -117,7 +117,7 @@ class FakeWorld:
         if argv[:2] == ["gh", "api"]:
             return self._gh_api(argv)
         if argv[:3] == ["gh", "variable", "list"]:
-            where = argv[4]
+            where = self._scope_key(argv)
             payload = []
             for k, v in self.variables.get(where, {}).items():
                 entry = {"name": k, "value": v}
@@ -127,8 +127,14 @@ class FakeWorld:
                 payload.append(entry)
             return _ok(argv, payload)
         if argv[:3] == ["gh", "secret", "list"]:
-            where = argv[4]
+            where = self._scope_key(argv)
             return _ok(argv, [{"name": k} for k in self.secrets.get(where, ())])
+        if argv[:3] in (["gh", "secret", "delete"], ["gh", "variable", "delete"]):
+            self.writes.append(argv)
+            where = self._scope_key(argv)
+            self.secrets.get(where, set()).discard(argv[3])
+            self.variables.get(where, {}).pop(argv[3], None)
+            return _ok(argv, None)
         if argv[:3] == ["gh", "secret", "set"]:
             self.writes.append(argv)
             self.secrets.setdefault(argv[5], set()).add(argv[3])
@@ -161,6 +167,16 @@ class FakeWorld:
             self.credentials = [c for c in self.credentials if c["name"] != name]
             return _ok(argv, None)
         raise AssertionError(f"unexpected command {key}")
+
+    @staticmethod
+    def _scope_key(argv):
+        """Values live per scope: an org name, a repo, or repo@env."""
+        if "--org" in argv:
+            return argv[argv.index("--org") + 1]
+        repo = argv[argv.index("--repo") + 1]
+        if "--env" in argv:
+            return f"{repo}@{argv[argv.index('--env') + 1]}"
+        return repo
 
     def _gh_api(self, argv):
         method = "GET"
@@ -440,10 +456,73 @@ class TestPlanning:
         sets = [s.argv[3] for s in plan.steps if s.argv[:3] == ["gh", "variable", "set"]]
         assert sets == ["SPI_STACK_CLUSTER"]
 
+    def test_a_stale_environment_value_shadowing_the_repo_is_drift_and_removed(self, world):
+        world.protect("Acme/osdu-spi-partition")
+        world.stamp("Acme/osdu-spi-partition")
+        world.variables["Acme/osdu-spi-partition@spi-stack"] = {"SPI_STACK_CLUSTER": "old"}
+        world.secrets["Acme/osdu-spi-partition@spi-stack"] = {"AZURE_CLIENT_ID"}
+
+        plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition")
+
+        states = _states(plan.rows)
+        assert states["SPI_STACK_CLUSTER at spi-stack on Acme/osdu-spi-partition"] == "drifted"
+        assert states["AZURE_CLIENT_ID at spi-stack on Acme/osdu-spi-partition"] == "drifted"
+        deletes = [s.argv for s in plan.steps if s.argv[2] == "delete"]
+        assert deletes == [
+            [
+                "gh",
+                "variable",
+                "delete",
+                "SPI_STACK_CLUSTER",
+                "--repo",
+                "Acme/osdu-spi-partition",
+                "--env",
+                "spi-stack",
+            ],
+            [
+                "gh",
+                "secret",
+                "delete",
+                "AZURE_CLIENT_ID",
+                "--repo",
+                "Acme/osdu-spi-partition",
+                "--env",
+                "spi-stack",
+            ],
+        ]
+
+        rows = apply_plan(plan)
+
+        assert world.variables["Acme/osdu-spi-partition@spi-stack"] == {}
+        assert not any(" at " in r.item for r in rows)
+
+    def test_org_stamping_reports_repository_values_that_shadow_it(self, world):
+        world.protect("Acme/osdu-spi-partition")
+        world.stamp("Acme")
+        world.variables["Acme/osdu-spi-partition"] = {"AZURE_TENANT_ID": "other-tenant"}
+
+        plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition", org="Acme")
+
+        assert _states(plan.rows)["AZURE_TENANT_ID at Acme/osdu-spi-partition"] == "drifted"
+        assert [
+            "gh",
+            "variable",
+            "delete",
+            "AZURE_TENANT_ID",
+            "--repo",
+            "Acme/osdu-spi-partition",
+        ] in [s.argv for s in plan.steps]
+
+    def test_skip_repo_withholds_trust_steps_until_the_rules_exist(self, world):
+        plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition", skip_repo=True)
+        assert plan.steps == []
+        assert _states(plan.rows)["spi-stack environment on Acme/osdu-spi-partition"] == "missing"
+
     def test_skip_repo_leaves_github_out_but_still_reports_protection(self, world):
+        world.protect("Acme/osdu-spi-partition")
         plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition", skip_repo=True)
         assert _phases(plan) == ["azure", "cluster"]
-        assert _states(plan.rows)["spi-stack environment on Acme/osdu-spi-partition"] == "missing"
+        assert _states(plan.rows)["spi-stack environment on Acme/osdu-spi-partition"] == "correct"
         assert not any("AZURE_CLIENT_ID" in row.item for row in plan.rows)
 
     def test_a_corrupt_projection_is_drift_the_identity_overwrites(self, world):

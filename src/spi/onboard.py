@@ -167,6 +167,9 @@ class Plan:
     protection: Optional[Protection]
     values: dict[str, Optional[str]]
     projection: dict[str, str]
+    # (scope label, gh scope args, kind, name) for our five names found at a
+    # scope narrower than the one being written; GitHub lets those win.
+    shadows: list[tuple[str, list[str], str, str]] = field(default_factory=list)
     steps: list[Step] = field(default_factory=list)
     rows: list[Row] = field(default_factory=list)
 
@@ -385,6 +388,39 @@ def read_values(repo: str, org: str) -> dict[str, Optional[str]]:
     return observed
 
 
+def read_shadows(
+    repo: str, org: str, environment_exists: bool
+) -> list[tuple[str, list[str], str, str]]:
+    """Our five names at scopes narrower than the write target.
+
+    An environment value overrides a repository value and both override an
+    organization value, so a stale copy there is what the job would read.
+    """
+
+    scopes: list[tuple[str, list[str]]] = []
+    if org:
+        scopes.append((repo, ["--repo", repo]))
+    if environment_exists:
+        scopes.append(
+            (f"{DEPLOY_ENVIRONMENT} on {repo}", ["--repo", repo, "--env", DEPLOY_ENVIRONMENT])
+        )
+    found = []
+    for label, scope in scopes:
+        variables = _read_json(
+            ["gh", "variable", "list", *scope, "--json", "name"], f"variables on {label}"
+        )
+        secrets = _read_json(
+            ["gh", "secret", "list", *scope, "--json", "name"], f"secrets on {label}"
+        )
+        for entry in variables or []:
+            if isinstance(entry, dict) and entry.get("name") in VARIABLE_NAMES:
+                found.append((label, scope, "variable", str(entry["name"])))
+        for entry in secrets or []:
+            if isinstance(entry, dict) and entry.get("name") == CLIENT_ID_SECRET:
+                found.append((label, scope, "secret", CLIENT_ID_SECRET))
+    return found
+
+
 def read_projection() -> dict[str, str]:
     lock = read_lock(required=False)
     if lock is None:
@@ -449,6 +485,17 @@ def _value_commands(plan: Plan) -> list[Step]:
             )
         )
     return steps
+
+
+def _shadow_commands(plan: Plan) -> list[Step]:
+    return [
+        Step(
+            "repository",
+            ["gh", kind, "delete", name, *scope],
+            f"Remove the {name} {kind} shadowing the {plan.org or 'repository'} value at {label}",
+        )
+        for label, scope, kind, name in plan.shadows
+    ]
 
 
 def _protection_commands(plan: Plan) -> list[Step]:
@@ -585,6 +632,18 @@ def _value_rows(plan: Plan, stamped: frozenset[str] = frozenset()) -> list[Row]:
     return rows
 
 
+def _shadow_rows(plan: Plan) -> list[Row]:
+    return [
+        Row(
+            "repository",
+            f"{name} at {label}",
+            "drifted",
+            f"shadows the {plan.org or 'repository'} value",
+        )
+        for label, _scope, _kind, name in plan.shadows
+    ]
+
+
 def _protection_rows(plan: Plan) -> list[Row]:
     protection = plan.protection
     assert protection is not None
@@ -691,17 +750,24 @@ def plan_onboard(
         projection=read_projection(),
     )
     _refuse_before_writes(plan)
+    assert plan.protection is not None
+    if not skip_repo:
+        plan.shadows = read_shadows(repo, org, plan.protection.exists)
 
     steps: list[Step] = []
     if not skip_repo:
         steps.extend(_protection_commands(plan))
+        steps.extend(_shadow_commands(plan))
         steps.extend(_value_commands(plan))
-    credential = _credential_command(plan)
-    if credential is not None:
-        steps.append(credential)
-    projection = _projection_step(_desired_projection(plan), plan.projection)
-    if projection is not None:
-        steps.append(projection)
+    # The handoff must not enable trust ahead of the rules; without --skip-repo
+    # the repository steps above establish them first.
+    if not skip_repo or plan.protection.satisfied:
+        credential = _credential_command(plan)
+        if credential is not None:
+            steps.append(credential)
+        projection = _projection_step(_desired_projection(plan), plan.projection)
+        if projection is not None:
+            steps.append(projection)
     plan.steps = steps
     plan.rows = _status_rows(plan)
     return plan
@@ -710,6 +776,7 @@ def plan_onboard(
 def _status_rows(plan: Plan, stamped: frozenset[str] = frozenset()) -> list[Row]:
     rows = _protection_rows(plan)
     if not plan.skip_repo:
+        rows.extend(_shadow_rows(plan))
         rows.extend(_value_rows(plan, stamped))
     rows.append(_credential_row(plan))
     rows.append(_projection_row(_desired_projection(plan), plan.projection))
@@ -763,10 +830,16 @@ def render_plan(plan: Plan) -> None:
         script = "\n".join(f"# {step.description}\n{_quote(step.argv)}" for step in steps)
         console.print(Syntax(script, "bash", theme="monokai", word_wrap=True))
     if plan.skip_repo:
+        assert plan.protection is not None
         console.print(
             "\n[dim]--skip-repo: GitHub values are left to the repository's owner; the "
             f"{DEPLOY_ENVIRONMENT} environment rules are still required before trust.[/dim]"
         )
+        if not plan.protection.satisfied:
+            console.print(
+                "[warning]Trust steps are withheld until the repository owner establishes "
+                f"the {DEPLOY_ENVIRONMENT} environment rules; re-run afterwards.[/warning]"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -900,6 +973,7 @@ def apply_plan(plan: Plan) -> list[Row]:
 
     if not plan.skip_repo:
         plan.values = read_values(plan.repo, plan.org)
+        plan.shadows = read_shadows(plan.repo, plan.org, plan.protection.exists)
     plan.steps = []
     plan.rows = _status_rows(plan, frozenset(stamped))
     return plan.rows
