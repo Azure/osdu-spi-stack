@@ -162,7 +162,39 @@ def run_process(cmd_list: List[str], **kwargs: Any) -> subprocess.CompletedProce
         if kwargs.get("text", False):
             return subprocess.CompletedProcess(cmd_list, 1, stdout="", stderr=error)
         return subprocess.CompletedProcess(cmd_list, 1, stdout=b"", stderr=error.encode())
-    return subprocess.run(prepared, **kwargs)
+    timeout = kwargs.pop("timeout", None)
+    if timeout is None:
+        return subprocess.run(prepared, **kwargs)
+    return _run_with_timeout(prepared, timeout, **kwargs)
+
+
+def _run_with_timeout(prepared: PreparedCommand, timeout: float, **kwargs: Any):
+    """``subprocess.run`` with a timeout that ends the whole process tree.
+
+    ``subprocess.run`` kills only the immediate child. On Windows that child
+    is the cmd.exe running a batch shim, and the CLI it launched would keep
+    the captured pipes open past the timeout, so the tree goes as a unit.
+    """
+    if kwargs.pop("capture_output", False):
+        kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
+    with subprocess.Popen(prepared, **kwargs) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(proc)
+            stdout, stderr = proc.communicate()
+            raise subprocess.TimeoutExpired(prepared, timeout, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(prepared, proc.returncode, stdout, stderr)
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    if platform.system() == "Windows":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            capture_output=True,
+            check=False,
+        )
+    proc.kill()
 
 
 def run_command(

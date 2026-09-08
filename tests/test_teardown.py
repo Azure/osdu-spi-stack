@@ -17,9 +17,10 @@
 import json
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -843,6 +844,32 @@ class TestCli:
 
 
 class TestRunCommandTimeout:
+    def test_a_timed_out_child_is_killed_with_its_tree(self, tmp_path):
+        """A real sleeping child on this platform: the call must end at the timeout."""
+        from spi.shell import run_process
+
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_process(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+        assert time.monotonic() - started < 15
+
+    def test_windows_uses_taskkill_for_the_tree(self):
+        from spi.shell import _kill_process_tree
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.pid = 4242
+        with (
+            patch("spi.shell.platform.system", return_value="Windows"),
+            patch("spi.shell.subprocess.run") as run,
+        ):
+            _kill_process_tree(proc)
+        assert run.call_args.args[0][:4] == ["taskkill", "/T", "/F", "/PID"]
+
     def test_an_expired_timeout_is_reported_as_a_failed_result(self):
         from spi.shell import run_command
 
