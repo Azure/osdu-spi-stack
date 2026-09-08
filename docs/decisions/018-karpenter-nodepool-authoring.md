@@ -10,16 +10,26 @@ The placement choice matters because the same CRs need to evolve with workload s
 
 Author Karpenter `NodePool` and `AKSNodeClass` resources as Flux-managed workload manifests in `software/components/nodepools/`, reconciled by the `spi-nodepools` Kustomization at Layer 0b of the core profile (after `spi-namespaces`, before any layer that schedules workloads).
 
-Two NodePools:
+Two NodePools, shaped by the class of workload each hosts:
 
-- `platform`: taint `workload=platform:NoSchedule`, requirements `D` family, 8 vCPU, >30 GiB RAM, premium-capable, on-demand. Hosts stateful middleware.
-- `osdu`: same shape, taint `workload=osdu:NoSchedule`. Hosts OSDU services.
+- `platform`: taint `workload=platform:NoSchedule`, requirements `D` family, 8 vCPU, >30 GiB RAM, premium-capable, on-demand. Hosts stateful middleware. Disruption is `WhenEmpty` with a 5-minute delay and a budget of one node at a time.
+- `osdu`: taint `workload=osdu:NoSchedule`, requirements `D` family, 4, 8, or 16 vCPU, spot or on-demand. Hosts OSDU services. Disruption is `WhenEmptyOrUnderutilized` with a 5-minute delay.
 
-Both pin `AKSNodeClass.imageFamily: AzureLinux` with a 128 GiB OS disk. Disruption uses `WhenEmptyOrUnderutilized` with a 5-minute consolidation delay.
+Both pin `AKSNodeClass.imageFamily: AzureLinux` with a 128 GiB OS disk.
+
+The shapes differ because the pools hold opposite workloads. Platform pods are bound to zonal PersistentVolumes and guarded by PodDisruptionBudgets, so Karpenter cannot move them; underutilization consolidation on that pool only retries evictions that never succeed, and a fixed 8 vCPU shape keeps the per-node kubelet and DaemonSet reservation amortized over the few hosts the pool needs. OSDU services are stateless HTTP workloads behind Istio with no volumes, so a range of sizes lets Karpenter bin-pack them and replace an underutilized node with a smaller one, and spot capacity with on-demand fallback prices them accordingly.
+
+Elasticsearch, PostgreSQL, and Redis each declare a required hostname anti-affinity across their own members (`software/components/{elasticsearch,postgres,redis}/`). Setting any `affinity` block on an ECK pod template replaces the operator's default preferred spread, and Karpenter relaxes preferred rules it cannot satisfy, so only a required rule keeps a quorum off a single host. The rule is hostname, not zone: a zone requirement would strand pods whose volumes were provisioned in one zone.
+
+Rejected:
+
+- **Identical shapes for both pools.** One review surface, but it pins a stateless pool to an 8 vCPU on-demand floor chosen for JVM-heavy middleware and disables the bin-packing Karpenter exists for.
+- **Spot capacity on `platform`.** Same saving as on `osdu`, but a spot eviction ignores PodDisruptionBudgets and a zonal volume cannot follow its pod to whichever zone has spot capacity.
+- **Preferred anti-affinity for the stateful sets.** Schedules even when hosts are scarce, but the scheduler and Karpenter both treat it as a score, and a co-located quorum makes its host permanently undrainable.
 
 Placement rides the stack-owned `spi-pool` label, applied consistently to NodePool templates, workload `nodeSelector`s, and affinity rules. AKS reserves `agentpool` as a system label: NodePool manifests that set it are rejected at admission (`label "agentpool" is restricted`), and reserved labels can gain restrictions in any hardening wave. A stack-owned label cannot collide with platform reservations; the AKS-managed `kubernetes.azure.com/agentpool` is set by the platform, not by Karpenter templates, and taint-only placement loses the ability to require (rather than merely tolerate) a pool.
 
-Rejected:
+Rejected placements:
 
 - **Declare NodePools in Bicep alongside the AKS cluster.** Bicep would have to either embed the CR as a `Microsoft.Resources/deployments` JSON blob (loses CR-level review) or call a `kubernetesClusterExtension`-style escape hatch. Either way the NodePool evolution is gated on a Bicep deploy when it should track workload evolution.
 - **Apply NodePools imperatively from the CLI at bootstrap.** Re-opens the problem ADR-009 closed for everything else: cluster state stops being reconstructable from Git, and a NodePool tweak requires the CLI to run.
@@ -32,4 +42,5 @@ Rejected:
 - The Layer 0b position means NodePools are present before Layer 1 operators reconcile, so the first ECK or CNPG pod schedules on the correct pool without a Karpenter cold-start delay against unlabeled nodes.
 - Adding a new workload domain (e.g., a future ingest pool) is a new NodePool + AKSNodeClass pair under `software/components/nodepools/` and a chart-level toleration. No infra-side change.
 - Operators inspecting nodes must know `spi-pool` is the placement label (`kubectl get nodes -L spi-pool`).
-- The disruption settings (`WhenEmptyOrUnderutilized`, 5 min) are tuned for dev/test churn. Production tuning is unvalidated here; the expected direction is longer windows and `WhenEmpty` only.
+- The required anti-affinity sets a floor of three `platform` hosts, one per Elasticsearch member, and a spot eviction on `osdu` leaves a single-replica service unavailable until its replacement passes the chart's startup delay. A production overlay that cannot accept that pins `osdu` to on-demand.
+- The 5-minute consolidation delays are tuned for dev/test churn. Production tuning is unvalidated here; the expected direction is longer windows.
