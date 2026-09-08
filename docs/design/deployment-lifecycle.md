@@ -1,231 +1,203 @@
-# Deployment Lifecycle
+# Deployment lifecycle
 
-**What this explains.** Everything that happens between `spi up` exiting and a healthy OSDU cluster serving requests, broken into three phases with concrete timings.
+`spi up` provisions Azure resources, bootstraps Kubernetes, and starts Flux.
+It can return before the OSDU APIs are ready. Use `spi status --watch` to follow
+the remaining rollout.
 
-**Why it matters.** A `spi up` of the default profile takes ~45-50 minutes, dominated by AKS Automatic provisioning. If you do not know what phase you are in, a long wait on what looks like silence feels like a bug. This doc lays out the phases so you can watch the right signals.
+Before returning, the CLI verifies the requested Git revision and suspends Git fetching. Flux continues
+reconciling the cached revision; suspension does not stop workloads or cancel
+the rollout.
 
-> **Companion docs.** [Bicep architecture](bicep-architecture.md) covers what each Bicep deployment lands. [Flux reconciliation](flux-reconciliation.md) covers the layer DAG from the reconcile-loop perspective. Read this for "where am I in the spi up wait."
+## From invocation to CLI exit
 
-## The three phases
+The commands below create billable Azure resources in the active subscription:
 
-![Deployment lifecycle](../diagrams/deployment-lifecycle.png)
-
-| Phase | Who drives it | Duration | What it produces |
-|---|---|---|---|
-| 1. CLI bootstrap | The `spi` CLI | ~40-45 min | A cluster with the AKS Flux extension installed and a `GitRepository` registered |
-| 2. Flux reconciliation | Flux CD | ~10-30 min | A healthy cluster running the chosen profile and ingress mode |
-| 3. Suspended steady state | No one | indefinite | Pods keep running; Flux stops fetching new commits |
-
-Phase 1 is the long pole: AKS Automatic provisioning alone takes ~30 min, with the Flux extension Bicep adding another ~10-15 min on top of the smaller PaaS deploy and K8s bootstrap.
-
-## Phase 1: CLI bootstrap
-
-The CLI is doing the minimum work needed to hand off to Flux. Every `az` and `kubectl` command it runs is printed in a Rich panel before execution so you can copy-paste it and re-run manually.
-
-The sequence inside `deploy.deploy_azure()` is:
-
-1. **Config resolution.** `Config.from_env()` takes `--env`, `--profile`, `--partition`, `--ingress-mode`, and applies defaults (region, derived cluster name, profile-driven layer wiring). Pure Python, no external calls.
-2. **Prerequisite check.** `check_prerequisites()` runs each tool in the registry (`az`, `bicep`, `kubectl`, `kubelogin`, `flux`) and fails fast if anything is missing.
-3. **Resource group.** `az group create --name spi-stack-<env> --location <region>`. The one thing Bicep cannot do itself.
-4. **`infra/aks.bicep` deploy.** AKS Automatic cluster, BYO VNet + NAT gateway, managed Istio, declared as a raw `Microsoft.ContainerService/managedClusters` resource. This is the slowest single step (~30 min).
-5. **`az aks get-credentials`** merges the kubeconfig.
-6. **`az aks mesh enable-istio-cni`.** The resource provider rejects `proxyRedirectionMechanism` at cluster creation, so the CLI enables CNI chaining afterwards and skips the call when the cluster already reports `CNIChaining`. See [ADR-008](../decisions/008-bicep-for-azure-provisioning.md).
-7. **Deployer cluster-admin grant.** `az role assignment create --role "Azure Kubernetes Service RBAC Cluster Admin"` on the cluster for the signed-in principal, then a wait until the assignment propagates (minutes). Local accounts are disabled, so bootstrap `kubectl` has no other path.
-8. **Key Vault soft-delete recovery.** If a prior `spi down` left a soft-deleted Key Vault with the same name, `az keyvault recover` brings it back so the upcoming Bicep deploy does not collide.
-9. **`infra/main.bicep` deploy.** Identity, RBAC, Key Vault (with Bicep-resolved secrets), ACR, Cosmos DB Gremlin, per-partition (Cosmos SQL + Service Bus + Storage), common Storage, optional `external-dns-*` for `dns` ingress. (The VNet is provisioned by `aks.bicep`, not here.)
-10. **K8s bootstrap.** `kubectl apply` for namespaces, StorageClasses, the middleware secret seed (`spi-secrets`) plus the `platform`/`osdu` credential Secrets, `workload-identity-sa` (in `platform` and `osdu`), the `osdu-config` ConfigMap, the `spi-ingress-config` ConfigMap, the `spi-init-values` ConfigMap, and the Istio JWT projection resources from [ADR-016](../decisions/016-istio-jwt-projection.md). The `core` profile also creates the `osdu-image-lock` ConfigMap, resolved live from the OSDU community registry per [ADR-017](../decisions/017-osdu-image-lock.md); `minimal` and `bare` skip image resolution and this ConfigMap.
-11. **`infra/flux.bicep` deploy.** Activates the AKS Flux extension and creates the `fluxConfigurations` resource with two top-level Kustomizations: `stack` (pointing at `./software/stacks/osdu/profiles/<profile>`) and `ingress` (pointing at `./software/stacks/osdu/ingress/<mode>`).
-12. **Runtime Key Vault secrets.** The CLI writes the runtime secrets to Key Vault: per-partition Elasticsearch credentials and Redis hostname/password from the generated seed passwords and fixed in-cluster hostnames, and `tbl-storage-endpoint` derived from the common Storage account name. There is no wait for middleware Ready, since every value is known once infra is up. See [ADR-010](../decisions/010-keyvault-secret-management.md).
-13. **Suspend pin.** `_finalize_gitops_source()` waits up to 10 minutes for `gitrepository/osdu-spi-stack-system` to appear, resumes and reconciles it with a 10-minute timeout, verifies `Ready=True` and the requested artifact revision, then `_set_source_suspended()` patches `spec.suspend: true`. See [ADR-014](../decisions/014-suspend-gitops-after-deploy.md).
-14. **Next-steps panel.** The CLI prints `spi status --watch`, `spi info`, and the matching `spi down` command with flags pre-filled.
-
-At this point the CLI exits. You have a cluster with Flux installed, a suspended `GitRepository`, all `Kustomization` definitions queued, and the runtime KV secrets in place. The OSDU services have not finished starting yet.
-
-## Phase 2: Flux reconciliation
-
-From the moment Phase 1 ends, Flux owns the cluster. The two top-level Kustomizations (`stack` and `ingress`) reconcile in parallel; their child Kustomizations reconcile in dependency order from the profile `stack.yaml`.
-
-The `core` profile produces this DAG (simplified):
-
-```
-L0a  spi-namespaces
-       |
-       +--> L0b  spi-nodepools                            (ADR-018)
-       +--> L1   spi-cert-manager, spi-trust-manager,
-       |          spi-eck-operator, spi-cnpg-operator,
-       |          spi-helm-sources
-       |          |
-       |          +--> L2   spi-elasticsearch, spi-redis, spi-postgresql
-       |                     |
-       |                     +--> L3   spi-airflow
-       |
-       +--> L4a  spi-osdu-config
-                 |
-                 +--> L4b  spi-bootstrap     (trust-manager Bundles + Redis DR)
-                            |
-                            +--> L5   spi-osdu-services   (10 services)
-                                       |
-                                       +--> L5a  spi-osdu-init       (partition + entitlements, ADR-015)
-                                                  |
-                                                  +--> L5b  spi-osdu-schema-load    (ADR-013)
-                                                  |          |
-                                                  |          +--> L6  spi-osdu-reference
-                                                  |
-                                                  +--> L5c  spi-osdu-legal          (non-gating, ADR-015)
+```bash
+spi check
+spi up --env dev1
 ```
 
-Each edge is a `dependsOn` entry. Each dependency gates on the parent's health check. See [flux reconciliation](flux-reconciliation.md) for the full mechanics.
+The CLI defaults to `core`, region `westus3`, partition `opendes`, and ingress
+mode `azure`. It checks prerequisites, resolves the deployer identity and names,
+and prepares infrastructure. For `core`, an explicit `--refresh-images` resolves
+images before provisioning; otherwise bootstrap reads the existing lock and
+resolves only when no lock exists. `minimal` and `bare` skip image resolution. The main orchestration is in
+`deploy_azure()` in `src/spi/deploy.py`.
 
-Rough timing on the default profile with a freshly-deployed cluster:
-
-| Layer | Wall time | Notes |
+| Stage | Work performed | State available afterward |
 |---|---|---|
-| L0 Namespaces + NodePools | <30 s | `kubectl apply` then Karpenter |
-| L1 Operators + Gateway | ~2 min | HelmReleases pulling charts, CRDs registering |
-| L2 Middleware | ~3-4 min | Elasticsearch HTTP CA + 3-node startup is the long pole |
-| L3 Airflow | ~1-2 min | Needs Postgres Ready |
-| L4 Config + bootstrap | <30 s | ConfigMaps + trust-manager Bundles + Redis DestinationRule |
-| L5 10 core OSDU services | ~3-4 min | Spring Boot startup, 10 HelmReleases install in parallel |
-| L5a Partition + entitlements init | <1 min | Two Jobs per partition, each one HTTP call |
-| L5b Schema load | ~3-5 min | 1,386 schemas POSTed one by one |
-| L6 Reference services | ~2 min | crs-conversion downloads SIS data in its init container |
+| Subscription preflight | Resolve the system pool SKU's usable zones and ephemeral-disk capability | Invalid or restricted zone sets rejected before resource-group creation |
+| Resource group | Verify Azure login, create or reuse the group, persist the naming suffix | Stable resource names for retries |
+| AKS | Deploy `infra/aks.bicep`, obtain kubeconfig, enable Istio CNI chaining, grant the deployer cluster access | An accessible cluster and OIDC issuer |
+| Azure PaaS | Recover a matching soft-deleted Key Vault if needed, then deploy `infra/main.bicep` | Data services, identities, role assignments, Azure-derived Key Vault values |
+| Kubernetes bootstrap | Create namespaces, seed Secrets, StorageClasses, Gateway API CRDs, ServiceAccounts, ConfigMaps including `spi-cluster-config`, the trusted-repository projection (`core` only), and Istio policies | Inputs in `osdu-flux`, `platform`, and `osdu` |
+| Flux activation | Deploy `infra/flux.bicep` with the repository, branch or tag, profile, and ingress paths | Source fetching and workload reconciliation begin |
+| Runtime Key Vault values | Write middleware passwords from the seed and derived endpoints | Service configuration available in Key Vault |
+| Git-source finalization | Wait for the source, resume and reconcile it, verify the requested artifact revision, then suspend it and write the deploy record | Verified Git revision recorded; new Git revisions no longer fetched |
 
-*Times measured on `Standard_D8s_v5` Karpenter nodes against a warm AKS quota; tune to your own region and quota.*
+The runtime Key Vault writes **do not wait for Elasticsearch or Redis**.
+Passwords were generated during bootstrap and are already available. The CLI
+may instead wait for the deployer's Key Vault role assignment to propagate.
 
-What to watch while Phase 2 runs:
+Flux runs concurrently with those final CLI stages. There is no single moment
+when the CLI stops all work and Flux starts all work.
+
+Source finalization waits up to ten minutes for the GitRepository to appear,
+then runs a source reconcile with a ten-minute timeout. A missing, unready, or
+wrong-ref artifact fails deployment. Failure during reconciliation or
+verification attempts to suspend the source again before propagating the error.
+Inspect the source if deployment stops at that stage:
+
+```bash
+kubectl get gitrepository osdu-spi-stack-system -n osdu-flux -o yaml
+```
+
+Check `spec.suspend`, `status.artifact.revision`, and Ready. The deploy record
+stores the verified commit and CLI version. A new tag deployment starts with
+`maintenance: true`; an existing record preserves its maintenance value.
+Lifecycle workflows explicitly set maintenance before mutating a standing
+environment and clear it only after readiness and probes pass. Follow the
+[environment lifecycle](environment-lifecycle.md) for that workflow contract.
+
+## What Flux finishes
+
+The two root Kustomizations, `stack` and `ingress`, create child Kustomizations.
+Their `dependsOn` entries form a dependency graph rather than one serial queue.
+
+Operators and NodePools precede middleware. Elasticsearch, Redis, and
+trust-manager must be ready before the CA-bundle bootstrap layer. Core OSDU
+services follow that layer, then partition and entitlements initialization,
+schema loading, and reference services. Legal-tag seeding follows initialization
+on a separate, non-gating branch. Airflow follows PostgreSQL on a
+separate branch. Ingress has its own certificate and route dependencies.
+
+That sequence describes `core`. `minimal` stops before OSDU services; `bare`
+activates empty workload trees. Neither profile skips Azure PaaS provisioning
+or CLI credential bootstrap. The [profile reference](../architecture.md#stack-profiles)
+defines the boundaries.
+
+The [Flux guide](flux-reconciliation.md#dependency-ordering) owns the dependency
+reference. Layer numbers are grouping labels; they are not global barriers.
+
+## Timing and readiness
+
+Existing observations recorded in the
+[smoke workflow](../../.github/workflows/smoke.yml) put fresh provisioning in
+`centralus` at roughly 45-50 minutes, including about 30 minutes for AKS and
+10-15 minutes for the Flux extension. These are planning estimates from prior
+runs, not measurements of the current release or guarantees for other regions.
+The CLI's default region is `westus3`, not `centralus`.
+
+Application readiness can take longer than CLI provisioning. Reconciliation
+overlaps the end of provisioning, so adding separate phase estimates does not
+give a reliable total. Image pulls, quota, node availability, certificate
+issuance, and initialization Jobs all affect the remaining wait. CI allows
+60 minutes for provisioning and a separate 230-minute Flux-readiness wait
+inside a 270-minute verify job. These are ceilings, not expected durations.
+The core schema-load Job alone has a 150-minute deadline, with a 155-minute
+Kustomization timeout that includes cold-cluster scheduling and image pulls.
+
+After `spi up` returns:
 
 ```bash
 spi status --watch
 ```
 
-The dashboard groups Kustomizations by layer, shows HelmRelease status, the schema-load Job, and the per-partition init Jobs. Anything stuck at `False` for more than a few minutes points to the layer where the chain is blocked.
+Distinguish these milestones:
+
+| Signal | What it establishes |
+|---|---|
+| CLI exits successfully | The orchestration completed without a fatal error |
+| Git source has an artifact | Flux has manifests to reconcile |
+| Kustomizations and HelmReleases are Ready | Declared resources passed their configured health checks |
+| Initialization Jobs are Complete | Partition/entitlements bootstrap and schema loading finished |
+| An authenticated API request succeeds | The particular request path is usable |
+
+A pod in `Running` phase is not necessarily ready. Completed Jobs should not
+be expected to remain Running. Use `spi info` to discover endpoints, then
+exercise the API needed for your test.
+
+## Retrying and previewing
+
+If provisioning fails, inspect the failed ARM deployment or Kubernetes
+condition before retrying. Re-running `spi up` reuses the resource group's
+naming suffix and existing credential seed, but it is not a resume-from-step
+operation: it resubmits infrastructure and reapplies bootstrap configuration.
+Use the same partition list, location, repository/branch, and ingress settings.
+
+For `core`, a retry preserves an existing image lock, including service pins.
+Pass `--refresh-images` to resolve fresh canonical images while retaining active
+pins. `--no-refresh-images` fails if the cluster has no image-lock ConfigMap;
+it cannot bootstrap a new core deployment on its own.
+
+`spi up --env dev1 --dry-run` previews the AKS and PaaS templates. It still
+creates or updates the resource group and naming tag. It skips Key Vault
+recovery, Kubernetes bootstrap, Flux activation, and runtime secret writes.
+The [Bicep guide](bicep-architecture.md#previewing-changes) explains the
+preview's missing OIDC-dependent resources.
+
+Changing a profile is not a non-destructive retry. Moving to `bare` removes
+middleware; Redis's PVC retention policy deletes volumes when its StatefulSets
+are removed or scaled down.
+
+## Steady state and teardown
+
+After deployment, inspect changes before fetching another Git revision.
+`spi reconcile --resume` enables polling, and `--suspend` disables it again.
+`--refresh-images` is a separate image update and can roll services even when
+Git fetching is suspended. See the [Flux guide](flux-reconciliation.md).
+
+**Teardown deletes the environment's data and compute. Managed identities,
+the resource group, and its tags survive ordinary `spi down`.**
 
 ```bash
-kubectl get kustomizations -n osdu-flux --watch
+spi down --env dev1
+az resource list --resource-group spi-stack-dev1 --output table
 ```
 
-The raw Flux view if you need to confirm exact condition messages.
+Success means a fresh inventory contains only managed identities and the AKS
+managed nodes group is gone. The command waits up to 45 minutes; an incomplete
+delete exits nonzero with the remaining resources. Independent resources delete
+concurrently, then subnet NAT associations, NAT gateway, public IP, and VNet
+are removed in dependency order. An unhandled resource type blocks deletion;
+authorization failures and resource locks stop the run. Re-run `spi down` to
+continue from a partial inventory.
 
-## Phase 3: Suspended steady state
+Retaining identities preserves client IDs and external grants. The naming suffix
+also survives, so the next `spi up` reuses resource names and recovers the
+matching soft-deleted Key Vault. Kubernetes seed Secrets are lost with the
+cluster; a rebuild generates new middleware passwords.
 
-When Phase 2 finishes, every Kustomization reports `READY=True`, every pod is `Running`, and the cluster serves requests. The `GitRepository` is still suspended from Phase 1.
-
-The most common source of confusion: **suspended does not mean stopped.** The cluster is fully operational. The thing that is suspended is Flux's polling of the `GitRepository`. If you push a commit to the repo, Flux ignores it until you resume.
+To delete the resource group and its identities as well:
 
 ```bash
-spi reconcile                  # one-shot reconcile, stays suspended
-spi reconcile --resume         # unpin (auto-reconciliation back on)
-spi reconcile --suspend        # re-pin
-spi reconcile --refresh-images # re-resolve osdu-image-lock and reconcile services
+spi down --env dev1 --purge
+az group exists --name spi-stack-dev1
 ```
 
-`spi status` and `spi info` show a `SUSPENDED` banner when the `GitRepository` is pinned.
+Purge discovers the identities' external role assignments first. It removes and
+confirms the stack-owned ExternalDNS zone grant; unknown grants, discovery
+failures, or failed removals stop purge with the group intact. The external DNS
+zone is never a deletion target. `false` from `az group exists` confirms the
+group is gone. Purge waits for completion within the same 45-minute deadline.
 
-## Phase 4: Teardown
+Kubeconfig cleanup follows confirmed cluster deletion and checks the recorded
+API-server FQDN before removing entries, so a same-named cluster in another
+subscription keeps its context. Missing `kubectl` or an unverifiable server
+skips cleanup. With a multi-file `KUBECONFIG`, the CLI re-reads surviving
+contexts before removing unreferenced cluster or user entries.
 
-```bash
-spi down --env <env>           # resources go, managed identities stay
-spi down --env <env> --purge   # the whole group goes
-```
+[ADR-034](../decisions/034-deploy-identity-survives-down.md) owns retention and
+purge boundaries. Scheduled reset and teardown workflows remain unbuilt; their
+planned sequencing is in [environment lifecycle](environment-lifecycle.md).
 
-Ordinary `spi down` keeps the environment resource group, its tags, and its
-managed identities, so a rebuild never rotates the deploy identity's client
-id ([ADR-034](../decisions/034-deploy-identity-survives-down.md)). Everything
-else in the group is deleted from a live inventory (`az resource list`)
-rather than from an assumed shape, in two stages:
+## Decisions and implementation
 
-1. Everything without an in-group dependency is requested at once with
-   `az resource delete --no-wait`: the AKS cluster, Cosmos DB accounts,
-   Service Bus, storage accounts, ACR, Key Vault, the Event Grid system
-   topics Azure creates beside storage accounts, and the telemetry
-   resources when that option provisioned them. Azure runs these deletes
-   concurrently, so the stage takes as long as its slowest member, usually
-   the cluster or the largest Cosmos account. The Key Vault enters
-   soft-delete; the next `spi up --env <env>` recovers it in Phase 1 step 8.
-   Once the inventory shows the stage gone, teardown waits until Azure
-   reports the managed nodes group (`<cluster>-nodes`) gone too, then
-   prunes the kubeconfig entries, since the cluster is confirmed dead.
-2. The network chain, which Azure does enforce an order on: subnet NAT
-   associations are detached, then the NAT gateway, its public IP, and the
-   VNet go one after another.
-
-Delete acceptance is not completion; a fresh inventory decides when a stage
-is done, and the plan runs in passes so a resource Azure adds while a stage
-is in flight is picked up by the next pass. The whole run has a 45-minute
-deadline. A resource that is still present and no longer reports `Deleting`
-had its delete fail behind the accepted request, so it is requested again
-with backoff. Authorization failures and resource locks stop the run at once
-with the resource named. A resource type the plan does not cover stops the
-run before anything is deleted, listing the offending resources, because a
-Bicep change that adds a resource type also adds a teardown obligation
-(`tests/test_teardown.py` checks the plan against `infra/`). Success means
-the final inventory holds only managed identities; anything else exits
-nonzero with the remaining list and each resource's provisioning state, and
-reset does not proceed to `spi up`. A second `spi down` on a partially torn
-down group picks up where the first stopped.
-
-`spi down --purge` deletes the group and its identities. Before requesting
-the group delete it discovers the identities' role assignments outside the
-environment (the group and its managed nodes group), removes the ExternalDNS
-identity's `DNS Zone Contributor` assignment on the external DNS zone, and
-confirms its absence, allowing for RBAC replication lag. Any other external grant, a discovery failure, or a failed removal
-stops the purge with the assignment IDs listed and the group intact. Purge
-then waits for Azure to report the group gone within the same 45-minute
-deadline and exits nonzero naming the group when the accepted delete has not
-completed. A managed nodes group left behind by a cluster an earlier `down`
-already deleted is purged with the environment group, since its grants were
-treated as in-environment. The external DNS zone and its resource group are never deletion
-targets.
-
-Cluster names repeat across subscriptions: `spi up --env dev1` run in two subscriptions builds two `spi-stack-dev1` clusters, and both write the same context name. `spi down` therefore reads the cluster's API server FQDN before deleting anything, and prunes the context only when the kubeconfig entry points at that server; tearing one down leaves the other's credentials alone. A lookup that comes back empty, from a cluster already deleted or one that never finished creating, leaves the kubeconfig untouched and says which check failed.
-
-The kubeconfig is then read a second time, because `delete-context` edits only the file holding the winning entry and a multi-file `KUBECONFIG` can surface a shadowed context of the same name. That post-delete view decides the rest: the cluster and user entries go only when no context that survived references them, so a kubeconfig shared with another cluster stays intact, and `current-context`, which `delete-context` leaves naming the entry it removed, is cleared only when nothing took that name's place. `spi down` requires only `az`, so a machine without kubectl skips the prune instead of failing the teardown. The two kubeconfig reads are silent; the command panels report what teardown changes, and every entry it removes gets one.
-
-## Worked example: `spi up --env dev1`, what you should see
-
-```bash
-$ uv run spi up --env dev1
-```
-
-Milestones to watch for in the CLI output:
-
-1. **"Resource group spi-stack-dev1 ready"** -- Phase 1 step 3.
-2. **"AKS Automatic cluster spi-stack-dev1 ready"** -- Phase 1 step 4. The cluster exists.
-3. **"Bicep deployment complete"** -- Phase 1 step 9. Cosmos, Service Bus, Storage, Key Vault, ACR are live.
-4. **"GitOps activated for profile: core"** -- Phase 1 step 11. Flux is running in `flux-system`; SPI GitOps objects reconcile in `osdu-flux`.
-5. **"Writing OSDU bootstrap secrets to Key Vault..."** -- Phase 1 step 12. Redis/Elasticsearch credentials and `tbl-storage-endpoint` are written from the seed passwords, fixed in-cluster hostnames, and the common Storage account name.
-6. **"GitRepository pinned to v0.8.0 (<commit>); deployable after convergence."** -- Phase 1 step 13. CLI is about to exit.
-
-Switch to another terminal:
-
-```bash
-uv run spi status --watch
-```
-
-You see the layers come up in order. Once every Kustomization is Ready and every pod is `Running`:
-
-```bash
-uv run spi info
-```
-
-returns the gateway hostname / IP and (with `--show-secrets`) the Workload Identity client ID for token requests. The cluster is testable.
-
-## Related ADRs
-
-- [ADR-008](../decisions/008-bicep-for-azure-provisioning.md) -- Bicep for Azure Provisioning
-- [ADR-009](../decisions/009-flux-cd-for-gitops.md) -- Flux CD + AKS GitOps Extension
-- [ADR-014](../decisions/014-suspend-gitops-after-deploy.md) -- Suspend GitOps After Deploy
-- [ADR-017](../decisions/017-osdu-image-lock.md) -- Per-Deploy Image Lock
-
-## Source files
-
-- `src/spi/cli.py` -- `up`, `down`, `reconcile`, `status`, `info`, `check`, `update` commands
-- `src/spi/deploy.py` -- Phase 1 orchestrator (`deploy_azure`); `osdu-config` ConfigMap, workload-identity ServiceAccounts, Istio JWT projection, runtime KV writes, `_finalize_gitops_source()`, `_set_source_suspended()`
-- `src/spi/azure_infra.py` -- Azure infra provisioning (`provision_azure_infra`: RG, AKS, `main.bicep`, KV recovery)
-- `src/spi/bicep.py` -- `az deployment group create` wrapper
-- `src/spi/bootstrap.py` -- K8s bootstrap (namespaces, StorageClasses, Gateway API CRDs)
-- `src/spi/shell.py` -- command execution; `prune_kube_context()` clears the Phase 4 kubeconfig entries
-- `src/spi/secrets.py` -- middleware secret seed + `platform`/`osdu` credential Secrets
-- `src/spi/images.py` -- resolves and renders `osdu-image-lock`
-- `infra/aks.bicep`, `infra/main.bicep`, `infra/flux.bicep` -- the three Bicep entrypoints
-- `software/stacks/osdu/profiles/core/stack.yaml` -- the layer DAG
+- [ADR-008](../decisions/008-bicep-for-azure-provisioning.md): Bicep provisioning.
+- [ADR-014](../decisions/014-suspend-gitops-after-deploy.md): default Git-source suspension.
+- [CLI](../../src/spi/cli.py): options, prerequisite checks, naming suffix, completion output.
+- [Deployment orchestration](../../src/spi/deploy.py): bootstrap, Key Vault writes, source suspension.
+- [Teardown](../../src/spi/teardown.py): deletion inventory, retention, external-grant cleanup, and deadlines.
+- [Deploy record](../../src/spi/deploy_record.py): verified revision and maintenance state.
+- [Azure provisioning](../../src/spi/azure_infra.py): AKS, PaaS, recovery, and preview ordering.
+- [Core stack](../../software/stacks/osdu/profiles/core/stack.yaml): workload dependencies.

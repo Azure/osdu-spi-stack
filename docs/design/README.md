@@ -1,57 +1,88 @@
-# Design Documentation
+# Design documentation
 
-This section holds narrative design explainers for the SPI Stack platform. Unlike the architectural overview in [`architecture.md`](../architecture.md) or the individual decision records in [`decisions/`](../decisions/), design docs zoom in on specific subsystems and explain how they actually work, paired with diagrams.
+Start with the [architecture overview](../architecture.md) for system boundaries
+and operating assumptions. Use these guides when you need to understand or
+change a particular part of the stack.
 
-## How this section relates to the others
-
-| Document type | Purpose | Lifecycle |
-|---|---|---|
-| [`architecture.md`](../architecture.md) | 30,000-ft overview of the whole system | Updated when the top-level model changes |
-| [`decisions/`](../decisions/) (ADRs) | Why a specific choice was made, with alternatives considered | States the ruling as it stands; rewritten in place when the decision changes |
-| [`design/`](./) (this section) | How a subsystem actually works, with diagrams | Living documents; updated as code evolves |
-
-Design docs reference ADRs for decision rationale. They do not re-justify decisions. If a doc finds itself arguing "we chose X instead of Y," that belongs in an ADR.
-
-## Design explainers
-
-| Doc | Answers |
+| Guide | Read it when you need to... |
 |---|---|
-| [Deployment lifecycle](deployment-lifecycle.md) | What actually happens in the ~45-50 minutes that `spi up` takes, from CLI invocation to a healthy cluster |
-| [Bicep architecture](bicep-architecture.md) | How `infra/` is organised, what each of the three top-level templates lands, where the imperative seams live |
-| [Flux reconciliation](flux-reconciliation.md) | The layer DAG, `dependsOn` mechanics, the `osdu-image-lock` substitution loop, suspend and resume |
-| [Workload Identity](workload-identity.md) | One UAMI, one ServiceAccount, the token federation chain, what the JWT projection in ADR-016 does after the bearer arrives |
-| [Gateway and ingress](gateway-ingress.md) | The three ingress modes (`azure`, `dns`, `ip`) concretely, what each provisions, how to switch, how to debug a 404 |
-| [Secret lifecycle](secret-lifecycle.md) | The three secret stores, what Bicep writes vs what the CLI writes post-handoff, how trust-manager mirrors CAs into `osdu` |
-| [Environment lifecycle](environment-lifecycle.md) | How the shared backing environment for fork CI is versioned, refreshed, upgraded, and reset, and which surfaces fork pipelines consume |
-| [Fork deployment](fork-deployment.md) | The fork CI deploy loop end to end: authenticate, connect, pin, verify, test, restore, and how stranded pins are recovered |
+| [Deployment lifecycle](deployment-lifecycle.md) | Follow `spi up`, distinguish CLI completion from readiness, or recover a partial deployment |
+| [Bicep architecture](bicep-architecture.md) | Find the template that owns a resource or understand the limits of `--dry-run` |
+| [Flux reconciliation](flux-reconciliation.md) | Trace a blocked dependency, fetch a Git revision, refresh images, or manage service pins |
+| [Workload Identity](workload-identity.md) | Separate Azure token exchange from incoming OSDU request authentication |
+| [Gateway and ingress](gateway-ingress.md) | Choose an ingress mode or diagnose DNS, TLS, routing, and backend failures |
+| [Secret lifecycle](secret-lifecycle.md) | Find credential writers and consumers, or understand rotation limitations |
+| [Environment lifecycle](environment-lifecycle.md) | Operate the version-pinned shared environment, its maintenance gate, and its implemented and planned workflows |
+| [Fork deployment](fork-deployment.md) | Pin and verify a fork image, restore it by run ownership, or inspect the onboarding roadmap |
+| [CI smoke pipeline](ci-smoke.md) | Run the Azure smoke workflow or investigate cleanup failures |
 
-## Doc template
+Commands use the installed `spi` executable. From a source checkout, replace
+`spi` with `uv run spi`. Commands containing `<placeholders>` need values from
+your environment; do not paste them unchanged. Kubernetes commands act on the
+current context.
 
-Every design doc should include these sections, in order:
+## What belongs where
 
-1. **What this explains** -- one sentence describing the scope.
-2. **Why it matters** -- one or two sentences on the developer pain this doc removes.
-3. **How it works** -- the narrative body. Lead with a diagram where possible.
-4. **Concrete examples or recipes** -- at least one worked example that a reader can run or trace.
-5. **Related ADRs** -- bulleted list linking to `../decisions/NNN-*.md`.
-6. **Source files** -- bulleted list of files in the repo this doc stays consistent with.
+| Document | Purpose | Maintenance |
+|---|---|---|
+| Architecture overview | Explain the main components, ownership boundaries, and constraints | Update when the operating model changes |
+| Subsystem guide | Explain current behavior, including failure cases and important limits | Update alongside the implementation |
+| [ADR](../decisions/README.md) | State a standing decision, its alternatives, and trade-offs | Update through a PR under the decision-register model; Git carries history |
+| Operational recipe | Give a supported procedure, expected outcome, and failure handling | Keep beside the subsystem it operates on, or link a dedicated runbook |
 
-When writing a new design doc, copy the shape of an existing one and replace the content.
+A short statement of a governing constraint is useful in a design guide. Link
+the ADR for its rationale rather than repeating the argument. If implementation differs
+from a standing ADR, describe that difference explicitly instead of presenting
+the intended behavior as already implemented.
 
-## Diagram convention
+## Writing and reviewing a guide
 
-- Diagrams live in `docs/diagrams/` as `.excalidraw` source plus an exported `.png`.
-- The filename stem matches the doc stem. Multiple diagrams for one doc use a suffix.
-- Markdown references the `.png` so it renders inline on GitHub.
-- The `.excalidraw` source is the editable truth. When you update a diagram, edit the source in [Excalidraw](https://excalidraw.com/), re-export the PNG, and commit both.
-- Posters are the exception: an HTML-authored infographic keeps its `.html` file as the editable source next to the exported `.png` (for example `environment-lifecycle.html`). Edit the HTML and re-render it to PNG rather than recreating it in Excalidraw.
+Follow [the prose style guide](../STYLE.md). Use headings that match the subject,
+not a mandatory template. Start with the
+behavior the reader needs to know, rather than "What this explains" or "Why it
+matters." A lifecycle may need a timeline; an identity guide may need two
+separate request paths.
 
-## Contribution guide
+Before publishing, make sure the guide answers:
 
-**Add a new design doc when** a reader would benefit from a narrative plus a diagram to understand a subsystem, and the information is not already obvious from `architecture.md` or a single ADR.
+- Who writes the state, who reads it, and who keeps it up to date?
+- What happens on failure, retry, restart, or partial completion?
+- Which limitations and exceptions would change an operator's decision?
+- Where can a maintainer find the implementation and the relevant ADR?
 
-**Update an existing design doc when** the code it references changes shape (file paths, function names, YAML field names). The Source files list at the bottom of each doc is the consistency anchor.
+Keep exact inventories and tuning values in one place. Link the owning guide
+or source instead of copying tables across the overview and every subsystem.
+Name project-specific concepts without reteaching standard Kubernetes tooling.
 
-**Write a new ADR instead when** you are making a fresh architectural choice, not explaining an existing one. Design docs document the present; ADRs capture the decision moment.
+Prefer specific claims over "always," "atomic," "zero secrets," or "everything
+is GitOps." Distinguish an observed timing from a timeout or a guarantee, and
+state the environment and source of an observation. The
+[deployment guide](deployment-lifecycle.md#timing-and-readiness) owns timing
+estimates.
 
-**Writing style**: fixed in [docs/STYLE.md](../STYLE.md), including the design-doc genre rules (status-marked present tense, explain rather than justify, imperative recipes).
+For recipes, confirm the command exists and targets the documented resource.
+State side effects before commands that mutate or delete anything. Describe
+expected conditions rather than inventing CLI transcripts. Use commands and
+manifest excerpts from the implementation. If a safe procedure is not implemented, say so rather
+than offering the nearest unrelated command.
+
+Use plain language and descriptive headings. No em dashes. Keep historical
+debugging logs in issues and PRs, but retain failure mechanisms that help a
+reader understand the current system.
+
+## Diagrams and source links
+
+Use a diagram when it explains relationships better than a table. Label
+ownership boundaries and distinguish runtime traffic from provisioning or
+reconciliation. Show parallel work as parallel, not as a single ordered chain.
+
+Diagrams live in `docs/diagrams/` as editable `.excalidraw` files and exported
+`.png` files. Update both together, inspect the rendered image for clipping and
+ambiguous arrows, and use descriptive alt text in Markdown.
+
+HTML-authored posters keep their `.html` source beside the exported `.png`,
+for example `environment-lifecycle.html`. Edit and render that source when
+updating a poster.
+
+End each subsystem guide with links to the source files it explains. When those
+files change, review the corresponding prose, diagrams, and recipes together.

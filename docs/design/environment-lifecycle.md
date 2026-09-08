@@ -260,7 +260,7 @@ gh run watch
    chart digest rendering, digest-preserving lock overlays (ADR-030), and
    the pin surface (`pin --image --ephemeral`, `verify`, ownership-checked
    `reset`, the stale sweep; ADR-031) are implemented. Still unbuilt:
-   `spi service refresh` and the two fork RBAC Roles. Exit test: hand-pin a partition GHCR digest against a
+   `spi service refresh`. Exit test: hand-pin a partition GHCR digest against a
    standing environment and reset it.
 2. **Versioning** (built for the backing environment): `repoTag` in
    `infra/flux.bicep`, `spi up --tag`, the deploy record, the declaration
