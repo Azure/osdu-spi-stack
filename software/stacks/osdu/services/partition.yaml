@@ -21,6 +21,7 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
+    replicaCount: 2
     image:
       repository: ${PARTITION_IMAGE_REPOSITORY}
       tag: "${PARTITION_IMAGE_TAG}"

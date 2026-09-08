@@ -23,6 +23,7 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
+    replicaCount: 2
     image:
       repository: ${LEGAL_IMAGE_REPOSITORY}
       tag: "${LEGAL_IMAGE_TAG}"

@@ -31,6 +31,11 @@ spec:
         - key: karpenter.sh/capacity-type
           operator: In
           values: ["on-demand"]
+        # Karpenter lists the non-zonal offering as zone "0"; a PV provisioned
+        # there cannot attach to a zonal VM later.
+        - key: topology.kubernetes.io/zone
+          operator: NotIn
+          values: ["0"]
         - key: kubernetes.io/arch
           operator: In
           values: ["amd64"]
@@ -42,8 +47,8 @@ spec:
         kind: AKSNodeClass
         name: platform
   disruption:
-    # Stateful pods are pinned by zonal PVs and PDBs, so underutilization
-    # consolidation could only retry evictions that never succeed.
+    # Relocating a stateful pod costs a permitted eviction, a same-zone
+    # replacement, and a disk reattachment; not worth it on a few hosts.
     consolidationPolicy: WhenEmpty
     consolidateAfter: 5m
     budgets:
@@ -84,6 +89,11 @@ spec:
         - key: karpenter.sh/capacity-type
           operator: In
           values: ["spot", "on-demand"]
+        # Karpenter lists the non-zonal offering as zone "0"; a PV provisioned
+        # there cannot attach to a zonal VM later.
+        - key: topology.kubernetes.io/zone
+          operator: NotIn
+          values: ["0"]
         - key: kubernetes.io/arch
           operator: In
           values: ["amd64"]
