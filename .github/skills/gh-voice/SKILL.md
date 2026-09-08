@@ -1,115 +1,78 @@
 ---
 name: gh-voice
-description: House tone for PR descriptions, issues, and PR or issue comments in this repo. Use when writing any of those, when reviewing a pull request and leaving comments, or when asked to tighten or clean one up.
+description: Write and edit PR descriptions, issues, comments, and review replies in the concise, factual house style of osdu-spi-stack.
 ---
 
 # Voice for PRs, Issues, and Comments
 
-One tone for everything written on GitHub in this repo: PR descriptions,
-issues, review comments, review replies. Each tells the reader what is true
-and what to do. None is a record of how the work went.
-
-Structure is owned elsewhere. PR descriptions follow the three-part shape in
+This skill governs wording, not structure. PR descriptions follow
 `CONTRIBUTING.md` under "PR Descriptions" and the template in
 `.github/PULL_REQUEST_TEMPLATE.md`. Issues follow the forms in
-`.github/ISSUE_TEMPLATE/`. This skill governs how the words read inside
-those shapes.
+`.github/ISSUE_TEMPLATE/`.
 
 ## Principles
 
-**Write about the change, not about writing the change.** The reviewer sees
-`main...HEAD`. A bug introduced and fixed inside the branch never existed for
-them. Sections named "Rejected alternatives" or "What I could not verify" are
-process narration wearing a heading.
+- **Lead with the result.** Start with the change, observed problem, or
+  review verdict. Follow with the reason and supporting evidence.
+- **Keep essential rationale.** Explain unusual choices, trade-offs, and
+  limitations a reader needs to understand the change. Reproduction steps
+  and results that substantiate a verdict are evidence, not process
+  narration. Omit investigation chronology and unrelated follow-ups.
+- **Preserve meaning.** Simplify prose without adding or changing claims.
+  Keep precise technical terms. State uncertainty explicitly rather than
+  presenting unverified behavior as fact.
+- **Be direct and respectful.** Remove filler ("worth noting"), marketing
+  language ("seamless"), and self-evaluation ("the honest fix"). Omit generic
+  praise and acknowledgments that add no information. Contractions are fine.
+- **Use only useful structure.** Group changes by concern, not by file.
+  Use headings that name the subject; remove empty sections and repeated
+  explanations. No generic validation checklists; mention checks when the
+  evidence or a validation limit matters.
+- **Preserve literal text.** Replace em and en dashes in prose with commas,
+  periods, colons, or parentheses. Leave commands, identifiers, URLs, and
+  quoted evidence unchanged.
 
-- An alternative earns a mention only when the diff looks wrong without it.
-  Then it is a note explaining the code, in Notes.
-- An open risk is stated as system behavior, not as a caveat about the
-  author. "The switch first runs Monday and logs failures instead of failing
-  a check" tells the reader what to do. "I could not verify this" does not.
-
-**Headings are labels, not theses.** Use a flat noun (Notes, Risk) or name
-the subject. A section carrying one fact is a sentence, not a section.
-
-**Drop any section with nothing real to say.** An empty section trains
-readers to skip the filled ones.
-
-## Issues
-
-- **Problem**: what is observed, with evidence a reader can chase: exact
-  error text, the run or PR link, the file and line. One paragraph.
-- **Cause**: only when known. Say what the code does that produces the
-  problem, not how it was found.
-- **Required change**: numbered, each item checkable. A recommendation, not a
-  menu.
-
-## Comments and review replies
-
-Lead with the outcome or the answer, then the reason, in one to three
-sentences. Link the commit or line instead of quoting the diff.
-
-- No thanks, no praise, no restating the other person's comment. "Great
-  point", "you're absolutely right", "just to confirm my understanding" all go.
-- "Fixed in the latest push" says nothing. Say what the code does now and
-  where: "`upload-database: false` now, since `upload: never` only covers
-  SARIF. d3cd529."
-- Declining a suggestion: one sentence on what the code does and why. No
-  apology, no "happy to change it if you prefer".
-- A review comment names the defect and the consequence, then the fix if it
-  is obvious. It does not open with "Consider" or "It might be worth".
+A review comment names the defect and consequence, then the fix when clear.
+A reply states the verdict, evidence, and relevant commit or line link.
+When declining a suggestion, give the technical reason. One to three
+sentences usually suffice; include more when the evidence needs it.
 
 ## Cut on sight
 
+- **Praise and acknowledgment.** "Great point", "you're absolutely right",
+  "thanks for the catch", "just to confirm my understanding".
+- **Soft openers.** "Consider", "it might be worth", "worth noting". Name
+  the defect and its consequence instead.
+- **Empty status.** "Fixed in the latest push" says nothing. Say what the
+  code does now and where: "`upload-database: false` now, since
+  `upload: never` only covers SARIF. d3cd529."
 - **Reader stage-direction.** "The pin is the part to argue with", "worth
-  opening that log". Spend words on the risky thing instead of pointing at
-  it.
+  opening that log". Spend the words on the risky thing itself.
 - **Process narration.** "Preflight caught four defects", "addresses review
   feedback from round 2". State the resulting design.
-- **Backlog and follow-up sections.** File an issue and leave the PR alone.
-- **Test-plan checklists.** CI results are on the pull request. Name a check
-  only when how it was proven is itself the interesting part.
-- **File-by-file enumeration.** Group by behavior.
-- **Restatement.** If the commit message or the diff already says it, cut it.
-
-## Words
-
-No em dashes or en dashes anywhere. A comma, colon, period, or parentheses
-always works.
-
-Plain engineer vocabulary:
-
-| inflated | plain |
-|---|---|
-| the canonical X | the template owns X |
-| ADR-023 posture | (ADR-023) |
-| four defects | four bugs |
-| degraded to a clean skip | skipped silently |
-| a destructive deletion path | that script deletes registry tags |
-| the contract this consumes | the contract this uses |
-| grows a new mode | gets a new mode |
-| by approved decision | as agreed |
-| the honest fix is to X | X |
-| a failure there is quiet | it logs the error instead of failing the check |
+- **Author caveats.** "I could not verify deployment" becomes "Deployment is
+  unverified because the test subscription was unavailable."
 
 Two tells that read as generated even with plain words: grading the fix
 ("honest", "principled", "proper", "clean") and calling a check a "signal".
 Say what the fix does and what the check checks.
 
-Also avoid: "worth noting", "notably", "leverage", "robust", "seamless",
-"comprehensive", "holistic", "delve", and "ensure" where "make sure" reads
-better. Contractions are fine. Prose with none of them reads stiff enough to
-be a tell on its own.
+## Words
+
+| inflated | plain |
+|---|---|
+| the canonical X | the template owns X |
+| degraded to a clean skip | skipped silently |
+| a destructive deletion path | that script deletes registry tags |
+| the honest fix is to X | X |
+| a failure there is quiet | it logs the error instead of failing the check |
+
+Also avoid "leverage", "robust", "seamless", "comprehensive", "holistic",
+"delve", and "ensure" where "make sure" reads better.
 
 ## Cleanup pass
 
-When asked to tighten an existing description or comment:
-
-1. Delete process narration and follow-up sections. That is usually most of
-   the excess.
-2. Replace every dash.
-3. Run the vocabulary swaps.
-4. Re-read Notes. Anything that reads as history, restate as design or cut.
-5. Check: `gh pr view <n> --json body --jq '.body' | grep -c '—'` returns 0.
-
-Preserve the load-bearing why while cutting. A note explaining why an
-odd-looking line exists is the reason a reviewer does not have to ask.
+1. Remove repetition, investigation chronology, and empty sections.
+2. Simplify wording without changing technical meaning.
+3. Check that essential rationale, evidence, uncertainty, and literal text
+   survived the edit.

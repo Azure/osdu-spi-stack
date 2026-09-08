@@ -1,70 +1,73 @@
 ---
 name: resolve-review-threads
-description: Assess-before-fix loop for addressing review comments on a pull request, from Copilot, other bots, or humans. Use when asked to address, resolve, or handle review feedback, or when driving a PR's threads to resolved.
+description: Address PR review feedback by verifying findings, fixing confirmed problems, replying with evidence, and resolving completed threads.
 ---
 
 # Resolve Review Threads
 
-Every finding gets verified before any code changes. Reviewers, bots
-especially, are sometimes wrong, and applying an unverified prescription
-trades one defect for another.
+Verify each finding before editing. A reviewer's assertion alone is
+insufficient evidence. Respect the requested scope: assessment-only requests
+do not authorize edits or GitHub changes; commit and push only when authorized.
+
+## Verdicts
+
+| Verdict | Evidence | Action |
+|---|---|---|
+| Confirmed | Observed behavior or code establishes the claim. | Fix the root cause and verify the result. |
+| Disproved | Evidence shows the claim does not apply. | Reply with evidence; do not change code for that finding. |
+| Inconclusive | Evidence does not establish or refute the claim. | State what remains unknown and leave open. |
+
+Judge suggestions by evidence and impact, not reviewer type or round.
+Preference-only suggestions can be declined with a brief reason; they are not
+disproved defects.
 
 ## Loop
 
-1. **Inventory.** List the unresolved threads (commands below). Note which
-   are from bots and which from people.
-2. **Classify each finding before touching code.** Rate the evidence:
-   - the reviewer said so: worthless on its own;
-   - they pointed at a line: read it and the code around it;
-   - reasoned through why the bad case can or cannot happen;
-   - ran code that demonstrates it. This is the target for anything
-     nontrivial. Reproduce the failure the finding claims, or record it
-     explicitly as plausible but not reproduced. Never silently accept.
-3. **Verdict per finding.** Real: fix at the root cause, not the prescribed
-   patch when the prescription is shallow. Wrong: rebut in the thread with the
-   evidence and leave the code alone.
-4. **Look for the sibling.** A confirmed finding usually has relatives: the
-   same pattern elsewhere, the same assumption in a design doc or ADR.
-5. **Fix, test, commit.** Run `uv run pre-commit run --all-files` before
-   pushing. One commit per concern, Conventional Commits subject, no
-   generated-with footers or tool co-author trailers.
-6. **Reply, then resolve.** The reply states evidence, not agreement:
-   "Confirmed by running X, fixed in <sha>" or "Not reproducible: <what was
-   run and observed>". Tone follows the `gh-voice` skill. Resolve every thread
-   you addressed; leave open only active discussion or a question awaiting the
-   reviewer.
-7. **End state.** CI green, zero unresolved threads. A human approves and
-   merges. Never merge, never enable auto-merge.
-
-## Repo checks a finding can miss
-
-While verifying, also check the invariants in the `code-review` skill. A
-reviewer asking for a template change under `software/charts/` has usually not
-asked for the `Chart.yaml` version bump that makes the change ship; add it.
-
-## Bot rounds
-
-Bot reviewers inflate nits once nothing critical is left. Track the round
-count. From the third round, a judgment-call nit earns a reasoned reply and a
-resolve rather than a code change, unless verification shows a real defect.
+1. **Inventory.** Read unresolved threads and their full discussions using
+   the paginated commands below.
+2. **Assess.** Read the current code and apply the `code-review` skill,
+   including governing ADRs. Reproduce nontrivial failures where possible;
+   otherwise state the code evidence and what remains unverified. Failure
+   to reproduce alone does not disprove a finding.
+3. **Check related occurrences.** Look for the same failure in related code
+   and documentation. Keep fixes within the confirmed issue's scope.
+4. **Fix and verify.** Address the root cause, not merely the suggested
+   patch. Run relevant checks and `uv run pre-commit run --all-files` before
+   pushing. Follow repository commit conventions, with one commit per concern.
+5. **Reply.** Use `gh-voice`: state the verdict and supporting evidence.
+   Link the pushed fix when applicable; do not describe an unpushed edit as
+   available to the reviewer.
+6. **Resolve.** Resolve after a verified fix is pushed, a finding is
+   disproved with evidence, or a preference-only suggestion is declined
+   with a reason. Leave inconclusive findings, incomplete fixes, and active
+   discussion open.
+7. **Report state.** Refresh the paginated inventory and check CI on the
+   latest pushed commit. Report remaining threads, pending CI, or failing
+   checks rather than claiming completion. Leave approval and merge to a
+   human; never enable auto-merge.
 
 ## Commands
 
-```bash
-# Review comments with ids
-gh api repos/{owner}/{repo}/pulls/{pr}/comments \
-  --jq '.[] | {id, path, line, body, user: .user.login}'
+Replace `{owner}`, `{repo}`, `{pr}`, and comment/thread IDs with the target
+PR's values. Read full discussions from the REST inventory; the GraphQL query
+fetches only each thread's root comment ID needed to reply.
 
-# Unresolved threads with node ids
-gh api graphql -f query='
-query {
+```bash
+# Review comments and replies across all pages
+gh api --paginate repos/{owner}/{repo}/pulls/{pr}/comments \
+  --jq '.[] | {id, in_reply_to_id, path, line, body, user: .user.login}'
+
+# Unresolved threads across all pages
+gh api graphql --paginate -f query='
+query($endCursor: String) {
   repository(owner: "{owner}", name: "{repo}") {
     pullRequest(number: {pr}) {
-      reviewThreads(first: 50) {
+      reviewThreads(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           id
           isResolved
-          comments(first: 1) { nodes { databaseId body } }
+          comments(first: 1) { nodes { databaseId } }
         }
       }
     }
@@ -73,7 +76,7 @@ query {
 
 # Reply to a comment
 gh api --method POST repos/{owner}/{repo}/pulls/{pr}/comments/{comment_id}/replies \
-  -f body="..."
+  -f body='...'
 
 # Resolve a thread
 gh api graphql -f query='
