@@ -129,7 +129,7 @@ The JSON spec at `docs/branch-protection.json` enforces:
 | Stale reviews | Dismissed on new commits |
 | CODEOWNERS review | Required |
 | Admins | Bypass allowed (`enforce_admins: false`) |
-| Maintainer bypass | `danielscholl` merges without the CODEOWNERS review |
+| Owner bypass | The repo owner merges without the CODEOWNERS review |
 | Required reviewers | 0 |
 
 ### Notes on the solo-maintainer configuration
@@ -137,12 +137,14 @@ The JSON spec at `docs/branch-protection.json` enforces:
 - `required_approving_review_count: 0` because a single maintainer cannot
   approve their own PR. When the team grows past one maintainer, raise it to
   `1`; CODEOWNERS review then has teeth.
-- `bypass_pull_request_allowances` names the maintainer, who therefore merges
-  their own PRs once CI is green without a second human and without elevating
-  to admin. GitHub never counts a PR author's own approval, so without this the
-  only remaining code owner on a maintainer's PR is `@Azure/azure-global-energy`.
-  Everyone else still needs a code owner approval. Swap the user for a team when
-  a second maintainer arrives.
+- `bypass_pull_request_allowances` names the repo owner, who can therefore
+  merge once CI is green without a second human and without elevating to admin.
+  The allowance is evaluated against whoever performs the merge, not against the
+  PR's author, so it covers every PR the owner merges rather than only their
+  own. Everyone else still needs a code owner approval. The case it exists for
+  is the owner's own PR, where GitHub never counts the author's approval and
+  `@Azure/azure-global-energy` is the only code owner left. Swap the user for a
+  team when a second maintainer arrives.
 - `enforce_admins: false` leaves a broader escape hatch for anyone holding
   admin. When the team grows, set to `true`; the bypass list above stays
   narrower and is the one to keep.
