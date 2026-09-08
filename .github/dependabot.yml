@@ -1,10 +1,14 @@
 # Tracks the CLI's Python dependencies and action pins only. OSDU image tags
 # move through `spi reconcile --refresh-images`, and Helm chart pins are bumped
 # by hand against each chart's release notes.
+#
+# The Python ecosystem is `uv`, not `pip`: `pip` reads pyproject.toml as a plain
+# manifest and never regenerates uv.lock, so every bump landed with a stale lock
+# and failed the `lock` job in validate.yml.
 
 version: 2
 updates:
-  - package-ecosystem: pip
+  - package-ecosystem: uv
     directory: "/"
     schedule:
       interval: weekly
