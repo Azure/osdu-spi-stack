@@ -22,7 +22,7 @@ that pass those checks.
   Preserve `runAsNonRoot`, `seccompProfile.type: RuntimeDefault`,
   `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, resource
   requests and limits, and liveness and readiness probes. Init containers
-  need the same security context (ADR-004). Removing safeguards can cause
+  need the same security context. Removing safeguards can cause
   admission failures across all services.
 - **ADRs.** Read the governing record in `docs/decisions/` before evaluating
   changes to namespaces, identity, ingress, secret handling, Flux layering,
@@ -33,11 +33,11 @@ that pass those checks.
   `run_command` in `src/spi/shell.py` so the user sees them before execution.
   Bare `subprocess` or `run_process` calls must not bypass that display.
   Read-only queries may stay silent.
-- **Credentials.** Azure data-plane access uses Workload Identity (ADR-023).
+- **Credentials.** Azure data-plane access uses Workload Identity only.
   Flag Azure key/SAS authentication, `disableLocalAuth: false`, committed
   credentials, or secret values exposed in logs. Runtime middleware Secrets
-  and Key Vault writes follow ADR-010; their credential values are not
-  themselves a defect.
+  and Key Vault writes follow the Key Vault secret management record; their
+  credential values are not themselves a defect.
 - **Azure scope.** Keep implementation Azure-only. Upstream provider work
   is limited to `*-azure/` and shared `*-core/`.
 - **Comments.** Keep cross-file coupling, external contracts, and reasons
