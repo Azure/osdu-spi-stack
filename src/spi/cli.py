@@ -710,7 +710,9 @@ def onboard(
     ),
     write: bool = typer.Option(False, "--write", help="Apply the plan; default prints it"),
     skip_repo: bool = typer.Option(
-        False, "--skip-repo", help="Leave GitHub secrets and variables to the repository owner"
+        False,
+        "--skip-repo",
+        help="Leave the spi-stack environment rules, secrets and variables to the repository owner",
     ),
     org: Optional[str] = typer.Option(
         None, "--org", help="Stamp the five values at this GitHub organization instead"
