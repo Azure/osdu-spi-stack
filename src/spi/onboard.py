@@ -29,8 +29,9 @@ import json
 import re
 import shlex
 import shutil
+import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from rich.syntax import Syntax
 from rich.table import Table
@@ -61,6 +62,8 @@ VARIABLE_NAMES = (
     "SPI_STACK_CLUSTER",
 )
 REQUIRED_PROFILE = "core"
+CONFLICT_BACKOFF_SECONDS = (5, 15, 30)
+_CONFLICT_MARKERS = ("conflict", "409", "concurrent", "retryable")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$)[A-Za-z0-9_.-]+$")
 _SUBJECT_RE = re.compile(rf"^repo:([^:]+/[^:]+):environment:{DEPLOY_ENVIRONMENT}$")
@@ -315,15 +318,23 @@ def read_protection(repo: str) -> Protection:
     branches: list[str] = []
     extras: list[tuple[int, str]] = []
     if custom:
-        listing = _read_json(
+        # --paginate --slurp returns every page as one JSON array of page objects.
+        pages = _read_json(
             [
                 "gh",
                 "api",
+                "--paginate",
+                "--slurp",
                 f"repos/{repo}/environments/{DEPLOY_ENVIRONMENT}/deployment-branch-policies",
             ],
             f"branch policies of {DEPLOY_ENVIRONMENT} on {repo}",
         )
-        entries = (listing or {}).get("branch_policies") or [] if isinstance(listing, dict) else []
+        entries = [
+            entry
+            for page in (pages if isinstance(pages, list) else [pages])
+            if isinstance(page, dict)
+            for entry in page.get("branch_policies") or []
+        ]
         for entry in entries:
             if not isinstance(entry, dict) or not entry.get("name"):
                 continue
@@ -764,6 +775,37 @@ def _run_step(step: Step) -> None:
         raise OnboardError(f"{step.description} failed: {stderr or 'command failed'}")
 
 
+def _write_credential(plan: Plan, build: Callable[[Plan], Optional[Step]]) -> None:
+    """Issue one credential write, backing off and re-reading the roster on a conflict.
+
+    The Managed Identity RP rejects concurrent writes on one identity; a
+    competing onboarding is answered by waiting and rebuilding the step
+    from the observed roster, which may show nothing left to do.
+    """
+
+    for attempt, delay in enumerate((*CONFLICT_BACKOFF_SECONDS, None)):
+        step = build(plan)
+        if step is None:
+            return
+        result = run_command(step.argv, description=step.description, check=False)
+        if result.returncode == 0:
+            return
+        stderr = (result.stderr or result.stdout or "").strip()
+        if delay is None or not _is_conflict(stderr):
+            raise OnboardError(f"{step.description} failed: {stderr or 'command failed'}")
+        console.print(
+            f"  [warning]{step.description}: identity busy, retrying in {delay}s "
+            f"(attempt {attempt + 1}/{len(CONFLICT_BACKOFF_SECONDS)})[/warning]"
+        )
+        time.sleep(delay)
+        plan.roster = read_roster(plan.target)
+
+
+def _is_conflict(stderr: str) -> bool:
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _CONFLICT_MARKERS)
+
+
 def project_roster(
     target: Target, description: str = "Project the trusted-repository roster"
 ) -> dict[str, str]:
@@ -827,9 +869,7 @@ def apply_plan(plan: Plan) -> list[Row]:
                 f"{plan.repo} does not protect {DEPLOY_ENVIRONMENT} with custom branch "
                 f"policies for {', '.join(REQUIRED_BRANCHES)}; trust stays disabled until it does."
             )
-        credential = _credential_command(plan)
-        if credential is not None:
-            _run_step(credential)
+        _write_credential(plan, _credential_command)
         plan.roster = read_roster(plan.target)
     except (OnboardError, PinError) as exc:
         raise fail(exc, "azure") from None
@@ -888,6 +928,29 @@ def list_trust(target: Target) -> list[Row]:
     return rows
 
 
+def _delete_command(plan: Plan) -> Optional[Step]:
+    existing = plan.existing_credential()
+    if existing is None:
+        return None
+    return Step(
+        "azure",
+        [
+            "az",
+            "identity",
+            "federated-credential",
+            "delete",
+            "--name",
+            plan.credential_name,
+            "--identity-name",
+            plan.target.identity_name,
+            "--resource-group",
+            plan.target.resource_group,
+            "--yes",
+        ],
+        f"Revoke {existing.repo or existing.subject} for {plan.service}",
+    )
+
+
 def plan_remove(target: Target, service: str) -> Plan:
     require_target(target)
     _require_known_service(service)
@@ -905,26 +968,9 @@ def plan_remove(target: Target, service: str) -> Plan:
     )
     existing = plan.existing_credential()
     steps: list[Step] = []
-    if existing is not None:
-        steps.append(
-            Step(
-                "azure",
-                [
-                    "az",
-                    "identity",
-                    "federated-credential",
-                    "delete",
-                    "--name",
-                    plan.credential_name,
-                    "--identity-name",
-                    target.identity_name,
-                    "--resource-group",
-                    target.resource_group,
-                    "--yes",
-                ],
-                f"Revoke {existing.repo or existing.subject} for {service}",
-            )
-        )
+    delete = _delete_command(plan)
+    if delete is not None:
+        steps.append(delete)
     desired = {svc: repo for svc, repo in roster_repos(roster).items() if svc != service}
     projection = _projection_step(desired, plan.projection)
     if projection is not None:
@@ -946,9 +992,7 @@ def apply_remove(plan: Plan) -> list[Row]:
     """Revoke, then reproject; a failure names the phase left pending."""
 
     try:
-        for step in plan.steps:
-            if step.phase == "azure":
-                _run_step(step)
+        _write_credential(plan, _delete_command)
         plan.roster = read_roster(plan.target)
     except (OnboardError, PinError) as exc:
         raise OnboardError(

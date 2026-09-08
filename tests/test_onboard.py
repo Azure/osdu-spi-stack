@@ -192,7 +192,9 @@ class FakeWorld:
                     {"id": len(env["policies"]) + 1, "name": name, "type": "branch"}
                 )
                 return _ok(argv, {})
-            return _ok(argv, {"branch_policies": list(env["policies"])})
+            assert "--paginate" in argv and "--slurp" in argv, argv
+            pages = [env["policies"][i : i + 2] for i in range(0, len(env["policies"]), 2)]
+            return _ok(argv, [{"branch_policies": page} for page in pages or [[]]])
         raise AssertionError(f"unexpected gh api path {path}")
 
     def read_lock(self, required=True):
@@ -378,6 +380,15 @@ class TestPlanning:
         assert deletes and deletes[0][-1].endswith("/deployment-branch-policies/100")
         assert plan.protection is not None and not plan.protection.satisfied
 
+    def test_policies_on_a_later_page_still_count(self, world):
+        world.protect(
+            "Acme/osdu-spi-partition",
+            extra=(("a/*", "branch"), ("b/*", "branch"), ("c/*", "branch")),
+        )
+        plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition")
+        row = next(r for r in plan.rows if r.item.startswith("spi-stack environment"))
+        assert row.detail == "admits a/* (branch), b/* (branch), c/* (branch)"
+
     def test_a_tag_policy_named_main_does_not_count_as_the_branch(self, world):
         world.protect(
             "Acme/osdu-spi-partition", branches=("fork_integration",), extra=(("main", "tag"),)
@@ -486,6 +497,54 @@ class TestApplying:
         later = [" ".join(w[:3]) for w in world.writes[first_writes:]]
         assert later == ["gh secret set", "az identity federated-credential"]
         assert world.projection() == {"partition": "Acme/osdu-spi-partition"}
+
+    def test_a_busy_identity_is_retried_after_a_roster_re_read(self, world, monkeypatch):
+        world.protect("Acme/osdu-spi-partition")
+        slept = []
+        monkeypatch.setattr(onboard.time, "sleep", slept.append)
+        world.failures["az identity federated-credential create"] = "Conflict (409): busy"
+        creates = []
+        real = world.run_command
+
+        def flaky(argv, **kwargs):
+            if argv[:4] == ["az", "identity", "federated-credential", "create"]:
+                creates.append(argv)
+                if len(creates) == 2:
+                    world.failures.clear()
+            return real(argv, **kwargs)
+
+        monkeypatch.setattr(onboard, "run_command", flaky)
+
+        apply_plan(plan_onboard(target(), "partition", "acme/osdu-spi-partition"))
+
+        assert len(creates) == 2 and slept == [5]
+        assert world.projection() == {"partition": "Acme/osdu-spi-partition"}
+
+    def test_a_competitor_finishing_the_same_write_ends_the_retry(self, world, monkeypatch):
+        world.protect("Acme/osdu-spi-partition")
+        monkeypatch.setattr(onboard.time, "sleep", lambda s: None)
+        world.failures["az identity federated-credential create"] = "Conflict (409): busy"
+        real = world.run_command
+
+        def competitor_wins(argv, **kwargs):
+            result = real(argv, **kwargs)
+            if argv[:4] == ["az", "identity", "federated-credential", "create"]:
+                world.failures.clear()
+                world.trust("partition", "Acme/osdu-spi-partition")
+            return result
+
+        monkeypatch.setattr(onboard, "run_command", competitor_wins)
+
+        apply_plan(plan_onboard(target(), "partition", "acme/osdu-spi-partition"))
+
+        assert [c["name"] for c in world.credentials] == ["fork-partition"]
+
+    def test_a_non_conflict_failure_is_not_retried(self, world, monkeypatch):
+        world.protect("Acme/osdu-spi-partition")
+        monkeypatch.setattr(onboard.time, "sleep", lambda s: pytest.fail("slept"))
+        world.failures["az identity federated-credential create"] = "AuthorizationFailed"
+        with pytest.raises(OnboardError, match="AuthorizationFailed"):
+            apply_plan(plan_onboard(target(), "partition", "acme/osdu-spi-partition"))
 
     def test_the_projection_keeps_other_services_and_the_pins_annotation(self, world):
         world.protect("Acme/osdu-spi-partition")
