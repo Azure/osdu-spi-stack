@@ -29,10 +29,8 @@ spec:
     spec:
       serviceAccountName: workload-identity-sa
       restartPolicy: Never
-      # A spot eviction counts as a failed attempt against backoffLimit.
       nodeSelector:
         spi-pool: osdu
-        karpenter.sh/capacity-type: on-demand
       tolerations:
         - key: workload
           operator: Equal

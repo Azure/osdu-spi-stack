@@ -33,11 +33,9 @@ image:
 #    the AZURE_* variables when the pod carries azure.workload.identity/use.
 serviceAccountName: workload-identity-sa
 
-# -- Jobs run on the osdu nodepool alongside the services, on on-demand
-# capacity because a spot eviction counts as a failed attempt.
+# -- Jobs run on the osdu nodepool alongside the services.
 nodeSelector:
   spi-pool: osdu
-  karpenter.sh/capacity-type: on-demand
 
 tolerations:
   - key: workload
