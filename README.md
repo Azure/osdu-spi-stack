@@ -70,7 +70,7 @@ spi up --env dev1
 spi status          # Monitor deployment health
 spi info            # View endpoints
 
-# Delete the environment when finished
+# Delete the environment when finished (managed identities stay; add --purge to remove the group)
 spi down --env dev1
 ```
 
@@ -153,7 +153,7 @@ See [Ingress modes](docs/architecture.md#ingress-profiles) and
 | `spi service` | Pin services to merge-request or fork-built images |
 | `spi update` | Check for and install a newer CLI release |
 | `spi maintenance` | Set or clear the deploy-blocking maintenance flag |
-| `spi down` | Delete the environment's Azure resources |
+| `spi down` | Delete the environment's Azure resources; `--purge` removes the group and its identities |
 
 Run `spi --help` or `spi <command> --help` for the complete command reference.
 

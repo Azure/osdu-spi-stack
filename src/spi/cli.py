@@ -615,8 +615,13 @@ def up(
 @app.command()
 def down(
     env: str = typer.Option(..., "--env", help="Environment name"),
+    purge: bool = typer.Option(
+        False,
+        "--purge",
+        help="Delete the resource group itself, including the managed identities",
+    ),
 ):
-    """Tear down all Azure resources."""
+    """Tear down the environment's resources; managed identities survive unless --purge."""
     console.print(Panel("[bold]SPI Stack Cleanup[/bold]", border_style="cyan"))
     check_prerequisites(["az"])
 
@@ -625,9 +630,16 @@ def down(
     config = _build_config(env=env, name_suffix=name_suffix)
     _show_config(config)
 
-    from .deploy import cleanup_azure
+    from .teardown import TeardownError, purge_environment, teardown_environment
 
-    cleanup_azure(config)
+    try:
+        if purge:
+            purge_environment(config)
+        else:
+            teardown_environment(config)
+    except TeardownError as exc:
+        console.print(f"\n[error]{exc}[/error]")
+        raise typer.Exit(code=1)
 
 
 @app.command()

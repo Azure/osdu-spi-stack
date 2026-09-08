@@ -23,11 +23,11 @@ deleting the whole group and its identities.
   assignment enumeration. It does not depend on the cluster still existing,
   or assume that the selected ingress mode describes earlier grants.
   The stack-owned ExternalDNS grant is `DNS Zone Contributor` at DNS-zone
-  scope, with the deterministic assignment name
-  `guid(zone.id, principalId, dnsZoneContributorRoleId)` from
-  `infra/modules/external-dns-role.bicep`. Purge removes that exact assignment
-  by resource ID and confirms its absence before requesting group deletion;
-  the external zone and its resource group are not deletion targets. Purge
+  scope held by the environment's ExternalDNS identity, created by
+  `infra/modules/external-dns-role.bicep`. Purge recognises a grant by that
+  identity, role, and scope kind, removes it by resource ID, and confirms
+  its absence before requesting group deletion; the external zone and its
+  resource group are not deletion targets. Purge
   then waits for Azure to report the group gone within the same 45-minute
   deadline as teardown; an accepted delete that has not completed exits
   nonzero naming the group, since acceptance is not completion.
@@ -44,12 +44,13 @@ deleting the whole group and its identities.
   bundled Bicep, including optional resources; an unhandled non-identity
   resource blocks the plan rather than being ignored or deleted blindly.
   An unreadable inventory is a failure, not an empty group.
-- AKS is deleted first, and its cluster and managed nodes group must be gone
-  before network teardown. Cosmos, Service Bus, storage, ACR, and Key Vault
-  follow; optional Application Insights is removed before its Log Analytics
-  workspace. Subnet associations are detached before deleting the NAT
-  gateway, then its public IP, with the VNet last. Key Vault soft delete is
-  unaffected, and `spi up` recovers the vault.
+- Resources with no in-group dependency (AKS, Cosmos, Service Bus, storage,
+  ACR, Key Vault, optional telemetry) are requested together and deleted
+  concurrently, as `az group delete` would. The cluster and its managed
+  nodes group must be gone before network teardown. Subnet associations are
+  detached before deleting the NAT gateway, then its public IP, with the
+  VNet last. Key Vault soft delete is unaffected, and `spi up` recovers the
+  vault.
 - The command waits for completion within a 45-minute deadline. Only
   transient or dependency failures are retried, with backoff; authorization,
   resource locks, and unhandled resource types fail with the affected IDs
