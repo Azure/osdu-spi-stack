@@ -16,7 +16,7 @@ requires-python = ">=3.10"
 # enforces that for both this runtime set and the dev group.
 dependencies = [
     "rich>=15.0.0",
-    "typer>=0.27.1",
+    "typer>=0.27.2",
     "pydantic>=2.13.4",
     "pyyaml>=6.0",
     "packaging>=26.3",
@@ -65,10 +65,12 @@ index-strategy = "unsafe-best-match"
 name = "microsoft-pypi-proxy"
 url = "https://packagefeedproxy.microsoft.io/pypi/simple/"
 
-# ruff resolves from the proxy only: best-match would otherwise chase PyPI's
-# newest release, which the proxy has not ingested, and break corporate sync.
+# ruff and ty resolve from the proxy only: best-match would otherwise chase
+# PyPI's newest release, which the proxy has not ingested, and break corporate
+# sync.
 [tool.uv.sources]
 ruff = { index = "microsoft-pypi-proxy" }
+ty = { index = "microsoft-pypi-proxy" }
 
 [dependency-groups]
 dev = [
@@ -77,7 +79,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pyyaml>=6.0.3",
     "ruff>=0.16.4",
-    "ty>=0.0.74",
+    "ty>=0.0.75",
 ]
 
 [tool.ruff]
