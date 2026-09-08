@@ -97,3 +97,22 @@ def test_unrepresentable_argument_is_a_normal_failure(tmp_path, monkeypatch):
     assert result.returncode == 1
     assert "newline or NUL" in result.stderr
     assert "line1" not in result.stderr
+
+
+def test_timeout_ends_the_process_tree_behind_a_batch_shim(tmp_path, monkeypatch):
+    """The cmd.exe wrapper dies on timeout; without a tree kill the sleeping
+    child would hold the pipes and the call would last the full 60 seconds."""
+    import time
+
+    monkeypatch.setenv("SPI_E2E_PYTHON", sys.executable)
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    (shim_dir / "sleeper.py").write_text("import time; time.sleep(60)", encoding="utf-8")
+    shim = shim_dir / "sleeper.cmd"
+    shim.write_text('@echo off\r\n"%SPI_E2E_PYTHON%" "%~dp0sleeper.py"\r\n', encoding="utf-8")
+
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_process([str(shim)], capture_output=True, text=True, timeout=2)
+
+    assert time.monotonic() - started < 20

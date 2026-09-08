@@ -70,7 +70,7 @@ spi up --env dev1
 spi status          # Monitor deployment health
 spi info            # View endpoints
 
-# Delete the environment when finished
+# Delete the environment when finished (managed identities stay; add --purge to remove the group)
 spi down --env dev1
 ```
 
@@ -151,9 +151,10 @@ See [Ingress modes](docs/architecture.md#ingress-profiles) and
 | `spi info` | Show cluster endpoints and optional credentials |
 | `spi reconcile` | Suspend, resume, or refresh Flux reconciliation |
 | `spi service` | Pin services to merge-request or fork-built images |
+| `spi onboard` | Trust a fork repository to deploy against the environment; plans by default, `--write` applies |
 | `spi update` | Check for and install a newer CLI release |
 | `spi maintenance` | Set or clear the deploy-blocking maintenance flag |
-| `spi down` | Delete the environment's Azure resources |
+| `spi down` | Delete the environment's Azure resources; `--purge` removes the group and its identities |
 
 Run `spi --help` or `spi <command> --help` for the complete command reference.
 
@@ -167,6 +168,9 @@ Run `spi --help` or `spi <command> --help` for the complete command reference.
   and service pins
 - [Gateway and ingress](docs/design/gateway-ingress.md): hostname, TLS, and routing modes
 - [Workload Identity](docs/design/workload-identity.md): identity and Azure RBAC flow
+- [Design guides](docs/design/README.md): subsystem ownership, diagnostics, and limitations
+- [Environment lifecycle](docs/design/environment-lifecycle.md): shared version, maintenance, and upgrades
+- [Fork deployment](docs/design/fork-deployment.md): pin, verify, and restore fork images
 - [Architecture decisions](docs/decisions/): governing decisions and trade-offs
 
 ## Development and Support

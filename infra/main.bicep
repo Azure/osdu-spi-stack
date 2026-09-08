@@ -19,6 +19,12 @@ param location string = 'westus3'
 @description('Resource name for the OSDU workload identity.')
 param identityName string
 
+@description('Resource name for the deploy identity fork CI federates to.')
+param deployIdentityName string
+
+@description('Name of the existing AKS cluster from aks.bicep; scopes the deploy identity Cluster User grant.')
+param clusterName string
+
 @description('Globally unique name of the Key Vault that stores OSDU configuration secrets.')
 param keyVaultName string
 
@@ -102,6 +108,7 @@ module identityModule 'modules/identity.bicep' = {
   name: 'spi-identity'
   params: {
     name: identityName
+    deployIdentityName: deployIdentityName
     location: location
     oidcIssuerUrl: oidcIssuerUrl
   }
@@ -148,6 +155,8 @@ module rbacModule 'modules/rbac.bicep' = {
     deployerPrincipalId: deployerPrincipalId
     deployerPrincipalType: deployerPrincipalType
     kubeletIdentityObjectId: kubeletIdentityObjectId
+    forkDeployerPrincipalId: identityModule.outputs.deployIdentityPrincipalId
+    clusterName: clusterName
     keyVaultName: keyVaultName
     acrName: acrName
     commonStorageName: commonStorageName
@@ -333,6 +342,15 @@ output identityPrincipalId string = identityModule.outputs.principalId
 
 @description('Azure resource ID of the OSDU workload identity.')
 output identityResourceId string = identityModule.outputs.resourceId
+
+@description('Client ID of the deploy identity; the AZURE_CLIENT_ID a trusted repository holds.')
+output deployIdentityClientId string = identityModule.outputs.deployIdentityClientId
+
+@description('Principal ID of the deploy identity; the User subject of the fork RoleBindings.')
+output deployIdentityPrincipalId string = identityModule.outputs.deployIdentityPrincipalId
+
+@description('Azure resource ID of the deploy identity.')
+output deployIdentityResourceId string = identityModule.outputs.deployIdentityResourceId
 
 @description('Vault URI used by OSDU services to retrieve configuration secrets.')
 output keyvaultUri string = keyvaultModule.outputs.uri

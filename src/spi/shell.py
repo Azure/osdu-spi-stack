@@ -162,7 +162,39 @@ def run_process(cmd_list: List[str], **kwargs: Any) -> subprocess.CompletedProce
         if kwargs.get("text", False):
             return subprocess.CompletedProcess(cmd_list, 1, stdout="", stderr=error)
         return subprocess.CompletedProcess(cmd_list, 1, stdout=b"", stderr=error.encode())
-    return subprocess.run(prepared, **kwargs)
+    timeout = kwargs.pop("timeout", None)
+    if timeout is None:
+        return subprocess.run(prepared, **kwargs)
+    return _run_with_timeout(prepared, timeout, **kwargs)
+
+
+def _run_with_timeout(prepared: PreparedCommand, timeout: float, **kwargs: Any):
+    """``subprocess.run`` with a timeout that ends the whole process tree.
+
+    ``subprocess.run`` kills only the immediate child. On Windows that child
+    is the cmd.exe running a batch shim, and the CLI it launched would keep
+    the captured pipes open past the timeout, so the tree goes as a unit.
+    """
+    if kwargs.pop("capture_output", False):
+        kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
+    with subprocess.Popen(prepared, **kwargs) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(proc)
+            stdout, stderr = proc.communicate()
+            raise subprocess.TimeoutExpired(prepared, timeout, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(prepared, proc.returncode, stdout, stderr)
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    if platform.system() == "Windows":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            capture_output=True,
+            check=False,
+        )
+    proc.kill()
 
 
 def run_command(
@@ -172,8 +204,13 @@ def run_command(
     display: bool = True,
     description: Optional[str] = None,
     check: bool = True,
+    timeout: Optional[float] = None,
 ) -> subprocess.CompletedProcess:
-    """Run a command and display it in a formatted panel."""
+    """Run a command and display it in a formatted panel.
+
+    ``timeout`` kills the child when it expires; the result then carries
+    returncode 124 and the reason on stderr, like any other failed launch.
+    """
     formatted_parts = []
     if cmd_list:
         formatted_parts.append(cmd_list[0])
@@ -204,7 +241,11 @@ def run_command(
         command_syntax = Syntax(formatted_cmd, "bash", theme="monokai", line_numbers=False)
         console.print(Panel(command_syntax, title=title, border_style=style))
 
-    result = run_process(cmd_list, capture_output=capture_output, text=text)
+    try:
+        result = run_process(cmd_list, capture_output=capture_output, text=text, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        reason = f"{cmd_list[0]}: timed out after {timeout:.0f}s"
+        result = subprocess.CompletedProcess(cmd_list, 124, stdout="", stderr=reason)
 
     if check and result.returncode != 0:
         if result.stderr and result.stderr.strip():
@@ -264,8 +305,8 @@ def gather_reads(calls: Sequence[Callable[[], Any]]) -> List[Any]:
     Results and exceptions resolve in call order, so a caller's error
     precedence does not depend on which query finished first.
 
-    Only for reads: concurrent writes would interleave the Rich panels that
-    show the operator what is changing.
+    Only for reads: the Rich console serialises panels, but concurrent
+    writes would show them in an order that does not match execution.
     """
     if len(calls) < 2:
         return [call() for call in calls]

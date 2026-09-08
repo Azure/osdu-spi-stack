@@ -180,3 +180,11 @@ class TestDnsLabel:
     def test_legacy_deployment_keeps_cluster_name_label(self):
         cfg = Config(env="dev1")
         assert cfg.dns_label == f"{cfg.cluster_name}-ingress"
+
+
+def test_deploy_identity_name_follows_the_cluster():
+    from spi.config import Config
+
+    cfg = Config.from_env("dks")
+
+    assert cfg.deploy_identity_name == "spi-stack-dks-deployer"

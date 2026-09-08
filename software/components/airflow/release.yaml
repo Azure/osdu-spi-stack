@@ -286,6 +286,8 @@ spec:
 
     config:
       api:
-        # Only the path matters: it becomes the FastAPI root_path, so the UI
-        # and API serve under /airflow behind the gateway without a rewrite.
-        base_url: "http://localhost:8080/airflow"
+        # Path-only: this becomes the FastAPI root_path, so the UI and API
+        # serve under /airflow without a gateway rewrite. A scheme and host
+        # here leak into the auth manager's login redirect, which urljoins
+        # against this value, sending the browser off the gateway.
+        base_url: "/airflow"

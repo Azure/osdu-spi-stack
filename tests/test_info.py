@@ -66,6 +66,19 @@ def _wire(
             "AZURE_REGION": "westus3",
         },
     )
+    monkeypatch.setattr(
+        info,
+        "_read_cluster_config",
+        lambda: {
+            "ISTIO_REVISION": "asm-1-30",
+            "DEPLOY_IDENTITY_CLIENT_ID": "deployer-client-id",
+            "DEPLOY_IDENTITY_PRINCIPAL_ID": "deployer-principal-id",
+            "AZURE_TENANT_ID": "tenant-id",
+            "AZURE_SUBSCRIPTION_ID": "subscription-id",
+            "AZURE_RESOURCE_GROUP": "spi-stack-shared",
+            "AKS_CLUSTER_NAME": "spi-stack-shared",
+        },
+    )
     names = partitions or ["opendes"]
     values_yaml = "partitions:\n" + "".join(f"  - {name}\n" for name in names)
     values_yaml += f"legalTag: {legal_tag_base or LEGAL_TAG_BASE}\n"
@@ -123,6 +136,7 @@ def test_openid_issuer_is_published_explicitly(monkeypatch):
 
 def test_openid_issuer_empty_until_tenant_known(monkeypatch):
     _wire(monkeypatch, osdu_config={})
+    monkeypatch.setattr(info, "_read_cluster_config", lambda: {})
 
     result = info.collect_info()
 
@@ -277,3 +291,70 @@ def test_info_human_header_marks_a_missing_record(monkeypatch):
     result = CliRunner().invoke(cli.app, ["info"])
 
     assert "Environment:   unknown (no deploy record)" in _plain(result.output)
+
+
+def test_info_json_publishes_the_five_deploy_identity_values(monkeypatch):
+    _wire(monkeypatch)
+
+    block = info.collect_info()["deploy_identity"]
+
+    assert block == {
+        "client_id": "deployer-client-id",
+        "tenant_id": "tenant-id",
+        "subscription_id": "subscription-id",
+        "resource_group": "spi-stack-shared",
+        "cluster": "spi-stack-shared",
+    }
+    assert "deployer-principal-id" not in str(block)
+
+
+def test_deploy_identity_block_is_empty_strings_before_bootstrap(monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setattr(info, "_read_cluster_config", lambda: {})
+
+    block = info.collect_info()["deploy_identity"]
+
+    assert block["client_id"] == ""
+    assert block["cluster"] == ""
+    assert block["resource_group"] == "spi-stack-shared"
+
+
+def test_resource_group_falls_back_to_cluster_config_without_flux_extension(monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setattr(info, "_read_flux_extension_values", lambda: {})
+
+    result = info.collect_info()
+
+    assert result["azure"]["resource_group"] == "spi-stack-shared"
+    assert result["deploy_identity"]["resource_group"] == "spi-stack-shared"
+
+
+def test_info_fails_when_the_cluster_config_is_unreadable(monkeypatch):
+    """Empty deploy-identity values mean an unprovisioned identity; a read
+    failure is not that, so info exits 1 rather than publishing false values."""
+    from spi.bootstrap import ClusterConfigError
+
+    _wire(monkeypatch)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    def unreadable():
+        raise ClusterConfigError("Could not read spi-cluster-config: forbidden")
+
+    monkeypatch.setattr(info, "read_cluster_config", unreadable)
+    monkeypatch.setattr(info, "_read_cluster_config", lambda: info.read_cluster_config())
+
+    result = CliRunner().invoke(cli.app, ["info", "--json"])
+
+    assert result.exit_code == 1
+    assert "forbidden" in result.output
+    assert "{" not in result.output
+
+
+def test_tenant_comes_from_cluster_config_when_osdu_config_is_unreadable(monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setattr(info, "_read_osdu_config", lambda: {})
+
+    result = info.collect_info()
+
+    assert result["deploy_identity"]["tenant_id"] == "tenant-id"
+    assert result["azure"]["tenant_id"] == "tenant-id"

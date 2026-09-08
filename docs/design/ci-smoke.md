@@ -1,91 +1,135 @@
-# CI Smoke Pipeline
+# CI smoke pipeline
 
-**What this explains.** How `.github/workflows/smoke.yml` is structured into three jobs (`provision`, `verify`, `teardown`), why each job runs its own Azure OIDC login, and how the orphan-RG sweeper backstops the design.
+The smoke workflow creates a real Azure environment, waits for Flux readiness,
+and requests resource-group deletion. It runs on a daily schedule or manual
+dispatch, not on pull requests. Its default profile is `bare`, so a scheduled
+pass establishes infrastructure and empty-GitOps readiness, not middleware
+or OSDU readiness. Each job logs into Azure independently so
+cleanup does not depend on the provisioning job's credential lifetime.
 
-**Why it matters.** The smoke pipeline performs a real `spi up` against the Azure subscription, which takes ~45-50 minutes end-to-end. A naive single-job workflow leaves orphan resource groups in Azure when `spi up` fails after the 5-minute GitHub OIDC JWT has expired: every subsequent `az` call hits AADSTS700024 and silently no-ops, including the teardown step. The three-job split guarantees the teardown job starts with a fresh JWT regardless of how the upstream jobs ended.
+This is a deployment smoke test, not an end-to-end OSDU acceptance test.
 
-## The three jobs
+## Job boundaries
 
-| Job | Owns | Timeout | OIDC login |
-|-----|------|---------|------------|
-| `provision` | `az group create` + `spi up` (AKS + PaaS + Flux extension Bicep) | 60 min | Fresh per job |
-| `verify` | `wait_for_flux_ready.sh` + acceptance probe + diagnostics-on-failure | 270 min | Fresh per job |
-| `teardown` | `az group delete --name <rg> --yes --no-wait` | 15 min | Fresh per job |
+| Job | Responsibility | Timeout |
+|---|---|---|
+| `provision` | Resolve an environment name, tag the resource group, run `spi up` | 60 minutes |
+| `verify` | Obtain cluster access, wait for Kustomizations, run non-bare ingress probes, capture diagnostics on failure | 270 minutes; Flux wait allows 230 minutes |
+| `teardown` | Request asynchronous resource-group deletion | 15 minutes |
 
-`provision` exposes the resource group name as a job output (`needs.provision.outputs.rg`). `verify` consumes it to call `az aks get-credentials`. `teardown` consumes it to issue the deletion. The teardown step guards on an empty RG so a provision that died before "Resolve env name" no-ops cleanly.
+`provision` publishes the resource group name as a job output. The other jobs
+use that output rather than reconstructing the name. The current workflow
+sanitizes the requested suffix and keeps its final six characters to fit Azure
+Storage naming limits.
 
-`teardown` runs with `if: ${{ always() && needs.provision.result != 'skipped' }}`, so it fires on provision failure, provision cancellation, verify failure, or verify timeout. It skips only when provision itself was skipped (currently impossible, but defensive against a future precondition job).
+`verify` follows successful provisioning. `teardown` uses
+`always() && needs.provision.result != 'skipped'` so it is eligible to run after
+upstream failure or cancellation. It skips deletion when no resource-group
+output is available.
 
-## Why the three-job split
+The "gateway reachable" step requires a ready endpoint on the managed ingress
+Service; on failure it lists Services and pods for diagnostics. A separate HTTPS probe
+requests the first HTTPS listener's hostname and requires an HTTP response,
+including a 4xx or 5xx response, after a successful TLS connection. It retries
+up to 20 times and is skipped when no HTTPS listener exists.
 
-The original single-job design had two failure modes:
+Both ingress probes are skipped for `bare`. A green non-bare run establishes
+the probed TLS path, not authenticated API acceptance. The long verify timeout
+accommodates core schema loading; it is not an expected duration for `bare`.
 
-1. **OIDC JWT expiry.** GitHub mints an OIDC JWT good for ~5 minutes. `azure/login@v3` exchanges it for AAD access tokens that live ~1 hour. When `spi up` takes 30-50 minutes and fails partway through, the original JWT is long dead. Any `az` command that needs to refresh against a dead JWT (e.g., teardown calling `az group delete` with stale tokens) silently fails with AADSTS700024. The `|| true` on the teardown step swallows the error, leaving an orphan resource group.
-2. **Failure isolation.** A single 90-minute job step list hides where the failure happened. Splitting into provision/verify/teardown makes the workflow summary directly answer "did infra fail or did K8s fail?"
+## Authentication over a long deployment
 
-The fix: each job runs `azure/login@v3` at its own start. The teardown job's JWT is seconds old when it issues the delete, not hours old. The trade-off is repeating the tool-install steps (uv, kubectl, kubelogin, helm, flux CLI) across jobs; these run in ~30 seconds each and were deemed cheap compared to extracting them into a reusable composite action.
+GitHub's OIDC assertion is short-lived. Azure access tokens obtained with that
+assertion can last longer, but a later token exchange or refresh can fail once
+the original assertion has expired.
 
-## Cancellation backstop
+Each job starts with `azure/login`. Provisioning also pre-caches tokens for
+ARM, Microsoft Graph, AKS, and Key Vault while the assertion is fresh, and
+resolves the deployer object ID before the long AKS deployment. The verify job
+pre-caches its ARM and AKS tokens.
 
-The split-job design catches normal failure paths but not full-workflow cancellation: when the user clicks "Cancel workflow" or GitHub kills the entire run, `if: always()` jobs are killed too.
+Separate jobs give teardown a fresh login attempt; they do not guarantee
+authentication or deletion will succeed. Provisioning estimates are maintained
+in [deployment timing](deployment-lifecycle.md#timing-and-readiness), not as
+another independent set of numbers here.
 
-[`.github/workflows/sweeper.yml`](../../.github/workflows/sweeper.yml) plus [`scripts/sweep_orphan_rgs.sh`](../../scripts/sweep_orphan_rgs.sh) are the backstop for that path. The sweeper runs daily at 04:00 UTC, four hours before the nightly smoke at 08:00 UTC. It deletes any RG named `spi-stack-ci-*` tagged `spi-ci-sweep-eligible=true` whose `spi-created-utc` tag is older than three hours.
+## Cleanup and its limits
 
-The provision job's "Pre-create RG with sweeper tags" step is what makes the backstop work even for runs that die before `spi up` finishes: the tags are written before any other Azure work begins. So a workflow that gets killed in the first 30 seconds still leaves a sweep-eligible RG behind.
+The teardown command uses `az group delete --no-wait`. It requests deletion
+rather than waiting for every resource to disappear. The current workflow
+also appends `|| true`, so a green teardown job is not evidence that Azure
+accepted the request.
 
-The standing shared environment ([environment-lifecycle.md](environment-lifecycle.md)) is outside the sweeper's reach on both criteria: its RG matches neither the `spi-stack-ci-*` name pattern nor the sweep-eligibility tag. Smoke environments are ephemeral by contract; the shared environment is torn down only by its own reset and teardown workflows.
+Full-workflow cancellation can interrupt cleanup. The
+[orphan sweeper](../../.github/workflows/sweeper.yml) runs independently at
+04:00 UTC, before the smoke schedule at 08:00 UTC. By default, a group is
+eligible only if all three conditions hold:
 
-## Observed timings (`centralus`)
+- Its name starts with `spi-stack-ci-`.
+- It has `spi-ci-sweep-eligible=true`.
+- Its parseable `spi-created-utc` tag is at least three hours old.
 
-- `provision`: ~45 min (~30 min AKS Automatic Bicep + ~3 min PaaS Bicep + ~30s K8s bootstrap + ~10-15 min Flux extension Bicep)
-- `verify`: highly variable; `scripts/wait_for_flux_ready.sh --timeout 13800` allows up to 230 minutes for Flux to reconcile every Kustomization
-- `teardown`: under 15 seconds (fires-and-forgets the RG delete)
+Provisioning writes those tags before `spi up`, so partially provisioned
+environments can still be selected. The age threshold is an eligibility rule,
+not a promise to clean up within three hours: the scheduled sweep is daily.
+Missing tags, authentication failures, and deletion failures still require
+operator attention.
 
-The 60-minute provision timeout gives ~15 minutes of headroom over the worst observed run.
+The standing shared environment is outside the sweeper's selection: its name
+and tags do not meet those criteria. Its upgrade and refresh workflows are
+separate from smoke; reset and teardown workflows remain unbuilt. See
+[environment lifecycle](environment-lifecycle.md).
 
-## Running a smoke manually
+## Running and inspecting smoke
+
+**Dispatching smoke creates billable Azure resources.**
 
 ```bash
-# Default profile, run id as env suffix
 gh workflow run smoke.yml --ref main
-
-# Custom suffix + middleware-only profile
-gh workflow run smoke.yml --ref main \
-  -f env_suffix=mybranch \
-  -f profile=minimal
-
-# Tail the run
+gh run list --workflow smoke.yml --limit 5
 gh run watch <run-id>
 ```
+
+For a named run, pass `-f env_suffix=trial1`. To exercise middleware rather
+than the default empty workload trees, choose `minimal`:
+
+```bash
+gh workflow run smoke.yml --ref main -f profile=minimal
+```
+
+Choose `core` to include OSDU services and initialization. `full` is not a
+supported profile.
 
 To inspect a failed run:
 
 ```bash
-# Per-job log tail
-gh run view <run-id> --log --job=<job-id>
-
-# Download diagnostics artifact (verify-failure only)
+gh run view <run-id> --log --job <job-id>
 gh run download <run-id> --name smoke-diagnostics-<run-id>
 ```
 
-To verify the sweeper sees what you expect without deleting anything:
+Diagnostics artifacts are produced by verify-failure handling. A provisioning
+failure may have only job logs, and cancellation can prevent artifact upload.
+Review diagnostic content before sharing it.
+
+To preview sweeper candidates without deleting them:
 
 ```bash
-gh workflow run sweeper.yml -f dry_run=true
+gh workflow run sweeper.yml --ref main -f dry_run=true
 ```
 
-## Related ADRs
+After teardown, confirm the resolved resource group is gone:
 
-The smoke pipeline is a CI artifact, not an architectural choice in its own right. The deployment shape it exercises is covered in:
+```bash
+az group exists --name <resource-group-from-run>
+```
 
-- [ADR-003: In-cluster middleware scope](../decisions/003-in-cluster-middleware-scope.md)
-- [ADR-008: Bicep for Azure provisioning](../decisions/008-bicep-for-azure-provisioning.md)
-- [ADR-009: Flux CD for GitOps](../decisions/009-flux-cd-for-gitops.md)
+`false` confirms deletion. If it remains, inspect Azure's deletion state and
+the cleanup logs rather than assuming the next sweep will resolve the failure.
 
-## Source files
+## Decisions and implementation
 
-- `.github/workflows/smoke.yml`
-- `.github/workflows/sweeper.yml`
-- `scripts/sweep_orphan_rgs.sh`
-- `scripts/wait_for_flux_ready.sh`
-- `scripts/capture_diagnostics.sh`
+- [CI setup](../CI_SETUP.md): repository environment, identity, and permissions.
+- [Deployment lifecycle](deployment-lifecycle.md): the deployment exercised by smoke.
+- [Smoke workflow](../../.github/workflows/smoke.yml): job conditions, token caching, and timeouts.
+- [Sweeper workflow](../../.github/workflows/sweeper.yml) and [script](../../scripts/sweep_orphan_rgs.sh): schedule and selection rules.
+- [Readiness wait](../../scripts/wait_for_flux_ready.sh) and [diagnostic capture](../../scripts/capture_diagnostics.sh): verification and failure artifacts.
