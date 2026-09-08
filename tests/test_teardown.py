@@ -438,6 +438,40 @@ class TestTeardownStops:
 
         assert az.deletes().count(vault) == 3
 
+    def test_a_failed_wave_still_prunes_kubeconfig_once_the_cluster_is_gone(self, az):
+        """The fingerprint read at the start is the last chance to match the context."""
+        vault = next(r["id"] for r in az.inventory if "vaults" in r["type"])
+        az.delete_failures[vault] = ["AuthorizationFailed"]
+
+        with pytest.raises(TeardownError, match="Delete refused"):
+            teardown_environment(config())
+
+        az.prune.assert_called_once_with("spi-stack-dev1", server_fqdn=FQDN)
+
+    def test_a_failed_wave_leaves_kubeconfig_alone_while_the_cluster_exists(self, az):
+        cluster = az.inventory[0]["id"]
+        az.delete_failures[cluster] = ["AuthorizationFailed"]
+
+        with pytest.raises(TeardownError, match="Delete refused"):
+            teardown_environment(config())
+
+        az.prune.assert_not_called()
+
+    def test_the_api_server_read_is_retried_before_being_treated_as_unknown(self, az):
+        original = az.run_command
+        flaky = {"left": 1}
+
+        def throttled(cmd, **kw):
+            if cmd[1:3] == ["aks", "show"] and flaky["left"]:
+                flaky["left"] -= 1
+                return subprocess.CompletedProcess(cmd, 1, "", "TooManyRequests")
+            return original(cmd, **kw)
+
+        with patch("spi.teardown.run_command", side_effect=throttled):
+            teardown_environment(config())
+
+        az.prune.assert_called_once_with("spi-stack-dev1", server_fqdn=FQDN)
+
     def test_a_fatal_refusal_still_requests_the_rest_of_the_wave(self, az):
         cluster = az.inventory[0]["id"]
         az.delete_failures[cluster] = ["AuthorizationFailed"]

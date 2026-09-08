@@ -36,7 +36,8 @@ TEARDOWN_DEADLINE_SECONDS = 45 * 60
 POLL_INTERVAL_SECONDS = 15
 RETRY_BACKOFF_SECONDS = (20, 40, 60)
 READ_RETRY_BACKOFF_SECONDS = (5, 15, 30)
-MAX_PARALLEL_REQUESTS = 8
+# Wide enough that every long-running delete in a multi-partition group starts at once.
+MAX_PARALLEL_REQUESTS = 16
 # Cap on any single read or small write, so a hung CLI call cannot stall the deadline loop.
 CALL_TIMEOUT_SECONDS = 120
 MAX_PASSES = 5
@@ -378,7 +379,7 @@ def _describe_with_state(resources: Iterable[AzureResource]) -> str:
 
 
 def _cluster_api_server(config: Config) -> str:
-    result = run_command(
+    result = _read(
         [
             "az",
             "aks",
@@ -392,10 +393,7 @@ def _cluster_api_server(config: Config) -> str:
             "--output",
             "tsv",
         ],
-        description=f"Look up API server for {config.cluster_name}",
-        display=False,
-        check=False,
-        timeout=CALL_TIMEOUT_SECONDS,
+        f"Look up API server for {config.cluster_name}",
     )
     return result.stdout.strip() if result.returncode == 0 else ""
 
@@ -431,6 +429,43 @@ def teardown_environment(config: Config) -> List[AzureResource]:
     run.had_cluster = any(r.type == CLUSTER_TYPE for r in run.inventory)
     run.api_server = _cluster_api_server(config) if run.had_cluster else ""
 
+    try:
+        _run_passes(run)
+    except TeardownError:
+        _prune_if_cluster_gone(run)
+        raise
+
+    leftovers = [r for r in run.inventory if r.type not in RETAINED_TYPES]
+    if leftovers:
+        raise TeardownError("Resources remain after teardown:\n  " + _describe(leftovers))
+    _confirm_nodes_group_gone(run)
+    retained = retained_resources(run.inventory)
+    display_result(f"Resource group {rg} holds only managed identities")
+    for identity in retained:
+        console.print(f"  [dim]retained {identity.name}[/dim]")
+    return retained
+
+
+def _prune_if_cluster_gone(run: TeardownRun) -> None:
+    """A failed pass must not strand the kubeconfig entry: once the cluster and its
+    nodes group are gone the fingerprint read at the start is the last chance to
+    match it, because a rerun finds no cluster to read one from."""
+    if not run.had_cluster or run.context_pruned:
+        return
+    try:
+        inventory = list_group_resources(run.config.resource_group)
+        if any(r.type == CLUSTER_TYPE for r in inventory):
+            return
+        if group_exists(run.config.node_resource_group):
+            return
+    except TeardownError:
+        return
+    prune_kube_context(run.config.cluster_name, server_fqdn=run.api_server)
+    run.context_pruned = True
+
+
+def _run_passes(run: TeardownRun) -> None:
+    rg = run.config.resource_group
     for _ in range(MAX_PASSES):
         if not any(r.type not in RETAINED_TYPES for r in run.inventory):
             break
@@ -457,16 +492,6 @@ def teardown_environment(config: Config) -> List[AzureResource]:
             console.print(
                 "  [info]New resources appeared during teardown; running another pass[/info]"
             )
-
-    leftovers = [r for r in run.inventory if r.type not in RETAINED_TYPES]
-    if leftovers:
-        raise TeardownError("Resources remain after teardown:\n  " + _describe(leftovers))
-    _confirm_nodes_group_gone(run)
-    retained = retained_resources(run.inventory)
-    display_result(f"Resource group {rg} holds only managed identities")
-    for identity in retained:
-        console.print(f"  [dim]retained {identity.name}[/dim]")
-    return retained
 
 
 @dataclass(frozen=True)
