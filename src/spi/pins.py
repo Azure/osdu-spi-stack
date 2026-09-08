@@ -51,6 +51,7 @@ from .images import (
     ResolvedImage,
     build_lock_annotations,
     build_lock_data,
+    fork_package_repository,
     ghcr_index_child_digests,
     gitlab_get,
     image_lock_key,
@@ -66,6 +67,9 @@ from .images import (
 from .shell import run_command, run_process
 
 PINS_ANNOTATION = "spi-stack.osdu.dev/pins"
+# Service to trusted repository, projected from the deploy identity's
+# federated credentials by spi onboard and spi up.
+TRUSTED_REPOS_ANNOTATION = "spi-stack.osdu.dev/trusted-repos"
 
 # Pin origins recorded in the annotation.
 GITLAB_MR_ORIGIN = "gitlab-mr"
@@ -86,9 +90,9 @@ _FLUX_WATCH_LABEL = "reconcile.fluxcd.io/watch"
 STALE_EPHEMERAL_PIN_AGE_HOURS = 6
 
 _RUN_ID_RE = re.compile(r"^[0-9]+$")
-# Only these repositories may answer a pin's owning-run state; the
-# fork-written source_run_url is display-only and never fetched.
-_FORK_SOURCE_REPO_RE = re.compile(r"^azure/osdu-spi-[a-z0-9._-]+$", re.IGNORECASE)
+# Repository path syntax only; membership comes from the lock's roster projection.
+_REPO_PATH_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$)[A-Za-z0-9_.-]+$")
+
 
 # entry.file prefix -> the Flux Kustomization that substitutes those keys.
 _FILE_KUSTOMIZATIONS = {
@@ -322,6 +326,29 @@ def decode_pins(lock: dict) -> dict[str, ServicePin]:
             f"Corrupt {PINS_ANNOTATION} annotation on {IMAGE_LOCK_CONFIGMAP}: {exc}. "
             "Repair or remove the annotation before changing images."
         ) from exc
+
+
+def decode_trusted_repos(lock: dict) -> dict[str, str]:
+    """Return the trusted-repository roster projected on a lock object."""
+
+    raw = (lock.get("metadata", {}).get("annotations") or {}).get(TRUSTED_REPOS_ANNOTATION, "")
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise PinError(
+            f"Corrupt {TRUSTED_REPOS_ANNOTATION} annotation on {IMAGE_LOCK_CONFIGMAP}: {exc}. "
+            "Re-run 'spi onboard --list' after repairing it."
+        ) from exc
+    if not isinstance(parsed, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
+    ):
+        raise PinError(
+            f"Corrupt {TRUSTED_REPOS_ANNOTATION} annotation on {IMAGE_LOCK_CONFIGMAP}: "
+            "expected a JSON object of service to repository."
+        )
+    return dict(parsed)
 
 
 def encode_pins(pins: dict[str, ServicePin]) -> str:
@@ -840,6 +867,26 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     return results
 
 
+def _require_trusted_source(lock: dict, service: str, source_repo: str) -> None:
+    """An ephemeral pin's claimed source must be the repository trusted for the service.
+
+    The roster is the lock's projection of the deploy identity's credentials;
+    the comparison is exact because Entra matched the OIDC subject exactly.
+    """
+
+    trusted = decode_trusted_repos(lock).get(service)
+    if trusted is None:
+        raise PinError(
+            f"No repository is trusted for {service}; run 'spi onboard {service} "
+            "--repo <owner>/<fork> --write' before deploying ephemeral pins."
+        )
+    if trusted != source_repo:
+        raise PinError(
+            f"--source-repo {source_repo!r} is not the repository trusted for {service} "
+            f"({trusted}); the sweep could never query this pin's owning run."
+        )
+
+
 def pin_service_image(
     service: str,
     image: str,
@@ -882,11 +929,15 @@ def pin_service_image(
         )
     if run_id and not _RUN_ID_RE.match(run_id):
         raise PinError(f"--run-id must be a numeric GitHub Actions run id, got {run_id!r}.")
-    if source_repo and not _FORK_SOURCE_REPO_RE.match(source_repo):
-        raise PinError(
-            f"--source-repo {source_repo!r} is not an allow-listed fork repository "
-            "(Azure/osdu-spi-*); the sweep could never query this pin's owning run."
-        )
+    if source_repo and not _REPO_PATH_RE.match(source_repo):
+        raise PinError(f"--source-repo must be <owner>/<repo>, got {source_repo!r}.")
+    if ephemeral:
+        expected = fork_package_repository(source_repo, service)
+        if repository.lower() != expected:
+            raise PinError(
+                f"An ephemeral {service} pin from {source_repo} must use the fork's package "
+                f"{expected}, got {repository!r}."
+            )
 
     _refuse_unless_deployable()
     try:
@@ -907,6 +958,8 @@ def pin_service_image(
                 "is this a core-profile cluster?"
             )
         nonlocal applied, released, prior_pins, prior_entries
+        if ephemeral:
+            _require_trusted_source(lock, service, source_repo)
         lock_data = lock.get("data") or {}
         pins = decode_pins(lock)
         data = dict(lock_data)
@@ -1271,12 +1324,12 @@ def verify_service_image(
 def _github_run_status(source_repo: str, run_id: str) -> str | None:
     """Return the owning workflow run's status, or None when unreachable.
 
-    The URL is built only from the allow-listed ``source_repo`` and numeric
-    ``run_id``; a repository outside the allow-list is never fetched and
+    The URL is built only from a well-formed ``<owner>/<repo>`` and numeric
+    ``run_id`` under the fixed API host; anything else is never fetched and
     reads as unreachable, leaving the age threshold to decide.
     """
 
-    if not _FORK_SOURCE_REPO_RE.match(source_repo) or not _RUN_ID_RE.match(run_id):
+    if not _REPO_PATH_RE.match(source_repo) or not _RUN_ID_RE.match(run_id):
         return None
     headers = {"User-Agent": "spi-stack-resolver", "Accept": "application/vnd.github+json"}
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
@@ -1466,6 +1519,9 @@ def apply_image_lock(
         annotations = build_lock_annotations(branch, timestamp)
         if active_pins:
             annotations[PINS_ANNOTATION] = encode_pins(active_pins)
+        existing = ((lock or {}).get("metadata") or {}).get("annotations") or {}
+        if existing.get(TRUSTED_REPOS_ANNOTATION):
+            annotations[TRUSTED_REPOS_ANNOTATION] = existing[TRUSTED_REPOS_ANNOTATION]
         return {"data": data, "metadata": {"annotations": annotations}}
 
     mutate_lock(compute, description, max_attempts=max_attempts)
