@@ -80,6 +80,13 @@ After changing a bound, regenerate the lock with `uv lock`; never hand-edit
 installs the built wheel and resolves the dev group with the mirror as the only
 index. Normal development still resolves through PyPI as a fallback.
 
+A tool whose mirror version trails PyPI needs an entry in `[tool.uv.sources]`
+pinning it to the mirror; `ruff` and `ty` have one. Without the pin,
+`index-strategy = "unsafe-best-match"` picks the PyPI release the mirror lacks,
+which puts a PyPI URL in the lock and fails `uv lock` outright on a network that
+blocks `pythonhosted.org`. Dependabot runs the `uv` ecosystem, so its bumps
+arrive with `uv.lock` already regenerated.
+
 ## Making Changes
 
 ### Branch Naming
