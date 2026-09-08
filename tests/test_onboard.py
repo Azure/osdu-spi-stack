@@ -618,9 +618,9 @@ class TestCli:
     @pytest.mark.parametrize(
         "args, message",
         [
-            (["--list", "partition"], "--list takes no other options"),
-            (["partition", "--remove", "--repo", REPO], "--remove takes only"),
-            (["partition", "--org", "Acme", "--skip-repo"], "--org stamps GitHub values"),
+            (["--list", "partition"], "takes no other options"),
+            (["partition", "--remove", "--repo", REPO], "takes only the service"),
+            (["partition", "--org", "Acme", "--skip-repo"], "stamps GitHub values"),
             ([], "name the service"),
         ],
     )
