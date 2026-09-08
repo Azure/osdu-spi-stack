@@ -11,8 +11,12 @@ ingress. The default is `azure`.
 | `dns` | Environment-prefixed names in an existing Azure DNS zone | Let's Encrypt, separate hostnames | Team environments with owned DNS |
 | `ip` | Gateway public IP | None | Isolated debugging only |
 
-**`ip` mode sends API traffic, including any bearer tokens, over HTTP.** Do not
-use it for sensitive data or credentials over an untrusted network.
+**Port 80 serves the API routes in every mode.** The base Gateway keeps its
+HTTP listener for ACME challenges, and the OSDU HTTPRoutes name no listener,
+so they attach to it as well as to HTTPS; nothing redirects. A client that
+uses an `http://` URL sends its bearer token in plaintext even in `azure` and
+`dns` mode. `ip` mode has no HTTPS at all; do not use it for credentials over
+an untrusted network.
 
 ## Shared gateway and configuration
 

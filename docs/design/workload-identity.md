@@ -65,7 +65,7 @@ add a fallback for them: it requires Workload-Identity-capable images
 ([ADR-023](../decisions/023-entra-only-data-plane.md)).
 
 Middleware passwords and Airflow signing material remain stored in Kubernetes
-Secrets and Key Vault. [Secret lifecycle](secret-lifecycle.md) describes those
+Secrets; the Redis and Elasticsearch passwords are also mirrored into Key Vault. [Secret lifecycle](secret-lifecycle.md) describes those
 values separately from Azure token exchange.
 
 ## Environment deploy identity

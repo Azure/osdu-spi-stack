@@ -30,7 +30,7 @@ resolves only when no lock exists. `minimal` and `bare` skip image resolution. T
 | Resource group | Verify Azure login, create or reuse the group, persist the naming suffix | Stable resource names for retries |
 | AKS | Deploy `infra/aks.bicep`, obtain kubeconfig, enable Istio CNI chaining, grant the deployer cluster access | An accessible cluster and OIDC issuer |
 | Azure PaaS | Recover a matching soft-deleted Key Vault if needed, then deploy `infra/main.bicep` | Data services, identities, role assignments, Azure-derived Key Vault values |
-| Kubernetes bootstrap | Create namespaces, seed Secrets, StorageClasses, Gateway API CRDs, ServiceAccounts, ConfigMaps including `spi-cluster-config`, the trusted-repository projection, and Istio policies | Inputs in `osdu-flux`, `platform`, and `osdu` |
+| Kubernetes bootstrap | Create namespaces, seed Secrets, StorageClasses, Gateway API CRDs, ServiceAccounts, ConfigMaps including `spi-cluster-config`, the trusted-repository projection (`core` only), and Istio policies | Inputs in `osdu-flux`, `platform`, and `osdu` |
 | Flux activation | Deploy `infra/flux.bicep` with the repository, branch or tag, profile, and ingress paths | Source fetching and workload reconciliation begin |
 | Runtime Key Vault values | Write middleware passwords from the seed and derived endpoints | Service configuration available in Key Vault |
 | Git-source finalization | Wait for the source, resume and reconcile it, verify the requested artifact revision, then suspend it and write the deploy record | Verified Git revision recorded; new Git revisions no longer fetched |
