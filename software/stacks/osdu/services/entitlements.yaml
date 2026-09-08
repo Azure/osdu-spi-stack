@@ -23,6 +23,10 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
+    replicaCount: 2
+    hostAntiAffinity: true
+    podDisruptionBudget:
+      enabled: true
     image:
       repository: ${ENTITLEMENTS_IMAGE_REPOSITORY}
       tag: "${ENTITLEMENTS_IMAGE_TAG}"
@@ -34,6 +38,10 @@ spec:
       - key: workload
         operator: Equal
         value: "osdu"
+        effect: NoSchedule
+      - key: kubernetes.azure.com/scalesetpriority
+        operator: Equal
+        value: "spot"
         effect: NoSchedule
     env:
       - name: SPRING_APPLICATION_NAME

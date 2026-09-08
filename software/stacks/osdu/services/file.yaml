@@ -35,6 +35,10 @@ spec:
         operator: Equal
         value: "osdu"
         effect: NoSchedule
+      - key: kubernetes.azure.com/scalesetpriority
+        operator: Equal
+        value: "spot"
+        effect: NoSchedule
     istioProxyPin:
       enabled: true
     env:

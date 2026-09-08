@@ -43,6 +43,8 @@ spec:
             - effect: NoSchedule
               key: workload
               value: "platform"
+          # Setting affinity at all replaces ECK's default preferred
+          # hostname anti-affinity, so it is restated here as required.
           affinity:
             nodeAffinity:
               requiredDuringSchedulingIgnoredDuringExecution:
@@ -52,6 +54,12 @@ spec:
                         operator: In
                         values:
                           - platform
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      elasticsearch.k8s.elastic.co/cluster-name: elasticsearch
           securityContext:
             fsGroup: 1000
             runAsNonRoot: true
