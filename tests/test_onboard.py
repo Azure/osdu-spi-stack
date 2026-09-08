@@ -86,8 +86,11 @@ class FakeWorld:
             }
         )
 
-    def protect(self, repo, branches=("main", "fork_integration"), custom=True):
-        self.environments[repo] = {"custom": custom, "branches": list(branches)}
+    def protect(self, repo, branches=("main", "fork_integration"), custom=True, extra=()):
+        policies = [{"id": i + 1, "name": b, "type": "branch"} for i, b in enumerate(branches)]
+        for j, (name, kind) in enumerate(extra):
+            policies.append({"id": 100 + j, "name": name, "type": kind})
+        self.environments[repo] = {"custom": custom, "policies": policies}
 
     def stamp(self, where, values=VALUES):
         self.secrets[where] = {"AZURE_CLIENT_ID"}
@@ -168,22 +171,28 @@ class FakeWorld:
         if parts[3:] == ["environments", DEPLOY_ENVIRONMENT]:
             if method == "PUT":
                 self.writes.append(argv)
-                self.environments[repo] = {"custom": True, "branches": []}
+                self.environments[repo] = {"custom": True, "policies": []}
                 return _ok(argv, {})
             if env is None:
                 return _fail(argv, "gh: Not Found (HTTP 404)")
             policy = {"custom_branch_policies": env["custom"], "protected_branches": False}
             return _ok(argv, {"name": DEPLOY_ENVIRONMENT, "deployment_branch_policy": policy})
-        if parts[3:] == ["environments", DEPLOY_ENVIRONMENT, "deployment-branch-policies"]:
+        if parts[3:5] == ["environments", DEPLOY_ENVIRONMENT] and parts[5] == (
+            "deployment-branch-policies"
+        ):
             assert env is not None
+            if method == "DELETE":
+                self.writes.append(argv)
+                env["policies"] = [p for p in env["policies"] if p["id"] != int(parts[6])]
+                return _ok(argv, None)
             if method == "POST":
                 self.writes.append(argv)
-                env["branches"].append(argv[argv.index("-f") + 1].split("=", 1)[1])
+                name = argv[argv.index("-f") + 1].split("=", 1)[1]
+                env["policies"].append(
+                    {"id": len(env["policies"]) + 1, "name": name, "type": "branch"}
+                )
                 return _ok(argv, {})
-            return _ok(
-                argv,
-                {"branch_policies": [{"name": b, "type": "branch"} for b in env["branches"]]},
-            )
+            return _ok(argv, {"branch_policies": list(env["policies"])})
         raise AssertionError(f"unexpected gh api path {path}")
 
     def read_lock(self, required=True):
@@ -360,6 +369,30 @@ class TestPlanning:
         ]
         assert "update" in next(s.argv for s in plan.steps if s.phase == "azure")
 
+    def test_a_wildcard_policy_is_drift_and_its_removal_is_planned(self, world):
+        world.protect("Acme/osdu-spi-partition", extra=(("release/*", "branch"),))
+        plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition")
+        row = next(r for r in plan.rows if r.item.startswith("spi-stack environment"))
+        assert (row.state, row.detail) == ("drifted", "admits release/* (branch)")
+        deletes = [s.argv for s in plan.steps if "DELETE" in s.argv]
+        assert deletes and deletes[0][-1].endswith("/deployment-branch-policies/100")
+        assert plan.protection is not None and not plan.protection.satisfied
+
+    def test_a_tag_policy_named_main_does_not_count_as_the_branch(self, world):
+        world.protect(
+            "Acme/osdu-spi-partition", branches=("fork_integration",), extra=(("main", "tag"),)
+        )
+        plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition")
+        row = next(r for r in plan.rows if r.item.startswith("spi-stack environment"))
+        assert row.detail == "missing main; admits main (tag)"
+
+    def test_write_removes_the_extra_policy_before_enabling_trust(self, world):
+        world.protect("Acme/osdu-spi-partition", extra=(("release/*", "branch"),))
+        apply_plan(plan_onboard(target(), "partition", "acme/osdu-spi-partition"))
+        names = [p["name"] for p in world.environments["Acme/osdu-spi-partition"]["policies"]]
+        assert names == ["main", "fork_integration"]
+        assert len(world.credentials) == 1
+
     def test_org_values_are_planned_at_organization_level(self, world):
         plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition", org="Acme")
         value_steps = [s.argv for s in plan.steps if s.argv[1] in ("secret", "variable")]
@@ -405,7 +438,7 @@ class TestApplying:
         ]
         assert all("--repo" in w and "Acme/osdu-spi-partition" in w for w in world.writes[3:8])
         assert kinds.index("az identity federated-credential") > kinds.index("gh variable set")
-        assert world.environments["Acme/osdu-spi-partition"]["branches"] == [
+        assert [p["name"] for p in world.environments["Acme/osdu-spi-partition"]["policies"]] == [
             "main",
             "fork_integration",
         ]
@@ -502,6 +535,44 @@ class TestListAndRemove:
         )
         assert rows["legal"].state == "drifted"
         assert rows["other"].state == "unverified"
+
+    def test_a_credential_with_a_drifted_issuer_is_not_projected(self, world):
+        world.trust("partition", "Acme/osdu-spi-partition", issuer="https://evil.example")
+        world.trust("storage", "Acme/osdu-spi-storage", audiences=("api://other",))
+        world.trust("legal", "Acme/osdu-spi-legal")
+
+        assert onboard.sync_projection_from_identity(IDENTITY, RG) == {
+            "legal": "Acme/osdu-spi-legal"
+        }
+        rows = {row.item: row for row in list_trust(target())}
+        assert rows["fork-partition"].state == "unverified"
+        assert rows["fork-storage"].state == "unverified"
+        assert rows["legal"].state == "correct"
+
+    def test_projection_reads_the_roster_fresh_so_a_racing_onboard_is_kept(self, world):
+        """Snapshot at plan time, competitor lands, our write must not drop it."""
+        world.protect("Acme/osdu-spi-partition")
+        plan = plan_onboard(target(), "partition", "acme/osdu-spi-partition")
+        world.trust("storage", "Acme/osdu-spi-storage")
+        world.project({"storage": "Acme/osdu-spi-storage"})
+
+        apply_plan(plan)
+
+        assert world.projection() == {
+            "partition": "Acme/osdu-spi-partition",
+            "storage": "Acme/osdu-spi-storage",
+        }
+
+    def test_removal_names_the_pending_phase_when_projection_fails(self, world):
+        world.trust("partition", "Acme/osdu-spi-partition")
+        world.project({"partition": "Acme/osdu-spi-partition"})
+        plan = plan_remove(target(), "partition")
+        world.lock = None
+
+        with pytest.raises(OnboardError, match="Completed: azure. Pending: cluster"):
+            apply_remove(plan)
+
+        assert world.credentials == []
 
     def test_remove_plans_the_delete_and_the_projection_without_writing(self, world):
         world.trust("partition", "Acme/osdu-spi-partition")
@@ -619,6 +690,11 @@ class TestCli:
         plan.assert_not_called()
         result, *_ = self._run(["onboard", "partition", "--list"])
         assert result.exit_code != 0
+
+    def test_list_rejects_org_and_skip_repo_too(self):
+        for extra in (["--org", "Acme"], ["--skip-repo"]):
+            result, *_ = self._run(["onboard", "--list", *extra])
+            assert result.exit_code != 0, extra
 
     def test_a_service_is_required_outside_list(self):
         result, *_ = self._run(["onboard"])

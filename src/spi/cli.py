@@ -721,7 +721,7 @@ def onboard(
     """Trust a fork repository to deploy against the connected environment."""
     from . import onboard as _onboard
 
-    if list_trusted and (service or repo or remove or write):
+    if list_trusted and (service or repo or remove or write or org or skip_repo):
         raise typer.BadParameter("--list takes no other options", param_hint="--list")
     if remove and (repo or org or skip_repo):
         raise typer.BadParameter(

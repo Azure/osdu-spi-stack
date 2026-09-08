@@ -1220,6 +1220,8 @@ class TestParseImageDigestRef:
             require_ghcr_repository("docker.io/azure/storage")
         with pytest.raises(ImageResolutionError, match="not a GHCR package"):
             require_ghcr_repository("ghcr.io/storage")
+        with pytest.raises(ImageResolutionError, match="not a GHCR package"):
+            require_ghcr_repository("ghcr.io/acme/other/storage")
 
 
 class TestPinServiceImage:

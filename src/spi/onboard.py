@@ -118,6 +118,9 @@ class Protection:
     exists: bool
     custom_branch_policies: bool
     branches: tuple[str, ...]
+    # Policies beyond the required branches, as (id, name); a tag policy or a
+    # wildcard here admits runs ADR-032 keeps out, so trust waits until they go.
+    extra_policies: tuple[tuple[int, str], ...] = ()
 
     @property
     def missing_branches(self) -> tuple[str, ...]:
@@ -125,7 +128,12 @@ class Protection:
 
     @property
     def satisfied(self) -> bool:
-        return self.exists and self.custom_branch_policies and not self.missing_branches
+        return (
+            self.exists
+            and self.custom_branch_policies
+            and not self.missing_branches
+            and not self.extra_policies
+        )
 
 
 @dataclass(frozen=True)
@@ -276,7 +284,11 @@ def read_roster(target: Target) -> list[Credential]:
 def roster_repos(roster: list[Credential]) -> dict[str, str]:
     """Map service to trusted repository for the credentials this CLI owns."""
 
-    return {cred.service: cred.repo for cred in roster if cred.service and cred.repo}
+    return {
+        cred.service: cred.repo
+        for cred in roster
+        if cred.service and cred.repo and cred.matches(cred.repo)
+    }
 
 
 def resolve_repository(spec: str) -> str:
@@ -300,7 +312,8 @@ def read_protection(repo: str) -> Protection:
         return Protection(exists=False, custom_branch_policies=False, branches=())
     policy = env.get("deployment_branch_policy") or {}
     custom = bool(policy.get("custom_branch_policies"))
-    branches: tuple[str, ...] = ()
+    branches: list[str] = []
+    extras: list[tuple[int, str]] = []
     if custom:
         listing = _read_json(
             [
@@ -311,12 +324,21 @@ def read_protection(repo: str) -> Protection:
             f"branch policies of {DEPLOY_ENVIRONMENT} on {repo}",
         )
         entries = (listing or {}).get("branch_policies") or [] if isinstance(listing, dict) else []
-        branches = tuple(
-            str(entry.get("name"))
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name")
-        )
-    return Protection(exists=True, custom_branch_policies=custom, branches=branches)
+        for entry in entries:
+            if not isinstance(entry, dict) or not entry.get("name"):
+                continue
+            name = str(entry["name"])
+            kind = str(entry.get("type") or "branch")
+            if kind == "branch" and name in REQUIRED_BRANCHES and name not in branches:
+                branches.append(name)
+            else:
+                extras.append((int(entry.get("id") or 0), f"{name} ({kind})"))
+    return Protection(
+        exists=True,
+        custom_branch_policies=custom,
+        branches=tuple(branches),
+        extra_policies=tuple(extras),
+    )
 
 
 def read_values(repo: str, org: str) -> dict[str, Optional[str]]:
@@ -435,6 +457,21 @@ def _protection_commands(plan: Plan) -> list[Step]:
                 f"Create the protected {DEPLOY_ENVIRONMENT} environment on {plan.repo}",
             )
         )
+    for policy_id, label in protection.extra_policies:
+        steps.append(
+            Step(
+                "repository",
+                [
+                    "gh",
+                    "api",
+                    "--method",
+                    "DELETE",
+                    f"repos/{plan.repo}/environments/{DEPLOY_ENVIRONMENT}"
+                    f"/deployment-branch-policies/{policy_id}",
+                ],
+                f"Remove the {label} policy from {DEPLOY_ENVIRONMENT} on {plan.repo}",
+            )
+        )
     for branch in protection.missing_branches:
         steps.append(
             Step(
@@ -540,15 +577,13 @@ def _protection_rows(plan: Plan) -> list[Row]:
         return [Row("repository", item, "missing")]
     if not protection.custom_branch_policies:
         return [Row("repository", item, "drifted", "no custom branch policies")]
+    problems = []
     if protection.missing_branches:
-        return [
-            Row(
-                "repository",
-                item,
-                "drifted",
-                "missing " + ", ".join(protection.missing_branches),
-            )
-        ]
+        problems.append("missing " + ", ".join(protection.missing_branches))
+    if protection.extra_policies:
+        problems.append("admits " + ", ".join(label for _id, label in protection.extra_policies))
+    if problems:
+        return [Row("repository", item, "drifted", "; ".join(problems))]
     return [Row("repository", item, "correct", ", ".join(protection.branches))]
 
 
@@ -730,21 +765,31 @@ def _run_step(step: Step) -> None:
 
 
 def project_roster(
-    desired: dict[str, str], description: str = "Project the trusted-repository roster"
-) -> None:
-    """Write the roster annotation on the lock, leaving data and pins alone."""
+    target: Target, description: str = "Project the trusted-repository roster"
+) -> dict[str, str]:
+    """Write the identity's roster onto the lock, leaving data and pins alone.
+
+    The roster is re-read on every attempt, so a competing onboarding that
+    landed between this call's planning read and its write is projected
+    rather than overwritten with a stale snapshot. Returns what was written.
+    """
+
+    written: dict[str, str] = {}
 
     def compute(lock: dict | None) -> dict:
+        nonlocal written
         if lock is None:
             raise PinError("osdu-image-lock is missing; nothing to project the roster into.")
+        written = roster_repos(read_roster(target))
         annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
-        annotations[TRUSTED_REPOS_ANNOTATION] = json.dumps(desired, sort_keys=True)
+        annotations[TRUSTED_REPOS_ANNOTATION] = json.dumps(written, sort_keys=True)
         return {"data": dict(lock.get("data") or {}), "metadata": {"annotations": annotations}}
 
     try:
         mutate_lock(compute, description)
     except PinError as exc:
         raise OnboardError(str(exc)) from exc
+    return written
 
 
 def apply_plan(plan: Plan) -> list[Row]:
@@ -791,9 +836,8 @@ def apply_plan(plan: Plan) -> list[Row]:
     completed.append("azure")
 
     try:
-        desired = _desired_projection(plan)
-        if plan.projection != desired:
-            project_roster(desired)
+        if plan.projection != _desired_projection(plan):
+            project_roster(plan.target)
         plan.projection = read_projection()
     except (OnboardError, PinError) as exc:
         raise fail(exc, "cluster") from None
@@ -833,7 +877,11 @@ def list_trust(target: Target) -> list[Row]:
         else:
             rows.append(Row("azure", service, "correct", repo))
     for cred in roster:
-        if not cred.service or not cred.repo:
+        if cred.service and cred.repo and not cred.matches(cred.repo):
+            rows.append(
+                Row("azure", cred.name, "unverified", f"issuer or audience drifted; {cred.subject}")
+            )
+        elif not cred.service or not cred.repo:
             rows.append(
                 Row("azure", cred.name, "unverified", f"not a {DEPLOY_ENVIRONMENT} credential")
             )
@@ -895,14 +943,26 @@ def plan_remove(target: Target, service: str) -> Plan:
 
 
 def apply_remove(plan: Plan) -> list[Row]:
-    for step in plan.steps:
-        if step.phase == "azure":
-            _run_step(step)
-    plan.roster = read_roster(plan.target)
-    desired = {svc: repo for svc, repo in roster_repos(plan.roster).items() if svc != plan.service}
-    if plan.projection != desired:
-        project_roster(desired)
-    plan.projection = read_projection()
+    """Revoke, then reproject; a failure names the phase left pending."""
+
+    try:
+        for step in plan.steps:
+            if step.phase == "azure":
+                _run_step(step)
+        plan.roster = read_roster(plan.target)
+    except (OnboardError, PinError) as exc:
+        raise OnboardError(
+            f"{exc}\nCompleted: nothing. Pending: azure, cluster. Re-run to resume."
+        ) from None
+    desired = roster_repos(plan.roster)
+    try:
+        if plan.projection != desired:
+            project_roster(plan.target)
+        plan.projection = read_projection()
+    except (OnboardError, PinError) as exc:
+        raise OnboardError(
+            f"{exc}\nCompleted: azure. Pending: cluster. Re-run to resume."
+        ) from None
     plan.steps = []
     plan.rows = [
         Row("azure", plan.credential_name, "correct", "absent"),
@@ -940,5 +1000,5 @@ def sync_projection_from_identity(identity_name: str, resource_group: str) -> di
     )
     desired = roster_repos(read_roster(target))
     if read_projection() != desired:
-        project_roster(desired, "Project the trusted-repository roster after bootstrap")
+        desired = project_roster(target, "Project the trusted-repository roster after bootstrap")
     return desired

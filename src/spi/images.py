@@ -465,7 +465,7 @@ def require_ghcr_repository(repository: str) -> None:
     """Require a pin's repository to be a GHCR package, ``ghcr.io/<owner>/<name>``."""
 
     parts = repository.lower().split("/")
-    if len(parts) < 3 or parts[0] != GHCR_HOST or not all(parts[1:]):
+    if len(parts) != 3 or parts[0] != GHCR_HOST or not all(parts[1:]):
         raise ImageResolutionError(
             f"repository {repository!r} is not a GHCR package; expected {GHCR_HOST}/<owner>/<name>"
         )
