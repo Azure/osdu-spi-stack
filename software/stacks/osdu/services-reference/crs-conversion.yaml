@@ -17,6 +17,7 @@ spec:
   chart:
     spec:
       chart: ./software/charts/osdu-spi-service
+      reconcileStrategy: Revision
       sourceRef:
         kind: GitRepository
         name: osdu-spi-stack-system
