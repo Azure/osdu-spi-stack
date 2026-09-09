@@ -60,8 +60,9 @@ def osdu_config_configmap(
     PRIMARY_* keys exist for the schema-load Job, which targets the
     primary-only system database, and for operator visibility.
 
-    aad_client_id is the app id the Spring auth filters match against the
-    JWT appid claim and core-lib-azure scopes `getWIToken` to.
+    aad_client_id is the resource core-lib-azure scopes `getWIToken` to for
+    service-to-service calls, and one of the audiences the Istio jwtRules
+    accept. It is not the appid the Lua projects; that is each token's own.
     """
     return f"""\
 apiVersion: v1
@@ -121,11 +122,15 @@ def istio_auth_resources(
     The PeerAuthentication keeps mTLS PERMISSIVE so the bootstrap Jobs are
     not rejected.
 
-    Both client ids are jwtRule audiences. Bootstrap Jobs present
-    ``aud=https://management.azure.com/`` and the Lua pins their x-app-id to
-    ``entra_client_id``; service-to-service tokens carry
-    ``aud=aad_client_id`` and must pass jwt_authn too. When the two ids are
-    equal only one audience entry is emitted.
+    Both client ids are jwtRule audiences. Bootstrap Jobs and acceptance
+    callers present ``aud=https://management.azure.com/``; service-to-service
+    tokens carry ``aud=aad_client_id`` and must pass jwt_authn too. When the
+    two ids are equal only one audience entry is emitted.
+
+    The Lua projects every caller as itself: x-app-id is the token's own
+    ``appid`` (v1) or ``azp`` (v2) and x-user-id follows the issuer-specific
+    claims, so the audience a token was minted for never changes which
+    principal a service sees. Authorization stays with entitlements.
     """
     extra_aud = (
         f'\n        - "{aad_client_id}"'
@@ -201,7 +206,6 @@ spec:
             inlineCode: |
               local AAD_V1_ISSUER = "sts.windows.net"
               local AAD_V2_ISSUER = "login.microsoftonline.com"
-              local entraClientId = "{entra_client_id}"
 
               local function processAADV1(payload, h)
                 if payload["unique_name"] then
@@ -234,17 +238,9 @@ spec:
                 end
                 local payload = meta["payload"]
 
-                local aud = payload["aud"]
-                if aud then
-                  h:headers():add("x-app-id", aud)
-                  if aud == "https://management.azure.com/"
-                     or aud == "https://management.azure.com" then
-                    if payload["appid"] then
-                      h:headers():replace("x-app-id", entraClientId)
-                      h:headers():add("x-user-id", entraClientId)
-                    end
-                    return
-                  end
+                local appId = payload["appid"] or payload["azp"]
+                if appId then
+                  h:headers():add("x-app-id", appId)
                 end
 
                 local iss = payload["iss"]

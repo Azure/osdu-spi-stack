@@ -67,8 +67,19 @@ record written at the end of `spi up` supplies the version fields.
   around it, are ADR-029's ruling.
 - Endpoints, partitions, and non-secret Azure coordinates stay in `spi info --json`,
   which carries the same `apiVersion` field plus `azure.tenant_id`,
-  `azure.data_plane_application_id` (the application id acceptance suites
-  need to mint tokens), `azure.openid_issuer`, and `partitions[].legal_tag`.
+  `azure.data_plane_application_id` (the `AAD_CLIENT_ID` resource services
+  request service-to-service tokens for), `azure.token_audience` (the
+  resource acceptance suites mint tokens for), `azure.openid_issuer`, and
+  `partitions[].legal_tag`.
+- `azure.token_audience` is `https://management.azure.com` unless an operator
+  overrode `AAD_CLIENT_ID` to an app registration, in which case it is that
+  id. The application id is not mintable when it names the platform's managed
+  identity, which is the default, so the two facts are separate: a consumer
+  reads the audience per run and never derives it from the application id.
+  The override is detected by comparing `AAD_CLIENT_ID` with the client id on
+  the `osdu/workload-identity-sa` annotation; when that annotation cannot be
+  read the fact is the management audience, which the v1 issuer rule accepts
+  on every environment.
 - `azure.openid_issuer` is the OIDC v2.0 issuer URL, published explicitly
   rather than derived by consumers from the tenant id. It is an empty string
   until the cluster reports its tenant, so consumers treat present-but-empty
