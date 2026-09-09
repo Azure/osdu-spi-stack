@@ -263,17 +263,21 @@ the same federated credential and belongs to no group. Entitlements is
 expected to answer such a caller with 403, distinct from the 401 an
 unauthenticated request draws; if a partition answers 401 instead, the
 members Job seeds the no-access identity into `users` alone so the
-distinction holds. Both tokens are
-minted for the data-plane application id. A token for
-`https://management.azure.com/` is rewritten by the Istio identity filter to
-the platform's own workload identity, which owns every group, so it would
-pass any positive test and fail every negative one.
+distinction holds. Both tokens are minted for `azure.token_audience`, read
+per run because it depends on the environment: the management audience by
+default, or an operator's app registration. The Istio identity filter
+projects each token's own application id, so the two callers reach
+entitlements as two different principals whatever audience they minted for.
+
+Partition is not a witness for either caller. Its Azure provider admits any
+app-only token from the tenant and refuses any token that names a user, so
+the no-access identity gets 200 there and a human's own token gets 403.
 
 ```yaml
 - id: facts
   run: |
     spi info --json > facts.json
-    echo "audience=$(jq -r .azure.data_plane_application_id facts.json)" >> "$GITHUB_OUTPUT"
+    echo "audience=$(jq -r .azure.token_audience facts.json)" >> "$GITHUB_OUTPUT"
     echo "noaccess=$(jq -r .deploy_identity.no_access_client_id facts.json)" >> "$GITHUB_OUTPUT"
 - uses: azure/login@v2            # the deploy identity, AZURE_CLIENT_ID from the repository
   with: { client-id: ${{ secrets.AZURE_CLIENT_ID }}, tenant-id: ..., subscription-id: ... }

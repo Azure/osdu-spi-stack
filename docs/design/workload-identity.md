@@ -114,21 +114,32 @@ to contain a token. Do not interpret the presence of that resource as a complete
 authorization policy.
 
 The Lua filter removes incoming identity headers before projecting its own.
-Its mapping uses the token audience for `x-app-id` and issuer-specific claims
-for `x-user-id`. Management-audience bootstrap tokens have a special mapping
-to the OSDU UAMI client ID. The exact claim handling is in
+`x-app-id` is the token's own application id (`appid` on a v1 token, `azp` on
+a v2 token) and `x-user-id` follows issuer-specific claims. No audience is
+mapped to a fixed principal: a bootstrap Job, the deploy identity, the
+no-access identity, and a human all reach the Spring filters as themselves,
+and entitlements decides what each may do. The exact claim handling is in
 [`istio_auth_resources()`](../../src/spi/templates.py), not in the federation
 module.
 
 ## Audiences used by OSDU callers
 
-Bootstrap Jobs obtain management-scoped tokens. Service-to-service code uses
-the configured OSDU application ID as its token scope.
+Bootstrap Jobs and acceptance callers obtain management-scoped tokens.
+Service-to-service code uses the configured OSDU application ID as its token
+scope.
 
 | Token path | Configuration |
 |---|---|
 | Bootstrap Jobs | Management audience, accepted by the template's Entra v1 issuer rule with or without a trailing slash |
+| Acceptance callers (deploy identity, no-access identity) | `azure.token_audience` from `spi info --json`; the management audience unless an operator overrides `AAD_CLIENT_ID` |
 | OSDU service-to-service calls | `${aadClientId}/.default` scope; application audience accepted by the v1 and v2 issuer rules |
+
+A managed identity cannot be a token audience (Entra answers
+`AADSTS100040`), so on a default environment the UAMI client id in
+`AAD_CLIENT_ID` is not something an external caller can mint for. The
+management audience is; every jwtRule accepts it, and because the filter
+projects the caller's own `appid`, the token's audience does not change who
+the service sees.
 
 `AAD_CLIENT_ID` defaults to the OSDU UAMI client ID. An environment-variable
 override can select a separate OSDU app registration. `deploy.py` passes that

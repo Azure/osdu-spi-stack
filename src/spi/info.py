@@ -38,6 +38,8 @@ from .ingress import get_ingress_ip
 from .shell import gather_reads, kubectl_json
 from .templates import LEGAL_TAG_BASE, entitlements_members_job_name, parse_init_values
 
+MANAGEMENT_AUDIENCE = "https://management.azure.com"
+
 # Display order.
 _OSDU_API_PATHS = [
     ("partition", "/api/partition/v1/"),
@@ -84,6 +86,30 @@ def _read_osdu_config() -> dict:
     if not data:
         return {}
     return data.get("data", {}) or {}
+
+
+def _read_workload_identity_client_id() -> str:
+    """Client id on the osdu workload-identity-sa annotation. Empty if missing."""
+    data = kubectl_json(["get", "serviceaccount", "workload-identity-sa", "-n", "osdu"])
+    if not data:
+        return ""
+    annotations = (data.get("metadata") or {}).get("annotations") or {}
+    return annotations.get("azure.workload.identity/client-id", "")
+
+
+def token_audience(aad_client_id: str, identity_client_id: str) -> str:
+    """The resource acceptance callers mint a bearer for.
+
+    A managed identity cannot be a token audience (AADSTS100040), so when
+    AAD_CLIENT_ID is the platform UAMI, callers mint for the management
+    audience, which every jwtRule accepts. An operator override to an app
+    registration is mintable and is published as-is. When the UAMI id cannot
+    be read the comparison is impossible, and the management audience is the
+    value every environment accepts.
+    """
+    if aad_client_id and identity_client_id and aad_client_id != identity_client_id:
+        return aad_client_id
+    return MANAGEMENT_AUDIENCE
 
 
 def _read_cluster_config() -> dict:
@@ -333,7 +359,7 @@ def _read_deploy_record():
 def _collect_info() -> dict:
     from .guard import get_suspend_status
 
-    cfg, osdu, azure_ext, cluster_cfg, init_values, suspended, record = gather_reads(
+    cfg, osdu, azure_ext, cluster_cfg, init_values, suspended, record, wi_client_id = gather_reads(
         [
             _read_ingress_config,
             _read_osdu_config,
@@ -342,6 +368,7 @@ def _collect_info() -> dict:
             _read_init_values_yaml,
             get_suspend_status,
             _read_deploy_record,
+            _read_workload_identity_client_id,
         ]
     )
     mode, base, endpoints, middleware = _compute_endpoints(cfg)
@@ -381,6 +408,7 @@ def _collect_info() -> dict:
             "servicebus": osdu.get("PRIMARY_SERVICEBUS_NAMESPACE", ""),
             "tenant_id": tenant_id,
             "data_plane_application_id": osdu.get("AAD_CLIENT_ID", ""),
+            "token_audience": token_audience(osdu.get("AAD_CLIENT_ID", ""), wi_client_id),
             # Empty until the cluster reports its tenant.
             "openid_issuer": (
                 f"https://login.microsoftonline.com/{tenant_id}/v2.0" if tenant_id else ""

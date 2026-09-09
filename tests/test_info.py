@@ -93,6 +93,7 @@ def _wire(
         info, "_entitlements_seeded", lambda partition, members: bool(members) and members_seeded
     )
     monkeypatch.setattr(info, "_read_deploy_record", lambda: record)
+    monkeypatch.setattr(info, "_read_workload_identity_client_id", lambda: "application-id")
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: True)
 
 
@@ -140,6 +141,31 @@ def test_openid_issuer_is_published_explicitly(monkeypatch):
     result = info.collect_info()
 
     assert result["azure"]["openid_issuer"] == ("https://login.microsoftonline.com/tenant-id/v2.0")
+
+
+def test_token_audience_is_management_when_aad_client_id_is_the_uami(monkeypatch):
+    _wire(monkeypatch)
+
+    result = info.collect_info()
+
+    assert result["azure"]["token_audience"] == "https://management.azure.com"
+
+
+def test_token_audience_is_the_app_registration_when_overridden(monkeypatch):
+    _wire(
+        monkeypatch,
+        osdu_config={"AZURE_TENANT_ID": "tenant-id", "AAD_CLIENT_ID": "app-registration-id"},
+    )
+
+    result = info.collect_info()
+
+    assert result["azure"]["token_audience"] == "app-registration-id"
+    assert result["azure"]["data_plane_application_id"] == "app-registration-id"
+
+
+def test_token_audience_is_management_when_the_uami_is_unknown():
+    assert info.token_audience("", "") == "https://management.azure.com"
+    assert info.token_audience("application-id", "") == "https://management.azure.com"
 
 
 def test_openid_issuer_empty_until_tenant_known(monkeypatch):
