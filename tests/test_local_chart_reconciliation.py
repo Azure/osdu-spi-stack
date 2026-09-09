@@ -18,15 +18,14 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOFTWARE = REPO_ROOT / "software"
+CHARTS = SOFTWARE / "charts"
 
 
 def test_local_chart_releases_reconcile_per_revision():
     invalid_releases = []
 
     for path in sorted(SOFTWARE.rglob("*.yaml")):
-        if path.is_relative_to(SOFTWARE / "charts") and "templates" in path.relative_to(
-            SOFTWARE / "charts"
-        ).parts:
+        if path.is_relative_to(CHARTS) and "templates" in path.relative_to(CHARTS).parts:
             continue
 
         text = path.read_text(encoding="utf-8")
