@@ -97,6 +97,26 @@ def test_bicep_compiles_from_path_with_cmd_metacharacters(tmp_path, monkeypatch)
     assert result.returncode == 0, result.stderr
 
 
+def test_main_bicep_publishes_both_fork_identity_client_ids():
+    """spi info reads these outputs into deploy_identity; a renamed output
+    would silently publish an empty client id."""
+    source = (INFRA_DIR / "main.bicep").read_text()
+
+    assert "output deployIdentityClientId string" in source
+    assert "output noAccessIdentityClientId string" in source
+    assert "noAccessIdentityName: noAccessIdentityName" in source
+
+
+def test_no_access_identity_holds_no_role_assignment():
+    """The identity exists so fork CI can prove 403 paths; wiring it into the
+    rbac module would defeat that."""
+    rbac = (INFRA_DIR / "modules" / "rbac.bicep").read_text()
+    main = (INFRA_DIR / "main.bicep").read_text()
+
+    assert "noAccess" not in rbac
+    assert "identityModule.outputs.noAccessIdentityPrincipalId" not in main.split("output ")[0]
+
+
 def test_flux_bicep_allows_every_profile():
     source = (INFRA_DIR / "flux.bicep").read_text()
     match = re.search(

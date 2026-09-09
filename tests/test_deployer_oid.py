@@ -208,6 +208,13 @@ def test_bicep_params_receive_resolved_deployer_identity():
     assert params["deployerPrincipalType"] == "User"
 
 
+def test_bicep_params_name_both_fork_identities():
+    params = _build_bicep_params(Config.from_env("test"), "https://oidc.example/", OID, "User")
+
+    assert params["deployIdentityName"] == "spi-stack-test-deployer"
+    assert params["noAccessIdentityName"] == "spi-stack-test-noaccess"
+
+
 def test_unresolved_deployer_fails_before_resource_group_creation(monkeypatch):
     monkeypatch.delenv("SPI_DEPLOYER_OID", raising=False)
     account_result = MagicMock(

@@ -169,7 +169,7 @@ phases; source promotion is separate from enabling trust:
 | Phase | Change | Needs |
 |---|---|---|
 | 1. Repository protection | Create or repair the protected `spi-stack` environment and its required rules, then stamp the five values | repository admin for environment rules; organization admin for organization values with `--org` |
-| 2. Azure trust | Enable `fork-<service>` on `spi-stack-<env>-deployer` for `repo:<org>/<fork>:environment:spi-stack`, after reading back the required protection rules | write on the identity and read access to repository rules |
+| 2. Azure trust | Enable `fork-<service>` on `spi-stack-<env>-deployer` and on `spi-stack-<env>-noaccess` for `repo:<org>/<fork>:environment:spi-stack`, after reading back the required protection rules | write on both identities and read access to repository rules |
 | 3. Cluster trust | Project the observed credential roster and existing source policy into `osdu-image-lock` without changing resolved images or pins | the operator's kube context |
 | 4. Source policy | When requested, validate promotion preconditions, write `spi-source-<service>` on the RG, and update the lock's source projection (ADR-033) | RG tag write and the operator's kube context |
 
@@ -179,9 +179,12 @@ services and no lock for phase 3 to project into (ADR-032). It then
 resolves the repository through the GitHub API and carries its
 canonical casing into every later write, since Entra matches the federated
 subject exactly. It reads the credential roster next and refuses before
-phase 1 when the repository already backs another service or the identity
-holds twenty credentials (ADR-032); neither failure is recoverable in
-phase 2.
+phase 1 when the repository already backs another service or either
+identity holds twenty credentials (ADR-032); neither failure is recoverable
+in phase 2. The no-access identity carries the same credentials and nothing
+else, so a fork's 403 tests run as a caller entitlements has never met;
+its client id is read from `deploy_identity.no_access_client_id` in
+`spi info --json` at run time.
 Without `--write` the command prints the `gh`, `az`, and `kubectl` commands
 for each phase and changes nothing; the plan is the handoff for whoever holds
 the rights on each side. `--write` applies the phases in order. `--skip-repo`

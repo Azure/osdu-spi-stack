@@ -382,10 +382,12 @@ def _collect_info() -> dict:
                 f"https://login.microsoftonline.com/{tenant_id}/v2.0" if tenant_id else ""
             ),
         },
-        # The five values a trusted repository holds (ADR-032); the client id
-        # is inert until spi onboard adds a federated credential.
+        # The five values a trusted repository holds, plus the no-access client
+        # id it reads at run time for 403 tests; both identities are inert
+        # until spi onboard adds a federated credential.
         "deploy_identity": {
             "client_id": cluster_cfg.get("DEPLOY_IDENTITY_CLIENT_ID", ""),
+            "no_access_client_id": cluster_cfg.get("NO_ACCESS_IDENTITY_CLIENT_ID", ""),
             "tenant_id": tenant_id,
             "subscription_id": cluster_cfg.get("AZURE_SUBSCRIPTION_ID", ""),
             "resource_group": rg,

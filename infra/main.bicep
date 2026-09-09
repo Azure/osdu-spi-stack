@@ -22,6 +22,9 @@ param identityName string
 @description('Resource name for the deploy identity fork CI federates to.')
 param deployIdentityName string
 
+@description('Resource name for the no-access identity fork CI federates to for 403 tests.')
+param noAccessIdentityName string
+
 @description('Name of the existing AKS cluster from aks.bicep; scopes the deploy identity Cluster User grant.')
 param clusterName string
 
@@ -109,6 +112,7 @@ module identityModule 'modules/identity.bicep' = {
   params: {
     name: identityName
     deployIdentityName: deployIdentityName
+    noAccessIdentityName: noAccessIdentityName
     location: location
     oidcIssuerUrl: oidcIssuerUrl
   }
@@ -351,6 +355,12 @@ output deployIdentityPrincipalId string = identityModule.outputs.deployIdentityP
 
 @description('Azure resource ID of the deploy identity.')
 output deployIdentityResourceId string = identityModule.outputs.deployIdentityResourceId
+
+@description('Client ID of the no-access identity; spi info publishes it as no_access_client_id.')
+output noAccessIdentityClientId string = identityModule.outputs.noAccessIdentityClientId
+
+@description('Principal ID of the no-access identity; holds no role assignment.')
+output noAccessIdentityPrincipalId string = identityModule.outputs.noAccessIdentityPrincipalId
 
 @description('Vault URI used by OSDU services to retrieve configuration secrets.')
 output keyvaultUri string = keyvaultModule.outputs.uri
