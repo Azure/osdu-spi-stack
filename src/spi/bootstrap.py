@@ -196,8 +196,29 @@ INIT_VALUES_CONFIGMAP = "spi-init-values"
 
 def read_init_values() -> str:
     """The live values.yaml blob the init chart renders from; empty when absent."""
-    data = kubectl_json(["get", "configmap", INIT_VALUES_CONFIGMAP, "-n", ISTIO_REVISION_NAMESPACE])
-    return ((data or {}).get("data") or {}).get("values.yaml", "")
+    result = run_process(
+        [
+            "kubectl",
+            "get",
+            "configmap",
+            INIT_VALUES_CONFIGMAP,
+            "-n",
+            ISTIO_REVISION_NAMESPACE,
+            "--ignore-not-found",
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or "kubectl failed"
+        raise ClusterConfigError(f"Could not read {INIT_VALUES_CONFIGMAP}: {detail}")
+    if not result.stdout.strip():
+        return ""
+    return (json.loads(result.stdout).get("data") or {}).get("values.yaml", "")
 
 
 def refresh_spi_init_values() -> None:

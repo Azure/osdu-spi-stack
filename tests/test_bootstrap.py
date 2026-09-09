@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import typer
+import pytest
 from typer.testing import CliRunner
 
 from spi import cli
@@ -216,13 +217,13 @@ class TestRefreshSpiInitValues:
     members Job seeds whatever deploy identity the cluster config names."""
 
     def _run(self, values_yaml: str | None, client_id: str):
-        def kubectl_json(args):
-            if "spi-init-values" in args:
-                return None if values_yaml is None else {"data": {"values.yaml": values_yaml}}
-            raise AssertionError(args)
-
         with (
-            patch("spi.bootstrap.kubectl_json", side_effect=kubectl_json),
+            patch(
+                "spi.bootstrap.run_process",
+                return_value=_proc(0, "" if values_yaml is None else json.dumps(
+                    {"data": {"values.yaml": values_yaml}}
+                )),
+            ),
             patch(
                 "spi.bootstrap.read_cluster_config",
                 return_value={"DEPLOY_IDENTITY_CLIENT_ID": client_id} if client_id else {},
@@ -265,6 +266,16 @@ class TestRefreshSpiInitValues:
     def test_skips_a_cluster_without_values_or_identity(self):
         self._run(None, "id").assert_not_called()
         self._run("partitions:\n  - opendes\n", "").assert_not_called()
+
+    def test_refuses_to_refresh_when_values_read_fails(self):
+        with (
+            patch("spi.bootstrap.run_process", return_value=_proc(1, "", "Forbidden")),
+            patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
+            pytest.raises(ClusterConfigError, match="Could not read spi-init-values: Forbidden"),
+        ):
+            refresh_spi_init_values()
+
+        apply_yaml.assert_not_called()
 
 
 class TestReconcileRefreshesClusterConfig:
