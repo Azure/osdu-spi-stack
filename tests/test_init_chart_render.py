@@ -37,6 +37,7 @@ from typing import Callable, cast
 
 import pytest
 import yaml
+from _quantities import _millicores
 
 from spi.shell import run_process
 
@@ -138,12 +139,6 @@ def test_legal_release_declares_no_volume_it_does_not_own():
         "scripts",
         "partition-records",
     ]
-
-
-def _millicores(quantity) -> int:
-    """A Kubernetes CPU quantity as millicores: "100m", "1", or "0.3"."""
-    text = str(quantity)
-    return int(text[:-1]) if text.endswith("m") else round(float(text) * 1000)
 
 
 def test_jobs_request_the_cpu_admission_will_grant_them():

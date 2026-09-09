@@ -44,7 +44,7 @@ spec:
         - elastic-ca-cert
     resources:
       requests:
-        cpu: 50m
+        cpu: 100m
         memory: 64Mi
       limits:
         memory: 128Mi
