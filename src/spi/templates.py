@@ -60,8 +60,9 @@ def osdu_config_configmap(
     PRIMARY_* keys exist for the schema-load Job, which targets the
     primary-only system database, and for operator visibility.
 
-    aad_client_id is the app id the Spring auth filters match against the
-    JWT appid claim and core-lib-azure scopes `getWIToken` to.
+    aad_client_id is the resource core-lib-azure scopes `getWIToken` to for
+    service-to-service calls, and one of the audiences the Istio jwtRules
+    accept. It is not the appid the Lua projects; that is each token's own.
     """
     return f"""\
 apiVersion: v1
