@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from rich.panel import Panel
 from rich.table import Table
@@ -338,13 +338,42 @@ def _read_members_jobs() -> list[dict]:
     return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
 
 
-def bootstrap_failure(jobs: list[dict]) -> StatusReason | None:
+def _read_job_termination_message(job_name: str) -> str:
+    """The termination message of the Job's newest pod, or "" when unreadable.
+
+    The verdict comes from the Job; this only sharpens the reason text, so a
+    pod read failure is not fatal.
+    """
+    try:
+        data = _required_kubectl_json(
+            ["get", "pods", "-n", "osdu", "-l", f"job-name={job_name}"],
+            f"read the pods of {job_name}",
+        )
+    except StatusError:
+        return ""
+    items = data.get("items") if isinstance(data, dict) else None
+    pods = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+    pods.sort(key=lambda pod: pod.get("metadata", {}).get("creationTimestamp", ""))
+    for pod in reversed(pods):
+        for container in (pod.get("status") or {}).get("containerStatuses") or []:
+            for state in (container.get("state"), container.get("lastState")):
+                message = ((state or {}).get("terminated") or {}).get("message")
+                if message:
+                    return " ".join(message.split())
+    return ""
+
+
+def bootstrap_failure(
+    jobs: list[dict], termination_message: Callable[[str], str] = lambda name: ""
+) -> StatusReason | None:
     """The first failed members Job as a deployability blocker.
 
     A fork cannot run a positive test until its deploy identity holds the
     root groups, so unlike legal seeding this failure refuses deploys; a
     Job still retrying or never rendered does not, and ``spi info``
-    ``entitlements_seeded`` stays the seeded signal.
+    ``entitlements_seeded`` stays the seeded signal. The script's own
+    outcome line, when the pod still holds it, replaces the generic
+    Job condition.
     """
     for job in sorted(jobs, key=lambda j: j.get("metadata", {}).get("name", "")):
         status = job.get("status") or {}
@@ -361,7 +390,12 @@ def bootstrap_failure(jobs: list[dict]) -> StatusReason | None:
         if failed is None or status.get("succeeded"):
             continue
         name = job.get("metadata", {}).get("name", "")
-        detail = failed.get("message") or failed.get("reason") or "Job failed"
+        detail = (
+            termination_message(name)
+            or failed.get("message")
+            or failed.get("reason")
+            or "Job failed"
+        )
         return StatusReason(
             code="bootstrap_failed",
             message=f"{name}: {detail}",
@@ -372,7 +406,7 @@ def bootstrap_failure(jobs: list[dict]) -> StatusReason | None:
 
 def collect_bootstrap_failure() -> StatusReason | None:
     """Read the members Jobs and report a failed one; shared with the pin guard."""
-    return bootstrap_failure(_read_members_jobs())
+    return bootstrap_failure(_read_members_jobs(), _read_job_termination_message)
 
 
 def _read_deploy_record() -> DeployRecord | None:
@@ -433,7 +467,7 @@ def collect_status() -> StatusSnapshot:
         raise StatusError(str(exc)) from exc
 
     maintenance = record.maintenance if record else False
-    bootstrap = bootstrap_failure(members_jobs)
+    bootstrap = bootstrap_failure(members_jobs, _read_job_termination_message)
     deployable = ready and record is not None and not maintenance and bootstrap is None
 
     # A readiness blocker takes precedence; maintenance, a missing record,

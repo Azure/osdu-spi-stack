@@ -18,7 +18,12 @@ import json
 
 from .console import console, display_result, display_yaml
 from .shell import kubectl_apply_yaml, kubectl_json, run_command, run_process
-from .templates import parse_init_values, spi_init_values_configmap, storage_class
+from .templates import (
+    LEGAL_TAG_BASE,
+    parse_init_values,
+    spi_init_values_configmap,
+    storage_class,
+)
 
 STORAGE_CLASSES = ["pg-storageclass", "redis-storageclass", "es-storageclass"]
 ISTIO_REVISION_CONFIGMAP = "spi-cluster-config"
@@ -212,7 +217,8 @@ def refresh_spi_init_values() -> None:
     members = [client_id] if client_id else []
     if members == list(values.get("entitlementsMembers") or []):
         return
-    yaml_content = spi_init_values_configmap(partitions, members)
+    legal_tag = values.get("legalTag") or LEGAL_TAG_BASE
+    yaml_content = spi_init_values_configmap(partitions, members, legal_tag)
     display_yaml(yaml_content, f"ConfigMap: {INIT_VALUES_CONFIGMAP}")
     kubectl_apply_yaml(yaml_content, f"refresh {INIT_VALUES_CONFIGMAP} ConfigMap")
 

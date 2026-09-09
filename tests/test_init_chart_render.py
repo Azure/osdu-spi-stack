@@ -27,6 +27,7 @@ import io
 import json
 import shutil
 import sys
+import tempfile
 import time
 import types
 import urllib.error
@@ -307,6 +308,7 @@ class _Result:
     exit_code: int
     stdout: str
     calls: list[_Call]
+    termination_message: str = ""
 
     def routed(self, route: str) -> list[_Call]:
         return [call for call in self.calls if call.route == route]
@@ -446,6 +448,8 @@ def _run_members(init_scripts, monkeypatch, capsys, *, members="deployer-client-
     """
     monkeypatch.setenv("PARTITION", "opendes")
     monkeypatch.setenv("MEMBERS", members)
+    termination_log = Path(tempfile.mkdtemp()) / "termination-log"
+    monkeypatch.setenv("TERMINATION_MESSAGE_PATH", str(termination_log))
     auth = types.ModuleType("auth")
     setattr(auth, "get_token", lambda: "test-token")
     wait = types.ModuleType("wait")
@@ -484,7 +488,8 @@ def _run_members(init_scripts, monkeypatch, capsys, *, members="deployer-client-
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     main = cast(Callable[[], int], namespace["main"])
     rc = main()
-    return _Result(rc, capsys.readouterr().out, calls)
+    message = termination_log.read_text() if termination_log.exists() else ""
+    return _Result(rc, capsys.readouterr().out, calls, message)
 
 
 def test_members_seeds_every_root_group_and_verifies(init_scripts, monkeypatch, capsys):
@@ -529,6 +534,10 @@ def test_members_fails_when_a_root_group_is_missing(init_scripts, monkeypatch, c
     assert "entitlements-members outcome: group_missing" in result.stdout
     assert "users.datalake.admins, users.data.root" in result.stdout
     assert result.routed("post") == []
+    assert result.termination_message == (
+        "entitlements-members outcome: group_missing: "
+        "root groups not visible to the owner: users.datalake.admins, users.data.root"
+    )
 
 
 def test_members_fails_when_the_service_rejects_a_member(init_scripts, monkeypatch, capsys):

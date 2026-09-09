@@ -590,7 +590,9 @@ data:
 
     Every exit prints "entitlements-members outcome: <code>", one of: seeded,
     already_member, group_missing, member_rejected, verify_failed,
-    config_missing, service_timeout, auth_failed, unexpected_error.
+    config_missing, service_timeout, auth_failed, unexpected_error, and
+    writes the same line, with the failure detail, to the pod termination
+    message so spi status can name the member and group that failed.
     The Job renders only in the non-gating osdu-spi-members release; spi
     status reports its failure as a bootstrap blocker rather than
     letting Flux hold the whole init layer for it.
@@ -614,10 +616,21 @@ data:
     INFO_ATTEMPTS = 30
     WAIT_DELAY = 2.0
     WAIT_SOCKET_TIMEOUT = 5.0
+    TERMINATION_MESSAGE_PATH = os.environ.get(
+        "TERMINATION_MESSAGE_PATH", "/dev/termination-log"
+    )
 
 
-    def outcome(code: str) -> None:
-        print(f"entitlements-members outcome: {code}")
+    def outcome(code: str, detail: str = "") -> None:
+        if detail:
+            print(f"ERROR: {detail}")
+        line = f"entitlements-members outcome: {code}"
+        print(line)
+        try:
+            with open(TERMINATION_MESSAGE_PATH, "w") as handle:
+                handle.write(f"{line}: {detail}" if detail else line)
+        except OSError:
+            pass
 
 
     def request(url: str, headers: dict, method: str = "GET", body: dict | None = None):
@@ -643,8 +656,7 @@ data:
     def main() -> int:
         missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
         if missing:
-            print(f"ERROR: missing environment: {', '.join(missing)}")
-            outcome("config_missing")
+            outcome("config_missing", f"missing environment: {', '.join(missing)}")
             return 1
         partition = os.environ["PARTITION"]
         members = sorted({m.strip() for m in os.environ["MEMBERS"].split(",") if m.strip()})
@@ -659,7 +671,7 @@ data:
             delay=WAIT_DELAY,
             timeout=WAIT_SOCKET_TIMEOUT,
         ):
-            outcome("service_timeout")
+            outcome("service_timeout", "entitlements /info did not answer 200")
             return 1
 
         print("  Acquiring bearer token via Workload Identity...")
@@ -673,7 +685,7 @@ data:
         code, payload = request(f"{base}/groups", headers)
         if code != 200:
             print(payload)
-            outcome("group_missing")
+            outcome("group_missing", f"GET /groups returned {code} for the owner")
             return 1
         emails = {}
         for group in parse(payload).get("groups") or []:
@@ -681,8 +693,7 @@ data:
                 emails[group["name"]] = group.get("email", "")
         absent = [name for name in ROOT_GROUPS if not emails.get(name)]
         if absent:
-            print(f"ERROR: root groups not visible to the owner: {', '.join(absent)}")
-            outcome("group_missing")
+            outcome("group_missing", f"root groups not visible to the owner: {', '.join(absent)}")
             return 1
 
         added = False
@@ -696,8 +707,7 @@ data:
                     print(f"  {member} is already a member of {emails[name]}")
                 else:
                     print(payload)
-                    print(f"ERROR: {member} was not added to {emails[name]}")
-                    outcome("member_rejected")
+                    outcome("member_rejected", f"{member} was not added to {emails[name]} ({code})")
                     return 1
 
         for name in ROOT_GROUPS:
@@ -709,8 +719,7 @@ data:
             }
             for member in members:
                 if code != 200 or member.lower() not in present:
-                    print(f"ERROR: {member} is not a member of {emails[name]} after seeding")
-                    outcome("verify_failed")
+                    outcome("verify_failed", f"{member} is not a member of {emails[name]} after seeding")
                     return 1
 
         outcome("seeded" if added else "already_member")
@@ -721,12 +730,10 @@ data:
         try:
             rc = main()
         except SystemExit as e:
-            print(f"ERROR: {e}")
-            outcome("auth_failed")
+            outcome("auth_failed", str(e))
             rc = 1
         except Exception as e:
-            print(f"ERROR: {type(e).__name__}: {e}")
-            outcome("unexpected_error")
+            outcome("unexpected_error", f"{type(e).__name__}: {e}")
             rc = 1
         sys.exit(rc)
 {{- end }}

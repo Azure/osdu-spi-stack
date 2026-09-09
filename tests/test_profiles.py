@@ -638,6 +638,14 @@ class TestForkRbac:
                 assert not {"create", "delete", "update"} & set(rule["verbs"])
                 if "patch" in rule["verbs"]:
                     assert rule["resourceNames"] == ["osdu-image-lock"]
+        verifier_verbs = {
+            resource: set(rule["verbs"])
+            for rule in roles["spi-fork-verifier"]["rules"]
+            for resource in rule["resources"]
+        }
+        # spi status lists the members Jobs by label and reads a failed one's pods.
+        assert {"get", "list"} <= verifier_verbs["jobs"]
+        assert {"get", "list"} <= verifier_verbs["pods"]
         for binding in bindings:
             (subject,) = binding["subjects"]
             assert subject["kind"] == "User"

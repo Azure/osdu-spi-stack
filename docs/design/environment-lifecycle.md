@@ -179,7 +179,8 @@ of every partition, reporting through `entitlements_seeded` in
 `spi info --json`. A Job name carries a hash of the member list, so a
 recreated identity renders a new Job and an unchanged one is left Complete.
 A failed Job is the `bootstrap_failed` blocker in `spi status --json`
-(ADR-030). The rebuilt environment starts with `maintenance`
+(ADR-030); its message carries the script's outcome line from the pod
+termination message, naming the member and group that failed. The rebuilt environment starts with `maintenance`
 set and opens to deploys only after the probes pass. Protected teardown uses
 `spi down --purge`, which discovers external grants from the retained
 principal IDs and removes the stack-owned ExternalDNS zone assignment before

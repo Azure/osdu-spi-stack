@@ -249,6 +249,11 @@ class TestRefreshSpiInitValues:
 
         assert "entitlementsMembers:\n    - new\n" in apply_yaml.call_args.args[0]
 
+    def test_keeps_the_live_legal_tag(self):
+        apply_yaml = self._run("partitions:\n  - opendes\nlegalTag: custom-tag\n", "id")
+
+        assert "legalTag: custom-tag\n" in apply_yaml.call_args.args[0]
+
     def test_leaves_current_values_alone(self):
         apply_yaml = self._run(
             "partitions:\n  - opendes\nlegalTag: demo-legaltag\nentitlementsMembers:\n  - id\n",

@@ -82,12 +82,27 @@ def _members_job(
     }
 
 
-def _wire(monkeypatch, *, ready=True, record=_record(), lock=None, suspended=True, jobs=()):
+def _job_pod(message: str, created: str = "2026-09-09T10:00:00Z") -> dict:
+    return {
+        "metadata": {"name": f"pod-{created}", "creationTimestamp": created},
+        "status": {
+            "containerStatuses": [
+                {"name": "init", "state": {"terminated": {"exitCode": 1, "message": message}}}
+            ]
+        },
+    }
+
+
+def _wire(
+    monkeypatch, *, ready=True, record=_record(), lock=None, suspended=True, jobs=(), pods=()
+):
     def required(args, description):
         if "kustomizations" in args:
             return _kustomizations(ready)
         if "jobs" in args:
             return {"items": list(jobs)}
+        if "pods" in args:
+            return {"items": list(pods)}
         return {"spec": {"suspend": suspended}}
 
     monkeypatch.setattr(status, "_required_kubectl_json", required)
@@ -293,6 +308,51 @@ def test_readiness_and_maintenance_outrank_a_failed_members_job(monkeypatch):
 
     _wire(monkeypatch, record=None, jobs=[failed])
     assert code() == "missing_deploy_record"
+
+
+def test_failed_members_job_reports_the_script_outcome(monkeypatch):
+    """The newest pod's termination message names the member and group, which
+    the Job condition cannot."""
+    _wire(
+        monkeypatch,
+        jobs=[_members_job("entitlements-members-opendes-abc12345", failed=2)],
+        pods=[
+            _job_pod("entitlements-members outcome: auth_failed: token", "2026-09-09T09:00:00Z"),
+            _job_pod(
+                "entitlements-members outcome: group_missing: "
+                "root groups not visible to the owner: users.data.root\n"
+            ),
+        ],
+    )
+
+    snapshot = status.collect_status()
+
+    assert snapshot.reason is not None
+    assert snapshot.reason.code == "bootstrap_failed"
+    assert snapshot.reason.message == (
+        "entitlements-members-opendes-abc12345: entitlements-members outcome: group_missing: "
+        "root groups not visible to the owner: users.data.root"
+    )
+
+
+def test_unreadable_pods_fall_back_to_the_job_condition(monkeypatch):
+    _wire(monkeypatch, jobs=[_members_job("entitlements-members-opendes-abc12345", failed=2)])
+
+    def required(args, description):
+        if "pods" in args:
+            raise status.StatusError(f"Could not {description}: forbidden")
+        if "jobs" in args:
+            return {"items": [_members_job("entitlements-members-opendes-abc12345", failed=2)]}
+        if "kustomizations" in args:
+            return _kustomizations(True)
+        return {"spec": {"suspend": False}}
+
+    monkeypatch.setattr(status, "_required_kubectl_json", required)
+
+    snapshot = status.collect_status()
+
+    assert snapshot.reason is not None
+    assert snapshot.reason.message.endswith("Job has reached the specified backoff limit")
 
 
 def test_members_job_read_failure_is_fatal(monkeypatch):

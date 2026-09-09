@@ -265,7 +265,9 @@ LEGAL_TAG_BASE = "demo-legaltag"
 ENTITLEMENTS_MEMBERS_COMPONENT = "entitlements-members"
 
 
-def spi_init_values_configmap(partitions: list[str], members: Sequence[str] = ()) -> str:
+def spi_init_values_configmap(
+    partitions: list[str], members: Sequence[str] = (), legal_tag: str = LEGAL_TAG_BASE
+) -> str:
     """ConfigMap consumed by the osdu-spi-init HelmRelease via valuesFrom.
 
     Lives in osdu-flux (where the HelmRelease is reconciled) and carries the
@@ -291,7 +293,7 @@ data:
   values.yaml: |
     partitions:
 {partition_lines}
-    legalTag: {LEGAL_TAG_BASE}
+    legalTag: {legal_tag}
 {members_block}"""
 
 
