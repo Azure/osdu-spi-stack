@@ -264,7 +264,7 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     )
     monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: _deploy_record())
     monkeypatch.setattr(status, "collect_kustomization_readiness", lambda: _readiness())
-    monkeypatch.setattr(status, "collect_bootstrap_failure", lambda: None)
+    monkeypatch.setattr(status, "collect_bootstrap_blocker", lambda: None)
     return calls
 
 
@@ -491,7 +491,7 @@ class TestPinService:
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
         monkeypatch.setattr(
             status,
-            "collect_bootstrap_failure",
+            "collect_bootstrap_blocker",
             lambda: StatusReason(
                 code="bootstrap_failed",
                 message="entitlements-members-opendes-abc12345: BackoffLimitExceeded",
@@ -505,13 +505,30 @@ class TestPinService:
         assert calls["fetches"] == 0
         assert calls["patch"] is None
 
+    def test_pin_refused_while_bootstrap_pending(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+        monkeypatch.setattr(
+            status,
+            "collect_bootstrap_blocker",
+            lambda: StatusReason(
+                code="bootstrap_pending",
+                message="entitlements-members-opendes-abc12345: still running",
+                resource="job/osdu/entitlements-members-opendes-abc12345",
+            ),
+        )
+
+        with pytest.raises(PinError, match="bootstrap is not complete .*still running"):
+            pin_service("storage", "ghcr.io/azure/storage@sha256:" + "a" * 64)
+
+        assert calls["patch"] is None
+
     def test_pin_bootstrap_read_failure_becomes_pin_error(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
 
         def raise_unreachable():
             raise StatusError("Could not read the entitlements-members Jobs: connection refused")
 
-        monkeypatch.setattr(status, "collect_bootstrap_failure", raise_unreachable)
+        monkeypatch.setattr(status, "collect_bootstrap_blocker", raise_unreachable)
 
         with pytest.raises(PinError, match="entitlements-members Jobs: connection refused"):
             pin_service("storage", "42")

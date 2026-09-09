@@ -547,7 +547,7 @@ def _refuse_unless_deployable() -> None:
     imports from this module, so a module-level import here would cycle.
     """
 
-    from .status import StatusError, collect_bootstrap_failure, collect_kustomization_readiness
+    from .status import StatusError, collect_bootstrap_blocker, collect_kustomization_readiness
 
     try:
         readiness = collect_kustomization_readiness()
@@ -562,12 +562,13 @@ def _refuse_unless_deployable() -> None:
         )
 
     try:
-        bootstrap = collect_bootstrap_failure()
+        bootstrap = collect_bootstrap_blocker()
     except StatusError as exc:
         raise PinError(str(exc)) from exc
     if bootstrap is not None:
+        state = "failed" if bootstrap.code == "bootstrap_failed" else "is not complete"
         raise PinError(
-            f"Environment bootstrap failed ({bootstrap.message}); the deploy identity is not "
+            f"Environment bootstrap {state} ({bootstrap.message}); the deploy identity is not "
             "seeded into entitlements, so a pinned image could not be tested."
         )
 

@@ -36,6 +36,7 @@ from .deploy_record import (
 from .pins import PinError, decode_pins
 from .shell import gather_reads, kubectl_json, run_process
 from .templates import ENTITLEMENTS_MEMBERS_COMPONENT as MEMBERS_COMPONENT
+from .templates import entitlements_members_job_name, parse_init_values
 
 STATUS_API_VERSION = "spi.osdu.dev/v1"
 
@@ -338,6 +339,20 @@ def _read_members_jobs() -> list[dict]:
     return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
 
 
+def _read_expected_members_jobs() -> list[str]:
+    """The members Job names the live spi-init-values implies, one per partition.
+
+    Empty when the values carry no members, which is every environment
+    bootstrapped before the CLI wrote them, so those are never gated.
+    """
+    data = _optional_configmap("spi-init-values", "osdu-flux")
+    values = parse_init_values(((data or {}).get("data") or {}).get("values.yaml", ""))
+    members = [m for m in values.get("entitlementsMembers") or [] if isinstance(m, str)]
+    if not members:
+        return []
+    return [entitlements_members_job_name(p, members) for p in values.get("partitions") or []]
+
+
 def _read_job_termination_message(job_name: str) -> str:
     """The termination message of the Job's newest pod, or "" when unreadable.
 
@@ -363,17 +378,18 @@ def _read_job_termination_message(job_name: str) -> str:
     return ""
 
 
-def bootstrap_failure(
-    jobs: list[dict], termination_message: Callable[[str], str] = lambda name: ""
+def bootstrap_blocker(
+    jobs: list[dict],
+    expected: list[str] = [],
+    termination_message: Callable[[str], str] = lambda name: "",
 ) -> StatusReason | None:
-    """The first failed members Job as a deployability blocker.
+    """A failed members Job, else an expected one not yet Complete, as a blocker.
 
     A fork cannot run a positive test until its deploy identity holds the
-    root groups, so unlike legal seeding this failure refuses deploys; a
-    Job still retrying or never rendered does not, and ``spi info``
-    ``entitlements_seeded`` stays the seeded signal. The script's own
-    outcome line, when the pod still holds it, replaces the generic
-    Job condition.
+    root groups, so unlike legal seeding this refuses deploys: a failure
+    as ``bootstrap_failed``, and a current Job still running or not yet
+    rendered as ``bootstrap_pending``. The script's own outcome line, when
+    the pod still holds it, replaces the generic Job condition.
     """
     for job in sorted(jobs, key=lambda j: j.get("metadata", {}).get("name", "")):
         status = job.get("status") or {}
@@ -401,12 +417,25 @@ def bootstrap_failure(
             message=f"{name}: {detail}",
             resource=f"job/osdu/{name}",
         )
+    by_name = {job.get("metadata", {}).get("name", ""): job for job in jobs}
+    for name in expected:
+        job = by_name.get(name)
+        if job is not None and (job.get("status") or {}).get("succeeded"):
+            continue
+        detail = "not yet rendered" if job is None else "still running"
+        return StatusReason(
+            code="bootstrap_pending",
+            message=f"{name}: {detail}",
+            resource=f"job/osdu/{name}",
+        )
     return None
 
 
-def collect_bootstrap_failure() -> StatusReason | None:
-    """Read the members Jobs and report a failed one; shared with the pin guard."""
-    return bootstrap_failure(_read_members_jobs(), _read_job_termination_message)
+def collect_bootstrap_blocker() -> StatusReason | None:
+    """Read the members Jobs and report a blocker; shared with the pin guard."""
+    return bootstrap_blocker(
+        _read_members_jobs(), _read_expected_members_jobs(), _read_job_termination_message
+    )
 
 
 def _read_deploy_record() -> DeployRecord | None:
@@ -425,13 +454,14 @@ def _read_deploy_record() -> DeployRecord | None:
 def collect_status() -> StatusSnapshot:
     from .info import collect_base_url
 
-    # Six independent reads. Ordered results keep the failure a caller sees
+    # Seven independent reads. Ordered results keep the failure a caller sees
     # deterministic: a Kustomization error still outranks a GitRepository one.
     (
         kustomization_readiness,
         git_repository,
         record,
         members_jobs,
+        expected_jobs,
         image_lock,
         base_url,
     ) = gather_reads(
@@ -443,6 +473,7 @@ def collect_status() -> StatusSnapshot:
             ),
             _read_deploy_record,
             _read_members_jobs,
+            _read_expected_members_jobs,
             lambda: _optional_configmap("osdu-image-lock", "osdu-flux"),
             collect_base_url,
         ]
@@ -467,7 +498,7 @@ def collect_status() -> StatusSnapshot:
         raise StatusError(str(exc)) from exc
 
     maintenance = record.maintenance if record else False
-    bootstrap = bootstrap_failure(members_jobs, _read_job_termination_message)
+    bootstrap = bootstrap_blocker(members_jobs, expected_jobs, _read_job_termination_message)
     deployable = ready and record is not None and not maintenance and bootstrap is None
 
     # A readiness blocker takes precedence; maintenance, a missing record,

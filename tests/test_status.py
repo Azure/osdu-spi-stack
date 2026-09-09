@@ -93,8 +93,26 @@ def _job_pod(message: str, created: str = "2026-09-09T10:00:00Z") -> dict:
     }
 
 
+def _init_values(members=("deployer-client-id",), partitions=("opendes",)) -> dict:
+    lines = ["partitions:"] + [f"  - {p}" for p in partitions] + ["legalTag: demo-legaltag"]
+    if members:
+        lines += ["entitlementsMembers:"] + [f"  - {m}" for m in members]
+    return {"data": {"values.yaml": "\n".join(lines) + "\n"}}
+
+
+EXPECTED_JOB = status.entitlements_members_job_name("opendes", ["deployer-client-id"])
+
+
 def _wire(
-    monkeypatch, *, ready=True, record=_record(), lock=None, suspended=True, jobs=(), pods=()
+    monkeypatch,
+    *,
+    ready=True,
+    record=_record(),
+    lock=None,
+    suspended=True,
+    jobs=(),
+    pods=(),
+    init_values=None,
 ):
     def required(args, description):
         if "kustomizations" in args:
@@ -110,7 +128,7 @@ def _wire(
     monkeypatch.setattr(
         status,
         "_optional_configmap",
-        lambda name, namespace: lock,
+        lambda name, namespace: init_values if name == "spi-init-values" else lock,
     )
     monkeypatch.setattr("spi.info.collect_base_url", lambda: "https://example.test")
 
@@ -353,6 +371,51 @@ def test_unreadable_pods_fall_back_to_the_job_condition(monkeypatch):
 
     assert snapshot.reason is not None
     assert snapshot.reason.message.endswith("Job has reached the specified backoff limit")
+
+
+def test_expected_members_job_not_complete_blocks_deploys(monkeypatch):
+    """Right after a reconcile adds the members release, every gating layer is
+    Ready while the deploy identity still draws 401; the seed has to land
+    before the gate opens."""
+    _wire(monkeypatch, init_values=_init_values(), jobs=[])
+    snapshot = status.collect_status()
+    assert snapshot.ready is True
+    assert snapshot.deployable is False
+    assert snapshot.reason is not None
+    assert snapshot.reason.code == "bootstrap_pending"
+    assert snapshot.reason.message == f"{EXPECTED_JOB}: not yet rendered"
+
+    _wire(monkeypatch, init_values=_init_values(), jobs=[_members_job(EXPECTED_JOB, active=1)])
+    snapshot = status.collect_status()
+    assert snapshot.deployable is False
+    assert snapshot.reason is not None
+    assert snapshot.reason.message == f"{EXPECTED_JOB}: still running"
+
+
+def test_completed_expected_members_job_opens_the_gate(monkeypatch):
+    _wire(monkeypatch, init_values=_init_values(), jobs=[_members_job(EXPECTED_JOB, succeeded=1)])
+
+    snapshot = status.collect_status()
+
+    assert snapshot.deployable is True
+    assert snapshot.reason is None
+
+
+def test_values_without_members_are_never_gated(monkeypatch):
+    """An environment bootstrapped before the CLI wrote members has no seed to wait for."""
+    _wire(monkeypatch, init_values=_init_values(members=()), jobs=[])
+
+    assert status.collect_status().deployable is True
+
+
+def test_failed_members_job_outranks_a_pending_one(monkeypatch):
+    stale = _members_job("entitlements-members-opendes-00000000", failed=2)
+    _wire(monkeypatch, init_values=_init_values(), jobs=[stale])
+
+    snapshot = status.collect_status()
+
+    assert snapshot.reason is not None
+    assert snapshot.reason.code == "bootstrap_failed"
 
 
 def test_members_job_read_failure_is_fatal(monkeypatch):
