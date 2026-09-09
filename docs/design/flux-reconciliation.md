@@ -26,7 +26,8 @@ stack and ingress trees. These path combinations are derived in
 `infra/flux.bicep`, not selected independently by the operator.
 
 OSDU HelmReleases use the local `software/charts/osdu-spi-service` chart from
-the Git source. Middleware HelmReleases can use external chart repositories.
+the Git source. The chart is rebuilt for each Git revision. Middleware
+HelmReleases can use external chart repositories.
 Suspending Git therefore does not freeze every upstream chart or controller.
 
 The CLI owns several inputs outside Git: `osdu-config` in `osdu`, and
