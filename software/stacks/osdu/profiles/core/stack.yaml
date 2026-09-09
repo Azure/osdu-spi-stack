@@ -426,6 +426,35 @@ spec:
       namespace: osdu-flux
 
 ---
+# Layer 5d: deploy identity membership, non-gating like legal so a failed
+# seed cannot block schema-load; spi status reports it as bootstrap_failed.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-osdu-members
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "5"
+    spi-stack.gating: "false"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-osdu-init
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/stacks/osdu/members
+  prune: true
+  wait: true
+  # Outlasts the HelmRelease's 15m install timeout.
+  timeout: 20m
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: osdu-spi-members
+      namespace: osdu-flux
+
+---
 # Layer 5b: OSDU schema loader (one-shot Job). The healthCheck on the Job's
 # Complete condition is what lets spi-osdu-reference depend on a loaded
 # cluster.

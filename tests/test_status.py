@@ -54,10 +54,40 @@ def _record(maintenance: bool = False) -> DeployRecord:
     )
 
 
-def _wire(monkeypatch, *, ready=True, record=_record(), lock=None, suspended=True):
+def _members_job(
+    name: str, *, succeeded: int = 0, failed: int = 0, active: int = 0, terminal: bool = True
+) -> dict:
+    conditions = []
+    if failed and not succeeded and not active and terminal:
+        conditions.append(
+            {
+                "type": "Failed",
+                "status": "True",
+                "reason": "BackoffLimitExceeded",
+                "message": "Job has reached the specified backoff limit",
+            }
+        )
+    return {
+        "metadata": {
+            "name": name,
+            "namespace": "osdu",
+            "labels": {"app.kubernetes.io/component": "entitlements-members"},
+        },
+        "status": {
+            "succeeded": succeeded,
+            "failed": failed,
+            "active": active,
+            "conditions": conditions,
+        },
+    }
+
+
+def _wire(monkeypatch, *, ready=True, record=_record(), lock=None, suspended=True, jobs=()):
     def required(args, description):
         if "kustomizations" in args:
             return _kustomizations(ready)
+        if "jobs" in args:
+            return {"items": list(jobs)}
         return {"spec": {"suspend": suspended}}
 
     monkeypatch.setattr(status, "_required_kubectl_json", required)
@@ -206,6 +236,92 @@ def test_missing_record_fails_closed(monkeypatch):
     assert snapshot.deployable is False
     assert snapshot.reason is not None
     assert snapshot.reason.code == "missing_deploy_record"
+
+
+def test_failed_members_job_blocks_deploys_but_not_ready(monkeypatch):
+    """The deploy identity cannot call any service until it is seeded, so a
+    failed members Job refuses deploys with a typed reason while Flux
+    convergence stays reported as it is."""
+    _wire(monkeypatch, jobs=[_members_job("entitlements-members-opendes-abc12345", failed=3)])
+
+    snapshot = status.collect_status()
+
+    assert snapshot.ready is True
+    assert snapshot.deployable is False
+    assert snapshot.reason is not None
+    assert snapshot.reason.code == "bootstrap_failed"
+    assert snapshot.reason.message == (
+        "entitlements-members-opendes-abc12345: Job has reached the specified backoff limit"
+    )
+    assert snapshot.reason.resource == "job/osdu/entitlements-members-opendes-abc12345"
+    assert status.status_exit_code(snapshot) == 2
+
+
+@pytest.mark.parametrize(
+    "job",
+    [
+        _members_job("entitlements-members-opendes-abc12345", succeeded=1),
+        _members_job("entitlements-members-opendes-abc12345", active=1),
+        _members_job("entitlements-members-opendes-abc12345", succeeded=1, failed=1),
+        # One pod failed and the Job is retrying under its backoffLimit.
+        _members_job("entitlements-members-opendes-abc12345", failed=1, active=1),
+        _members_job("entitlements-members-opendes-abc12345", failed=2, terminal=False),
+    ],
+)
+def test_retrying_or_completed_members_jobs_do_not_block(monkeypatch, job):
+    _wire(monkeypatch, jobs=[job])
+
+    snapshot = status.collect_status()
+
+    assert snapshot.deployable is True
+    assert snapshot.reason is None
+
+
+def test_readiness_and_maintenance_outrank_a_failed_members_job(monkeypatch):
+    failed = _members_job("entitlements-members-opendes-abc12345", failed=1)
+
+    def code() -> str:
+        reason = status.collect_status().reason
+        assert reason is not None
+        return reason.code
+
+    _wire(monkeypatch, ready=False, jobs=[failed])
+    assert code() == "kustomization_not_ready"
+
+    _wire(monkeypatch, record=_record(maintenance=True), jobs=[failed])
+    assert code() == "maintenance"
+
+    _wire(monkeypatch, record=None, jobs=[failed])
+    assert code() == "missing_deploy_record"
+
+
+def test_members_job_read_failure_is_fatal(monkeypatch):
+    """Fail closed: an unreadable Job list must not report deployable."""
+    _wire(monkeypatch)
+
+    def required(args, description):
+        if "jobs" in args:
+            raise status.StatusError(f"Could not {description}: connection refused")
+        if "kustomizations" in args:
+            return _kustomizations(True)
+        return {"spec": {"suspend": False}}
+
+    monkeypatch.setattr(status, "_required_kubectl_json", required)
+
+    with pytest.raises(status.StatusError, match="entitlements-members Jobs: connection refused"):
+        status.collect_status()
+
+
+def test_status_human_names_the_failed_members_job(monkeypatch):
+    _wire(monkeypatch, jobs=[_members_job("entitlements-members-opendes-abc12345", failed=2)])
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    output = " ".join(_plain(result.output).split())
+
+    assert "entitlements-members-opendes-abc12345" in output
+    assert "backoff limit" in output
+    assert "Not deployable" in output
 
 
 def test_image_lock_summary_includes_pins(monkeypatch):

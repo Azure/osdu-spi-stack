@@ -59,7 +59,7 @@ additional ordering.
 | `spi-bootstrap` | trust-manager, Elasticsearch, Redis, OSDU config |
 | `spi-osdu-services` | Bootstrap, NodePools |
 | `spi-osdu-init` | Core services |
-| `spi-osdu-schema-load`, `spi-osdu-legal` | Initialization |
+| `spi-osdu-schema-load`, `spi-osdu-legal`, `spi-osdu-members` | Initialization |
 | `spi-osdu-reference` | Core services, schema load |
 
 Names are shortened in the dependency column; the full definitions are in
@@ -67,8 +67,9 @@ Names are shortened in the dependency column; the full definitions are in
 adds dependencies defined in its selected profile. For example, TLS routes
 depend on the gateway certificate layer as well as service readiness.
 
-Legal-tag seeding is a non-gating branch: reference services wait for schema
-load, without depending on `spi-osdu-legal`. Fork RBAC is also independent of
+Legal-tag and entitlements-member seeding are non-gating branches:
+reference services wait for schema load, without depending on
+`spi-osdu-legal` or `spi-osdu-members`. Fork RBAC is also independent of
 the middleware and service readiness chain.
 
 A downstream error may name only its direct dependency. Follow that dependency

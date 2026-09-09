@@ -137,12 +137,13 @@ def _create_istio_auth(config: Config, infra_outputs: dict) -> None:
     )
 
 
-def _create_spi_init_values(config: Config) -> None:
+def _create_spi_init_values(config: Config, infra_outputs: dict) -> None:
     """Apply the spi-init-values ConfigMap that the osdu-spi-init HelmRelease
     consumes via valuesFrom. Must run before Flux reconciles the HelmRelease.
     """
     console.print("\n[bold]Creating SPI init values ConfigMap...[/bold]")
-    yaml_content = spi_init_values_configmap(config.data_partitions)
+    members = [infra_outputs.get("deploy_identity_client_id", "")]
+    yaml_content = spi_init_values_configmap(config.data_partitions, [m for m in members if m])
     display_yaml(yaml_content, "ConfigMap: spi-init-values")
     kubectl_apply_yaml(yaml_content, "apply spi-init-values ConfigMap")
     display_result(
@@ -544,7 +545,7 @@ def deploy_azure(
     _project_trusted_repos(config)
     _create_osdu_config(config, infra_outputs)
     _create_istio_auth(config, infra_outputs)
-    _create_spi_init_values(config)
+    _create_spi_init_values(config, infra_outputs)
 
     # Bare deploys no Gateway, so there is no ingress to configure.
     if config.profile is not Profile.BARE:

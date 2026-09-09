@@ -35,6 +35,7 @@ from .deploy_record import (
 )
 from .pins import PinError, decode_pins
 from .shell import gather_reads, kubectl_json, run_process
+from .templates import ENTITLEMENTS_MEMBERS_COMPONENT as MEMBERS_COMPONENT
 
 STATUS_API_VERSION = "spi.osdu.dev/v1"
 
@@ -327,6 +328,53 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
     return KustomizationReadiness(items=items, states=states, ready=ready, reason=reason)
 
 
+def _read_members_jobs() -> list[dict]:
+    """The entitlements-members Jobs in osdu; a read failure is fatal (fail closed)."""
+    data = _required_kubectl_json(
+        ["get", "jobs", "-n", "osdu", "-l", f"app.kubernetes.io/component={MEMBERS_COMPONENT}"],
+        "read the entitlements-members Jobs",
+    )
+    items = data.get("items")
+    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def bootstrap_failure(jobs: list[dict]) -> StatusReason | None:
+    """The first failed members Job as a deployability blocker.
+
+    A fork cannot run a positive test until its deploy identity holds the
+    root groups, so unlike legal seeding this failure refuses deploys; a
+    Job still retrying or never rendered does not, and ``spi info``
+    ``entitlements_seeded`` stays the seeded signal.
+    """
+    for job in sorted(jobs, key=lambda j: j.get("metadata", {}).get("name", "")):
+        status = job.get("status") or {}
+        # status.failed counts retried pods; only the Failed condition means
+        # the backoff limit or deadline is exhausted.
+        failed = next(
+            (
+                c
+                for c in status.get("conditions") or []
+                if c.get("type") == "Failed" and c.get("status") == "True"
+            ),
+            None,
+        )
+        if failed is None or status.get("succeeded"):
+            continue
+        name = job.get("metadata", {}).get("name", "")
+        detail = failed.get("message") or failed.get("reason") or "Job failed"
+        return StatusReason(
+            code="bootstrap_failed",
+            message=f"{name}: {detail}",
+            resource=f"job/osdu/{name}",
+        )
+    return None
+
+
+def collect_bootstrap_failure() -> StatusReason | None:
+    """Read the members Jobs and report a failed one; shared with the pin guard."""
+    return bootstrap_failure(_read_members_jobs())
+
+
 def _read_deploy_record() -> DeployRecord | None:
     """Read the deploy record, reporting its failure the way the others do.
 
@@ -343,12 +391,13 @@ def _read_deploy_record() -> DeployRecord | None:
 def collect_status() -> StatusSnapshot:
     from .info import collect_base_url
 
-    # Five independent reads. Ordered results keep the failure a caller sees
+    # Six independent reads. Ordered results keep the failure a caller sees
     # deterministic: a Kustomization error still outranks a GitRepository one.
     (
         kustomization_readiness,
         git_repository,
         record,
+        members_jobs,
         image_lock,
         base_url,
     ) = gather_reads(
@@ -359,6 +408,7 @@ def collect_status() -> StatusSnapshot:
                 "read the Flux GitRepository",
             ),
             _read_deploy_record,
+            _read_members_jobs,
             lambda: _optional_configmap("osdu-image-lock", "osdu-flux"),
             collect_base_url,
         ]
@@ -383,10 +433,11 @@ def collect_status() -> StatusSnapshot:
         raise StatusError(str(exc)) from exc
 
     maintenance = record.maintenance if record else False
-    deployable = ready and record is not None and not maintenance
+    bootstrap = bootstrap_failure(members_jobs)
+    deployable = ready and record is not None and not maintenance and bootstrap is None
 
-    # A readiness blocker takes precedence; maintenance and a missing record
-    # only matter once Flux has converged.
+    # A readiness blocker takes precedence; maintenance, a missing record,
+    # and a failed bootstrap Job only matter once Flux has converged.
     if reason is None:
         if maintenance:
             reason = StatusReason(
@@ -400,6 +451,8 @@ def collect_status() -> StatusSnapshot:
                 message="The environment has no deploy record; rerun spi up.",
                 resource="configmap/osdu-flux/spi-deploy-record",
             )
+        elif bootstrap is not None:
+            reason = bootstrap
 
     return StatusSnapshot(
         ready=ready,
@@ -680,7 +733,7 @@ def get_custom_resources(platform_ns: str = "platform") -> Table:
     return table
 
 
-_PARTITION_INIT_COMPONENTS = {"partition-init", "entitlements-init"}
+_PARTITION_INIT_COMPONENTS = {"partition-init", "entitlements-init", MEMBERS_COMPONENT}
 
 
 def _job_status_cell(status_obj: dict) -> Text:

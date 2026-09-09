@@ -14,6 +14,9 @@
 
 """YAML templates for Kubernetes resources."""
 
+import hashlib
+from typing import Sequence
+
 
 def storage_class(
     name: str,
@@ -259,16 +262,23 @@ spec:
 LEGAL_TAG_BASE = "demo-legaltag"
 
 
-def spi_init_values_configmap(partitions: list[str]) -> str:
+ENTITLEMENTS_MEMBERS_COMPONENT = "entitlements-members"
+
+
+def spi_init_values_configmap(partitions: list[str], members: Sequence[str] = ()) -> str:
     """ConfigMap consumed by the osdu-spi-init HelmRelease via valuesFrom.
 
     Lives in osdu-flux (where the HelmRelease is reconciled) and carries the
     full Helm values YAML. The CLI writes it based on --partition flags so that
     enabling a new partition is a CLI argument change, not a git edit.
     `spi info` reads the same ConfigMap back, so the legal tag name it reports
-    is the one the init Jobs rendered from.
+    is the one the init Jobs rendered from. ``members`` are the principals
+    entitlements-members seeds; omitted entirely when empty so the chart
+    renders no Job.
     """
     partition_lines = "\n".join(f"    - {p}" for p in partitions)
+    member_lines = "".join(f"    - {m}\n" for m in sorted(set(members)))
+    members_block = f"    entitlementsMembers:\n{member_lines}" if member_lines else ""
     return f"""\
 apiVersion: v1
 kind: ConfigMap
@@ -282,4 +292,44 @@ data:
     partitions:
 {partition_lines}
     legalTag: {LEGAL_TAG_BASE}
-"""
+{members_block}"""
+
+
+def parse_init_values(text: str) -> dict:
+    """Parse the CLI-written values.yaml blob without a yaml dependency.
+
+    The shape is fixed: scalar keys and list keys whose items are ``- x``
+    lines. Returns ``{"partitions": [...], "legalTag": "...",
+    "entitlementsMembers": [...]}`` with absent keys missing.
+    """
+    parsed: dict = {}
+    current: list | None = None
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("- ") and current is not None:
+            current.append(stripped[2:].strip())
+            continue
+        key, sep, value = stripped.partition(":")
+        if not sep:
+            current = None
+            continue
+        value = value.strip()
+        if value:
+            parsed[key.strip()] = value
+            current = None
+        else:
+            current = []
+            parsed[key.strip()] = current
+    return parsed
+
+
+def entitlements_members_job_name(partition: str, members: Sequence[str]) -> str:
+    """The Job name the chart renders for this member list.
+
+    Must match templates/entitlements-members.yaml: sortAlpha, join ",",
+    sha256sum, trunc 8. A render test holds the two together.
+    """
+    digest = hashlib.sha256(",".join(sorted(set(members))).encode("utf-8")).hexdigest()[:8]
+    return f"{ENTITLEMENTS_MEMBERS_COMPONENT}-{partition}-{digest}"

@@ -264,6 +264,7 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     )
     monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: _deploy_record())
     monkeypatch.setattr(status, "collect_kustomization_readiness", lambda: _readiness())
+    monkeypatch.setattr(status, "collect_bootstrap_failure", lambda: None)
     return calls
 
 
@@ -478,6 +479,41 @@ class TestPinService:
         monkeypatch.setattr(status, "collect_kustomization_readiness", raise_unreachable)
 
         with pytest.raises(PinError, match="connection refused"):
+            pin_service("storage", "42")
+
+        assert calls["fetches"] == 0
+        assert calls["patch"] is None
+
+    def test_pin_refused_while_bootstrap_failed(self, monkeypatch):
+        """A failed members Job means the deploy identity cannot call the
+        services, so a pin would be untestable; the guard applies the same
+        rule `spi status` reports."""
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+        monkeypatch.setattr(
+            status,
+            "collect_bootstrap_failure",
+            lambda: StatusReason(
+                code="bootstrap_failed",
+                message="entitlements-members-opendes-abc12345: BackoffLimitExceeded",
+                resource="job/osdu/entitlements-members-opendes-abc12345",
+            ),
+        )
+
+        with pytest.raises(PinError, match="bootstrap failed .*entitlements-members-opendes"):
+            pin_service("storage", "42")
+
+        assert calls["fetches"] == 0
+        assert calls["patch"] is None
+
+    def test_pin_bootstrap_read_failure_becomes_pin_error(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+
+        def raise_unreachable():
+            raise StatusError("Could not read the entitlements-members Jobs: connection refused")
+
+        monkeypatch.setattr(status, "collect_bootstrap_failure", raise_unreachable)
+
+        with pytest.raises(PinError, match="entitlements-members Jobs: connection refused"):
             pin_service("storage", "42")
 
         assert calls["fetches"] == 0

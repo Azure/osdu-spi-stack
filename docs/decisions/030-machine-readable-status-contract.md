@@ -17,8 +17,9 @@ record written at the end of `spi up` supplies the version fields.
 
 - Envelope: `apiVersion: spi.osdu.dev/v1`, `ready`, `deployable`, a typed
   `reason` naming the first deployability blocker when `deployable` is false
-  (a non-ready Kustomization, the `maintenance` flag, or a missing deploy
-  record), `suspended`, `maintenance`, Kustomization counts with a not-ready
+  (a non-ready Kustomization, the `maintenance` flag, a missing deploy
+  record, or a failed `entitlements-members` Job as `bootstrap_failed`),
+  `suspended`, `maintenance`, Kustomization counts with a not-ready
   list, `environment` (name, stack version, resolved commit, profile,
   deploy timestamp, CLI version), `images` (branch, resolved-at, count,
   pinned services), and `baseUrl`. `stack` repeats the version fields

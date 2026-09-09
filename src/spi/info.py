@@ -36,7 +36,7 @@ from .console import console
 from .deploy_record import environment_facts, read_deploy_record
 from .ingress import get_ingress_ip
 from .shell import gather_reads, kubectl_json
-from .templates import LEGAL_TAG_BASE
+from .templates import LEGAL_TAG_BASE, entitlements_members_job_name, parse_init_values
 
 # Display order.
 _OSDU_API_PATHS = [
@@ -125,11 +125,8 @@ def _legal_tag_base_from_values_yaml(text: str) -> str:
     chart's values default carries, which is what those Jobs used. This is the
     desired name only; ``_legal_tag_seeded`` decides whether it exists.
     """
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if stripped.startswith("legalTag:"):
-            return stripped.split(":", 1)[1].strip()
-    return LEGAL_TAG_BASE
+    value = parse_init_values(text).get("legalTag")
+    return value if isinstance(value, str) and value else LEGAL_TAG_BASE
 
 
 def _legal_tag_seeded(partition: str) -> bool:
@@ -143,25 +140,28 @@ def _legal_tag_seeded(partition: str) -> bool:
     return bool(((data or {}).get("status") or {}).get("succeeded"))
 
 
-def _parse_partitions_from_values_yaml(text: str) -> list:
-    """Pull the partition names out of the small known-shape values.yaml blob.
+def _entitlements_seeded(partition: str, members: list[str]) -> bool:
+    """Whether entitlements-members has added the configured members for this partition.
 
-    Avoids a yaml dep at the CLI runtime path; the ConfigMap is CLI-written
-    so its shape is fixed: ``partitions:\\n  - p1\\n  - p2``.
+    The Job name carries a hash of the member list, so a Job that seeded a
+    previous deploy identity never reads as current; an empty list has no
+    Job and is never seeded.
     """
-    in_partitions = False
-    out: list = []
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if stripped == "partitions:":
-            in_partitions = True
-            continue
-        if in_partitions:
-            if stripped.startswith("- "):
-                out.append(stripped[2:].strip())
-            elif stripped and not stripped.startswith("-"):
-                break
-    return out
+    if not members:
+        return False
+    name = entitlements_members_job_name(partition, members)
+    data = kubectl_json(["get", "job", name, "-n", "osdu"])
+    return bool(((data or {}).get("status") or {}).get("succeeded"))
+
+
+def _parse_partitions_from_values_yaml(text: str) -> list:
+    """The partition list the init Jobs rendered from; empty before bootstrap."""
+    return list(parse_init_values(text).get("partitions") or [])
+
+
+def _parse_members_from_values_yaml(text: str) -> list[str]:
+    """The principals entitlements-members seeds; empty before the CLI wrote any."""
+    return list(parse_init_values(text).get("entitlementsMembers") or [])
 
 
 def _env_from_resource_group(rg: str) -> str:
@@ -357,6 +357,10 @@ def _collect_info() -> dict:
     # osdu-config covers environments provisioned before it carried the tenant.
     tenant_id = cluster_cfg.get("AZURE_TENANT_ID", "") or osdu.get("AZURE_TENANT_ID", "")
     seeded = gather_reads([partial(_legal_tag_seeded, name) for name in partitions])
+    members = _parse_members_from_values_yaml(init_values)
+    members_seeded = gather_reads(
+        [partial(_entitlements_seeded, name, members) for name in partitions]
+    )
 
     info = {
         "apiVersion": "spi.osdu.dev/v1",
@@ -407,6 +411,9 @@ def _collect_info() -> dict:
             }
             for i, (_label, cosmos, sb, storage) in enumerate(partition_rows)
         ],
+        # Observed from the members Job: true only once the deploy
+        # identity holds the four root groups for that partition.
+        "entitlements_seeded": {name: bool(members_seeded[i]) for i, name in enumerate(partitions)},
         "suspended": suspended,
     }
 
@@ -444,6 +451,11 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
             item["servicebus_namespace"],
             item["storage_account"],
             item["legal_tag"] or f"[dim]{item['legal_tag_desired']} (not seeded)[/dim]",
+            (
+                "seeded"
+                if info["entitlements_seeded"].get(item["name"])
+                else "[dim]not seeded[/dim]"
+            ),
         )
         for item in info["partitions"]
     ]
@@ -538,8 +550,9 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
         ptable.add_column("Service Bus Namespace", style="cyan")
         ptable.add_column("Storage Account", style="cyan")
         ptable.add_column("Legal Tag", style="cyan")
-        for label, cosmos, sb, storage, legal_tag in partition_rows:
-            ptable.add_row(label, cosmos, sb, storage, legal_tag)
+        ptable.add_column("Groups", style="cyan")
+        for label, cosmos, sb, storage, legal_tag, entitlements in partition_rows:
+            ptable.add_row(label, cosmos, sb, storage, legal_tag, entitlements)
         console.print(ptable)
         console.print()
 

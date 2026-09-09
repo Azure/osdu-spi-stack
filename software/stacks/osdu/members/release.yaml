@@ -1,12 +1,13 @@
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: osdu-spi-init
+  name: osdu-spi-members
   namespace: osdu-flux
 spec:
   targetNamespace: osdu
   interval: 30m
   install:
+    # Outlasts the Job's activeDeadlineSeconds so helm observes its outcome.
     timeout: 15m
     remediation:
       retries: 3
@@ -14,6 +15,8 @@ spec:
     timeout: 15m
     remediation:
       retries: 3
+      # A rollback would delete the failed Job spi status reports on.
+      remediateLastFailure: false
   chart:
     spec:
       chart: ./software/charts/osdu-spi-init
@@ -21,14 +24,14 @@ spec:
       sourceRef:
         kind: GitRepository
         name: osdu-spi-stack-system
-  # The CLI writes the partition list into spi-init-values; --partition
-  # changes need no edit here.
+  # Same chart and values as osdu-spi-init with only the members component
+  # rendered; helm-controller waits for every Job in a release, so the seed
+  # gets its own non-gating release. Inline values override valuesFrom.
   valuesFrom:
     - kind: ConfigMap
       name: spi-init-values
       valuesKey: values.yaml
-  # Core Jobs only; legal and members seeding run in the non-gating
-  # osdu-spi-legal and osdu-spi-members releases.
   values:
+    coreEnabled: false
     legalEnabled: false
-    membersEnabled: false
+    membersEnabled: true

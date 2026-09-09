@@ -18,7 +18,7 @@ import json
 
 from .console import console, display_result, display_yaml
 from .shell import kubectl_apply_yaml, kubectl_json, run_command, run_process
-from .templates import storage_class
+from .templates import parse_init_values, spi_init_values_configmap, storage_class
 
 STORAGE_CLASSES = ["pg-storageclass", "redis-storageclass", "es-storageclass"]
 ISTIO_REVISION_CONFIGMAP = "spi-cluster-config"
@@ -184,6 +184,37 @@ def create_istio_revision_configmap(
     display_yaml(yaml_content, f"ConfigMap: {ISTIO_REVISION_CONFIGMAP}")
     kubectl_apply_yaml(yaml_content, f"apply {ISTIO_REVISION_CONFIGMAP} ConfigMap")
     display_result(f"{ISTIO_REVISION_CONFIGMAP} ConfigMap created")
+
+
+INIT_VALUES_CONFIGMAP = "spi-init-values"
+
+
+def read_init_values() -> str:
+    """The live values.yaml blob the init chart renders from; empty when absent."""
+    data = kubectl_json(["get", "configmap", INIT_VALUES_CONFIGMAP, "-n", ISTIO_REVISION_NAMESPACE])
+    return ((data or {}).get("data") or {}).get("values.yaml", "")
+
+
+def refresh_spi_init_values() -> None:
+    """Re-render spi-init-values from the live partition list and deploy identity.
+
+    ``spi reconcile`` has no Config, so the partitions and legal tag come from
+    the ConfigMap already on the cluster and the member list from
+    spi-cluster-config. A cluster bootstrapped before either existed is left
+    alone: there is nothing to re-render from, and ``spi up`` writes both.
+    """
+    values = parse_init_values(read_init_values())
+    partitions = values.get("partitions") or []
+    if not partitions:
+        console.print("  [dim]spi-init-values not found; skipping members refresh[/dim]")
+        return
+    client_id = read_cluster_config().get("DEPLOY_IDENTITY_CLIENT_ID", "")
+    members = [client_id] if client_id else []
+    if members == list(values.get("entitlementsMembers") or []):
+        return
+    yaml_content = spi_init_values_configmap(partitions, members)
+    display_yaml(yaml_content, f"ConfigMap: {INIT_VALUES_CONFIGMAP}")
+    kubectl_apply_yaml(yaml_content, f"refresh {INIT_VALUES_CONFIGMAP} ConfigMap")
 
 
 def create_storage_classes() -> None:

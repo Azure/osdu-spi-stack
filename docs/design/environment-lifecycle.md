@@ -10,10 +10,11 @@ verb applies, what it costs, and what it will not fix; improvising that during
 an incident is how a 20-minute refresh becomes a 4-hour rebuild.
 
 **Status.** `env-upgrade` and `env-refresh` are implemented and described
-below as built. `env-reset` and `env-teardown`, the backstop's workflow step,
-the drain, onboarding-intent reconciliation, and the test-identity ensure
-step remain unbuilt; those sections still describe the target mechanism
-ahead of the code. Remove the remaining marks as those phases land.
+below as built, as is the test-identity ensure step. `env-reset` and
+`env-teardown`, the backstop's workflow step, the drain, and
+onboarding-intent reconciliation remain unbuilt; those sections still
+describe the target mechanism ahead of the code. Remove the remaining marks
+as those phases land.
 
 ![The backing environment at a glance](../diagrams/environment-lifecycle.png)
 
@@ -170,8 +171,15 @@ wait. The retained roster is not used as a substitute for that declaration.
 The deploy identity, suffix, source-policy tags, and declaration locator
 survive deletion, so repository client IDs and resource names stay stable,
 and Key Vault recovery finds the old vault (ADR-028). Bootstrap reconciles
-credentials and source projections; the post-provision ensure step repairs
-test-caller entitlements. The rebuilt environment starts with `maintenance`
+credentials and source projections; the ensure step repairs test-caller
+entitlements: `spi up` and `spi reconcile` write the deploy identity's client
+id into `spi-init-values`, and the `entitlements-members` Job in the
+non-gating `spi-osdu-members` Kustomization adds it to the four root groups
+of every partition, reporting through `entitlements_seeded` in
+`spi info --json`. A Job name carries a hash of the member list, so a
+recreated identity renders a new Job and an unchanged one is left Complete.
+A failed Job is the `bootstrap_failed` blocker in `spi status --json`
+(ADR-030). The rebuilt environment starts with `maintenance`
 set and opens to deploys only after the probes pass. Protected teardown uses
 `spi down --purge`, which discovers external grants from the retained
 principal IDs and removes the stack-owned ExternalDNS zone assignment before
@@ -267,9 +275,9 @@ gh run watch
    schema (`src/spi/environment.py`), and tri-state image refresh are
    implemented; `shared` stands up at the release tag via `env-upgrade`.
 3. **Ops workflows** (mostly built): `env-refresh`, `env-upgrade`, and the
-   bump-PR job are implemented. Still unbuilt: `env-reset`, `env-teardown`,
-   the test-identity ensure step, and the pin backstop/drain insertion
-   points noted above.
+   bump-PR job are implemented, as is the test-identity ensure step. Still
+   unbuilt: `env-reset`, `env-teardown`, and the pin backstop/drain
+   insertion points noted above.
 4. **Onboarding** (in progress): the deploy identity and two Roles in `spi up`,
    identity and RG-tag retention in `spi down` (ADR-034), and the trust path
    of `spi onboard` (repository protection, the five values, the federated
