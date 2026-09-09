@@ -37,9 +37,9 @@ from typing import Callable, cast
 
 import pytest
 import yaml
+from _quantities import _millicores
 
 from spi.shell import run_process
-from tests._quantities import _millicores
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHART_DIR = REPO_ROOT / "software" / "charts" / "osdu-spi-init"

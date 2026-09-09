@@ -5,8 +5,7 @@
 from pathlib import Path
 
 import yaml
-
-from tests._quantities import _millicores
+from _quantities import _millicores
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPONENTS_DIR = REPO_ROOT / "software" / "components"
@@ -37,4 +36,6 @@ def test_helmrelease_values_request_at_least_the_cpu_admission_floor():
                     relative_path = manifest_path.relative_to(REPO_ROOT)
                     below_floor.append(f"{relative_path}:{value_path}={quantity}")
 
-    assert not below_floor, "CPU requests below the 100m admission floor:\n" + "\n".join(below_floor)
+    assert not below_floor, "CPU requests below the 100m admission floor:\n" + "\n".join(
+        below_floor
+    )
