@@ -137,9 +137,9 @@ scope.
 A managed identity cannot be a token audience (Entra answers
 `AADSTS100040`), so on a default environment the UAMI client id in
 `AAD_CLIENT_ID` is not something an external caller can mint for. The
-management audience is; every jwtRule accepts it, and because the filter
-projects the caller's own `appid`, the token's audience does not change who
-the service sees.
+management audience is; the Entra v1 issuer rule accepts it, and because the
+filter projects the caller's own `appid`, the token's audience does not
+change who the service sees.
 
 `AAD_CLIENT_ID` defaults to the OSDU UAMI client ID. An environment-variable
 override can select a separate OSDU app registration. `deploy.py` passes that

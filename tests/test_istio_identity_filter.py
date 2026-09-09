@@ -47,7 +47,8 @@ def test_lua_never_substitutes_a_fixed_principal():
 def test_lua_projects_the_callers_own_app_id():
     lua = _lua()
 
-    assert 'payload["appid"] or payload["azp"] or payload["aud"]' in lua
+    assert 'local appId = payload["appid"] or payload["azp"]\n' in lua
+    assert 'payload["aud"]' not in lua
     assert 'h:headers():add("x-app-id", appId)' in lua
     assert 'h:headers():add("x-user-id", payload["appid"])' in lua
 

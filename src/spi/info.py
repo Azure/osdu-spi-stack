@@ -102,10 +102,10 @@ def token_audience(aad_client_id: str, identity_client_id: str) -> str:
 
     A managed identity cannot be a token audience (AADSTS100040), so when
     AAD_CLIENT_ID is the platform UAMI, callers mint for the management
-    audience, which every jwtRule accepts. An operator override to an app
-    registration is mintable and is published as-is. When the UAMI id cannot
-    be read the comparison is impossible, and the management audience is the
-    value every environment accepts.
+    audience, which the v1 issuer jwtRule accepts on every environment. An
+    operator override to an app registration is mintable and is published
+    as-is. When the UAMI id cannot be read the comparison is impossible, and
+    the management audience is the value every environment accepts.
     """
     if aad_client_id and identity_client_id and aad_client_id != identity_client_id:
         return aad_client_id

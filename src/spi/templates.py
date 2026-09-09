@@ -237,7 +237,7 @@ spec:
                 end
                 local payload = meta["payload"]
 
-                local appId = payload["appid"] or payload["azp"] or payload["aud"]
+                local appId = payload["appid"] or payload["azp"]
                 if appId then
                   h:headers():add("x-app-id", appId)
                 end
