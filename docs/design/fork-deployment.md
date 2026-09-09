@@ -256,11 +256,14 @@ run with those gates active.
 Mint the two test callers in fork CI. The deploy identity is the positive
 caller: the `entitlements-members` Job adds its client id to `users`,
 `users.datalake.ops`, `users.datalake.admins`, and `users.data.root` for
-every partition at each `spi up` and `spi reconcile`, and `spi info --json`
-reports `entitlements_seeded.<partition>` once that Job has completed. The
-no-access identity is the negative caller: it carries the same federated
-credential and belongs to no group, so a call minted as it must answer 403
-rather than the 401 an unauthenticated request draws. Both tokens are
+every partition when the environment is built or the identity changes, and
+`spi info --json` reports `entitlements_seeded.<partition>` once that Job
+has completed. The no-access identity is the negative caller: it carries
+the same federated credential and belongs to no group. Entitlements is
+expected to answer such a caller with 403, distinct from the 401 an
+unauthenticated request draws; if a partition answers 401 instead, the
+members Job seeds the no-access identity into `users` alone so the
+distinction holds. Both tokens are
 minted for the data-plane application id. A token for
 `https://management.azure.com/` is rewritten by the Istio identity filter to
 the platform's own workload identity, which owns every group, so it would
