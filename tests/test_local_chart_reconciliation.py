@@ -24,9 +24,12 @@ def test_local_chart_releases_reconcile_per_revision():
     invalid_releases = []
 
     for path in sorted(SOFTWARE.rglob("*.yaml")):
-        text = path.read_text(encoding="utf-8")
-        if "kind: HelmRelease" not in text:
+        if path.is_relative_to(SOFTWARE / "charts") and "templates" in path.relative_to(
+            SOFTWARE / "charts"
+        ).parts:
             continue
+
+        text = path.read_text(encoding="utf-8")
 
         for document in yaml.safe_load_all(text):
             if not document or document.get("kind") != "HelmRelease":
