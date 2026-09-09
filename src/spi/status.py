@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from rich.panel import Panel
 from rich.table import Table
@@ -35,6 +35,8 @@ from .deploy_record import (
 )
 from .pins import PinError, decode_pins
 from .shell import gather_reads, kubectl_json, run_process
+from .templates import ENTITLEMENTS_MEMBERS_COMPONENT as MEMBERS_COMPONENT
+from .templates import entitlements_members_job_name, parse_init_values
 
 STATUS_API_VERSION = "spi.osdu.dev/v1"
 
@@ -327,6 +329,115 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
     return KustomizationReadiness(items=items, states=states, ready=ready, reason=reason)
 
 
+def _read_members_jobs() -> list[dict]:
+    """The entitlements-members Jobs in osdu; a read failure is fatal (fail closed)."""
+    data = _required_kubectl_json(
+        ["get", "jobs", "-n", "osdu", "-l", f"app.kubernetes.io/component={MEMBERS_COMPONENT}"],
+        "read the entitlements-members Jobs",
+    )
+    items = data.get("items")
+    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _read_expected_members_jobs() -> list[str]:
+    """The members Job names the live spi-init-values implies, one per partition.
+
+    Empty when the values carry no members, which is every environment
+    bootstrapped before the CLI wrote them, so those are never gated.
+    """
+    data = _optional_configmap("spi-init-values", "osdu-flux")
+    values = parse_init_values(((data or {}).get("data") or {}).get("values.yaml", ""))
+    members = [m for m in values.get("entitlementsMembers") or [] if isinstance(m, str)]
+    if not members:
+        return []
+    return [entitlements_members_job_name(p, members) for p in values.get("partitions") or []]
+
+
+def _read_job_termination_message(job_name: str) -> str:
+    """The termination message of the Job's newest pod, or "" when unreadable.
+
+    The verdict comes from the Job; this only sharpens the reason text, so a
+    pod read failure is not fatal.
+    """
+    try:
+        data = _required_kubectl_json(
+            ["get", "pods", "-n", "osdu", "-l", f"job-name={job_name}"],
+            f"read the pods of {job_name}",
+        )
+    except StatusError:
+        return ""
+    items = data.get("items") if isinstance(data, dict) else None
+    pods = [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+    pods.sort(key=lambda pod: pod.get("metadata", {}).get("creationTimestamp", ""))
+    for pod in reversed(pods):
+        for container in (pod.get("status") or {}).get("containerStatuses") or []:
+            for state in (container.get("state"), container.get("lastState")):
+                message = ((state or {}).get("terminated") or {}).get("message")
+                if message:
+                    return " ".join(message.split())
+    return ""
+
+
+def bootstrap_blocker(
+    jobs: list[dict],
+    expected: list[str] = [],
+    termination_message: Callable[[str], str] = lambda name: "",
+) -> StatusReason | None:
+    """A failed members Job, else an expected one not yet Complete, as a blocker.
+
+    A fork cannot run a positive test until its deploy identity holds the
+    root groups, so unlike legal seeding this refuses deploys: a failure
+    as ``bootstrap_failed``, and a current Job still running or not yet
+    rendered as ``bootstrap_pending``. The script's own outcome line, when
+    the pod still holds it, replaces the generic Job condition.
+    """
+    for job in sorted(jobs, key=lambda j: j.get("metadata", {}).get("name", "")):
+        status = job.get("status") or {}
+        # status.failed counts retried pods; only the Failed condition means
+        # the backoff limit or deadline is exhausted.
+        failed = next(
+            (
+                c
+                for c in status.get("conditions") or []
+                if c.get("type") == "Failed" and c.get("status") == "True"
+            ),
+            None,
+        )
+        if failed is None or status.get("succeeded"):
+            continue
+        name = job.get("metadata", {}).get("name", "")
+        detail = (
+            termination_message(name)
+            or failed.get("message")
+            or failed.get("reason")
+            or "Job failed"
+        )
+        return StatusReason(
+            code="bootstrap_failed",
+            message=f"{name}: {detail}",
+            resource=f"job/osdu/{name}",
+        )
+    by_name = {job.get("metadata", {}).get("name", ""): job for job in jobs}
+    for name in expected:
+        job = by_name.get(name)
+        if job is not None and (job.get("status") or {}).get("succeeded"):
+            continue
+        detail = "not yet rendered" if job is None else "still running"
+        return StatusReason(
+            code="bootstrap_pending",
+            message=f"{name}: {detail}",
+            resource=f"job/osdu/{name}",
+        )
+    return None
+
+
+def collect_bootstrap_blocker() -> StatusReason | None:
+    """Read the members Jobs and report a blocker; shared with the pin guard."""
+    return bootstrap_blocker(
+        _read_members_jobs(), _read_expected_members_jobs(), _read_job_termination_message
+    )
+
+
 def _read_deploy_record() -> DeployRecord | None:
     """Read the deploy record, reporting its failure the way the others do.
 
@@ -343,12 +454,14 @@ def _read_deploy_record() -> DeployRecord | None:
 def collect_status() -> StatusSnapshot:
     from .info import collect_base_url
 
-    # Five independent reads. Ordered results keep the failure a caller sees
+    # Seven independent reads. Ordered results keep the failure a caller sees
     # deterministic: a Kustomization error still outranks a GitRepository one.
     (
         kustomization_readiness,
         git_repository,
         record,
+        members_jobs,
+        expected_jobs,
         image_lock,
         base_url,
     ) = gather_reads(
@@ -359,6 +472,8 @@ def collect_status() -> StatusSnapshot:
                 "read the Flux GitRepository",
             ),
             _read_deploy_record,
+            _read_members_jobs,
+            _read_expected_members_jobs,
             lambda: _optional_configmap("osdu-image-lock", "osdu-flux"),
             collect_base_url,
         ]
@@ -383,10 +498,11 @@ def collect_status() -> StatusSnapshot:
         raise StatusError(str(exc)) from exc
 
     maintenance = record.maintenance if record else False
-    deployable = ready and record is not None and not maintenance
+    bootstrap = bootstrap_blocker(members_jobs, expected_jobs, _read_job_termination_message)
+    deployable = ready and record is not None and not maintenance and bootstrap is None
 
-    # A readiness blocker takes precedence; maintenance and a missing record
-    # only matter once Flux has converged.
+    # A readiness blocker takes precedence; maintenance, a missing record,
+    # and a failed bootstrap Job only matter once Flux has converged.
     if reason is None:
         if maintenance:
             reason = StatusReason(
@@ -400,6 +516,8 @@ def collect_status() -> StatusSnapshot:
                 message="The environment has no deploy record; rerun spi up.",
                 resource="configmap/osdu-flux/spi-deploy-record",
             )
+        elif bootstrap is not None:
+            reason = bootstrap
 
     return StatusSnapshot(
         ready=ready,
@@ -680,7 +798,7 @@ def get_custom_resources(platform_ns: str = "platform") -> Table:
     return table
 
 
-_PARTITION_INIT_COMPONENTS = {"partition-init", "entitlements-init"}
+_PARTITION_INIT_COMPONENTS = {"partition-init", "entitlements-init", MEMBERS_COMPONENT}
 
 
 def _job_status_cell(status_obj: dict) -> Text:

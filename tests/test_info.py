@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from spi import cli, info
 from spi.deploy_record import DeployRecord
-from spi.templates import LEGAL_TAG_BASE, spi_init_values_configmap
+from spi.templates import LEGAL_TAG_BASE, entitlements_members_job_name, spi_init_values_configmap
 
 _RECORD = DeployRecord(
     ref="v0.9.1",
@@ -39,6 +39,8 @@ def _wire(
     legal_tag_base=None,
     seeded=True,
     record=_RECORD,
+    members=("deployer-client-id",),
+    members_seeded=True,
 ):
     monkeypatch.setattr(
         info,
@@ -83,8 +85,13 @@ def _wire(
     names = partitions or ["opendes"]
     values_yaml = "partitions:\n" + "".join(f"  - {name}\n" for name in names)
     values_yaml += f"legalTag: {legal_tag_base or LEGAL_TAG_BASE}\n"
+    if members:
+        values_yaml += "entitlementsMembers:\n" + "".join(f"  - {m}\n" for m in members)
     monkeypatch.setattr(info, "_read_init_values_yaml", lambda: values_yaml)
     monkeypatch.setattr(info, "_legal_tag_seeded", lambda partition: seeded)
+    monkeypatch.setattr(
+        info, "_entitlements_seeded", lambda partition, members: bool(members) and members_seeded
+    )
     monkeypatch.setattr(info, "_read_deploy_record", lambda: record)
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: True)
 
@@ -187,6 +194,66 @@ def test_legal_tag_seeded_reads_the_job_outcome(monkeypatch):
 
     monkeypatch.setattr(info, "kubectl_json", lambda args: None)
     assert info._legal_tag_seeded("opendes") is False
+
+
+def test_entitlements_seeded_asks_for_the_job_the_member_list_names(monkeypatch):
+    """A Job that seeded a previous deploy identity keeps its old hashed name,
+    so the read targets the name the current list renders and nothing else."""
+    seen = []
+
+    def fake_kubectl_json(args):
+        seen.append(args)
+        return {"status": {"succeeded": 1}}
+
+    monkeypatch.setattr(info, "kubectl_json", fake_kubectl_json)
+    assert info._entitlements_seeded("opendes", ["new-id"]) is True
+    assert seen[0] == [
+        "get",
+        "job",
+        entitlements_members_job_name("opendes", ["new-id"]),
+        "-n",
+        "osdu",
+    ]
+
+    monkeypatch.setattr(info, "kubectl_json", lambda args: {"status": {"failed": 2}})
+    assert info._entitlements_seeded("opendes", ["new-id"]) is False
+
+    seen.clear()
+    monkeypatch.setattr(info, "kubectl_json", lambda args: seen.append(args))
+    assert info._entitlements_seeded("opendes", []) is False
+    assert seen == []
+
+
+def test_info_json_reports_entitlements_seeded_per_partition(monkeypatch):
+    _wire(monkeypatch, partitions=["opendes", "second"])
+    assert info.collect_info()["entitlements_seeded"] == {"opendes": True, "second": True}
+
+    _wire(monkeypatch, members_seeded=False)
+    assert info.collect_info()["entitlements_seeded"] == {"opendes": False}
+
+    _wire(monkeypatch, members=())
+    assert info.collect_info()["entitlements_seeded"] == {"opendes": False}
+
+
+def test_info_table_shows_entitlements_seeding(monkeypatch):
+    _wire(monkeypatch, members_seeded=False)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    output = _plain(CliRunner().invoke(cli.app, ["info"]).output)
+
+    assert "Groups" in output
+    assert "not seeded" in output
+
+
+def test_init_values_parser_reads_every_list_block():
+    rendered = spi_init_values_configmap(["opendes", "second"], ["b-id", "a-id"])
+    values_yaml = rendered.split("values.yaml: |\n", 1)[1]
+    values_yaml = "\n".join(line[4:] for line in values_yaml.splitlines())
+
+    assert info._parse_partitions_from_values_yaml(values_yaml) == ["opendes", "second"]
+    assert info._parse_members_from_values_yaml(values_yaml) == ["a-id", "b-id"]
+    assert info._parse_members_from_values_yaml("partitions:\n  - opendes\n") == []
+    assert "entitlementsMembers" not in spi_init_values_configmap(["opendes"])
 
 
 def test_legal_tag_base_read_from_init_values(monkeypatch):

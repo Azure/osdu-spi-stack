@@ -26,6 +26,7 @@ from spi.bootstrap import (
     create_istio_revision_configmap,
     deploy_identity_facts,
     ensure_namespaces,
+    refresh_spi_init_values,
     render_istio_revision_configmap,
 )
 from spi.images import ResolvedImage
@@ -210,6 +211,77 @@ class TestCreateIstioRevisionConfigmap:
         apply_yaml.assert_not_called()
 
 
+class TestRefreshSpiInitValues:
+    """`spi reconcile` re-renders spi-init-values from the cluster so the
+    members Job seeds whatever deploy identity the cluster config names."""
+
+    def _run(self, values_yaml: str | None, client_id: str):
+        with (
+            patch(
+                "spi.bootstrap.run_process",
+                return_value=_proc(
+                    0,
+                    ""
+                    if values_yaml is None
+                    else json.dumps({"data": {"values.yaml": values_yaml}}),
+                ),
+            ),
+            patch(
+                "spi.bootstrap.read_cluster_config",
+                return_value={"DEPLOY_IDENTITY_CLIENT_ID": client_id} if client_id else {},
+            ),
+            patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
+        ):
+            refresh_spi_init_values()
+        return apply_yaml
+
+    def test_adds_the_deploy_identity_to_values_written_before_it_existed(self):
+        apply_yaml = self._run(
+            "partitions:\n  - opendes\n  - second\nlegalTag: demo-legaltag\n", "id"
+        )
+
+        applied = apply_yaml.call_args.args[0]
+        assert "    - opendes\n    - second\n" in applied
+        assert "entitlementsMembers:\n    - id\n" in applied
+
+    def test_replaces_a_stale_deploy_identity(self):
+        apply_yaml = self._run(
+            "partitions:\n  - opendes\nlegalTag: demo-legaltag\nentitlementsMembers:\n  - old\n",
+            "new",
+        )
+
+        assert "entitlementsMembers:\n    - new\n" in apply_yaml.call_args.args[0]
+
+    def test_keeps_the_live_legal_tag(self):
+        apply_yaml = self._run("partitions:\n  - opendes\nlegalTag: custom-tag\n", "id")
+
+        assert "legalTag: custom-tag\n" in apply_yaml.call_args.args[0]
+
+    def test_leaves_current_values_alone(self):
+        apply_yaml = self._run(
+            "partitions:\n  - opendes\nlegalTag: demo-legaltag\nentitlementsMembers:\n  - id\n",
+            "id",
+        )
+
+        apply_yaml.assert_not_called()
+
+    def test_skips_a_cluster_without_values_or_identity(self):
+        self._run(None, "id").assert_not_called()
+        self._run("partitions:\n  - opendes\n", "").assert_not_called()
+
+    def test_leaves_values_alone_when_the_read_fails(self, capsys):
+        """A Forbidden is not an absent ConfigMap; re-rendering from nothing
+        would drop the member list, so the refresh warns and skips."""
+        with (
+            patch("spi.bootstrap.run_process", return_value=_proc(1, "", "Forbidden")),
+            patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
+        ):
+            refresh_spi_init_values()
+
+        apply_yaml.assert_not_called()
+        assert "Could not read spi-init-values: Forbidden" in capsys.readouterr().out
+
+
 class TestReconcileRefreshesClusterConfig:
     """`spi up` is not the only way a cluster reaches a new commit.
 
@@ -231,6 +303,7 @@ class TestReconcileRefreshesClusterConfig:
                 ),
             ),
             patch("spi.cli.create_istio_revision_configmap") as configmap,
+            patch("spi.cli.refresh_spi_init_values") as init_values,
             # Reads the live lock through pins.run_process, which the
             # spi.cli.run_command patch above does not intercept; without
             # this the default reconcile path shells out to real kubectl.
@@ -239,16 +312,20 @@ class TestReconcileRefreshesClusterConfig:
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
         assert result.exit_code == 0, result.output
+        self.init_values = init_values
         return configmap
 
     def test_default_reconcile_writes_configmap(self):
         self._invoke().assert_called_once_with()
+        self.init_values.assert_called_once_with()
 
     def test_resume_writes_configmap(self):
         self._invoke("--resume").assert_called_once_with()
+        self.init_values.assert_called_once_with()
 
     def test_suspend_leaves_configmap_alone(self):
         self._invoke("--suspend").assert_not_called()
+        self.init_values.assert_not_called()
 
     def test_refresh_images_exits_on_resolution_error(self):
         """A registry lookup failure has to abort before annotating anything,
@@ -258,6 +335,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.refresh_spi_init_values"),
             patch(
                 "spi.cli.resolve_image_lock",
                 side_effect=cli.ImageResolutionError("schema: registry repository not found"),
@@ -291,6 +369,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.apply_image_lock", side_effect=PinError("could not read lock")),
             patch("spi.cli.run_command") as run_command,
@@ -326,6 +405,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.apply_image_lock", return_value={}),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
@@ -371,6 +451,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.apply_image_lock", return_value={}),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
@@ -417,6 +498,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
             patch("spi.cli.apply_schema_load_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[]),
@@ -445,6 +527,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
             patch("spi.cli.apply_schema_load_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=stalled),
@@ -490,6 +573,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", return_value=SimpleNamespace(returncode=0, stdout="")),
             patch("spi.cli.apply_schema_load_backfill", return_value=False),
             patch(
@@ -518,6 +602,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
             patch("spi.cli.apply_schema_load_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[("osdu-flux", "partition")]),
@@ -552,6 +637,7 @@ class TestSchemaLoadImageLockBackfill:
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.apply_schema_load_backfill", side_effect=_backfill) as backfill,
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
             patch("spi.status.resettable_helmreleases", return_value=[]),

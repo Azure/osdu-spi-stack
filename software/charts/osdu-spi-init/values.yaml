@@ -13,10 +13,17 @@ partitions:
 legalTag: demo-legaltag
 
 # -- Component toggles. The osdu-spi-init release renders only the core
-#    Jobs and osdu-spi-legal only the legal Jobs; both default on so helm
-#    template and the render tests see every manifest.
+#    Jobs, osdu-spi-legal only the legal Jobs, and osdu-spi-members only the
+#    members Jobs; all default on so helm template and the render tests see
+#    every manifest.
 coreEnabled: true
 legalEnabled: true
+membersEnabled: true
+
+# -- Principals entitlements-members adds to the root groups, as the
+#    x-user-id each presents. The CLI writes the deploy identity here
+#    through spi-init-values; no Job renders while the list is empty.
+entitlementsMembers: []
 
 # -- Namespace where the Jobs run; the CLI bootstrap creates
 #    workload-identity-sa here.

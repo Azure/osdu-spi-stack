@@ -1,0 +1,61 @@
+{{/*
+Copyright 2026, Microsoft
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+*/}}
+
+# One Job per partition, adding each member to the four root entitlement
+# groups. The name hashes the member list so a changed list renders a new
+# Job; templates.entitlements_members_job_name computes the same name.
+{{- if and .Values.membersEnabled .Values.entitlementsMembers }}
+{{- $members := .Values.entitlementsMembers | sortAlpha }}
+{{- $hash := $members | join "," | sha256sum | trunc 8 }}
+{{- range $partition := .Values.partitions }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: entitlements-members-{{ $partition }}-{{ $hash }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "osdu-spi-init.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: entitlements-members
+    osdu.spi/partition: {{ $partition }}
+spec:
+  backoffLimit: {{ $.Values.backoffLimit }}
+  activeDeadlineSeconds: {{ $.Values.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "osdu-spi-init.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: entitlements-members
+        osdu.spi/partition: {{ $partition }}
+        azure.workload.identity/use: "true"
+    spec:
+      {{- include "osdu-spi-init.podSpec" $ | nindent 6 }}
+      containers:
+        - name: init
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command:
+            - python
+            - /scripts/init_members.py
+          env:
+            - name: PARTITION
+              value: {{ $partition | quote }}
+            - name: MEMBERS
+              value: {{ $members | join "," | quote }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsUser: 1000
+            capabilities:
+              drop: [ALL]
+{{- end }}
+{{- end }}

@@ -17,8 +17,10 @@ record written at the end of `spi up` supplies the version fields.
 
 - Envelope: `apiVersion: spi.osdu.dev/v1`, `ready`, `deployable`, a typed
   `reason` naming the first deployability blocker when `deployable` is false
-  (a non-ready Kustomization, the `maintenance` flag, or a missing deploy
-  record), `suspended`, `maintenance`, Kustomization counts with a not-ready
+  (a non-ready Kustomization, the `maintenance` flag, a missing deploy
+  record, a failed `entitlements-members` Job as `bootstrap_failed`, or
+  the current one not yet Complete as `bootstrap_pending`),
+  `suspended`, `maintenance`, Kustomization counts with a not-ready
   list, `environment` (name, stack version, resolved commit, profile,
   deploy timestamp, CLI version), `images` (branch, resolved-at, count,
   pinned services), and `baseUrl`. `stack` repeats the version fields
@@ -45,9 +47,12 @@ record written at the end of `spi up` supplies the version fields.
   `kustomizations.ready == kustomizations.total`; read the boolean.
   `ready` is false when no gating Kustomization is visible at all, which
   reports `no_kustomizations` rather than vacuous success. `deployable` is `ready` with
-  `maintenance` unset and a deploy record present; `spi service pin`
-  (ADR-031) enforces the same rule itself, refusing while `maintenance` is
-  set or the record is absent.
+  `maintenance` unset, a deploy record present, and the
+  `entitlements-members` Job the live init values name Complete for every
+  partition; `spi service pin` (ADR-031) enforces the same rule itself,
+  refusing while `maintenance` is set, the record is absent, or the
+  members bootstrap has failed or not finished. Values written before the
+  CLI listed members name no Job, so older environments are not gated.
 - Exit codes: 0 deployable, 2 not deployable with the typed `reason`, 1
   unreachable or guard failure. Fork CI gates on the exit code alone. The
   lifecycle workflows, which run while `maintenance` is set, read `ready`

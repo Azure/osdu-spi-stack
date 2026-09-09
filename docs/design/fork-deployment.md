@@ -77,7 +77,9 @@ skews ahead of the cluster contract (ADR-031).
    (the cross-pipeline guard: a colliding deploy fails fast, naming the
    colliding run from the pin annotation), resolves endpoints from
    `spi info --json`, resolves the secret map from Key Vault, health-gates
-   the declared dependencies, then runs the suite.
+   the declared dependencies, then runs the suite. Its callers are the two
+   stack identities, minted per run and never stored; see the two-token
+   recipe below.
 7. **Restore.** An always-run job on PR pipelines:
    `spi service reset "$SERVICE" --if-run "$GITHUB_RUN_ID"`. The reset is
    conditional on ownership: it acts only while the live pin's `run_id` still
@@ -250,6 +252,36 @@ shared environment's source promotion follows a successful deploy and test
 run with those gates active.
 
 ## Recipes
+
+Mint the two test callers in fork CI. The deploy identity is the positive
+caller: the `entitlements-members` Job adds its client id to `users`,
+`users.datalake.ops`, `users.datalake.admins`, and `users.data.root` for
+every partition when the environment is built or the identity changes, and
+`spi info --json` reports `entitlements_seeded.<partition>` once that Job
+has completed. The no-access identity is the negative caller: it carries
+the same federated credential and belongs to no group. Entitlements is
+expected to answer such a caller with 403, distinct from the 401 an
+unauthenticated request draws; if a partition answers 401 instead, the
+members Job seeds the no-access identity into `users` alone so the
+distinction holds. Both tokens are
+minted for the data-plane application id. A token for
+`https://management.azure.com/` is rewritten by the Istio identity filter to
+the platform's own workload identity, which owns every group, so it would
+pass any positive test and fail every negative one.
+
+```yaml
+- id: facts
+  run: |
+    spi info --json > facts.json
+    echo "audience=$(jq -r .azure.data_plane_application_id facts.json)" >> "$GITHUB_OUTPUT"
+    echo "noaccess=$(jq -r .deploy_identity.no_access_client_id facts.json)" >> "$GITHUB_OUTPUT"
+- uses: azure/login@v2            # the deploy identity, AZURE_CLIENT_ID from the repository
+  with: { client-id: ${{ secrets.AZURE_CLIENT_ID }}, tenant-id: ..., subscription-id: ... }
+- run: echo "TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"
+- uses: azure/login@v2            # the no-access identity holds no subscription role
+  with: { client-id: ${{ steps.facts.outputs.noaccess }}, tenant-id: ..., allow-no-subscriptions: true }
+- run: echo "NO_ACCESS_TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"
+```
 
 Hand-pin a fork image against a standing environment and return it:
 

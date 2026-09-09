@@ -24,7 +24,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
-from .bootstrap import create_istio_revision_configmap
+from .bootstrap import create_istio_revision_configmap, refresh_spi_init_values
 from .checks import PREREQ_TOOLS, check_prerequisites
 from .config import Config, IngressMode, Profile
 from .console import console, display_result
@@ -906,6 +906,7 @@ def reconcile(
     # commit is applied; a stale or missing revision stalls the whole tree.
     console.print("\n[bold]Refreshing cluster config for Flux substitution...[/bold]")
     create_istio_revision_configmap()
+    refresh_spi_init_values()
 
     if not refresh_images:
         _backfill_schema_load_lock(image_branch)
