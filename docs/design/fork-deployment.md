@@ -275,8 +275,8 @@ pass any positive test and fail every negative one.
 - uses: azure/login@v2            # the deploy identity, AZURE_CLIENT_ID from the repository
   with: { client-id: ${{ secrets.AZURE_CLIENT_ID }}, tenant-id: ..., subscription-id: ... }
 - run: echo "TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"
-- uses: azure/login@v2            # the no-access identity, client id read from the facts
-  with: { client-id: ${{ steps.facts.outputs.noaccess }}, tenant-id: ..., subscription-id: ... }
+- uses: azure/login@v2            # the no-access identity holds no subscription role
+  with: { client-id: ${{ steps.facts.outputs.noaccess }}, tenant-id: ..., allow-no-subscriptions: true }
 - run: echo "NO_ACCESS_TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"
 ```
 

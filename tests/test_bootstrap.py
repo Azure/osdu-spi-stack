@@ -15,7 +15,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import typer
-import pytest
 from typer.testing import CliRunner
 
 from spi import cli
@@ -220,9 +219,12 @@ class TestRefreshSpiInitValues:
         with (
             patch(
                 "spi.bootstrap.run_process",
-                return_value=_proc(0, "" if values_yaml is None else json.dumps(
-                    {"data": {"values.yaml": values_yaml}}
-                )),
+                return_value=_proc(
+                    0,
+                    ""
+                    if values_yaml is None
+                    else json.dumps({"data": {"values.yaml": values_yaml}}),
+                ),
             ),
             patch(
                 "spi.bootstrap.read_cluster_config",
@@ -267,15 +269,17 @@ class TestRefreshSpiInitValues:
         self._run(None, "id").assert_not_called()
         self._run("partitions:\n  - opendes\n", "").assert_not_called()
 
-    def test_refuses_to_refresh_when_values_read_fails(self):
+    def test_leaves_values_alone_when_the_read_fails(self, capsys):
+        """A Forbidden is not an absent ConfigMap; re-rendering from nothing
+        would drop the member list, so the refresh warns and skips."""
         with (
             patch("spi.bootstrap.run_process", return_value=_proc(1, "", "Forbidden")),
             patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
-            pytest.raises(ClusterConfigError, match="Could not read spi-init-values: Forbidden"),
         ):
             refresh_spi_init_values()
 
         apply_yaml.assert_not_called()
+        assert "Could not read spi-init-values: Forbidden" in capsys.readouterr().out
 
 
 class TestReconcileRefreshesClusterConfig:

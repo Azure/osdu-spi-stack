@@ -60,20 +60,11 @@ class ClusterConfigError(RuntimeError):
     """The live spi-cluster-config could not be read, as opposed to not existing."""
 
 
-def read_cluster_config() -> dict[str, str]:
-    """Live spi-cluster-config data; empty when absent, an error on any other failure."""
+def _read_configmap_data(name: str) -> dict[str, str]:
+    """A ConfigMap's data in osdu-flux; empty when absent, an error on any other failure."""
     result = run_process(
-        [
-            "kubectl",
-            "get",
-            "configmap",
-            ISTIO_REVISION_CONFIGMAP,
-            "-n",
-            ISTIO_REVISION_NAMESPACE,
-            "--ignore-not-found",
-            "-o",
-            "json",
-        ],
+        ["kubectl", "get", "configmap", name, "-n", ISTIO_REVISION_NAMESPACE]
+        + ["--ignore-not-found", "-o", "json"],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -81,10 +72,15 @@ def read_cluster_config() -> dict[str, str]:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip() or "kubectl failed"
-        raise ClusterConfigError(f"Could not read {ISTIO_REVISION_CONFIGMAP}: {detail}")
+        raise ClusterConfigError(f"Could not read {name}: {detail}")
     if not result.stdout.strip():
         return {}
     return dict(json.loads(result.stdout).get("data", {}) or {})
+
+
+def read_cluster_config() -> dict[str, str]:
+    """Live spi-cluster-config data; empty when absent, an error on any other failure."""
+    return _read_configmap_data(ISTIO_REVISION_CONFIGMAP)
 
 
 def _detect_istio_revision() -> str | None:
@@ -196,29 +192,7 @@ INIT_VALUES_CONFIGMAP = "spi-init-values"
 
 def read_init_values() -> str:
     """The live values.yaml blob the init chart renders from; empty when absent."""
-    result = run_process(
-        [
-            "kubectl",
-            "get",
-            "configmap",
-            INIT_VALUES_CONFIGMAP,
-            "-n",
-            ISTIO_REVISION_NAMESPACE,
-            "--ignore-not-found",
-            "-o",
-            "json",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip() or "kubectl failed"
-        raise ClusterConfigError(f"Could not read {INIT_VALUES_CONFIGMAP}: {detail}")
-    if not result.stdout.strip():
-        return ""
-    return (json.loads(result.stdout).get("data") or {}).get("values.yaml", "")
+    return _read_configmap_data(INIT_VALUES_CONFIGMAP).get("values.yaml", "")
 
 
 def refresh_spi_init_values() -> None:
@@ -229,12 +203,16 @@ def refresh_spi_init_values() -> None:
     spi-cluster-config. A cluster bootstrapped before either existed is left
     alone: there is nothing to re-render from, and ``spi up`` writes both.
     """
-    values = parse_init_values(read_init_values())
-    partitions = values.get("partitions") or []
-    if not partitions:
-        console.print("  [dim]spi-init-values not found; skipping members refresh[/dim]")
+    try:
+        values = parse_init_values(read_init_values())
+        partitions = values.get("partitions") or []
+        if not partitions:
+            console.print("  [dim]spi-init-values not found; skipping members refresh[/dim]")
+            return
+        client_id = read_cluster_config().get("DEPLOY_IDENTITY_CLIENT_ID", "")
+    except ClusterConfigError as exc:
+        console.print(f"[warning]{exc}; leaving {INIT_VALUES_CONFIGMAP} unchanged.[/warning]")
         return
-    client_id = read_cluster_config().get("DEPLOY_IDENTITY_CLIENT_ID", "")
     members = [client_id] if client_id else []
     if members == list(values.get("entitlementsMembers") or []):
         return
