@@ -693,7 +693,11 @@ data:
                 emails[group["name"]] = group.get("email", "")
         absent = [name for name in ROOT_GROUPS if not emails.get(name)]
         if absent:
-            outcome("group_missing", f"root groups not visible to the owner: {', '.join(absent)}")
+            outcome(
+                "group_missing",
+                f"root groups not visible to the owner: {', '.join(absent)}; "
+                f"{', '.join(members)} not seeded",
+            )
             return 1
 
         added = False

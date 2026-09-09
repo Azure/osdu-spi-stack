@@ -202,8 +202,14 @@ def test_jobs_request_the_cpu_admission_will_grant_them():
     differing from the release manifest in a field Helm can only close by
     patching, which the API server rejects, so every later upgrade of the
     release fails and so does its rollback."""
-    jobs = [doc for doc in _render(["opendes"]) if doc.get("kind") == "Job"]
-    assert jobs
+    docs = _render(["opendes"], {"entitlementsMembers[0]": "deployer-client-id"})
+    jobs = [doc for doc in docs if doc.get("kind") == "Job"]
+    assert {job["metadata"]["labels"]["app.kubernetes.io/component"] for job in jobs} == {
+        "partition-init",
+        "entitlements-init",
+        "legal-init",
+        "entitlements-members",
+    }
     for job in jobs:
         pod = job["spec"]["template"]["spec"]
         for container in pod["containers"] + pod.get("initContainers", []):
@@ -536,7 +542,8 @@ def test_members_fails_when_a_root_group_is_missing(init_scripts, monkeypatch, c
     assert result.routed("post") == []
     assert result.termination_message == (
         "entitlements-members outcome: group_missing: "
-        "root groups not visible to the owner: users.datalake.admins, users.data.root"
+        "root groups not visible to the owner: users.datalake.admins, users.data.root; "
+        "deployer-client-id not seeded"
     )
 
 
