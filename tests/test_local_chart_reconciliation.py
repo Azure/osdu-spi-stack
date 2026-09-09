@@ -32,7 +32,7 @@ def test_local_chart_releases_reconcile_per_revision():
             if not document or document.get("kind") != "HelmRelease":
                 continue
 
-            chart_spec = document["spec"]["chart"]["spec"]
+            chart_spec = ((document.get("spec") or {}).get("chart") or {}).get("spec") or {}
             if not str(chart_spec.get("chart", "")).startswith("./"):
                 continue
             if chart_spec.get("reconcileStrategy") != "Revision":

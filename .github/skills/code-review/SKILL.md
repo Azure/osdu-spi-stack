@@ -15,9 +15,6 @@ that pass those checks.
 
 ## Repository checks
 
-- **Chart versions.** Changes under `software/charts/` require a `version`
-  bump in the affected `Chart.yaml`. Flux does not repackage a path chart
-  until that version changes.
 - **Safeguards.** Every OSDU service HelmRelease consumes `osdu-spi-service`.
   Preserve `runAsNonRoot`, `seccompProfile.type: RuntimeDefault`,
   `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, resource
