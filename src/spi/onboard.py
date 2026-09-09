@@ -27,7 +27,7 @@ import json
 import re
 import shlex
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 from rich.syntax import Syntax
@@ -78,6 +78,12 @@ class Target:
     identity_name: str
     resource_group: str
     values: dict[str, str]
+    # The no-access identity carries the same federated credentials and no
+    # role or group; fork CI mints its 403 caller from it.
+    no_access_identity_name: str = ""
+
+    def no_access(self) -> Target:
+        return replace(self, identity_name=self.no_access_identity_name)
 
     def az_scope(self) -> list[str]:
         scope = ["--identity-name", self.identity_name, "--resource-group", self.resource_group]
@@ -146,9 +152,13 @@ class State:
     # Variables carry their value; a present secret reads "" because GitHub
     # never returns it; an absent name is None.
     values: dict[str, Optional[str]] = field(default_factory=dict)
+    no_access_roster: tuple[Credential, ...] = ()
 
     def credential(self, service: str) -> Optional[Credential]:
         return find_credential(self.roster, service)
+
+    def no_access_credential(self, service: str) -> Optional[Credential]:
+        return find_credential(self.no_access_roster, service)
 
 
 @dataclass(frozen=True)
@@ -250,6 +260,7 @@ def load_target() -> Target:
         profile=environment.get("profile", ""),
         identity_name=f"{cluster}-deployer" if cluster else "",
         resource_group=identity.get("resource_group", ""),
+        no_access_identity_name=f"{cluster}-noaccess" if cluster else "",
         values={
             CLIENT_ID_SECRET: identity.get("client_id", ""),
             "AZURE_TENANT_ID": identity.get("tenant_id", ""),
@@ -290,6 +301,22 @@ def read_roster(target: Target) -> tuple[Credential, ...]:
         if isinstance(item, dict)
     ]
     return tuple(sorted(roster, key=lambda c: c.name))
+
+
+def read_no_access_roster(target: Target) -> tuple[Credential, ...]:
+    """The no-access identity's roster; a missing identity names the fix."""
+
+    if not target.no_access_identity_name:
+        return ()
+    try:
+        return read_roster(target.no_access())
+    except OnboardError as exc:
+        if "not found" in str(exc).lower():
+            raise OnboardError(
+                f"No-access identity {target.no_access_identity_name} not found; run "
+                "'spi up' on a release that provisions it first."
+            ) from None
+        raise
 
 
 def resolve_repository(spec: str) -> str:
@@ -382,6 +409,7 @@ def observe(
 ) -> State:
     return State(
         roster=read_roster(target) if roster is None else roster,
+        no_access_roster=read_no_access_roster(target),
         projection=read_projection(),
         protection=read_protection(repo) if repo else None,
         values=read_values(repo, org) if repo and values else {},
@@ -606,9 +634,9 @@ def value_rows(
     return rows
 
 
-def credential_row(plan: Plan) -> Row:
-    existing = plan.state.credential(plan.service)
-    item = f"{credential_name(plan.service)} on {plan.target.identity_name}"
+def credential_row(plan: Plan, target: Target, roster: tuple[Credential, ...]) -> Row:
+    existing = find_credential(roster, plan.service)
+    item = f"{credential_name(plan.service)} on {target.identity_name}"
     if plan.remove:
         if existing is None:
             return Row("azure", item, "correct", "absent")
@@ -635,7 +663,7 @@ def plan_rows(plan: Plan, *, stamped: bool = False) -> list[Row]:
         rows.extend(
             value_rows(plan.target, plan.org or plan.repo, plan.state.values, stamped=stamped)
         )
-    rows.append(credential_row(plan))
+    rows.extend(credential_row(plan, target, roster) for target, roster in _identity_rosters(plan))
     rows.append(projection_row(desired_projection(plan), plan.state.projection))
     return rows
 
@@ -643,8 +671,9 @@ def plan_rows(plan: Plan, *, stamped: bool = False) -> list[Row]:
 def plan_steps(plan: Plan) -> list[Step]:
     steps: list[Step] = []
     if plan.remove:
-        revoke = revoke_step(plan.target, plan.service, plan.state.roster)
-        steps.extend([revoke] if revoke else [])
+        for target, roster in _identity_rosters(plan):
+            revoke = revoke_step(target, plan.service, roster)
+            steps.extend([revoke] if revoke else [])
     else:
         assert plan.state.protection is not None
         if not plan.skip_repo:
@@ -653,11 +682,21 @@ def plan_steps(plan: Plan) -> list[Step]:
         # Trust never precedes the rules; without --skip-repo the steps above establish them.
         if plan.blocked:
             return steps
-        trust = credential_step(plan.target, plan.service, plan.repo, plan.state.roster)
-        steps.extend([trust] if trust else [])
+        for target, roster in _identity_rosters(plan):
+            trust = credential_step(target, plan.service, plan.repo, roster)
+            steps.extend([trust] if trust else [])
     projection = projection_step(desired_projection(plan), plan.state.projection)
     steps.extend([projection] if projection else [])
     return steps
+
+
+def _identity_rosters(plan: Plan) -> list[tuple[Target, tuple[Credential, ...]]]:
+    """The deployer first, then the no-access identity when the target names one."""
+
+    pairs = [(plan.target, plan.state.roster)]
+    if plan.target.no_access_identity_name:
+        pairs.append((plan.target.no_access(), plan.state.no_access_roster))
+    return pairs
 
 
 def refuse(plan: Plan) -> None:
@@ -676,11 +715,12 @@ def refuse(plan: Plan) -> None:
                 f"{plan.repo} already backs {cred.service or cred.name}; one repository "
                 "backs one service. Remove that credential first."
             )
-    if plan.state.credential(plan.service) is None and len(plan.state.roster) >= MAX_CREDENTIALS:
-        raise OnboardError(
-            f"{plan.target.identity_name} already holds {MAX_CREDENTIALS} federated "
-            "credentials, the Azure maximum; a larger roster is a new decision."
-        )
+    for target, roster in _identity_rosters(plan):
+        if find_credential(roster, plan.service) is None and len(roster) >= MAX_CREDENTIALS:
+            raise OnboardError(
+                f"{target.identity_name} already holds {MAX_CREDENTIALS} federated "
+                "credentials, the Azure maximum; a larger roster is a new decision."
+            )
 
 
 def require_known_service(service: str) -> None:
@@ -887,13 +927,16 @@ def apply_plan(plan: Plan) -> list[Row]:
                 _run(step)
 
     def azure() -> None:
-        target, service, repo = plan.target, plan.service, plan.repo
-        if plan.remove:
-            _write_credential(target, lambda roster: revoke_step(target, service, roster))
-            return
-        if not read_protection(repo).satisfied:
+        service, repo = plan.service, plan.repo
+        if not plan.remove and not read_protection(repo).satisfied:
             raise _unprotected(repo)
-        _write_credential(target, lambda roster: credential_step(target, service, repo, roster))
+        for target, _ in _identity_rosters(plan):
+            if plan.remove:
+                _write_credential(target, lambda roster, t=target: revoke_step(t, service, roster))
+            else:
+                _write_credential(
+                    target, lambda roster, t=target: credential_step(t, service, repo, roster)
+                )
 
     def cluster() -> None:
         if any(step.phase == "cluster" for step in plan.steps):
@@ -946,6 +989,27 @@ def list_trust(target: Target) -> list[Row]:
         for cred in roster
         if cred.service not in trusted
     )
+    if target.no_access_identity_name:
+        try:
+            no_access = roster_repos(read_no_access_roster(target))
+        except OnboardError as exc:
+            rows.append(Row("azure", target.no_access_identity_name, "missing", str(exc)))
+            return rows
+        for service, repo in sorted(trusted.items()):
+            item = f"{credential_name(service)} on {target.no_access_identity_name}"
+            mirrored = no_access.get(service)
+            if mirrored == repo:
+                rows.append(Row("azure", item, "correct", repo))
+            elif mirrored is None:
+                rows.append(Row("azure", item, "missing", f"{target.identity_name} trusts {repo}"))
+            else:
+                rows.append(Row("azure", item, "drifted", f"trusts {mirrored}, not {repo}"))
+        for service, repo in sorted(no_access.items()):
+            if service not in trusted:
+                item = f"{credential_name(service)} on {target.no_access_identity_name}"
+                rows.append(
+                    Row("azure", item, "drifted", f"trusts {repo}; {target.identity_name} does not")
+                )
     return rows
 
 

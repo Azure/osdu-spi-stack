@@ -188,3 +188,4 @@ def test_deploy_identity_name_follows_the_cluster():
     cfg = Config.from_env("dks")
 
     assert cfg.deploy_identity_name == "spi-stack-dks-deployer"
+    assert cfg.no_access_identity_name == "spi-stack-dks-noaccess"

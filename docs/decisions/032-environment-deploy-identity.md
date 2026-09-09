@@ -116,6 +116,14 @@ config.
 - **CI passes the guard, never bypasses it.** Fork jobs acquire their
   kubeconfig through the CLI, which yields a context the guard's fingerprint
   check accepts; `SPI_SKIP_GUARD` stays out of CI.
+- **A second identity proves the negative path.** `spi up` also creates
+  UAMI `spi-stack-<env>-noaccess` with no Azure role and no entitlements
+  group. `spi onboard` federates it on the same `fork-<service>` credential
+  and subject as the deployer and revokes both together, so a trusted
+  repository can mint a token whose data-plane calls must answer 403 rather
+  than 401. `spi info --json` publishes it as
+  `deploy_identity.no_access_client_id`; forks read it per run instead of
+  holding a sixth repository value.
 
 Rejected: one managed identity per fork in a separate persistent resource
 group. Distinct principal names in the cluster audit log, but the same

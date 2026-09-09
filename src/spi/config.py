@@ -76,6 +76,7 @@ class Config(BaseModel):
     data_partitions: List[str] = ["opendes"]
     identity_name: str = ""
     deploy_identity_name: str = ""
+    no_access_identity_name: str = ""
     external_dns_identity_name: str = ""
     keyvault_name: str = ""
     acr_name: str = ""
@@ -104,6 +105,7 @@ class Config(BaseModel):
         acr_name = f"osdu{safe_env}{name_suffix}"[:50] if env else "osduspistack"
         identity_name = f"{cluster_name}-osdu-identity"
         deploy_identity_name = f"{cluster_name}-deployer"
+        no_access_identity_name = f"{cluster_name}-noaccess"
         external_dns_identity_name = f"{cluster_name}-external-dns"
 
         return Config(
@@ -113,6 +115,7 @@ class Config(BaseModel):
             resource_group=resource_group,
             identity_name=identity_name,
             deploy_identity_name=deploy_identity_name,
+            no_access_identity_name=no_access_identity_name,
             external_dns_identity_name=external_dns_identity_name,
             keyvault_name=keyvault_name,
             acr_name=acr_name,

@@ -53,6 +53,7 @@ def test_render_cluster_config_carries_deploy_identity_facts():
         {
             "deploy_identity_client_id": "client",
             "deploy_identity_principal_id": "principal",
+            "no_access_identity_client_id": "noaccess",
             "tenant_id": "tenant",
             "subscription_id": "sub",
         },
@@ -65,6 +66,7 @@ def test_render_cluster_config_carries_deploy_identity_facts():
     assert 'AZURE_RESOURCE_GROUP: "spi-stack-dks"' in yaml
     assert 'DEPLOY_IDENTITY_CLIENT_ID: "client"' in yaml
     assert 'DEPLOY_IDENTITY_PRINCIPAL_ID: "principal"' in yaml
+    assert 'NO_ACCESS_IDENTITY_CLIENT_ID: "noaccess"' in yaml
     assert 'AZURE_TENANT_ID: "tenant"' in yaml
     assert 'AZURE_SUBSCRIPTION_ID: "sub"' in yaml
     assert 'AKS_CLUSTER_NAME: "spi-stack-dks"' in yaml

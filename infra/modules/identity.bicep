@@ -2,14 +2,19 @@
 // Licensed under the Apache License, Version 2.0.
 //
 // Federates the OSDU workload identity to workload-identity-sa in each
-// configured namespace, and creates the environment's deploy identity, which
-// carries no federated credential until spi onboard trusts a repository.
+// configured namespace, and creates the environment's deploy identity and
+// no-access identity, which carry no federated credential until spi onboard
+// trusts a repository. The no-access identity never receives a role
+// assignment or an entitlements group; fork CI uses it to prove 403 paths.
 
 @description('Resource name for the OSDU workload identity.')
 param name string
 
 @description('Resource name for the deploy identity fork CI federates to.')
 param deployIdentityName string
+
+@description('Resource name for the no-access identity fork CI federates to for 403 tests.')
+param noAccessIdentityName string
 
 @description('Azure region where the managed identity is deployed.')
 param location string
@@ -36,6 +41,11 @@ resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' 
 
 resource deployIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: deployIdentityName
+  location: location
+}
+
+resource noAccessIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: noAccessIdentityName
   location: location
 }
 
@@ -71,3 +81,12 @@ output deployIdentityClientId string = deployIdentity.properties.clientId
 
 @description('Principal ID bound as the User subject of the fork RoleBindings.')
 output deployIdentityPrincipalId string = deployIdentity.properties.principalId
+
+@description('Azure resource ID of the no-access identity.')
+output noAccessIdentityResourceId string = noAccessIdentity.id
+
+@description('Client ID a trusted repository reads from spi info as no_access_client_id.')
+output noAccessIdentityClientId string = noAccessIdentity.properties.clientId
+
+@description('Principal ID of the no-access identity; bound nowhere.')
+output noAccessIdentityPrincipalId string = noAccessIdentity.properties.principalId

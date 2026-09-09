@@ -60,6 +60,7 @@ def full_inventory() -> list:
         _res("Microsoft.ManagedIdentity/userAssignedIdentities", "spi-stack-dev1-ctl-id"),
         _res("Microsoft.ManagedIdentity/userAssignedIdentities", "spi-stack-dev1-osdu-identity"),
         _res("Microsoft.ManagedIdentity/userAssignedIdentities", "spi-stack-dev1-deployer"),
+        _res("Microsoft.ManagedIdentity/userAssignedIdentities", "spi-stack-dev1-noaccess"),
         _res("Microsoft.Network/natGateways", "spi-stack-dev1-natgw"),
         _res("Microsoft.Network/publicIPAddresses", "spi-stack-dev1-natgw-pip"),
         _res("Microsoft.Network/virtualNetworks", "spi-stack-dev1-vnet"),
@@ -222,6 +223,7 @@ class TestOrdinaryTeardown:
             "spi-stack-dev1-ctl-id",
             "spi-stack-dev1-osdu-identity",
             "spi-stack-dev1-deployer",
+            "spi-stack-dev1-noaccess",
         }
         assert all("userAssignedIdentities" not in rid for rid in az.deletes())
         assert {r["type"].lower() for r in az.inventory} == RETAINED_TYPES
@@ -323,7 +325,7 @@ class TestOrdinaryTeardown:
 
         retained = teardown_environment(config())
 
-        assert len(retained) == 3
+        assert len(retained) == 4
         assert az.deletes() == []
         az.prune.assert_not_called()
 
@@ -346,7 +348,7 @@ class TestOrdinaryTeardown:
         with patch("spi.teardown.run_command", side_effect=add_topic_after_natgw):
             retained = teardown_environment(config())
 
-        assert len(retained) == 3
+        assert len(retained) == 4
         assert topic["id"] in az.deletes()
         assert {r["type"].lower() for r in az.inventory} == RETAINED_TYPES
 
@@ -365,7 +367,7 @@ class TestReadsAndPrune:
         with patch("spi.teardown.run_command", side_effect=throttled):
             retained = teardown_environment(config())
 
-        assert len(retained) == 3
+        assert len(retained) == 4
 
     def test_an_unreadable_api_server_reaches_the_prune_as_empty(self, az):
         original = az.run_command

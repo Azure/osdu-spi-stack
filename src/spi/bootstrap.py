@@ -28,6 +28,7 @@ ISTIO_REVISION_KEY = "ISTIO_REVISION"
 DEPLOY_IDENTITY_KEYS = (
     "DEPLOY_IDENTITY_CLIENT_ID",
     "DEPLOY_IDENTITY_PRINCIPAL_ID",
+    "NO_ACCESS_IDENTITY_CLIENT_ID",
     "AZURE_TENANT_ID",
     "AZURE_SUBSCRIPTION_ID",
     "AZURE_RESOURCE_GROUP",
@@ -42,6 +43,7 @@ def deploy_identity_facts(
     return {
         "DEPLOY_IDENTITY_CLIENT_ID": infra_outputs.get("deploy_identity_client_id", ""),
         "DEPLOY_IDENTITY_PRINCIPAL_ID": infra_outputs.get("deploy_identity_principal_id", ""),
+        "NO_ACCESS_IDENTITY_CLIENT_ID": infra_outputs.get("no_access_identity_client_id", ""),
         "AZURE_TENANT_ID": infra_outputs.get("tenant_id", ""),
         "AZURE_SUBSCRIPTION_ID": infra_outputs.get("subscription_id", ""),
         "AZURE_RESOURCE_GROUP": resource_group,

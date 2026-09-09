@@ -73,6 +73,7 @@ def _wire(
             "ISTIO_REVISION": "asm-1-30",
             "DEPLOY_IDENTITY_CLIENT_ID": "deployer-client-id",
             "DEPLOY_IDENTITY_PRINCIPAL_ID": "deployer-principal-id",
+            "NO_ACCESS_IDENTITY_CLIENT_ID": "noaccess-client-id",
             "AZURE_TENANT_ID": "tenant-id",
             "AZURE_SUBSCRIPTION_ID": "subscription-id",
             "AZURE_RESOURCE_GROUP": "spi-stack-shared",
@@ -293,13 +294,17 @@ def test_info_human_header_marks_a_missing_record(monkeypatch):
     assert "Environment:   unknown (no deploy record)" in _plain(result.output)
 
 
-def test_info_json_publishes_the_five_deploy_identity_values(monkeypatch):
+def test_info_json_publishes_the_deploy_identity_values(monkeypatch):
+    """The five values a fork holds plus the no-access client id it reads at
+    run time; the principal id stays out because nothing outside the cluster
+    needs it."""
     _wire(monkeypatch)
 
     block = info.collect_info()["deploy_identity"]
 
     assert block == {
         "client_id": "deployer-client-id",
+        "no_access_client_id": "noaccess-client-id",
         "tenant_id": "tenant-id",
         "subscription_id": "subscription-id",
         "resource_group": "spi-stack-shared",
@@ -315,6 +320,7 @@ def test_deploy_identity_block_is_empty_strings_before_bootstrap(monkeypatch):
     block = info.collect_info()["deploy_identity"]
 
     assert block["client_id"] == ""
+    assert block["no_access_client_id"] == ""
     assert block["cluster"] == ""
     assert block["resource_group"] == "spi-stack-shared"
 
