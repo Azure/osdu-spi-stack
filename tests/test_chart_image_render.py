@@ -27,6 +27,7 @@ import pytest
 import yaml
 
 from spi.shell import run_process
+from tests._quantities import _millicores
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHART_DIR = REPO_ROOT / "software" / "charts" / "osdu-spi-service"
@@ -34,7 +35,7 @@ CHART_DIR = REPO_ROOT / "software" / "charts" / "osdu-spi-service"
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="Helm not installed")
 
 
-def _rendered_image(extra_set: dict[str, str]) -> str:
+def _rendered_deployment(extra_set: dict[str, str]) -> dict:
     set_args = []
     for key, value in extra_set.items():
         set_args += ["--set", f"{key}={value}"]
@@ -48,9 +49,13 @@ def _rendered_image(extra_set: dict[str, str]) -> str:
 
     for doc in yaml.safe_load_all(result.stdout):
         if doc and doc.get("kind") == "Deployment":
-            containers = doc["spec"]["template"]["spec"]["containers"]
-            return containers[0]["image"]
+            return doc
     raise AssertionError("no Deployment rendered")
+
+
+def _rendered_image(extra_set: dict[str, str]) -> str:
+    deployment = _rendered_deployment(extra_set)
+    return deployment["spec"]["template"]["spec"]["containers"][0]["image"]
 
 
 def test_renders_repository_at_digest_when_digest_set():
@@ -72,3 +77,13 @@ def test_falls_back_to_repository_colon_tag_when_digest_empty():
         }
     )
     assert image == "community.opengroup.org:5555/osdu/partition-master:abc1234"
+
+
+def test_requests_the_cpu_admission_will_grant_every_container():
+    deployment = _rendered_deployment({"redisTls": "true"})
+    pod = deployment["spec"]["template"]["spec"]
+    containers = pod["containers"] + pod["initContainers"]
+
+    for container in containers:
+        requested = container["resources"]["requests"]["cpu"]
+        assert _millicores(requested) >= 100, container["name"]
