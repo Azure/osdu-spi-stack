@@ -59,6 +59,8 @@ from .pins import ServicePin, apply_image_lock, apply_schema_load_backfill, desc
 from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, run_command, run_process
 from .templates import (
+    TESTER_NAMESPACE,
+    TESTER_SERVICE_ACCOUNTS,
     istio_auth_resources,
     osdu_config_configmap,
     spi_init_values_configmap,
@@ -112,6 +114,17 @@ def _create_osdu_config(config: Config, infra_outputs: dict) -> None:
             tenant_id=infra_outputs.get("tenant_id", ""),
         )
         kubectl_apply_yaml(sa_yaml, f"apply workload-identity-sa in {ns}")
+    for sa_name, output_key in TESTER_SERVICE_ACCOUNTS:
+        client_id = infra_outputs.get(output_key, "")
+        if not client_id:
+            continue
+        sa_yaml = workload_identity_sa(
+            namespace=TESTER_NAMESPACE,
+            client_id=client_id,
+            tenant_id=infra_outputs.get("tenant_id", ""),
+            name=sa_name,
+        )
+        kubectl_apply_yaml(sa_yaml, f"apply {sa_name} in {TESTER_NAMESPACE}")
     display_result("Workload Identity ServiceAccounts created")
 
 

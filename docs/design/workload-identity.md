@@ -94,6 +94,32 @@ and declaration enforcement remain unbuilt. See
 Ordinary `spi down` retains these managed identities; `--purge` removes them
 after external-grant cleanup ([ADR-034](../decisions/034-deploy-identity-survives-down.md)).
 
+### Minting as the deploy identity from a laptop
+
+Both identities also trust one ServiceAccount each on the cluster's OIDC
+issuer: `spi-test/spi-deployer` and `spi-test/spi-no-access`, applied by
+`spi up` with the matching `azure.workload.identity/client-id` annotation.
+`spi token` runs `kubectl create token` for the account with audience
+`api://AzureADTokenExchange` and a ten-minute lifetime, then posts it as a
+client assertion to `https://login.microsoftonline.com/<tenant>/oauth2/token`
+with `resource` set to `azure.token_audience`. The v1 endpoint is deliberate:
+v2 emits `azp` and omits `appid`, and the Spring filters read `appid`. The
+bearer goes to stdout alone, so `INTEGRATION_TESTER_ACCESS_TOKEN=$(spi token)`
+composes; status lines go to stderr. `--json` adds the client id, the
+ServiceAccount, the audience, and `expires_on`. Entra's default lifetime is
+about an hour, so a suite that runs longer sees a 401 mid-run that is an
+expired bearer, not a product fault.
+
+The same exchange happens with no CLI inside the cluster: a Job in
+`spi-test` on `spi-deployer` with the `azure.workload.identity/use` label
+receives the projected token file from the webhook. Check the federation
+without minting:
+
+```bash
+az identity federated-credential list -g <rg> --identity-name spi-stack-<env>-deployer -o table
+kubectl get serviceaccount spi-deployer -n spi-test -o yaml
+```
+
 ## Receiving an OSDU API request
 
 External callers reach OSDU through the gateway. Internal callers can reach

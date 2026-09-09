@@ -124,6 +124,25 @@ config.
   than 401. `spi info --json` publishes it as
   `deploy_identity.no_access_client_id`; forks read it per run instead of
   holding a sixth repository value.
+- **The cluster is a second issuer for the same identities.**
+  `infra/modules/identity.bicep` federates the deployer to
+  `system:serviceaccount:spi-test:spi-deployer` and the no-access identity
+  to `system:serviceaccount:spi-test:spi-no-access` on the AKS OIDC issuer,
+  and `spi up` applies both ServiceAccounts, annotated for workload
+  identity, in the `spi-test` namespace it creates outside the mesh. Every
+  Azure-provider service admits app-only tokens alone, so a developer's own
+  `az account get-access-token`, which carries `upn`, is refused on every
+  endpoint. `spi token` requests a ten-minute projected token for the
+  ServiceAccount and exchanges it at the Entra v1 endpoint for a bearer
+  whose `appid` is the deploy identity, the same principal fork CI holds
+  through GitHub federation; `--no-access` mints the negative-path bearer.
+  Who may mint is who may create tokens for those ServiceAccounts, a
+  Kubernetes RBAC question the fork Roles answer with no: CI stays on the
+  GitHub path. A Job on the `spi-deployer` account mints in-cluster through
+  the webhook with no CLI step. The two credentials sit outside the
+  onboarding roster (`onboard.py` projects GitHub-issuer credentials only)
+  but inside Azure's cap, so an environment trusts at most nineteen
+  repositories.
 
 Rejected: one managed identity per fork in a separate persistent resource
 group. Distinct principal names in the cluster audit log, but the same

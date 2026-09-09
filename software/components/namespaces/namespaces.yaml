@@ -19,6 +19,13 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: spi-test
+  labels:
+    app.kubernetes.io/managed-by: osdu-spi-stack
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: osdu
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack

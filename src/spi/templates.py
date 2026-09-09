@@ -91,13 +91,32 @@ data:
 """
 
 
-def workload_identity_sa(namespace: str, client_id: str, tenant_id: str) -> str:
-    """Workload Identity ServiceAccount for OSDU services."""
+# The subjects infra/modules/identity.bicep federates the deploy and no-access
+# identities to; spi up applies the accounts and spi token mints through them.
+# The namespace is outside the mesh: test Jobs reach services through the gateway.
+TESTER_NAMESPACE = "spi-test"
+DEPLOYER_SERVICE_ACCOUNT = "spi-deployer"
+NO_ACCESS_SERVICE_ACCOUNT = "spi-no-access"
+TESTER_SERVICE_ACCOUNTS = (
+    (DEPLOYER_SERVICE_ACCOUNT, "deploy_identity_client_id"),
+    (NO_ACCESS_SERVICE_ACCOUNT, "no_access_identity_client_id"),
+)
+
+
+def workload_identity_sa(
+    namespace: str, client_id: str, tenant_id: str, name: str = "workload-identity-sa"
+) -> str:
+    """Workload Identity ServiceAccount for OSDU services.
+
+    The default name is what every OSDU pod binds; the deploy and no-access
+    identities each trust a differently named account in the same namespace,
+    which spi token mints through and an in-cluster test Job can run as.
+    """
     return f"""\
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: workload-identity-sa
+  name: {name}
   namespace: {namespace}
   annotations:
     azure.workload.identity/client-id: "{client_id}"

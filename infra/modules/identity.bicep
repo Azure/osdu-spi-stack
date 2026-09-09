@@ -3,9 +3,11 @@
 //
 // Federates the OSDU workload identity to workload-identity-sa in each
 // configured namespace, and creates the environment's deploy identity and
-// no-access identity, which carry no federated credential until spi onboard
-// trusts a repository. The no-access identity never receives a role
-// assignment or an entitlements group; fork CI uses it to prove 403 paths.
+// no-access identity. Each of those trusts one cluster ServiceAccount, so a
+// developer with cluster access can mint the same app-only token fork CI
+// mints through GitHub federation (spi token); repositories are trusted later
+// by spi onboard. The no-access identity never receives a role assignment or
+// an entitlements group; fork CI uses it to prove 403 paths.
 
 @description('Resource name for the OSDU workload identity.')
 param name string
@@ -21,6 +23,15 @@ param location string
 
 @description('OIDC issuer URL of the AKS cluster; use an empty string only to omit federation.')
 param oidcIssuerUrl string
+
+@description('Namespace of the ServiceAccounts the deploy and no-access identities trust.')
+param testerNamespace string = 'spi-test'
+
+@description('ServiceAccount the deploy identity trusts; spi token mints through it.')
+param deployerServiceAccountName string = 'spi-deployer'
+
+@description('ServiceAccount the no-access identity trusts; spi token --no-access mints through it.')
+param noAccessServiceAccountName string = 'spi-no-access'
 
 @description('Kubernetes namespaces whose workload-identity-sa service account binds to this identity.')
 param federatedNamespaces array = [
@@ -63,6 +74,32 @@ resource federatedCredentials 'Microsoft.ManagedIdentity/userAssignedIdentities/
     ]
   }
 }]
+
+// The onboard roster projection ignores these two credentials by issuer, but
+// they count against the twenty-credential cap on each identity.
+resource deployerClusterCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = if (!empty(oidcIssuerUrl)) {
+  parent: deployIdentity
+  name: 'cluster-${testerNamespace}'
+  properties: {
+    issuer: oidcIssuerUrl
+    subject: 'system:serviceaccount:${testerNamespace}:${deployerServiceAccountName}'
+    audiences: [
+      'api://AzureADTokenExchange'
+    ]
+  }
+}
+
+resource noAccessClusterCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = if (!empty(oidcIssuerUrl)) {
+  parent: noAccessIdentity
+  name: 'cluster-${testerNamespace}'
+  properties: {
+    issuer: oidcIssuerUrl
+    subject: 'system:serviceaccount:${testerNamespace}:${noAccessServiceAccountName}'
+    audiences: [
+      'api://AzureADTokenExchange'
+    ]
+  }
+}
 
 @description('Azure resource ID of the OSDU workload identity.')
 output resourceId string = identity.id
