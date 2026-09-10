@@ -113,6 +113,7 @@ def _create_osdu_config(config: Config, infra_outputs: dict) -> None:
             client_id=infra_outputs.get("identity_client_id", ""),
             tenant_id=infra_outputs.get("tenant_id", ""),
         )
+        display_yaml(sa_yaml, f"ServiceAccount: workload-identity-sa in {ns}")
         kubectl_apply_yaml(sa_yaml, f"apply workload-identity-sa in {ns}")
     for sa_name, output_key in TESTER_SERVICE_ACCOUNTS:
         client_id = infra_outputs.get(output_key, "")
@@ -124,6 +125,7 @@ def _create_osdu_config(config: Config, infra_outputs: dict) -> None:
             tenant_id=infra_outputs.get("tenant_id", ""),
             name=sa_name,
         )
+        display_yaml(sa_yaml, f"ServiceAccount: {sa_name} in {TESTER_NAMESPACE}")
         kubectl_apply_yaml(sa_yaml, f"apply {sa_name} in {TESTER_NAMESPACE}")
     display_result("Workload Identity ServiceAccounts created")
 

@@ -731,6 +731,12 @@ class TestProjection:
             Credential(
                 "by-hand", GITHUB_ISSUER, "repo:Acme/x:ref:refs/heads/main", (GITHUB_AUDIENCE,)
             ),
+            Credential(
+                "cluster-spi-test",
+                "https://oidc.example/aks",
+                "system:serviceaccount:spi-test:spi-deployer",
+                (GITHUB_AUDIENCE,),
+            ),
         )
         monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
         monkeypatch.setattr(
@@ -743,6 +749,10 @@ class TestProjection:
         assert rows["schema"][0] == "drifted"
         assert rows["legal"] == ("drifted", "projected Acme/legal but not trusted")
         assert rows["by-hand"][0] == "unverified"
+        assert rows["cluster-spi-test"] == (
+            "correct",
+            "cluster issuer; system:serviceaccount:spi-test:spi-deployer",
+        )
         assert rows["fork-partition on spi-stack-dev1-noaccess"] == ("correct", REPO)
 
     def test_list_still_answers_when_the_no_access_identity_is_missing(self, monkeypatch):
@@ -841,6 +851,20 @@ class TestSubjectForms:
         assert cred("partition", REPO, subject=ID_SUBJECT).repo == REPO
         assert cred("partition", REPO, subject="repo:Acme/x:environment:other").repo == ""
 
+    @pytest.mark.parametrize(
+        "subject",
+        [
+            "repo:Acme@1/osdu-spi-partition:environment:spi-stack",
+            "repo:Acme/osdu-spi-partition@2:environment:spi-stack",
+        ],
+    )
+    def test_ids_must_come_as_a_pair(self, subject):
+        credential = cred("partition", REPO, subject=subject)
+
+        assert credential.repo == ""
+        assert not credential.well_formed
+        assert onboard.roster_repos((credential,)) == {}
+
     def test_roster_projects_either_form(self):
         roster = (cred("partition", REPO, subject=ID_SUBJECT),)
 
@@ -875,10 +899,19 @@ class TestSubjectForms:
             "repo:Acme@1/osdu-spi-partition@2:environment:spi-stack"
         )
 
-    def test_read_subject_falls_back_to_the_classic_form(self, monkeypatch):
-        monkeypatch.setattr(onboard, "run_command", Shell())
+    def test_read_subject_uses_the_classic_form_when_no_prefix_is_reported(self, monkeypatch):
+        shell = Shell()
+        shell.add(f"gh__api__repos/{REPO}/actions/oidc/customization/sub", {"use_default": True})
+        monkeypatch.setattr(onboard, "run_command", shell)
 
         assert onboard.read_subject(REPO) == credential_subject(REPO)
+
+    def test_an_unreadable_subject_endpoint_stops_onboarding(self, monkeypatch):
+        """A 404 can hide a token without access; guessing the form writes a dead credential."""
+        monkeypatch.setattr(onboard, "run_command", Shell())
+
+        with pytest.raises(OnboardError, match="Could not read OIDC subject"):
+            onboard.read_subject(REPO)
 
     def test_a_custom_template_is_refused(self, monkeypatch):
         shell = Shell()

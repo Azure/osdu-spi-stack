@@ -37,6 +37,7 @@ from .console import console
 from .images import IMAGE_REGISTRY, SCHEMA_LOAD_SERVICE_NAME
 from .pins import TRUSTED_REPOS_ANNOTATION, PinError, decode_trusted_repos, mutate_lock, read_lock
 from .shell import run_command
+from .templates import TESTER_NAMESPACE
 
 GITHUB_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_AUDIENCE = "api://AzureADTokenExchange"
@@ -57,9 +58,10 @@ PHASES = ("repository", "azure", "cluster")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$)[A-Za-z0-9_.-]+$")
 # GitHub signs the subject as repo:<owner>/<name> or, by default since the
-# immutable-subject change, repo:<owner>@<id>/<name>@<id>; both name one repository.
+# immutable-subject change, repo:<owner>@<id>/<name>@<id>; the ids come as a pair.
 _SUBJECT_RE = re.compile(
-    rf"^repo:([^:/@]+)(?:@\d+)?/([^:/@]+)(?:@\d+)?:environment:{DEPLOY_ENVIRONMENT}$"
+    rf"^repo:(?:([^:/@]+)/([^:/@]+)|([^:/@]+)@\d+/([^:/@]+)@\d+)"
+    rf":environment:{DEPLOY_ENVIRONMENT}$"
 )
 
 
@@ -112,7 +114,8 @@ class Credential:
         match = _SUBJECT_RE.match(self.subject)
         if not match:
             return ""
-        repo = f"{match.group(1)}/{match.group(2)}"
+        owner, name = (group for group in match.groups() if group)
+        repo = f"{owner}/{name}"
         return repo if _REPO_RE.match(repo) else ""
 
     @property
@@ -357,10 +360,9 @@ def read_subject(repo: str) -> str:
     payload = _read_json(
         ["gh", "api", f"repos/{repo}/actions/oidc/customization/sub"],
         f"OIDC subject customization on {repo}",
-        missing_ok=True,
     )
     if not isinstance(payload, dict):
-        return credential_subject(repo)
+        raise OnboardError(f"Unexpected OIDC subject customization on {repo}: {payload!r}")
     if payload.get("use_default") is False:
         raise OnboardError(
             f"{repo} customizes its OIDC subject claim; onboard trusts the default "
@@ -982,16 +984,20 @@ def list_trust(target: Target) -> list[Row]:
             )
         else:
             rows.append(Row("azure", service, "correct", repo))
-    rows.extend(
-        Row(
-            "azure",
-            cred.name,
-            "unverified",
-            f"not a {DEPLOY_ENVIRONMENT} credential this CLI wrote; {cred.subject}",
-        )
-        for cred in roster
-        if cred.service not in trusted
-    )
+    for cred in roster:
+        if cred.service in trusted:
+            continue
+        if cred.subject.startswith(f"system:serviceaccount:{TESTER_NAMESPACE}:"):
+            rows.append(Row("azure", cred.name, "correct", f"cluster issuer; {cred.subject}"))
+        else:
+            rows.append(
+                Row(
+                    "azure",
+                    cred.name,
+                    "unverified",
+                    f"not a {DEPLOY_ENVIRONMENT} credential this CLI wrote; {cred.subject}",
+                )
+            )
     if target.no_access_identity_name:
         try:
             no_access = roster_repos(read_no_access_roster(target))

@@ -113,7 +113,26 @@ def test_explicit_resource_wins():
 
 def test_missing_cluster_config_names_spi_up():
     with patch("spi.token.read_cluster_config", return_value={}):
-        with pytest.raises(token.TokenError, match="DEPLOY_IDENTITY_CLIENT_ID.*spi up"):
+        with pytest.raises(token.TokenError, match="DEPLOY_IDENTITY_CLIENT_ID, AZURE_TENANT_ID"):
+            token.mint_token()
+
+
+def test_missing_tenant_alone_is_named_alone():
+    partial = {k: v for k, v in CLUSTER_CFG.items() if k != "AZURE_TENANT_ID"}
+    with patch("spi.token.read_cluster_config", return_value=partial):
+        with pytest.raises(token.TokenError, match="carries no AZURE_TENANT_ID;"):
+            token.mint_token()
+
+
+def test_a_socket_timeout_is_a_token_error():
+    with (
+        patch("spi.token.read_cluster_config", return_value=CLUSTER_CFG),
+        patch("spi.token._read_osdu_config", return_value={}),
+        patch("spi.token._read_workload_identity_client_id", return_value=""),
+        patch("spi.token.run_process", side_effect=_kubectl_ok),
+        patch("spi.token.urllib.request.urlopen", side_effect=TimeoutError("timed out")),
+    ):
+        with pytest.raises(token.TokenError, match="Could not reach Entra: timed out"):
             token.mint_token()
 
 

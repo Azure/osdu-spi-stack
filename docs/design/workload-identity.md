@@ -94,7 +94,7 @@ and declaration enforcement remain unbuilt. See
 Ordinary `spi down` retains these managed identities; `--purge` removes them
 after external-grant cleanup ([ADR-034](../decisions/034-deploy-identity-survives-down.md)).
 
-### Minting as the deploy identity from a laptop
+### Minting through the cluster issuer
 
 Both identities also trust one ServiceAccount each on the cluster's OIDC
 issuer: `spi-test/spi-deployer` and `spi-test/spi-no-access`, applied by

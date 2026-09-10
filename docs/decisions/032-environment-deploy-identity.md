@@ -29,10 +29,11 @@ config.
   UAMI `spi-stack-<env>-deployer` in the environment resource group, next to
   the workload identity, with Azure Kubernetes Service Cluster User Role on
   the cluster and Key Vault Secrets User on the environment vault
-  (`infra/modules/rbac.bicep`). It carries no federated credential until a
-  repository is activated, so it is inert on a stack that never onboards
-  anything. `spi info --json` publishes its client id with the tenant,
-  subscription, resource group, and cluster: the five values a fork holds.
+  (`infra/modules/rbac.bicep`). Its only standing federated credential is
+  the cluster's, for `spi token` below; no repository can act as it until
+  one is activated. `spi info --json` publishes its client id with the
+  tenant, subscription, resource group, and cluster: the five values a
+  fork holds.
 - **Activated per repository.** `spi onboard <service> --repo <org>/<fork>`
   adds one federated credential for `repo:<org>/<fork>:environment:spi-stack`
   (`src/spi/onboard.py`). The credential list on the identity is the roster
@@ -68,12 +69,14 @@ config.
   again.
 - **The roster is keyed by repository and capped by Azure.** Azure keeps
   the issuer and subject pair unique on an identity and allows twenty
-  federated credentials per UAMI, so one repository backs exactly one
-  service and an environment trusts at most twenty repositories. `repo` is
-  unique across the roster and the declaration, and planning refuses a
-  second service naming an already trusted repository, or a twenty-first
-  entry, before any phase writes. Growth past the cap is a new decision,
-  since a second identity needs its own RoleBindings, not a retry.
+  federated credentials per UAMI. The cluster credential holds one slot,
+  so one repository backs exactly one service and an environment trusts
+  at most nineteen repositories. `repo` is unique across the roster and
+  the declaration, and planning counts every credential on the identity
+  and refuses a second service naming an already trusted repository, or an
+  entry past the cap, before any phase writes. Growth past the cap is a
+  new decision, since a second identity needs its own RoleBindings, not a
+  retry.
 - **Credential writes are serial per identity.** Onboarding and lifecycle
   reconciliation await each credential create, update, or delete before
   starting the next. Bicep loops use `@batchSize(1)`, matching
@@ -153,10 +156,8 @@ config.
   Who may mint is who may create tokens for those ServiceAccounts, a
   Kubernetes RBAC question the fork Roles answer with no: CI stays on the
   GitHub path. A Job on the `spi-deployer` account mints in-cluster through
-  the webhook with no CLI step. The two credentials sit outside the
-  onboarding roster (`onboard.py` projects GitHub-issuer credentials only)
-  but inside Azure's cap, so an environment trusts at most nineteen
-  repositories.
+  the webhook with no CLI step. `spi onboard --list` shows the credential
+  as the cluster issuer; it is never projected as a trusted repository.
 
 Rejected: one managed identity per fork in a separate persistent resource
 group. Distinct principal names in the cluster audit log, but the same

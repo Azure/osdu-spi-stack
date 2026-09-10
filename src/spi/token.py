@@ -133,6 +133,8 @@ def _exchange(tenant_id: str, client_id: str, assertion: str, resource: str) -> 
         raise TokenError(f"Entra refused the exchange ({exc.code}): {detail.strip()}") from None
     except urllib.error.URLError as exc:
         raise TokenError(f"Could not reach Entra: {exc.reason}") from None
+    except OSError as exc:
+        raise TokenError(f"Could not reach Entra: {exc}") from None
     if "access_token" not in payload:
         raise TokenError(f"Entra returned no access token: {payload}")
     return payload
@@ -149,10 +151,13 @@ def mint_token(*, no_access: bool = False, resource: Optional[str] = None) -> Mi
     key = "NO_ACCESS_IDENTITY_CLIENT_ID" if no_access else "DEPLOY_IDENTITY_CLIENT_ID"
     client_id = cluster_cfg.get(key, "")
     tenant_id = cluster_cfg.get("AZURE_TENANT_ID", "")
-    if not client_id or not tenant_id:
+    missing = [
+        name for name, value in ((key, client_id), ("AZURE_TENANT_ID", tenant_id)) if not value
+    ]
+    if missing:
         raise TokenError(
-            f"spi-cluster-config carries no {key}; run 'spi up' on a release that "
-            "provisions the deploy identity first."
+            f"spi-cluster-config carries no {', '.join(missing)}; run 'spi up' on a release "
+            "that provisions the deploy identity first."
         )
     service_account = NO_ACCESS_SERVICE_ACCOUNT if no_access else DEPLOYER_SERVICE_ACCOUNT
     audience = resource or token_audience(
