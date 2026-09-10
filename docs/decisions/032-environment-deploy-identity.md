@@ -51,7 +51,14 @@ config.
   and the lock's roster and `source_repo` fields; those fields compare
   exactly. A declaration entry matches its repository case-insensitively
   and is reported as drift, not as a different repository, when only the
-  casing differs.
+  casing differs. The subject itself is what GitHub reports it will sign
+  for the repository (`sub_claim_prefix` from the OIDC customization
+  endpoint), which by default carries the owner and repository ids,
+  `repo:<owner>@<id>/<name>@<id>`; onboard reads it rather than composing
+  the classic form, refuses a repository with a custom template, and treats
+  a credential in the other form as drift to rewrite. A repository deleted
+  and recreated under the same name gets a new id and must be onboarded
+  again.
 - **The roster is keyed by repository and capped by Azure.** Azure keeps
   the issuer and subject pair unique on an identity and allows twenty
   federated credentials per UAMI, so one repository backs exactly one

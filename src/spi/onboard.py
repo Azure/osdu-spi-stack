@@ -57,7 +57,11 @@ CONFLICT_BACKOFF_SECONDS = (5, 15, 30)
 PHASES = ("repository", "azure", "cluster")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$)[A-Za-z0-9_.-]+$")
-_SUBJECT_RE = re.compile(rf"^repo:([^:]+):environment:{DEPLOY_ENVIRONMENT}$")
+# GitHub signs the subject as repo:<owner>/<name> or, by default since the
+# immutable-subject change, repo:<owner>@<id>/<name>@<id>; both name one repository.
+_SUBJECT_RE = re.compile(
+    rf"^repo:([^:/@]+)(?:@\d+)?/([^:/@]+)(?:@\d+)?:environment:{DEPLOY_ENVIRONMENT}$"
+)
 
 
 class OnboardError(RuntimeError):
@@ -107,14 +111,25 @@ class Credential:
     @property
     def repo(self) -> str:
         match = _SUBJECT_RE.match(self.subject)
-        return match.group(1) if match and _REPO_RE.match(match.group(1)) else ""
+        if not match:
+            return ""
+        repo = f"{match.group(1)}/{match.group(2)}"
+        return repo if _REPO_RE.match(repo) else ""
 
-    def trusts(self, repo: str) -> bool:
+    @property
+    def well_formed(self) -> bool:
+        """A GitHub credential shaped the way this CLI writes them, whatever the subject form."""
+
         return (
             self.issuer == GITHUB_ISSUER
-            and self.subject == credential_subject(repo)
+            and bool(self.repo)
             and set(self.audiences) == {GITHUB_AUDIENCE}
         )
+
+    def trusts(self, subject: str) -> bool:
+        """Exact match: Entra compares the subject string, so a form change is drift."""
+
+        return self.well_formed and self.subject == subject
 
 
 @dataclass(frozen=True)
@@ -181,6 +196,7 @@ class Plan:
     target: Target
     service: str
     repo: str
+    subject: str = ""
     org: str = ""
     skip_repo: bool = False
     remove: bool = False
@@ -203,8 +219,14 @@ def credential_name(service: str) -> str:
     return f"{CREDENTIAL_PREFIX}{service}"
 
 
-def credential_subject(repo: str) -> str:
-    return f"repo:{repo}:environment:{DEPLOY_ENVIRONMENT}"
+def credential_subject(repo: str, prefix: str = "") -> str:
+    """The federated subject for a repository's protected environment.
+
+    ``prefix`` is what GitHub reports it will sign for the repository
+    (``sub_claim_prefix``); without it the classic ``repo:<owner>/<name>``.
+    """
+
+    return f"{prefix or f'repo:{repo}'}:environment:{DEPLOY_ENVIRONMENT}"
 
 
 def find_credential(roster: tuple[Credential, ...], service: str) -> Optional[Credential]:
@@ -215,7 +237,7 @@ def find_credential(roster: tuple[Credential, ...], service: str) -> Optional[Cr
 def roster_repos(roster: tuple[Credential, ...]) -> dict[str, str]:
     """Service to repository for the credentials shaped the way this CLI writes them."""
 
-    return {c.service: c.repo for c in roster if c.service and c.repo and c.trusts(c.repo)}
+    return {c.service: c.repo for c in roster if c.service and c.well_formed}
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +350,31 @@ def resolve_repository(spec: str) -> str:
     if not isinstance(payload, dict) or not payload.get("full_name"):
         raise OnboardError(f"Repository {spec} was not found on GitHub, or gh cannot read it.")
     return str(payload["full_name"])
+
+
+def read_subject(repo: str) -> str:
+    """The subject GitHub signs for the repository's protected environment.
+
+    GitHub reports the prefix it uses for the repository; a custom template
+    (``use_default`` false) is refused because the lane's login cannot
+    predict what it would carry.
+    """
+
+    payload = _read_json(
+        ["gh", "api", f"repos/{repo}/actions/oidc/customization/sub"],
+        f"OIDC subject customization on {repo}",
+        missing_ok=True,
+    )
+    if not isinstance(payload, dict):
+        return credential_subject(repo)
+    if payload.get("use_default") is False:
+        raise OnboardError(
+            f"{repo} customizes its OIDC subject claim; onboard trusts the default "
+            "template only. Reset it with: gh api -X PUT "
+            f"repos/{repo}/actions/oidc/customization/sub -F use_default=true"
+        )
+    prefix = str(payload.get("sub_claim_prefix") or "")
+    return credential_subject(repo, prefix)
 
 
 def read_protection(repo: str) -> Protection:
@@ -514,10 +561,10 @@ def value_steps(
 
 
 def credential_step(
-    target: Target, service: str, repo: str, roster: tuple[Credential, ...]
+    target: Target, service: str, repo: str, subject: str, roster: tuple[Credential, ...]
 ) -> Optional[Step]:
     existing = find_credential(roster, service)
-    if existing is not None and existing.trusts(repo):
+    if existing is not None and existing.trusts(subject):
         return None
     verb = "create" if existing is None else "update"
     return Step(
@@ -533,7 +580,7 @@ def credential_step(
             "--issuer",
             GITHUB_ISSUER,
             "--subject",
-            credential_subject(repo),
+            subject,
             "--audiences",
             GITHUB_AUDIENCE,
         ],
@@ -643,8 +690,8 @@ def credential_row(plan: Plan, target: Target, roster: tuple[Credential, ...]) -
         return Row("azure", item, "drifted", f"trusts {existing.repo or existing.subject}")
     if existing is None:
         return Row("azure", item, "missing")
-    if existing.trusts(plan.repo):
-        return Row("azure", item, "correct", credential_subject(plan.repo))
+    if existing.trusts(plan.subject):
+        return Row("azure", item, "correct", plan.subject)
     return Row("azure", item, "drifted", existing.subject)
 
 
@@ -683,7 +730,7 @@ def plan_steps(plan: Plan) -> list[Step]:
         if plan.blocked:
             return steps
         for target, roster in _identity_rosters(plan):
-            trust = credential_step(target, plan.service, plan.repo, roster)
+            trust = credential_step(target, plan.service, plan.repo, plan.subject, roster)
             steps.extend([trust] if trust else [])
     projection = projection_step(desired_projection(plan), plan.state.projection)
     steps.extend([projection] if projection else [])
@@ -741,7 +788,7 @@ def plan_onboard(
             raise OnboardError(f"{service} is not trusted yet; pass --repo <owner>/<name>.")
         repo_spec = existing.repo
     repo = resolve_repository(repo_spec)
-    plan = Plan(target, service, repo, org=org, skip_repo=skip_repo)
+    plan = Plan(target, service, repo, subject=read_subject(repo), org=org, skip_repo=skip_repo)
     plan.state = observe(target, repo, org, values=not skip_repo, roster=roster)
     refuse(plan)
     plan.steps = plan_steps(plan)
@@ -935,7 +982,10 @@ def apply_plan(plan: Plan) -> list[Row]:
                 _write_credential(target, lambda roster, t=target: revoke_step(t, service, roster))
             else:
                 _write_credential(
-                    target, lambda roster, t=target: credential_step(t, service, repo, roster)
+                    target,
+                    lambda roster, t=target: credential_step(
+                        t, service, repo, plan.subject, roster
+                    ),
                 )
 
     def cluster() -> None:

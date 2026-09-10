@@ -82,7 +82,16 @@ def correct_values() -> dict:
 def make_plan(
     state: State, *, service="partition", repo=REPO, org="", skip_repo=False, remove=False
 ) -> Plan:
-    plan = Plan(TARGET, service, repo, org=org, skip_repo=skip_repo, remove=remove, state=state)
+    plan = Plan(
+        TARGET,
+        service,
+        repo,
+        subject=credential_subject(repo) if repo else "",
+        org=org,
+        skip_repo=skip_repo,
+        remove=remove,
+        state=state,
+    )
     plan.steps = plan_steps(plan)
     plan.rows = plan_rows(plan)
     return plan
@@ -803,3 +812,67 @@ class TestCli:
 
         assert result.exit_code == 1
         assert "already backs schema" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Subject forms: GitHub signs repo:<owner>/<name> or repo:<owner>@<id>/<name>@<id>
+# ---------------------------------------------------------------------------
+
+ID_SUBJECT = "repo:Acme@199854422/osdu-spi-partition@1351440282:environment:spi-stack"
+
+
+class TestSubjectForms:
+    def test_both_forms_name_the_repository(self):
+        assert cred("partition", REPO).repo == REPO
+        assert cred("partition", REPO, subject=ID_SUBJECT).repo == REPO
+        assert cred("partition", REPO, subject="repo:Acme/x:environment:other").repo == ""
+
+    def test_roster_projects_either_form(self):
+        roster = (cred("partition", REPO, subject=ID_SUBJECT),)
+
+        assert onboard.roster_repos(roster) == {"partition": REPO}
+
+    def test_a_classic_credential_is_drift_against_an_id_subject(self):
+        """Entra matches the string, so the credential is rewritten, not kept."""
+        plan = Plan(
+            TARGET,
+            "partition",
+            REPO,
+            subject=ID_SUBJECT,
+            skip_repo=True,
+            state=State((cred("partition", REPO),), {"partition": REPO}, PROTECTED),
+        )
+        plan.steps = plan_steps(plan)
+        plan.rows = plan_rows(plan)
+
+        assert verbs(plan)[0] == "az identity federated-credential update"
+        assert plan.steps[0].argv[plan.steps[0].argv.index("--subject") + 1] == ID_SUBJECT
+        assert states(plan)["fork-partition on spi-stack-dev1-deployer"] == "drifted"
+
+    def test_read_subject_uses_the_reported_prefix(self, monkeypatch):
+        shell = Shell()
+        shell.add(
+            f"gh__api__repos/{REPO}/actions/oidc/customization/sub",
+            {"use_default": True, "sub_claim_prefix": "repo:Acme@1/osdu-spi-partition@2"},
+        )
+        monkeypatch.setattr(onboard, "run_command", shell)
+
+        assert onboard.read_subject(REPO) == (
+            "repo:Acme@1/osdu-spi-partition@2:environment:spi-stack"
+        )
+
+    def test_read_subject_falls_back_to_the_classic_form(self, monkeypatch):
+        monkeypatch.setattr(onboard, "run_command", Shell())
+
+        assert onboard.read_subject(REPO) == credential_subject(REPO)
+
+    def test_a_custom_template_is_refused(self, monkeypatch):
+        shell = Shell()
+        shell.add(
+            f"gh__api__repos/{REPO}/actions/oidc/customization/sub",
+            {"use_default": False, "include_claim_keys": ["repo", "job_workflow_ref"]},
+        )
+        monkeypatch.setattr(onboard, "run_command", shell)
+
+        with pytest.raises(OnboardError, match="customizes its OIDC subject"):
+            onboard.read_subject(REPO)
