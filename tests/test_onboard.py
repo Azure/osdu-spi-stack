@@ -499,6 +499,7 @@ class TestReads:
         monkeypatch.setattr(
             onboard, "resolve_repository", lambda spec: seen.setdefault("spec", spec) and REPO
         )
+        monkeypatch.setattr(onboard, "read_subject", credential_subject)
         monkeypatch.setattr(
             onboard,
             "observe",
