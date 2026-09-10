@@ -56,10 +56,8 @@ TARGET = Target(
         "SPI_STACK_CLUSTER": "spi-stack-dev1",
     },
 )
-PROTECTED = Protection(
-    exists=True, custom_branch_policies=True, branches=("main", "fork_integration")
-)
-ABSENT = Protection(exists=False, custom_branch_policies=False, branches=())
+PROTECTED = Protection(exists=True)
+ABSENT = Protection(exists=False)
 
 
 def cred(service: str, repo: str, **overrides) -> Credential:
@@ -116,13 +114,9 @@ class TestPlanning:
             State(roster=(), projection={}, protection=ABSENT, values=dict.fromkeys(TARGET.values))
         )
 
-        assert [s.phase for s in plan.steps] == ["repository"] * 8 + ["azure"] * 2 + ["cluster"]
-        assert verbs(plan)[:3] == [
-            "gh api --method PUT",
-            "gh api --method POST",
-            "gh api --method POST",
-        ]
-        assert verbs(plan)[3] == "gh secret set AZURE_CLIENT_ID"
+        assert [s.phase for s in plan.steps] == ["repository"] * 6 + ["azure"] * 2 + ["cluster"]
+        assert verbs(plan)[0] == "gh api --method PUT"
+        assert verbs(plan)[1] == "gh secret set AZURE_CLIENT_ID"
         assert verbs(plan)[-3:-1] == ["az identity federated-credential create"] * 2
         assert [s.argv[s.argv.index("--identity-name") + 1] for s in plan.steps[-3:-1]] == [
             TARGET.identity_name,
@@ -168,14 +162,17 @@ class TestPlanning:
         assert secret[4:8] == ["--org", "Acme", "--visibility", "all"]
         assert all("on Acme" in row.item for row in plan.rows if "AZURE" in row.item)
 
-    def test_extra_policies_are_deleted_by_id_and_missing_branches_admitted(self):
-        protection = Protection(True, True, ("main",), extra_policies=((7, "v* (tag)"),))
+    def test_a_restricted_environment_is_opened_to_every_branch(self):
+        protection = Protection(True, "only main (branch), v* (tag)")
         plan = make_plan(State((), {}, protection, correct_values()))
 
-        assert verbs(plan)[:2] == ["gh api --method DELETE", "gh api --method POST"]
-        assert plan.steps[0].argv[-1].endswith("/deployment-branch-policies/7")
-        assert plan.steps[1].argv[-3] == "name=fork_integration"
-        assert plan.rows[0].detail == "missing fork_integration; admits v* (tag)"
+        assert verbs(plan)[0] == "gh api --method PUT"
+        assert plan.steps[0].argv[-2:] == ["-F", "deployment_branch_policy=null"]
+        assert plan.steps[0].description.startswith("Open the spi-stack environment")
+        assert plan.rows[0].detail == "admits only main (branch), v* (tag)"
+        assert make_plan(State((), {}, PROTECTED, correct_values())).rows[0].detail == (
+            "every branch"
+        )
 
     def test_a_credential_naming_another_repository_is_updated_not_created(self):
         state = State(
@@ -355,7 +352,7 @@ def failed(stderr: str) -> subprocess.CompletedProcess:
 
 
 class TestReads:
-    def test_protection_reads_every_page_and_types_tags_as_extra(self, monkeypatch):
+    def test_protection_reads_every_page_of_a_custom_policy_as_drift(self, monkeypatch):
         shell = Shell()
         shell.add(
             "gh__api__repos/Acme/osdu-spi-partition/environments/spi-stack",
@@ -377,9 +374,25 @@ class TestReads:
 
         protection = onboard.read_protection(REPO)
 
-        assert protection.branches == ("main", "fork_integration")
-        assert protection.extra_policies == ((3, "main (tag)"),)
+        assert protection.restriction == "only main (branch), fork_integration (branch), main (tag)"
         assert not protection.satisfied
+
+    def test_protection_reads_open_and_protected_only_environments(self, monkeypatch):
+        shell = Shell()
+        shell.add(
+            "gh__api__repos/Acme/osdu-spi-partition/environments/spi-stack",
+            {"deployment_branch_policy": None},
+        )
+        monkeypatch.setattr(onboard, "run_command", shell)
+        assert onboard.read_protection(REPO) == PROTECTED
+
+        shell = Shell()
+        shell.add(
+            "gh__api__repos/Acme/osdu-spi-partition/environments/spi-stack",
+            {"deployment_branch_policy": {"protected_branches": True}},
+        )
+        monkeypatch.setattr(onboard, "run_command", shell)
+        assert onboard.read_protection(REPO) == Protection(True, "protected branches only")
 
     def test_a_missing_environment_reads_absent_while_other_errors_raise(self, monkeypatch):
         monkeypatch.setattr(onboard, "run_command", Shell())
@@ -604,7 +617,7 @@ class TestApply:
         rows = apply_plan(plan)
 
         tools = [call[0] for call in live.calls]
-        assert tools == ["gh"] * 8 + ["az"] * 2
+        assert tools == ["gh"] * 6 + ["az"] * 2
         assert live.no_access_roster == live.roster == (cred("partition", REPO),)
         assert live.projected == 1
         assert {row.state for row in rows} == {"correct"}
@@ -624,7 +637,7 @@ class TestApply:
     def test_trust_is_never_enabled_when_the_rules_are_missing_at_write_time(self, live):
         live.protection = PROTECTED
         plan = make_plan(live.observed(values=False), skip_repo=True)
-        live.protection = Protection(True, False, ())
+        live.protection = Protection(True, "protected branches only")
 
         with pytest.raises(OnboardError, match="does not protect spi-stack") as exc:
             apply_plan(plan)

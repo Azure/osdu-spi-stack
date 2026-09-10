@@ -41,7 +41,6 @@ from .shell import run_command
 GITHUB_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_AUDIENCE = "api://AzureADTokenExchange"
 DEPLOY_ENVIRONMENT = "spi-stack"
-REQUIRED_BRANCHES = ("main", "fork_integration")
 CREDENTIAL_PREFIX = "fork-"
 # Azure allows twenty federated credentials per user-assigned identity.
 MAX_CREDENTIALS = 20
@@ -134,27 +133,22 @@ class Credential:
 
 @dataclass(frozen=True)
 class Protection:
-    """What GitHub reports about the repository's ``spi-stack`` environment."""
+    """What GitHub reports about the repository's ``spi-stack`` environment.
+
+    The environment admits every branch. Write access is the boundary: a
+    pull request from another repository runs without an OIDC token, so it
+    cannot mint the deploy identity whatever the branch policy says. A
+    restriction only keeps the lane off same-repo pull requests, which is
+    drift.
+    """
 
     exists: bool
-    custom_branch_policies: bool
-    branches: tuple[str, ...]
-    # Policies beyond the required branches, as (id, label); a tag or wildcard
-    # policy admits runs the environment must keep out.
-    extra_policies: tuple[tuple[int, str], ...] = ()
-
-    @property
-    def missing_branches(self) -> tuple[str, ...]:
-        return tuple(name for name in REQUIRED_BRANCHES if name not in self.branches)
+    # A human-readable description of any branch restriction in force.
+    restriction: str = ""
 
     @property
     def satisfied(self) -> bool:
-        return (
-            self.exists
-            and self.custom_branch_policies
-            and not self.missing_branches
-            and not self.extra_policies
-        )
+        return self.exists and not self.restriction
 
 
 @dataclass(frozen=True)
@@ -220,7 +214,7 @@ def credential_name(service: str) -> str:
 
 
 def credential_subject(repo: str, prefix: str = "") -> str:
-    """The federated subject for a repository's protected environment.
+    """The federated subject for a repository's deploy environment.
 
     ``prefix`` is what GitHub reports it will sign for the repository
     (``sub_claim_prefix``); without it the classic ``repo:<owner>/<name>``.
@@ -353,7 +347,7 @@ def resolve_repository(spec: str) -> str:
 
 
 def read_subject(repo: str) -> str:
-    """The subject GitHub signs for the repository's protected environment.
+    """The subject GitHub signs for the repository's deploy environment.
 
     GitHub reports the prefix it uses for the repository; a custom template
     (``use_default`` false) is refused because the lane's login cannot
@@ -384,30 +378,30 @@ def read_protection(repo: str) -> Protection:
         missing_ok=True,
     )
     if not isinstance(env, dict):
-        return Protection(exists=False, custom_branch_policies=False, branches=())
-    custom = bool((env.get("deployment_branch_policy") or {}).get("custom_branch_policies"))
-    branches: list[str] = []
-    extras: list[tuple[int, str]] = []
-    if custom:
-        # --paginate --slurp returns every page as one JSON array of page objects.
-        pages = _read_json(
-            [
-                "gh",
-                "api",
-                "--paginate",
-                "--slurp",
-                f"repos/{repo}/environments/{DEPLOY_ENVIRONMENT}/deployment-branch-policies",
-            ],
-            f"branch policies of {DEPLOY_ENVIRONMENT} on {repo}",
-        )
-        for page in pages if isinstance(pages, list) else [pages]:
-            for entry in (page or {}).get("branch_policies") or []:
-                name, kind = str(entry.get("name", "")), str(entry.get("type") or "branch")
-                if kind == "branch" and name in REQUIRED_BRANCHES:
-                    branches.append(name)
-                elif name:
-                    extras.append((int(entry.get("id") or 0), f"{name} ({kind})"))
-    return Protection(True, custom, tuple(dict.fromkeys(branches)), tuple(extras))
+        return Protection(exists=False)
+    policy = env.get("deployment_branch_policy") or {}
+    if policy.get("protected_branches"):
+        return Protection(True, "protected branches only")
+    if not policy.get("custom_branch_policies"):
+        return Protection(True)
+    # --paginate --slurp returns every page as one JSON array of page objects.
+    pages = _read_json(
+        [
+            "gh",
+            "api",
+            "--paginate",
+            "--slurp",
+            f"repos/{repo}/environments/{DEPLOY_ENVIRONMENT}/deployment-branch-policies",
+        ],
+        f"branch policies of {DEPLOY_ENVIRONMENT} on {repo}",
+    )
+    names = []
+    for page in pages if isinstance(pages, list) else [pages]:
+        for entry in (page or {}).get("branch_policies") or []:
+            name, kind = str(entry.get("name", "")), str(entry.get("type") or "branch")
+            if name:
+                names.append(f"{name} ({kind})")
+    return Protection(True, "only " + ", ".join(names) if names else "an empty policy list")
 
 
 def read_values(repo: str, org: str) -> dict[str, Optional[str]]:
@@ -473,58 +467,24 @@ def _env_api(repo: str, suffix: str = "") -> str:
 
 
 def protection_steps(repo: str, protection: Protection) -> list[Step]:
-    steps = []
-    if not protection.exists or not protection.custom_branch_policies:
-        steps.append(
-            Step(
-                "repository",
-                [
-                    "gh",
-                    "api",
-                    "--method",
-                    "PUT",
-                    _env_api(repo),
-                    "-F",
-                    "deployment_branch_policy[protected_branches]=false",
-                    "-F",
-                    "deployment_branch_policy[custom_branch_policies]=true",
-                ],
-                f"Create the protected {DEPLOY_ENVIRONMENT} environment on {repo}",
-            )
+    if protection.satisfied:
+        return []
+    verb = "Create" if not protection.exists else "Open"
+    return [
+        Step(
+            "repository",
+            [
+                "gh",
+                "api",
+                "--method",
+                "PUT",
+                _env_api(repo),
+                "-F",
+                "deployment_branch_policy=null",
+            ],
+            f"{verb} the {DEPLOY_ENVIRONMENT} environment on {repo} to every branch",
         )
-    for policy_id, label in protection.extra_policies:
-        steps.append(
-            Step(
-                "repository",
-                [
-                    "gh",
-                    "api",
-                    "--method",
-                    "DELETE",
-                    _env_api(repo, f"/deployment-branch-policies/{policy_id}"),
-                ],
-                f"Remove the {label} policy from {DEPLOY_ENVIRONMENT} on {repo}",
-            )
-        )
-    for branch in protection.missing_branches:
-        steps.append(
-            Step(
-                "repository",
-                [
-                    "gh",
-                    "api",
-                    "--method",
-                    "POST",
-                    _env_api(repo, "/deployment-branch-policies"),
-                    "-f",
-                    f"name={branch}",
-                    "-f",
-                    "type=branch",
-                ],
-                f"Admit {branch} to {DEPLOY_ENVIRONMENT} on {repo}",
-            )
-        )
-    return steps
+    ]
 
 
 def value_steps(
@@ -641,16 +601,9 @@ def protection_row(repo: str, protection: Protection) -> Row:
     item = f"{DEPLOY_ENVIRONMENT} environment on {repo}"
     if not protection.exists:
         return Row("repository", item, "missing")
-    if not protection.custom_branch_policies:
-        return Row("repository", item, "drifted", "no custom branch policies")
-    problems = []
-    if protection.missing_branches:
-        problems.append("missing " + ", ".join(protection.missing_branches))
-    if protection.extra_policies:
-        problems.append("admits " + ", ".join(label for _, label in protection.extra_policies))
-    if problems:
-        return Row("repository", item, "drifted", "; ".join(problems))
-    return Row("repository", item, "correct", ", ".join(protection.branches))
+    if protection.restriction:
+        return Row("repository", item, "drifted", f"admits {protection.restriction}")
+    return Row("repository", item, "correct", "every branch")
 
 
 def value_rows(
@@ -905,8 +858,8 @@ def _write_credential(
 
 def _unprotected(repo: str) -> OnboardError:
     return OnboardError(
-        f"{repo} does not protect {DEPLOY_ENVIRONMENT} with custom branch policies for "
-        f"{', '.join(REQUIRED_BRANCHES)}; trust stays disabled until it does."
+        f"{repo} does not protect {DEPLOY_ENVIRONMENT} as an environment open to every "
+        "branch; trust stays disabled until it does."
     )
 
 

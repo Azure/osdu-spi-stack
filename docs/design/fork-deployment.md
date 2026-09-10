@@ -32,7 +32,7 @@ Each job authenticates fresh (the OIDC JWT lives ~5 minutes; one
 `ops/environments/shared.yaml` on the stack's `main`, so the client never
 skews ahead of the cluster contract (ADR-031).
 
-1. **Authenticate.** The deploy and test jobs run in the fork's protected
+1. **Authenticate.** The deploy and test jobs run in the fork's
    `spi-stack` GitHub environment, the subject of the federated credential
    `spi onboard` added to the environment's deploy identity (ADR-032);
    `azure/login@v3` uses `AZURE_CLIENT_ID` and the tenant and subscription
@@ -170,8 +170,8 @@ phases; source promotion is separate from enabling trust:
 
 | Phase | Change | Needs |
 |---|---|---|
-| 1. Repository protection | Create or repair the protected `spi-stack` environment and its required rules, then stamp the five values | repository admin for environment rules; organization admin for organization values with `--org` |
-| 2. Azure trust | Enable `fork-<service>` on `spi-stack-<env>-deployer` and on `spi-stack-<env>-noaccess` for `repo:<org>/<fork>:environment:spi-stack`, after reading back the required protection rules | write on both identities and read access to repository rules |
+| 1. Repository protection | Create the `spi-stack` environment, or open one restricted to a branch list, then stamp the five values | repository admin for environment rules; organization admin for organization values with `--org` |
+| 2. Azure trust | Enable `fork-<service>` on `spi-stack-<env>-deployer` and on `spi-stack-<env>-noaccess` for `repo:<org>/<fork>:environment:spi-stack`, after reading back that the environment exists and admits every branch | write on both identities and read access to repository rules |
 | 3. Cluster trust | Project the observed credential roster and existing source policy into `osdu-image-lock` without changing resolved images or pins | the operator's kube context |
 | 4. Source policy | When requested, validate promotion preconditions, write `spi-source-<service>` on the RG, and update the lock's source projection (ADR-033) | RG tag write and the operator's kube context |
 
@@ -190,10 +190,12 @@ its client id is read from `deploy_identity.no_access_client_id` in
 Without `--write` the command prints the `gh`, `az`, and `kubectl` commands
 for each phase and changes nothing; the plan is the handoff for whoever holds
 the rights on each side. `--write` applies the phases in order. `--skip-repo`
-omits repository writes but still reads and requires the protection rules
-before enabling trust; missing or unreadable rules stop activation. Merely
-finding an environment named `spi-stack` does not satisfy the precondition:
-GitHub can create a referenced environment without protection rules.
+omits repository writes but still reads the environment before enabling
+trust; a missing or unreadable environment, or one restricted to a branch
+list, stops activation. The environment admits every branch on purpose: a
+pull request from another repository carries no OIDC token, so write access
+on the fork is what bounds who can mint, and a branch list would only keep
+the lane off the fork's own pull requests (ADR-032).
 
 The plan compares credential issuer, subject and audience, repository
 protection rules, readable values, source tags, and lock projections. Rows

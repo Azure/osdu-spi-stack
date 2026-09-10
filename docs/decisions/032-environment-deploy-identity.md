@@ -37,11 +37,18 @@ config.
   adds one federated credential for `repo:<org>/<fork>:environment:spi-stack`
   (`src/spi/onboard.py`). The credential list on the identity is the roster
   of trusted repositories; deleting one credential revokes one repository.
-  The protected environment and its required rules are established before
-  the credential is enabled. The deploy and test jobs run there; its rules
-  restrict entry to `main`, `fork_integration`, and the PR runs the template's
-  ADR-036 gate admits. `fork_upstream` is excluded: its builds are core-only,
-  without the Azure provider. Trust does not select a canonical image source;
+  The `spi-stack` environment exists and admits every branch before the
+  credential is enabled; the deploy and test jobs run there on pushes to
+  `main` and `fork_integration` and on the fork's own pull requests.
+  Write access is the boundary. A pull request from another repository
+  runs without an OIDC token, so it cannot mint the deploy identity
+  whatever the environment's branch policy says, and a branch list only
+  keeps the lane off same-repo pull requests; onboard treats one as drift.
+  A maintainer who wants a human pause before a borrow adds required
+  reviewers to the environment, which holds the job before its first
+  credentialed step without any workflow change. `fork_upstream` never
+  enters: its builds are core-only, without the Azure provider, so no
+  image exists to borrow. Trust does not select a canonical image source;
   ADR-033 owns that separate policy and its promotion.
 - **Repository names are canonical before they are persisted.** GitHub
   resolves `<org>/<fork>` case-insensitively but mints the OIDC subject
