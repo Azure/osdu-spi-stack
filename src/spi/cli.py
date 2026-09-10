@@ -27,7 +27,7 @@ from . import __version__
 from .bootstrap import create_istio_revision_configmap, refresh_spi_init_values
 from .checks import PREREQ_TOOLS, check_prerequisites
 from .config import Config, IngressMode, Profile
-from .console import console, display_result
+from .console import console, display_result, error_console
 from .guard import get_suspend_status, verify_spi_cluster
 from .images import (
     DEFAULT_IMAGE_BRANCH,
@@ -50,6 +50,7 @@ from .pins import (
     verify_service_image,
 )
 from .shell import run_command
+from .templates import TESTER_NAMESPACE
 
 app = typer.Typer(
     name="spi",
@@ -698,6 +699,44 @@ def info(
         else:
             console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
+
+
+@app.command()
+def token(
+    no_access: bool = typer.Option(
+        False, "--no-access", help="Mint as the no-access identity for 403 tests"
+    ),
+    resource: Optional[str] = typer.Option(
+        None,
+        "--resource",
+        help="Token audience; defaults to azure.token_audience from spi info",
+    ),
+    output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
+):
+    """Mint an app-only bearer token as the environment's deploy identity.
+
+    The token is written to stdout alone, so it composes:
+    INTEGRATION_TESTER_ACCESS_TOKEN=$(spi token).
+    """
+    ctx = verify_spi_cluster()
+
+    from .bootstrap import ClusterConfigError
+    from .token import TokenError, mint_token
+
+    error_console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+    try:
+        minted = mint_token(no_access=no_access, resource=resource)
+    except (ClusterConfigError, TokenError) as exc:
+        error_console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+    error_console.print(
+        f"  [dim]Minted as {minted.client_id} via {TESTER_NAMESPACE}/{minted.service_account} "
+        f"for {minted.audience}[/dim]"
+    )
+    if output_json:
+        typer.echo(json.dumps(minted.as_dict(), indent=2))
+    else:
+        typer.echo(minted.access_token)
 
 
 @app.command()

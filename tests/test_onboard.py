@@ -56,10 +56,8 @@ TARGET = Target(
         "SPI_STACK_CLUSTER": "spi-stack-dev1",
     },
 )
-PROTECTED = Protection(
-    exists=True, custom_branch_policies=True, branches=("main", "fork_integration")
-)
-ABSENT = Protection(exists=False, custom_branch_policies=False, branches=())
+PROTECTED = Protection(exists=True)
+ABSENT = Protection(exists=False)
 
 
 def cred(service: str, repo: str, **overrides) -> Credential:
@@ -82,7 +80,16 @@ def correct_values() -> dict:
 def make_plan(
     state: State, *, service="partition", repo=REPO, org="", skip_repo=False, remove=False
 ) -> Plan:
-    plan = Plan(TARGET, service, repo, org=org, skip_repo=skip_repo, remove=remove, state=state)
+    plan = Plan(
+        TARGET,
+        service,
+        repo,
+        subject=credential_subject(repo) if repo else "",
+        org=org,
+        skip_repo=skip_repo,
+        remove=remove,
+        state=state,
+    )
     plan.steps = plan_steps(plan)
     plan.rows = plan_rows(plan)
     return plan
@@ -107,13 +114,9 @@ class TestPlanning:
             State(roster=(), projection={}, protection=ABSENT, values=dict.fromkeys(TARGET.values))
         )
 
-        assert [s.phase for s in plan.steps] == ["repository"] * 8 + ["azure"] * 2 + ["cluster"]
-        assert verbs(plan)[:3] == [
-            "gh api --method PUT",
-            "gh api --method POST",
-            "gh api --method POST",
-        ]
-        assert verbs(plan)[3] == "gh secret set AZURE_CLIENT_ID"
+        assert [s.phase for s in plan.steps] == ["repository"] * 6 + ["azure"] * 2 + ["cluster"]
+        assert verbs(plan)[0] == "gh api --method PUT"
+        assert verbs(plan)[1] == "gh secret set AZURE_CLIENT_ID"
         assert verbs(plan)[-3:-1] == ["az identity federated-credential create"] * 2
         assert [s.argv[s.argv.index("--identity-name") + 1] for s in plan.steps[-3:-1]] == [
             TARGET.identity_name,
@@ -159,14 +162,17 @@ class TestPlanning:
         assert secret[4:8] == ["--org", "Acme", "--visibility", "all"]
         assert all("on Acme" in row.item for row in plan.rows if "AZURE" in row.item)
 
-    def test_extra_policies_are_deleted_by_id_and_missing_branches_admitted(self):
-        protection = Protection(True, True, ("main",), extra_policies=((7, "v* (tag)"),))
+    def test_a_restricted_environment_is_opened_to_every_branch(self):
+        protection = Protection(True, "only main (branch), v* (tag)")
         plan = make_plan(State((), {}, protection, correct_values()))
 
-        assert verbs(plan)[:2] == ["gh api --method DELETE", "gh api --method POST"]
-        assert plan.steps[0].argv[-1].endswith("/deployment-branch-policies/7")
-        assert plan.steps[1].argv[-3] == "name=fork_integration"
-        assert plan.rows[0].detail == "missing fork_integration; admits v* (tag)"
+        assert verbs(plan)[0] == "gh api --method PUT"
+        assert plan.steps[0].argv[-2:] == ["-F", "deployment_branch_policy=null"]
+        assert plan.steps[0].description.startswith("Open the spi-stack environment")
+        assert plan.rows[0].detail == "admits only main (branch), v* (tag)"
+        assert make_plan(State((), {}, PROTECTED, correct_values())).rows[0].detail == (
+            "every branch"
+        )
 
     def test_a_credential_naming_another_repository_is_updated_not_created(self):
         state = State(
@@ -346,7 +352,7 @@ def failed(stderr: str) -> subprocess.CompletedProcess:
 
 
 class TestReads:
-    def test_protection_reads_every_page_and_types_tags_as_extra(self, monkeypatch):
+    def test_protection_reads_every_page_of_a_custom_policy_as_drift(self, monkeypatch):
         shell = Shell()
         shell.add(
             "gh__api__repos/Acme/osdu-spi-partition/environments/spi-stack",
@@ -368,9 +374,25 @@ class TestReads:
 
         protection = onboard.read_protection(REPO)
 
-        assert protection.branches == ("main", "fork_integration")
-        assert protection.extra_policies == ((3, "main (tag)"),)
+        assert protection.restriction == "only main (branch), fork_integration (branch), main (tag)"
         assert not protection.satisfied
+
+    def test_protection_reads_open_and_protected_only_environments(self, monkeypatch):
+        shell = Shell()
+        shell.add(
+            "gh__api__repos/Acme/osdu-spi-partition/environments/spi-stack",
+            {"deployment_branch_policy": None},
+        )
+        monkeypatch.setattr(onboard, "run_command", shell)
+        assert onboard.read_protection(REPO) == PROTECTED
+
+        shell = Shell()
+        shell.add(
+            "gh__api__repos/Acme/osdu-spi-partition/environments/spi-stack",
+            {"deployment_branch_policy": {"protected_branches": True}},
+        )
+        monkeypatch.setattr(onboard, "run_command", shell)
+        assert onboard.read_protection(REPO) == Protection(True, "protected branches only")
 
     def test_a_missing_environment_reads_absent_while_other_errors_raise(self, monkeypatch):
         monkeypatch.setattr(onboard, "run_command", Shell())
@@ -490,6 +512,7 @@ class TestReads:
         monkeypatch.setattr(
             onboard, "resolve_repository", lambda spec: seen.setdefault("spec", spec) and REPO
         )
+        monkeypatch.setattr(onboard, "read_subject", credential_subject)
         monkeypatch.setattr(
             onboard,
             "observe",
@@ -594,7 +617,7 @@ class TestApply:
         rows = apply_plan(plan)
 
         tools = [call[0] for call in live.calls]
-        assert tools == ["gh"] * 8 + ["az"] * 2
+        assert tools == ["gh"] * 6 + ["az"] * 2
         assert live.no_access_roster == live.roster == (cred("partition", REPO),)
         assert live.projected == 1
         assert {row.state for row in rows} == {"correct"}
@@ -614,7 +637,7 @@ class TestApply:
     def test_trust_is_never_enabled_when_the_rules_are_missing_at_write_time(self, live):
         live.protection = PROTECTED
         plan = make_plan(live.observed(values=False), skip_repo=True)
-        live.protection = Protection(True, False, ())
+        live.protection = Protection(True, "protected branches only")
 
         with pytest.raises(OnboardError, match="does not protect spi-stack") as exc:
             apply_plan(plan)
@@ -708,6 +731,12 @@ class TestProjection:
             Credential(
                 "by-hand", GITHUB_ISSUER, "repo:Acme/x:ref:refs/heads/main", (GITHUB_AUDIENCE,)
             ),
+            Credential(
+                "cluster-spi-test",
+                "https://oidc.example/aks",
+                "system:serviceaccount:spi-test:spi-deployer",
+                (GITHUB_AUDIENCE,),
+            ),
         )
         monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
         monkeypatch.setattr(
@@ -720,6 +749,10 @@ class TestProjection:
         assert rows["schema"][0] == "drifted"
         assert rows["legal"] == ("drifted", "projected Acme/legal but not trusted")
         assert rows["by-hand"][0] == "unverified"
+        assert rows["cluster-spi-test"] == (
+            "correct",
+            "cluster issuer; system:serviceaccount:spi-test:spi-deployer",
+        )
         assert rows["fork-partition on spi-stack-dev1-noaccess"] == ("correct", REPO)
 
     def test_list_still_answers_when_the_no_access_identity_is_missing(self, monkeypatch):
@@ -803,3 +836,90 @@ class TestCli:
 
         assert result.exit_code == 1
         assert "already backs schema" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Subject forms: GitHub signs repo:<owner>/<name> or repo:<owner>@<id>/<name>@<id>
+# ---------------------------------------------------------------------------
+
+ID_SUBJECT = "repo:Acme@199854422/osdu-spi-partition@1351440282:environment:spi-stack"
+
+
+class TestSubjectForms:
+    def test_both_forms_name_the_repository(self):
+        assert cred("partition", REPO).repo == REPO
+        assert cred("partition", REPO, subject=ID_SUBJECT).repo == REPO
+        assert cred("partition", REPO, subject="repo:Acme/x:environment:other").repo == ""
+
+    @pytest.mark.parametrize(
+        "subject",
+        [
+            "repo:Acme@1/osdu-spi-partition:environment:spi-stack",
+            "repo:Acme/osdu-spi-partition@2:environment:spi-stack",
+        ],
+    )
+    def test_ids_must_come_as_a_pair(self, subject):
+        credential = cred("partition", REPO, subject=subject)
+
+        assert credential.repo == ""
+        assert not credential.well_formed
+        assert onboard.roster_repos((credential,)) == {}
+
+    def test_roster_projects_either_form(self):
+        roster = (cred("partition", REPO, subject=ID_SUBJECT),)
+
+        assert onboard.roster_repos(roster) == {"partition": REPO}
+
+    def test_a_classic_credential_is_drift_against_an_id_subject(self):
+        """Entra matches the string, so the credential is rewritten, not kept."""
+        plan = Plan(
+            TARGET,
+            "partition",
+            REPO,
+            subject=ID_SUBJECT,
+            skip_repo=True,
+            state=State((cred("partition", REPO),), {"partition": REPO}, PROTECTED),
+        )
+        plan.steps = plan_steps(plan)
+        plan.rows = plan_rows(plan)
+
+        assert verbs(plan)[0] == "az identity federated-credential update"
+        assert plan.steps[0].argv[plan.steps[0].argv.index("--subject") + 1] == ID_SUBJECT
+        assert states(plan)["fork-partition on spi-stack-dev1-deployer"] == "drifted"
+
+    def test_read_subject_uses_the_reported_prefix(self, monkeypatch):
+        shell = Shell()
+        shell.add(
+            f"gh__api__repos/{REPO}/actions/oidc/customization/sub",
+            {"use_default": True, "sub_claim_prefix": "repo:Acme@1/osdu-spi-partition@2"},
+        )
+        monkeypatch.setattr(onboard, "run_command", shell)
+
+        assert onboard.read_subject(REPO) == (
+            "repo:Acme@1/osdu-spi-partition@2:environment:spi-stack"
+        )
+
+    def test_read_subject_uses_the_classic_form_when_no_prefix_is_reported(self, monkeypatch):
+        shell = Shell()
+        shell.add(f"gh__api__repos/{REPO}/actions/oidc/customization/sub", {"use_default": True})
+        monkeypatch.setattr(onboard, "run_command", shell)
+
+        assert onboard.read_subject(REPO) == credential_subject(REPO)
+
+    def test_an_unreadable_subject_endpoint_stops_onboarding(self, monkeypatch):
+        """A 404 can hide a token without access; guessing the form writes a dead credential."""
+        monkeypatch.setattr(onboard, "run_command", Shell())
+
+        with pytest.raises(OnboardError, match="Could not read OIDC subject"):
+            onboard.read_subject(REPO)
+
+    def test_a_custom_template_is_refused(self, monkeypatch):
+        shell = Shell()
+        shell.add(
+            f"gh__api__repos/{REPO}/actions/oidc/customization/sub",
+            {"use_default": False, "include_claim_keys": ["repo", "job_workflow_ref"]},
+        )
+        monkeypatch.setattr(onboard, "run_command", shell)
+
+        with pytest.raises(OnboardError, match="customizes its OIDC subject"):
+            onboard.read_subject(REPO)

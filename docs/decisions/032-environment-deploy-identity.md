@@ -29,19 +29,27 @@ config.
   UAMI `spi-stack-<env>-deployer` in the environment resource group, next to
   the workload identity, with Azure Kubernetes Service Cluster User Role on
   the cluster and Key Vault Secrets User on the environment vault
-  (`infra/modules/rbac.bicep`). It carries no federated credential until a
-  repository is activated, so it is inert on a stack that never onboards
-  anything. `spi info --json` publishes its client id with the tenant,
-  subscription, resource group, and cluster: the five values a fork holds.
+  (`infra/modules/rbac.bicep`). Its only standing federated credential is
+  the cluster's, for `spi token` below; no repository can act as it until
+  one is activated. `spi info --json` publishes its client id with the
+  tenant, subscription, resource group, and cluster: the five values a
+  fork holds.
 - **Activated per repository.** `spi onboard <service> --repo <org>/<fork>`
   adds one federated credential for `repo:<org>/<fork>:environment:spi-stack`
   (`src/spi/onboard.py`). The credential list on the identity is the roster
   of trusted repositories; deleting one credential revokes one repository.
-  The protected environment and its required rules are established before
-  the credential is enabled. The deploy and test jobs run there; its rules
-  restrict entry to `main`, `fork_integration`, and the PR runs the template's
-  ADR-036 gate admits. `fork_upstream` is excluded: its builds are core-only,
-  without the Azure provider. Trust does not select a canonical image source;
+  The `spi-stack` environment exists and admits every branch before the
+  credential is enabled; the deploy and test jobs run there on pushes to
+  `main` and `fork_integration` and on the fork's own pull requests.
+  Write access is the boundary. A pull request from another repository
+  runs without an OIDC token, so it cannot mint the deploy identity
+  whatever the environment's branch policy says, and a branch list only
+  keeps the lane off same-repo pull requests; onboard treats one as drift.
+  A maintainer who wants a human pause before a borrow adds required
+  reviewers to the environment, which holds the job before its first
+  credentialed step without any workflow change. `fork_upstream` never
+  enters: its builds are core-only, without the Azure provider, so no
+  image exists to borrow. Trust does not select a canonical image source;
   ADR-033 owns that separate policy and its promotion.
 - **Repository names are canonical before they are persisted.** GitHub
   resolves `<org>/<fork>` case-insensitively but mints the OIDC subject
@@ -51,15 +59,24 @@ config.
   and the lock's roster and `source_repo` fields; those fields compare
   exactly. A declaration entry matches its repository case-insensitively
   and is reported as drift, not as a different repository, when only the
-  casing differs.
+  casing differs. The subject itself is what GitHub reports it will sign
+  for the repository (`sub_claim_prefix` from the OIDC customization
+  endpoint), which by default carries the owner and repository ids,
+  `repo:<owner>@<id>/<name>@<id>`; onboard reads it rather than composing
+  the classic form, refuses a repository with a custom template, and treats
+  a credential in the other form as drift to rewrite. A repository deleted
+  and recreated under the same name gets a new id and must be onboarded
+  again.
 - **The roster is keyed by repository and capped by Azure.** Azure keeps
   the issuer and subject pair unique on an identity and allows twenty
-  federated credentials per UAMI, so one repository backs exactly one
-  service and an environment trusts at most twenty repositories. `repo` is
-  unique across the roster and the declaration, and planning refuses a
-  second service naming an already trusted repository, or a twenty-first
-  entry, before any phase writes. Growth past the cap is a new decision,
-  since a second identity needs its own RoleBindings, not a retry.
+  federated credentials per UAMI. The cluster credential holds one slot,
+  so one repository backs exactly one service and an environment trusts
+  at most nineteen repositories. `repo` is unique across the roster and
+  the declaration, and planning counts every credential on the identity
+  and refuses a second service naming an already trusted repository, or an
+  entry past the cap, before any phase writes. Growth past the cap is a
+  new decision, since a second identity needs its own RoleBindings, not a
+  retry.
 - **Credential writes are serial per identity.** Onboarding and lifecycle
   reconciliation await each credential create, update, or delete before
   starting the next. Bicep loops use `@batchSize(1)`, matching
@@ -124,6 +141,23 @@ config.
   than 401. `spi info --json` publishes it as
   `deploy_identity.no_access_client_id`; forks read it per run instead of
   holding a sixth repository value.
+- **The cluster is a second issuer for the same identities.**
+  `infra/modules/identity.bicep` federates the deployer to
+  `system:serviceaccount:spi-test:spi-deployer` and the no-access identity
+  to `system:serviceaccount:spi-test:spi-no-access` on the AKS OIDC issuer,
+  and `spi up` applies both ServiceAccounts, annotated for workload
+  identity, in the `spi-test` namespace it creates outside the mesh. Every
+  Azure-provider service admits app-only tokens alone, so a developer's own
+  `az account get-access-token`, which carries `upn`, is refused on every
+  endpoint. `spi token` requests a ten-minute projected token for the
+  ServiceAccount and exchanges it at the Entra v1 endpoint for a bearer
+  whose `appid` is the deploy identity, the same principal fork CI holds
+  through GitHub federation; `--no-access` mints the negative-path bearer.
+  Who may mint is who may create tokens for those ServiceAccounts, a
+  Kubernetes RBAC question the fork Roles answer with no: CI stays on the
+  GitHub path. A Job on the `spi-deployer` account mints in-cluster through
+  the webhook with no CLI step. `spi onboard --list` shows the credential
+  as the cluster issuer; it is never projected as a trusted repository.
 
 Rejected: one managed identity per fork in a separate persistent resource
 group. Distinct principal names in the cluster audit log, but the same

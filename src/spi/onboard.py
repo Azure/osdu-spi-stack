@@ -37,11 +37,11 @@ from .console import console
 from .images import IMAGE_REGISTRY, SCHEMA_LOAD_SERVICE_NAME
 from .pins import TRUSTED_REPOS_ANNOTATION, PinError, decode_trusted_repos, mutate_lock, read_lock
 from .shell import run_command
+from .templates import TESTER_NAMESPACE
 
 GITHUB_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_AUDIENCE = "api://AzureADTokenExchange"
 DEPLOY_ENVIRONMENT = "spi-stack"
-REQUIRED_BRANCHES = ("main", "fork_integration")
 CREDENTIAL_PREFIX = "fork-"
 # Azure allows twenty federated credentials per user-assigned identity.
 MAX_CREDENTIALS = 20
@@ -57,7 +57,12 @@ CONFLICT_BACKOFF_SECONDS = (5, 15, 30)
 PHASES = ("repository", "azure", "cluster")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$)[A-Za-z0-9_.-]+$")
-_SUBJECT_RE = re.compile(rf"^repo:([^:]+):environment:{DEPLOY_ENVIRONMENT}$")
+# GitHub signs the subject as repo:<owner>/<name> or, by default since the
+# immutable-subject change, repo:<owner>@<id>/<name>@<id>; the ids come as a pair.
+_SUBJECT_RE = re.compile(
+    rf"^repo:(?:([^:/@]+)/([^:/@]+)|([^:/@]+)@\d+/([^:/@]+)@\d+)"
+    rf":environment:{DEPLOY_ENVIRONMENT}$"
+)
 
 
 class OnboardError(RuntimeError):
@@ -107,39 +112,46 @@ class Credential:
     @property
     def repo(self) -> str:
         match = _SUBJECT_RE.match(self.subject)
-        return match.group(1) if match and _REPO_RE.match(match.group(1)) else ""
+        if not match:
+            return ""
+        owner, name = (group for group in match.groups() if group)
+        repo = f"{owner}/{name}"
+        return repo if _REPO_RE.match(repo) else ""
 
-    def trusts(self, repo: str) -> bool:
+    @property
+    def well_formed(self) -> bool:
+        """A GitHub credential shaped the way this CLI writes them, whatever the subject form."""
+
         return (
             self.issuer == GITHUB_ISSUER
-            and self.subject == credential_subject(repo)
+            and bool(self.repo)
             and set(self.audiences) == {GITHUB_AUDIENCE}
         )
+
+    def trusts(self, subject: str) -> bool:
+        """Exact match: Entra compares the subject string, so a form change is drift."""
+
+        return self.well_formed and self.subject == subject
 
 
 @dataclass(frozen=True)
 class Protection:
-    """What GitHub reports about the repository's ``spi-stack`` environment."""
+    """What GitHub reports about the repository's ``spi-stack`` environment.
+
+    The environment admits every branch. Write access is the boundary: a
+    pull request from another repository runs without an OIDC token, so it
+    cannot mint the deploy identity whatever the branch policy says. A
+    restriction only keeps the lane off same-repo pull requests, which is
+    drift.
+    """
 
     exists: bool
-    custom_branch_policies: bool
-    branches: tuple[str, ...]
-    # Policies beyond the required branches, as (id, label); a tag or wildcard
-    # policy admits runs the environment must keep out.
-    extra_policies: tuple[tuple[int, str], ...] = ()
-
-    @property
-    def missing_branches(self) -> tuple[str, ...]:
-        return tuple(name for name in REQUIRED_BRANCHES if name not in self.branches)
+    # A human-readable description of any branch restriction in force.
+    restriction: str = ""
 
     @property
     def satisfied(self) -> bool:
-        return (
-            self.exists
-            and self.custom_branch_policies
-            and not self.missing_branches
-            and not self.extra_policies
-        )
+        return self.exists and not self.restriction
 
 
 @dataclass(frozen=True)
@@ -181,6 +193,7 @@ class Plan:
     target: Target
     service: str
     repo: str
+    subject: str = ""
     org: str = ""
     skip_repo: bool = False
     remove: bool = False
@@ -203,8 +216,14 @@ def credential_name(service: str) -> str:
     return f"{CREDENTIAL_PREFIX}{service}"
 
 
-def credential_subject(repo: str) -> str:
-    return f"repo:{repo}:environment:{DEPLOY_ENVIRONMENT}"
+def credential_subject(repo: str, prefix: str = "") -> str:
+    """The federated subject for a repository's deploy environment.
+
+    ``prefix`` is what GitHub reports it will sign for the repository
+    (``sub_claim_prefix``); without it the classic ``repo:<owner>/<name>``.
+    """
+
+    return f"{prefix or f'repo:{repo}'}:environment:{DEPLOY_ENVIRONMENT}"
 
 
 def find_credential(roster: tuple[Credential, ...], service: str) -> Optional[Credential]:
@@ -215,7 +234,7 @@ def find_credential(roster: tuple[Credential, ...], service: str) -> Optional[Cr
 def roster_repos(roster: tuple[Credential, ...]) -> dict[str, str]:
     """Service to repository for the credentials shaped the way this CLI writes them."""
 
-    return {c.service: c.repo for c in roster if c.service and c.repo and c.trusts(c.repo)}
+    return {c.service: c.repo for c in roster if c.service and c.well_formed}
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +349,30 @@ def resolve_repository(spec: str) -> str:
     return str(payload["full_name"])
 
 
+def read_subject(repo: str) -> str:
+    """The subject GitHub signs for the repository's deploy environment.
+
+    GitHub reports the prefix it uses for the repository; a custom template
+    (``use_default`` false) is refused because the lane's login cannot
+    predict what it would carry.
+    """
+
+    payload = _read_json(
+        ["gh", "api", f"repos/{repo}/actions/oidc/customization/sub"],
+        f"OIDC subject customization on {repo}",
+    )
+    if not isinstance(payload, dict):
+        raise OnboardError(f"Unexpected OIDC subject customization on {repo}: {payload!r}")
+    if payload.get("use_default") is False:
+        raise OnboardError(
+            f"{repo} customizes its OIDC subject claim; onboard trusts the default "
+            "template only. Reset it with: gh api -X PUT "
+            f"repos/{repo}/actions/oidc/customization/sub -F use_default=true"
+        )
+    prefix = str(payload.get("sub_claim_prefix") or "")
+    return credential_subject(repo, prefix)
+
+
 def read_protection(repo: str) -> Protection:
     env = _read_json(
         ["gh", "api", f"repos/{repo}/environments/{DEPLOY_ENVIRONMENT}"],
@@ -337,30 +380,30 @@ def read_protection(repo: str) -> Protection:
         missing_ok=True,
     )
     if not isinstance(env, dict):
-        return Protection(exists=False, custom_branch_policies=False, branches=())
-    custom = bool((env.get("deployment_branch_policy") or {}).get("custom_branch_policies"))
-    branches: list[str] = []
-    extras: list[tuple[int, str]] = []
-    if custom:
-        # --paginate --slurp returns every page as one JSON array of page objects.
-        pages = _read_json(
-            [
-                "gh",
-                "api",
-                "--paginate",
-                "--slurp",
-                f"repos/{repo}/environments/{DEPLOY_ENVIRONMENT}/deployment-branch-policies",
-            ],
-            f"branch policies of {DEPLOY_ENVIRONMENT} on {repo}",
-        )
-        for page in pages if isinstance(pages, list) else [pages]:
-            for entry in (page or {}).get("branch_policies") or []:
-                name, kind = str(entry.get("name", "")), str(entry.get("type") or "branch")
-                if kind == "branch" and name in REQUIRED_BRANCHES:
-                    branches.append(name)
-                elif name:
-                    extras.append((int(entry.get("id") or 0), f"{name} ({kind})"))
-    return Protection(True, custom, tuple(dict.fromkeys(branches)), tuple(extras))
+        return Protection(exists=False)
+    policy = env.get("deployment_branch_policy") or {}
+    if policy.get("protected_branches"):
+        return Protection(True, "protected branches only")
+    if not policy.get("custom_branch_policies"):
+        return Protection(True)
+    # --paginate --slurp returns every page as one JSON array of page objects.
+    pages = _read_json(
+        [
+            "gh",
+            "api",
+            "--paginate",
+            "--slurp",
+            f"repos/{repo}/environments/{DEPLOY_ENVIRONMENT}/deployment-branch-policies",
+        ],
+        f"branch policies of {DEPLOY_ENVIRONMENT} on {repo}",
+    )
+    names = []
+    for page in pages if isinstance(pages, list) else [pages]:
+        for entry in (page or {}).get("branch_policies") or []:
+            name, kind = str(entry.get("name", "")), str(entry.get("type") or "branch")
+            if name:
+                names.append(f"{name} ({kind})")
+    return Protection(True, "only " + ", ".join(names) if names else "an empty policy list")
 
 
 def read_values(repo: str, org: str) -> dict[str, Optional[str]]:
@@ -426,58 +469,24 @@ def _env_api(repo: str, suffix: str = "") -> str:
 
 
 def protection_steps(repo: str, protection: Protection) -> list[Step]:
-    steps = []
-    if not protection.exists or not protection.custom_branch_policies:
-        steps.append(
-            Step(
-                "repository",
-                [
-                    "gh",
-                    "api",
-                    "--method",
-                    "PUT",
-                    _env_api(repo),
-                    "-F",
-                    "deployment_branch_policy[protected_branches]=false",
-                    "-F",
-                    "deployment_branch_policy[custom_branch_policies]=true",
-                ],
-                f"Create the protected {DEPLOY_ENVIRONMENT} environment on {repo}",
-            )
+    if protection.satisfied:
+        return []
+    verb = "Create" if not protection.exists else "Open"
+    return [
+        Step(
+            "repository",
+            [
+                "gh",
+                "api",
+                "--method",
+                "PUT",
+                _env_api(repo),
+                "-F",
+                "deployment_branch_policy=null",
+            ],
+            f"{verb} the {DEPLOY_ENVIRONMENT} environment on {repo} to every branch",
         )
-    for policy_id, label in protection.extra_policies:
-        steps.append(
-            Step(
-                "repository",
-                [
-                    "gh",
-                    "api",
-                    "--method",
-                    "DELETE",
-                    _env_api(repo, f"/deployment-branch-policies/{policy_id}"),
-                ],
-                f"Remove the {label} policy from {DEPLOY_ENVIRONMENT} on {repo}",
-            )
-        )
-    for branch in protection.missing_branches:
-        steps.append(
-            Step(
-                "repository",
-                [
-                    "gh",
-                    "api",
-                    "--method",
-                    "POST",
-                    _env_api(repo, "/deployment-branch-policies"),
-                    "-f",
-                    f"name={branch}",
-                    "-f",
-                    "type=branch",
-                ],
-                f"Admit {branch} to {DEPLOY_ENVIRONMENT} on {repo}",
-            )
-        )
-    return steps
+    ]
 
 
 def value_steps(
@@ -514,10 +523,10 @@ def value_steps(
 
 
 def credential_step(
-    target: Target, service: str, repo: str, roster: tuple[Credential, ...]
+    target: Target, service: str, repo: str, subject: str, roster: tuple[Credential, ...]
 ) -> Optional[Step]:
     existing = find_credential(roster, service)
-    if existing is not None and existing.trusts(repo):
+    if existing is not None and existing.trusts(subject):
         return None
     verb = "create" if existing is None else "update"
     return Step(
@@ -533,7 +542,7 @@ def credential_step(
             "--issuer",
             GITHUB_ISSUER,
             "--subject",
-            credential_subject(repo),
+            subject,
             "--audiences",
             GITHUB_AUDIENCE,
         ],
@@ -594,16 +603,9 @@ def protection_row(repo: str, protection: Protection) -> Row:
     item = f"{DEPLOY_ENVIRONMENT} environment on {repo}"
     if not protection.exists:
         return Row("repository", item, "missing")
-    if not protection.custom_branch_policies:
-        return Row("repository", item, "drifted", "no custom branch policies")
-    problems = []
-    if protection.missing_branches:
-        problems.append("missing " + ", ".join(protection.missing_branches))
-    if protection.extra_policies:
-        problems.append("admits " + ", ".join(label for _, label in protection.extra_policies))
-    if problems:
-        return Row("repository", item, "drifted", "; ".join(problems))
-    return Row("repository", item, "correct", ", ".join(protection.branches))
+    if protection.restriction:
+        return Row("repository", item, "drifted", f"admits {protection.restriction}")
+    return Row("repository", item, "correct", "every branch")
 
 
 def value_rows(
@@ -643,8 +645,8 @@ def credential_row(plan: Plan, target: Target, roster: tuple[Credential, ...]) -
         return Row("azure", item, "drifted", f"trusts {existing.repo or existing.subject}")
     if existing is None:
         return Row("azure", item, "missing")
-    if existing.trusts(plan.repo):
-        return Row("azure", item, "correct", credential_subject(plan.repo))
+    if existing.trusts(plan.subject):
+        return Row("azure", item, "correct", plan.subject)
     return Row("azure", item, "drifted", existing.subject)
 
 
@@ -683,7 +685,7 @@ def plan_steps(plan: Plan) -> list[Step]:
         if plan.blocked:
             return steps
         for target, roster in _identity_rosters(plan):
-            trust = credential_step(target, plan.service, plan.repo, roster)
+            trust = credential_step(target, plan.service, plan.repo, plan.subject, roster)
             steps.extend([trust] if trust else [])
     projection = projection_step(desired_projection(plan), plan.state.projection)
     steps.extend([projection] if projection else [])
@@ -741,7 +743,7 @@ def plan_onboard(
             raise OnboardError(f"{service} is not trusted yet; pass --repo <owner>/<name>.")
         repo_spec = existing.repo
     repo = resolve_repository(repo_spec)
-    plan = Plan(target, service, repo, org=org, skip_repo=skip_repo)
+    plan = Plan(target, service, repo, subject=read_subject(repo), org=org, skip_repo=skip_repo)
     plan.state = observe(target, repo, org, values=not skip_repo, roster=roster)
     refuse(plan)
     plan.steps = plan_steps(plan)
@@ -858,8 +860,8 @@ def _write_credential(
 
 def _unprotected(repo: str) -> OnboardError:
     return OnboardError(
-        f"{repo} does not protect {DEPLOY_ENVIRONMENT} with custom branch policies for "
-        f"{', '.join(REQUIRED_BRANCHES)}; trust stays disabled until it does."
+        f"{repo} does not protect {DEPLOY_ENVIRONMENT} as an environment open to every "
+        "branch; trust stays disabled until it does."
     )
 
 
@@ -935,7 +937,10 @@ def apply_plan(plan: Plan) -> list[Row]:
                 _write_credential(target, lambda roster, t=target: revoke_step(t, service, roster))
             else:
                 _write_credential(
-                    target, lambda roster, t=target: credential_step(t, service, repo, roster)
+                    target,
+                    lambda roster, t=target: credential_step(
+                        t, service, repo, plan.subject, roster
+                    ),
                 )
 
     def cluster() -> None:
@@ -979,16 +984,20 @@ def list_trust(target: Target) -> list[Row]:
             )
         else:
             rows.append(Row("azure", service, "correct", repo))
-    rows.extend(
-        Row(
-            "azure",
-            cred.name,
-            "unverified",
-            f"not a {DEPLOY_ENVIRONMENT} credential this CLI wrote; {cred.subject}",
-        )
-        for cred in roster
-        if cred.service not in trusted
-    )
+    for cred in roster:
+        if cred.service in trusted:
+            continue
+        if cred.subject.startswith(f"system:serviceaccount:{TESTER_NAMESPACE}:"):
+            rows.append(Row("azure", cred.name, "correct", f"cluster issuer; {cred.subject}"))
+        else:
+            rows.append(
+                Row(
+                    "azure",
+                    cred.name,
+                    "unverified",
+                    f"not a {DEPLOY_ENVIRONMENT} credential this CLI wrote; {cred.subject}",
+                )
+            )
     if target.no_access_identity_name:
         try:
             no_access = roster_repos(read_no_access_roster(target))

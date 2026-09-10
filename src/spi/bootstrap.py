@@ -20,6 +20,7 @@ from .console import console, display_result, display_yaml
 from .shell import kubectl_apply_yaml, kubectl_json, run_command, run_process
 from .templates import (
     LEGAL_TAG_BASE,
+    TESTER_NAMESPACE,
     parse_init_values,
     spi_init_values_configmap,
     storage_class,
@@ -107,7 +108,7 @@ def ensure_namespaces(istio_revision: str = "") -> str:
         istio_revision = _detect_istio_revision() or "asm-1-30"
     console.print(f"  [info]Istio revision: {istio_revision}[/info]")
 
-    for ns in ["osdu-flux", "foundation", "platform"]:
+    for ns in ["osdu-flux", "foundation", "platform", TESTER_NAMESPACE]:
         run_process(
             ["kubectl", "create", "namespace", ns],
             capture_output=True,

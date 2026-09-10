@@ -152,6 +152,7 @@ See [Ingress modes](docs/architecture.md#ingress-profiles) and
 | `spi reconcile` | Suspend, resume, or refresh Flux reconciliation |
 | `spi service` | Pin services to merge-request or fork-built images |
 | `spi onboard` | Trust a fork repository to deploy against the environment; plans by default, `--write` applies |
+| `spi token` | Mint an app-only bearer as the deploy identity for acceptance suites; `--no-access` for 403 tests |
 | `spi update` | Check for and install a newer CLI release |
 | `spi maintenance` | Set or clear the deploy-blocking maintenance flag |
 | `spi down` | Delete the environment's Azure resources; `--purge` removes the group and its identities |
