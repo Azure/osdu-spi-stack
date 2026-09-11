@@ -231,6 +231,8 @@ def refresh_spi_init_values() -> None:
         return
     members = [client_id] if client_id else []
     member_users = [member_id] if member_id else []
+    # An unreadable annotation is not an absent account; keep what was written.
+    tenant_account = tenant_account or (values.get("tenantServiceAccount") or "")
     if (
         members == list(values.get("entitlementsMembers") or [])
         and member_users == list(values.get("entitlementsMemberUsers") or [])

@@ -267,6 +267,16 @@ class TestRefreshSpiInitValues:
 
         assert "tenantServiceAccount: osdu-id\n" in apply_yaml.call_args.args[0]
 
+    def test_keeps_the_tenant_service_account_when_the_annotation_is_unreadable(self):
+        apply_yaml = self._run(
+            "partitions:\n  - opendes\nlegalTag: demo-legaltag\nentitlementsMembers:\n  - id\n"
+            "tenantServiceAccount: osdu-id\n",
+            "id",
+            tenant_account="",
+        )
+
+        apply_yaml.assert_not_called()
+
     def test_leaves_current_values_alone(self):
         apply_yaml = self._run(
             "partitions:\n  - opendes\nlegalTag: demo-legaltag\nentitlementsMembers:\n  - id\n"
