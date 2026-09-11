@@ -256,7 +256,7 @@ run with those gates active.
 
 ## Recipes
 
-Mint the two test callers in fork CI. The deploy identity is the positive
+Mint the three test callers in fork CI. The deploy identity is the positive
 caller: the `entitlements-members` Job adds its client id to `users`,
 `users.datalake.ops`, `users.datalake.admins`, `users.data.root`, and
 `users.datalake.delegation` for every partition, creating the delegation group
@@ -286,10 +286,14 @@ the no-access identity gets 200 there and a human's own token gets 403.
   run: |
     spi info --json > facts.json
     echo "audience=$(jq -r .azure.token_audience facts.json)" >> "$GITHUB_OUTPUT"
+    echo "member=$(jq -r .deploy_identity.member_client_id facts.json)" >> "$GITHUB_OUTPUT"
     echo "noaccess=$(jq -r .deploy_identity.no_access_client_id facts.json)" >> "$GITHUB_OUTPUT"
 - uses: azure/login@v2            # the deploy identity, AZURE_CLIENT_ID from the repository
   with: { client-id: ${{ secrets.AZURE_CLIENT_ID }}, tenant-id: ..., subscription-id: ... }
 - run: echo "TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"
+- uses: azure/login@v2            # the member identity holds no subscription role
+  with: { client-id: ${{ steps.facts.outputs.member }}, tenant-id: ..., allow-no-subscriptions: true }
+- run: echo "MEMBER_TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"
 - uses: azure/login@v2            # the no-access identity holds no subscription role
   with: { client-id: ${{ steps.facts.outputs.noaccess }}, tenant-id: ..., allow-no-subscriptions: true }
 - run: echo "NO_ACCESS_TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"

@@ -97,23 +97,27 @@ def test_bicep_compiles_from_path_with_cmd_metacharacters(tmp_path, monkeypatch)
     assert result.returncode == 0, result.stderr
 
 
-def test_main_bicep_publishes_both_fork_identity_client_ids():
+def test_main_bicep_publishes_the_fork_identity_client_ids():
     """spi info reads these outputs into deploy_identity; a renamed output
     would silently publish an empty client id."""
     source = (INFRA_DIR / "main.bicep").read_text()
 
     assert "output deployIdentityClientId string" in source
+    assert "output memberIdentityClientId string" in source
     assert "output noAccessIdentityClientId string" in source
+    assert "memberIdentityName: memberIdentityName" in source
     assert "noAccessIdentityName: noAccessIdentityName" in source
 
 
-def test_no_access_identity_holds_no_role_assignment():
-    """The identity exists so fork CI can prove the unknown-caller 401 path;
-    wiring it into the rbac module would defeat that."""
+def test_member_and_no_access_identities_hold_no_role_assignment():
+    """The identities exist so fork CI can prove the non-admin 403 path and the
+    unknown-caller 401 path; wiring either into the rbac module would defeat that."""
     rbac = (INFRA_DIR / "modules" / "rbac.bicep").read_text()
     main = (INFRA_DIR / "main.bicep").read_text()
 
+    assert "memberIdentity" not in rbac
     assert "noAccess" not in rbac
+    assert "identityModule.outputs.memberIdentityPrincipalId" not in main.split("output ")[0]
     assert "identityModule.outputs.noAccessIdentityPrincipalId" not in main.split("output ")[0]
 
 

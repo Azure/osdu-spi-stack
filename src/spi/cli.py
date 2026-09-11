@@ -716,9 +716,10 @@ def token(
     ),
     output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
 ):
-    """Mint an app-only bearer token as the environment's deploy identity.
+    """Mint an app-only bearer token as the deploy, member, or no-access identity.
 
-    The token is written to stdout alone, so it composes:
+    The deploy identity is the default. The token is written to stdout alone,
+    so it composes:
     INTEGRATION_TESTER_ACCESS_TOKEN=$(spi token).
     """
     ctx = verify_spi_cluster()

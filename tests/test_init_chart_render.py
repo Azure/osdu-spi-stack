@@ -638,14 +638,15 @@ def test_members_fails_closed_when_the_listing_exceeds_max_user_groups(
 ):
     """The deadline is only a true upper bound if the number of
     service.<name>.user groups seeded per member user is itself bounded, so
-    a listing carrying more than MAX_USER_GROUPS must refuse to seed."""
+    a listing carrying more than MAX_USER_GROUPS must refuse before any write,
+    including the impersonation groups it would otherwise create."""
     const = _script_constants(init_scripts["init_members.py"])
     max_groups = const["MAX_USER_GROUPS"]
     extra = {
         f"service.svc{i}.user": f"service.svc{i}.user@opendes.dataservices.energy"
         for i in range(max_groups + 1)
     }
-    groups = {**_GROUPS, **_CREATED_GROUPS, **extra}
+    groups = {**{n: _GROUPS[n] for n in _BOOTSTRAP_GROUPS}, **extra}
     listing = json.dumps(
         {"groups": [{"name": n, "email": e, "description": ""} for n, e in groups.items()]}
     ).encode()
@@ -660,6 +661,7 @@ def test_members_fails_closed_when_the_listing_exceeds_max_user_groups(
 
     assert result.exit_code == 1
     assert "entitlements-members outcome: too_many_user_groups" in result.stdout
+    assert result.routed("create") == []
     assert result.routed("post") == []
 
 
