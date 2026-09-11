@@ -75,3 +75,7 @@ spec:
         value: http://entitlements/api/entitlements/v2
       - name: ENTITLEMENTS_SERVICE_API_KEY
         value: OBSOLETE
+      # legal-azure's application.properties turns this off; the core default
+      # and the acceptance suite expect it on.
+      - name: FEATUREFLAG_LEGALTAGQUERYAPIFREETEXTALLFIELDS_ENABLED
+        value: "true"
