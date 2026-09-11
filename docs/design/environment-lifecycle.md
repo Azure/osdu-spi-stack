@@ -287,9 +287,10 @@ gh run watch
    credential, the roster projection with roster-derived pin validation) are
    built. Still unbuilt: `--canonical-source` and the source-policy phase,
    `forks:` and the declaration locator with pre-resolution intent loading;
-   onboard `osdu-spi-partition` with a community canonical; the
-   template-side deploy, integration-test, and restore jobs under the reserved
-   check names.
+   onboard `osdu-spi-partition` with a community canonical. The template
+   implements one `deploy-test` job with borrow, prove, and restore steps;
+   `validation-summary` reports its result through the required summary check.
+   See [fork deployment](fork-deployment.md#the-sequence).
 5. **Canonical promotions** (unbuilt): explicit per-service source policy in
    RG tags and its lock projection; on the shared environment a reviewed
    `canonicalSource: fork` change after the deploy and test gates pass
