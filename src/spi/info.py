@@ -92,7 +92,7 @@ def _read_osdu_config() -> dict:
 def _read_entitlements_domain() -> str:
     """Read the entitlements service domain from its Deployment. Empty if missing."""
     data = kubectl_json(["get", "deployment", "osdu-entitlements", "-n", "osdu"])
-    pod_spec = ((((data or {}).get("spec") or {}).get("template") or {}).get("spec") or {})
+    pod_spec = (((data or {}).get("spec") or {}).get("template") or {}).get("spec") or {}
     containers = pod_spec.get("containers") or []
     if not containers:
         return ""
