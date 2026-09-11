@@ -83,12 +83,16 @@ class Target:
     identity_name: str
     resource_group: str
     values: dict[str, str]
-    # The no-access identity carries the same federated credentials and no
-    # role or group; fork CI mints its 403 caller from it.
+    # The member and no-access identities carry the same federated credentials
+    # and no role; fork CI mints its non-admin and 401 callers from them.
     no_access_identity_name: str = ""
+    member_identity_name: str = ""
 
     def no_access(self) -> Target:
         return replace(self, identity_name=self.no_access_identity_name)
+
+    def member(self) -> Target:
+        return replace(self, identity_name=self.member_identity_name)
 
     def az_scope(self) -> list[str]:
         scope = ["--identity-name", self.identity_name, "--resource-group", self.resource_group]
@@ -165,12 +169,16 @@ class State:
     # never returns it; an absent name is None.
     values: dict[str, Optional[str]] = field(default_factory=dict)
     no_access_roster: tuple[Credential, ...] = ()
+    member_roster: tuple[Credential, ...] = ()
 
     def credential(self, service: str) -> Optional[Credential]:
         return find_credential(self.roster, service)
 
     def no_access_credential(self, service: str) -> Optional[Credential]:
         return find_credential(self.no_access_roster, service)
+
+    def member_credential(self, service: str) -> Optional[Credential]:
+        return find_credential(self.member_roster, service)
 
 
 @dataclass(frozen=True)
@@ -280,6 +288,7 @@ def load_target() -> Target:
         identity_name=f"{cluster}-deployer" if cluster else "",
         resource_group=identity.get("resource_group", ""),
         no_access_identity_name=f"{cluster}-noaccess" if cluster else "",
+        member_identity_name=f"{cluster}-member" if cluster else "",
         values={
             CLIENT_ID_SECRET: identity.get("client_id", ""),
             "AZURE_TENANT_ID": identity.get("tenant_id", ""),
@@ -322,20 +331,28 @@ def read_roster(target: Target) -> tuple[Credential, ...]:
     return tuple(sorted(roster, key=lambda c: c.name))
 
 
-def read_no_access_roster(target: Target) -> tuple[Credential, ...]:
-    """The no-access identity's roster; a missing identity names the fix."""
+def _read_mirror_roster(mirror: Target, label: str) -> tuple[Credential, ...]:
+    """A mirror identity's roster; a missing identity names the fix."""
 
-    if not target.no_access_identity_name:
+    if not mirror.identity_name:
         return ()
     try:
-        return read_roster(target.no_access())
+        return read_roster(mirror)
     except OnboardError as exc:
         if "not found" in str(exc).lower():
             raise OnboardError(
-                f"No-access identity {target.no_access_identity_name} not found; run "
+                f"{label} identity {mirror.identity_name} not found; run "
                 "'spi up' on a release that provisions it first."
             ) from None
         raise
+
+
+def read_no_access_roster(target: Target) -> tuple[Credential, ...]:
+    return _read_mirror_roster(target.no_access(), "No-access")
+
+
+def read_member_roster(target: Target) -> tuple[Credential, ...]:
+    return _read_mirror_roster(target.member(), "Member")
 
 
 def resolve_repository(spec: str) -> str:
@@ -453,6 +470,7 @@ def observe(
     return State(
         roster=read_roster(target) if roster is None else roster,
         no_access_roster=read_no_access_roster(target),
+        member_roster=read_member_roster(target),
         projection=read_projection(),
         protection=read_protection(repo) if repo else None,
         values=read_values(repo, org) if repo and values else {},
@@ -693,9 +711,11 @@ def plan_steps(plan: Plan) -> list[Step]:
 
 
 def _identity_rosters(plan: Plan) -> list[tuple[Target, tuple[Credential, ...]]]:
-    """The deployer first, then the no-access identity when the target names one."""
+    """The deployer first, then the member and no-access identities the target names."""
 
     pairs = [(plan.target, plan.state.roster)]
+    if plan.target.member_identity_name:
+        pairs.append((plan.target.member(), plan.state.member_roster))
     if plan.target.no_access_identity_name:
         pairs.append((plan.target.no_access(), plan.state.no_access_roster))
     return pairs
@@ -998,24 +1018,30 @@ def list_trust(target: Target) -> list[Row]:
                     f"not a {DEPLOY_ENVIRONMENT} credential this CLI wrote; {cred.subject}",
                 )
             )
-    if target.no_access_identity_name:
+    mirrors = [
+        (target.member_identity_name, read_member_roster),
+        (target.no_access_identity_name, read_no_access_roster),
+    ]
+    for mirror_name, read_mirror in mirrors:
+        if not mirror_name:
+            continue
         try:
-            no_access = roster_repos(read_no_access_roster(target))
+            mirrored_repos = roster_repos(read_mirror(target))
         except OnboardError as exc:
-            rows.append(Row("azure", target.no_access_identity_name, "missing", str(exc)))
-            return rows
+            rows.append(Row("azure", mirror_name, "missing", str(exc)))
+            continue
         for service, repo in sorted(trusted.items()):
-            item = f"{credential_name(service)} on {target.no_access_identity_name}"
-            mirrored = no_access.get(service)
+            item = f"{credential_name(service)} on {mirror_name}"
+            mirrored = mirrored_repos.get(service)
             if mirrored == repo:
                 rows.append(Row("azure", item, "correct", repo))
             elif mirrored is None:
                 rows.append(Row("azure", item, "missing", f"{target.identity_name} trusts {repo}"))
             else:
                 rows.append(Row("azure", item, "drifted", f"trusts {mirrored}, not {repo}"))
-        for service, repo in sorted(no_access.items()):
+        for service, repo in sorted(mirrored_repos.items()):
             if service not in trusted:
-                item = f"{credential_name(service)} on {target.no_access_identity_name}"
+                item = f"{credential_name(service)} on {mirror_name}"
                 rows.append(
                     Row("azure", item, "drifted", f"trusts {repo}; {target.identity_name} does not")
                 )

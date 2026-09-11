@@ -2,18 +2,23 @@
 // Licensed under the Apache License, Version 2.0.
 //
 // Federates the OSDU workload identity to workload-identity-sa in each
-// configured namespace, and creates the environment's deploy identity and
-// no-access identity. Each of those trusts one cluster ServiceAccount, so a
-// developer with cluster access can mint the same app-only token fork CI
-// mints through GitHub federation (spi token); repositories are trusted later
-// by spi onboard. The no-access identity never receives a role assignment or
-// an entitlements group; fork CI uses it to prove 403 paths.
+// configured namespace, and creates the environment's three test callers:
+// the deploy identity, the member identity, and the no-access identity. Each
+// trusts one cluster ServiceAccount, so a developer with cluster access can
+// mint the same app-only token fork CI mints through GitHub federation
+// (spi token); repositories are trusted later by spi onboard. The member
+// identity is seeded into users and the service user groups only, and the
+// no-access identity never receives a role assignment or an entitlements
+// group; fork CI uses them to prove non-admin and unauthenticated paths.
 
 @description('Resource name for the OSDU workload identity.')
 param name string
 
 @description('Resource name for the deploy identity fork CI federates to.')
 param deployIdentityName string
+
+@description('Resource name for the member identity fork CI federates to for non-admin tests.')
+param memberIdentityName string
 
 @description('Resource name for the no-access identity fork CI federates to for 403 tests.')
 param noAccessIdentityName string
@@ -24,11 +29,14 @@ param location string
 @description('OIDC issuer URL of the AKS cluster; use an empty string only to omit federation.')
 param oidcIssuerUrl string
 
-@description('Namespace of the ServiceAccounts the deploy and no-access identities trust.')
+@description('Namespace of the ServiceAccounts the deploy, member, and no-access identities trust.')
 param testerNamespace string = 'spi-test'
 
 @description('ServiceAccount the deploy identity trusts; spi token mints through it.')
 param deployerServiceAccountName string = 'spi-deployer'
+
+@description('ServiceAccount the member identity trusts; spi token --member mints through it.')
+param memberServiceAccountName string = 'spi-member'
 
 @description('ServiceAccount the no-access identity trusts; spi token --no-access mints through it.')
 param noAccessServiceAccountName string = 'spi-no-access'
@@ -55,6 +63,11 @@ resource deployIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-0
   location: location
 }
 
+resource memberIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: memberIdentityName
+  location: location
+}
+
 resource noAccessIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: noAccessIdentityName
   location: location
@@ -75,7 +88,7 @@ resource federatedCredentials 'Microsoft.ManagedIdentity/userAssignedIdentities/
   }
 }]
 
-// The onboard roster projection ignores these two credentials by issuer, but
+// The onboard roster projection ignores these three credentials by issuer, but
 // they count against the twenty-credential cap on each identity.
 resource deployerClusterCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = if (!empty(oidcIssuerUrl)) {
   parent: deployIdentity
@@ -83,6 +96,18 @@ resource deployerClusterCredential 'Microsoft.ManagedIdentity/userAssignedIdenti
   properties: {
     issuer: oidcIssuerUrl
     subject: 'system:serviceaccount:${testerNamespace}:${deployerServiceAccountName}'
+    audiences: [
+      'api://AzureADTokenExchange'
+    ]
+  }
+}
+
+resource memberClusterCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = if (!empty(oidcIssuerUrl)) {
+  parent: memberIdentity
+  name: 'cluster-${testerNamespace}'
+  properties: {
+    issuer: oidcIssuerUrl
+    subject: 'system:serviceaccount:${testerNamespace}:${memberServiceAccountName}'
     audiences: [
       'api://AzureADTokenExchange'
     ]
@@ -118,6 +143,15 @@ output deployIdentityClientId string = deployIdentity.properties.clientId
 
 @description('Principal ID bound as the User subject of the fork RoleBindings.')
 output deployIdentityPrincipalId string = deployIdentity.properties.principalId
+
+@description('Azure resource ID of the member identity.')
+output memberIdentityResourceId string = memberIdentity.id
+
+@description('Client ID a trusted repository reads from spi info as member_client_id.')
+output memberIdentityClientId string = memberIdentity.properties.clientId
+
+@description('Principal ID of the member identity; bound nowhere.')
+output memberIdentityPrincipalId string = memberIdentity.properties.principalId
 
 @description('Azure resource ID of the no-access identity.')
 output noAccessIdentityResourceId string = noAccessIdentity.id

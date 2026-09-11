@@ -24,6 +24,7 @@ and renders the right base URL / middleware UI table per ingress mode:
 
 import base64
 import json
+from collections.abc import Sequence
 from functools import partial
 
 from rich.panel import Panel
@@ -166,7 +167,9 @@ def _legal_tag_seeded(partition: str) -> bool:
     return bool(((data or {}).get("status") or {}).get("succeeded"))
 
 
-def _entitlements_seeded(partition: str, members: list[str]) -> bool:
+def _entitlements_seeded(
+    partition: str, members: list[str], member_users: Sequence[str] = ()
+) -> bool:
     """Whether entitlements-members has added the configured members for this partition.
 
     The Job name carries a hash of the member list, so a Job that seeded a
@@ -175,7 +178,7 @@ def _entitlements_seeded(partition: str, members: list[str]) -> bool:
     """
     if not members:
         return False
-    name = entitlements_members_job_name(partition, members)
+    name = entitlements_members_job_name(partition, members, member_users)
     data = kubectl_json(["get", "job", name, "-n", "osdu"])
     return bool(((data or {}).get("status") or {}).get("succeeded"))
 
@@ -188,6 +191,11 @@ def _parse_partitions_from_values_yaml(text: str) -> list:
 def _parse_members_from_values_yaml(text: str) -> list[str]:
     """The principals entitlements-members seeds; empty before the CLI wrote any."""
     return list(parse_init_values(text).get("entitlementsMembers") or [])
+
+
+def _parse_member_users_from_values_yaml(text: str) -> list[str]:
+    """The principals seeded into users and the service user groups only."""
+    return list(parse_init_values(text).get("entitlementsMemberUsers") or [])
 
 
 def _env_from_resource_group(rg: str) -> str:
@@ -385,8 +393,9 @@ def _collect_info() -> dict:
     tenant_id = cluster_cfg.get("AZURE_TENANT_ID", "") or osdu.get("AZURE_TENANT_ID", "")
     seeded = gather_reads([partial(_legal_tag_seeded, name) for name in partitions])
     members = _parse_members_from_values_yaml(init_values)
+    member_users = _parse_member_users_from_values_yaml(init_values)
     members_seeded = gather_reads(
-        [partial(_entitlements_seeded, name, members) for name in partitions]
+        [partial(_entitlements_seeded, name, members, member_users) for name in partitions]
     )
 
     info = {
@@ -414,11 +423,13 @@ def _collect_info() -> dict:
                 f"https://login.microsoftonline.com/{tenant_id}/v2.0" if tenant_id else ""
             ),
         },
-        # The five values a trusted repository holds, plus the no-access client
-        # id it reads at run time for 403 tests; both identities are inert
-        # until spi onboard adds a federated credential.
+        # The five values a trusted repository holds, plus the member and
+        # no-access client ids it reads at run time for non-admin and 401
+        # tests; all three identities are inert until spi onboard adds a
+        # federated credential.
         "deploy_identity": {
             "client_id": cluster_cfg.get("DEPLOY_IDENTITY_CLIENT_ID", ""),
+            "member_client_id": cluster_cfg.get("MEMBER_IDENTITY_CLIENT_ID", ""),
             "no_access_client_id": cluster_cfg.get("NO_ACCESS_IDENTITY_CLIENT_ID", ""),
             "tenant_id": tenant_id,
             "subscription_id": cluster_cfg.get("AZURE_SUBSCRIPTION_ID", ""),

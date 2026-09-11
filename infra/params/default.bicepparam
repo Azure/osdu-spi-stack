@@ -14,6 +14,7 @@ param location = 'eastus2'
 
 param identityName = 'spi-stack-osdu-identity'
 param deployIdentityName = 'spi-stack-deployer'
+param memberIdentityName = 'spi-stack-member'
 param noAccessIdentityName = 'spi-stack-noaccess'
 param clusterName = 'spi-stack'
 param keyVaultName = 'osduspistack'

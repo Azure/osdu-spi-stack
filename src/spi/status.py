@@ -350,7 +350,10 @@ def _read_expected_members_jobs() -> list[str]:
     members = [m for m in values.get("entitlementsMembers") or [] if isinstance(m, str)]
     if not members:
         return []
-    return [entitlements_members_job_name(p, members) for p in values.get("partitions") or []]
+    users = [m for m in values.get("entitlementsMemberUsers") or [] if isinstance(m, str)]
+    return [
+        entitlements_members_job_name(p, members, users) for p in values.get("partitions") or []
+    ]
 
 
 def _read_job_termination_message(job_name: str) -> str:

@@ -34,6 +34,7 @@ ISTIO_REVISION_KEY = "ISTIO_REVISION"
 DEPLOY_IDENTITY_KEYS = (
     "DEPLOY_IDENTITY_CLIENT_ID",
     "DEPLOY_IDENTITY_PRINCIPAL_ID",
+    "MEMBER_IDENTITY_CLIENT_ID",
     "NO_ACCESS_IDENTITY_CLIENT_ID",
     "AZURE_TENANT_ID",
     "AZURE_SUBSCRIPTION_ID",
@@ -49,6 +50,7 @@ def deploy_identity_facts(
     return {
         "DEPLOY_IDENTITY_CLIENT_ID": infra_outputs.get("deploy_identity_client_id", ""),
         "DEPLOY_IDENTITY_PRINCIPAL_ID": infra_outputs.get("deploy_identity_principal_id", ""),
+        "MEMBER_IDENTITY_CLIENT_ID": infra_outputs.get("member_identity_client_id", ""),
         "NO_ACCESS_IDENTITY_CLIENT_ID": infra_outputs.get("no_access_identity_client_id", ""),
         "AZURE_TENANT_ID": infra_outputs.get("tenant_id", ""),
         "AZURE_SUBSCRIPTION_ID": infra_outputs.get("subscription_id", ""),
@@ -210,15 +212,20 @@ def refresh_spi_init_values() -> None:
         if not partitions:
             console.print("  [dim]spi-init-values not found; skipping members refresh[/dim]")
             return
-        client_id = read_cluster_config().get("DEPLOY_IDENTITY_CLIENT_ID", "")
+        cluster_cfg = read_cluster_config()
+        client_id = cluster_cfg.get("DEPLOY_IDENTITY_CLIENT_ID", "")
+        member_id = cluster_cfg.get("MEMBER_IDENTITY_CLIENT_ID", "")
     except ClusterConfigError as exc:
         console.print(f"[warning]{exc}; leaving {INIT_VALUES_CONFIGMAP} unchanged.[/warning]")
         return
     members = [client_id] if client_id else []
-    if members == list(values.get("entitlementsMembers") or []):
+    member_users = [member_id] if member_id else []
+    if members == list(values.get("entitlementsMembers") or []) and member_users == list(
+        values.get("entitlementsMemberUsers") or []
+    ):
         return
     legal_tag = values.get("legalTag") or LEGAL_TAG_BASE
-    yaml_content = spi_init_values_configmap(partitions, members, legal_tag)
+    yaml_content = spi_init_values_configmap(partitions, members, legal_tag, member_users)
     display_yaml(yaml_content, f"ConfigMap: {INIT_VALUES_CONFIGMAP}")
     kubectl_apply_yaml(yaml_content, f"refresh {INIT_VALUES_CONFIGMAP} ConfigMap")
 

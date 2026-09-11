@@ -96,8 +96,9 @@ after external-grant cleanup ([ADR-034](../decisions/034-deploy-identity-survive
 
 ### Minting through the cluster issuer
 
-Both identities also trust one ServiceAccount each on the cluster's OIDC
-issuer: `spi-test/spi-deployer` and `spi-test/spi-no-access`, applied by
+The three identities also trust one ServiceAccount each on the cluster's OIDC
+issuer: `spi-test/spi-deployer`, `spi-test/spi-member`, and
+`spi-test/spi-no-access`, applied by
 `spi up` with the matching `azure.workload.identity/client-id` annotation.
 `spi token` runs `kubectl create token` for the account with audience
 `api://AzureADTokenExchange` and a ten-minute lifetime, then posts it as a
@@ -157,7 +158,7 @@ scope.
 | Token path | Configuration |
 |---|---|
 | Bootstrap Jobs | Management audience, accepted by the template's Entra v1 issuer rule with or without a trailing slash |
-| Acceptance callers (deploy identity, no-access identity) | `azure.token_audience` from `spi info --json`; the management audience unless an operator overrides `AAD_CLIENT_ID` |
+| Acceptance callers (deploy, member, and no-access identities) | `azure.token_audience` from `spi info --json`; the management audience unless an operator overrides `AAD_CLIENT_ID` |
 | OSDU service-to-service calls | `${aadClientId}/.default` scope; application audience accepted by the v1 and v2 issuer rules |
 
 A managed identity cannot be a token audience (Entra answers

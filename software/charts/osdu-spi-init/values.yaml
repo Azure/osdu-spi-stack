@@ -25,6 +25,10 @@ membersEnabled: true
 #    through spi-init-values; no Job renders while the list is empty.
 entitlementsMembers: []
 
+# -- Principals entitlements-members adds to users and every service.<name>.user
+#    group only: the environment's member identity, the non-admin test caller.
+entitlementsMemberUsers: []
+
 # -- Bumped when entitlements-members seeds something new, so an environment
 #    whose member list is unchanged still renders a fresh Job. Must equal
 #    ENTITLEMENTS_MEMBERS_GENERATION in the CLI, which computes the Job name.

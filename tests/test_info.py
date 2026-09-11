@@ -75,6 +75,7 @@ def _wire(
             "ISTIO_REVISION": "asm-1-30",
             "DEPLOY_IDENTITY_CLIENT_ID": "deployer-client-id",
             "DEPLOY_IDENTITY_PRINCIPAL_ID": "deployer-principal-id",
+            "MEMBER_IDENTITY_CLIENT_ID": "member-client-id",
             "NO_ACCESS_IDENTITY_CLIENT_ID": "noaccess-client-id",
             "AZURE_TENANT_ID": "tenant-id",
             "AZURE_SUBSCRIPTION_ID": "subscription-id",
@@ -90,7 +91,9 @@ def _wire(
     monkeypatch.setattr(info, "_read_init_values_yaml", lambda: values_yaml)
     monkeypatch.setattr(info, "_legal_tag_seeded", lambda partition: seeded)
     monkeypatch.setattr(
-        info, "_entitlements_seeded", lambda partition, members: bool(members) and members_seeded
+        info,
+        "_entitlements_seeded",
+        lambda partition, members, member_users=(): bool(members) and members_seeded,
     )
     monkeypatch.setattr(info, "_read_deploy_record", lambda: record)
     monkeypatch.setattr(info, "_read_workload_identity_client_id", lambda: "application-id")
@@ -214,6 +217,10 @@ def test_legal_tag_seeded_reads_the_job_outcome(monkeypatch):
     monkeypatch.setattr(info, "kubectl_json", fake_kubectl_json)
     assert info._legal_tag_seeded("opendes") is True
     assert seen[0] == ["get", "job", "legal-init-opendes", "-n", "osdu"]
+
+    seen.clear()
+    assert info._entitlements_seeded("opendes", ["new-id"], ["member-id"]) is True
+    assert seen[0][2] == entitlements_members_job_name("opendes", ["new-id"], ["member-id"])
 
     monkeypatch.setattr(info, "kubectl_json", lambda args: {"status": {"failed": 2}})
     assert info._legal_tag_seeded("opendes") is False
@@ -388,8 +395,8 @@ def test_info_human_header_marks_a_missing_record(monkeypatch):
 
 
 def test_info_json_publishes_the_deploy_identity_values(monkeypatch):
-    """The five values a fork holds plus the no-access client id it reads at
-    run time; the principal id stays out because nothing outside the cluster
+    """The five values a fork holds plus the member and no-access client ids
+    it reads at run time; the principal id stays out because nothing outside the cluster
     needs it."""
     _wire(monkeypatch)
 
@@ -397,6 +404,7 @@ def test_info_json_publishes_the_deploy_identity_values(monkeypatch):
 
     assert block == {
         "client_id": "deployer-client-id",
+        "member_client_id": "member-client-id",
         "no_access_client_id": "noaccess-client-id",
         "tenant_id": "tenant-id",
         "subscription_id": "subscription-id",
