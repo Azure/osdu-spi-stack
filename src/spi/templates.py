@@ -278,6 +278,8 @@ LEGAL_TAG_BASE = "demo-legaltag"
 
 
 ENTITLEMENTS_MEMBERS_COMPONENT = "entitlements-members"
+# Must equal membersGeneration in the init chart's values.yaml.
+ENTITLEMENTS_MEMBERS_GENERATION = 2
 
 
 def spi_init_values_configmap(
@@ -346,7 +348,9 @@ def entitlements_members_job_name(partition: str, members: Sequence[str]) -> str
     """The Job name the chart renders for this member list.
 
     Must match templates/entitlements-members.yaml: sortAlpha, join ",",
-    sha256sum, trunc 8. A render test holds the two together.
+    "#" and the generation, sha256sum, trunc 8. A render test holds the
+    two together.
     """
-    digest = hashlib.sha256(",".join(sorted(set(members))).encode("utf-8")).hexdigest()[:8]
+    seed = f"{','.join(sorted(set(members)))}#{ENTITLEMENTS_MEMBERS_GENERATION}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
     return f"{ENTITLEMENTS_MEMBERS_COMPONENT}-{partition}-{digest}"

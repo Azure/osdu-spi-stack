@@ -41,7 +41,7 @@ import yaml
 from _quantities import _millicores
 
 from spi.shell import run_process
-from spi.templates import entitlements_members_job_name
+from spi.templates import ENTITLEMENTS_MEMBERS_GENERATION, entitlements_members_job_name
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHART_DIR = REPO_ROOT / "software" / "charts" / "osdu-spi-init"
@@ -150,6 +150,13 @@ def test_members_job_renders_one_per_partition_under_the_cli_computed_name():
         assert env["MEMBERS"] == "a-client-id,b-client-id"
         assert job["metadata"]["labels"]["osdu.spi/partition"] == env["PARTITION"]
         assert [v["name"] for v in job["spec"]["template"]["spec"]["volumes"]] == ["scripts"]
+
+
+def test_members_generation_agrees_between_chart_and_cli():
+    """The chart's default generation and the CLI constant feed the same
+    hash; a bump on one side alone would make spi info miss every seeded Job."""
+    values = yaml.safe_load((CHART_DIR / "values.yaml").read_text())
+    assert values["membersGeneration"] == ENTITLEMENTS_MEMBERS_GENERATION
 
 
 def test_members_job_never_renders_without_members():
@@ -437,20 +444,31 @@ _GROUPS = {
     "users.datalake.ops": "users.datalake.ops@opendes.dataservices.energy",
     "users.datalake.admins": "users.datalake.admins@opendes.dataservices.energy",
     "users.data.root": "users.data.root@opendes.dataservices.energy",
+    "users.datalake.delegation": "users.datalake.delegation@opendes.dataservices.energy",
 }
+# Created by the Job when the listing lacks them; only delegation takes members.
+_CREATED_GROUPS = {
+    "users.datalake.delegation": _GROUPS["users.datalake.delegation"],
+    "users.datalake.impersonation": "users.datalake.impersonation@opendes.dataservices.energy",
+}
+_BOOTSTRAP_GROUPS = tuple(n for n in _GROUPS if n not in _CREATED_GROUPS)
 
 
-def _groups_listing(names=tuple(_GROUPS)) -> bytes:
+_ALL_GROUPS = {**_GROUPS, **_CREATED_GROUPS}
+
+
+def _groups_listing(names=tuple(_ALL_GROUPS)) -> bytes:
     return json.dumps(
-        {"groups": [{"name": n, "email": _GROUPS[n], "description": ""} for n in names]}
+        {"groups": [{"name": n, "email": _ALL_GROUPS[n], "description": ""} for n in names]}
     ).encode()
 
 
 def _run_members(init_scripts, monkeypatch, capsys, *, members="deployer-client-id", **routes):
     """Execute init_members.py against a routed fake of urlopen.
 
-    Routes: ``groups`` (GET /groups), ``post`` (POST members), ``get`` (GET
-    members); each a handler(url) returning a _FakeResponse or raising.
+    Routes: ``groups`` (GET /groups), ``create`` (POST /groups), ``post``
+    (POST members), ``get`` (GET members); each a handler(url) returning a
+    _FakeResponse or raising.
     """
     monkeypatch.setenv("PARTITION", "opendes")
     monkeypatch.setenv("MEMBERS", members)
@@ -470,9 +488,16 @@ def _run_members(init_scripts, monkeypatch, capsys, *, members="deployer-client-
 
     def urlopen(req, timeout):
         url, method = req.full_url, req.get_method()
-        if url.endswith("/groups"):
+        if url.endswith("/groups") and method == "GET":
             route = "groups"
             default = _responds(200, _groups_listing())
+        elif url.endswith("/groups"):
+            route = "create"
+            name = json.loads(req.data)["name"]
+            created = {"name": name, "email": _CREATED_GROUPS[name], "description": ""}
+
+            def default(url, created=created):
+                return _FakeResponse(201, json.dumps(created).encode())
         elif method == "POST":
             route = "post"
             email = url.rsplit("/groups/", 1)[1].removesuffix("/members")
@@ -503,15 +528,74 @@ def test_members_seeds_every_root_group_and_verifies(init_scripts, monkeypatch, 
 
     assert result.exit_code == 0
     assert "entitlements-members outcome: seeded" in result.stdout
+    assert result.routed("create") == []
     posts = result.routed("post")
-    assert len(posts) == 8
+    assert len(posts) == 10
     assert {json.loads(p.body)["email"] for p in posts} == {"a-id", "b-id"}
     assert {json.loads(p.body)["role"] for p in posts} == {"MEMBER"}
     assert {p.url.rsplit("/groups/", 1)[1].removesuffix("/members") for p in posts} == set(
         _GROUPS.values()
     )
     assert all(p.headers["Data-partition-id"] == "opendes" for p in posts)
-    assert len(result.routed("get")) == 4
+    assert len(result.routed("get")) == 5
+
+
+def test_members_creates_the_impersonation_groups_the_bootstrap_lacks(
+    init_scripts, monkeypatch, capsys
+):
+    result = _run_members(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        groups=_responds(200, _groups_listing(_BOOTSTRAP_GROUPS)),
+    )
+
+    assert result.exit_code == 0
+    assert "entitlements-members outcome: seeded" in result.stdout
+    creates = result.routed("create")
+    assert [json.loads(c.body)["name"] for c in creates] == [
+        "users.datalake.delegation",
+        "users.datalake.impersonation",
+    ]
+    assert all(json.loads(c.body)["description"] for c in creates)
+    posted_to = {
+        p.url.rsplit("/groups/", 1)[1].removesuffix("/members") for p in result.routed("post")
+    }
+    assert _CREATED_GROUPS["users.datalake.delegation"] in posted_to
+    assert _CREATED_GROUPS["users.datalake.impersonation"] not in posted_to
+
+
+def test_members_derives_the_created_group_email_when_the_service_omits_it(
+    init_scripts, monkeypatch, capsys
+):
+    result = _run_members(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        groups=_responds(200, _groups_listing(_BOOTSTRAP_GROUPS)),
+        create=_http_error(409, b"exists"),
+    )
+
+    assert result.exit_code == 0
+    posted_to = {
+        p.url.rsplit("/groups/", 1)[1].removesuffix("/members") for p in result.routed("post")
+    }
+    assert _CREATED_GROUPS["users.datalake.delegation"] in posted_to
+
+
+def test_members_fails_when_the_service_rejects_a_group(init_scripts, monkeypatch, capsys):
+    result = _run_members(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        groups=_responds(200, _groups_listing(_BOOTSTRAP_GROUPS)),
+        create=_http_error(403, b"forbidden"),
+    )
+
+    assert result.exit_code == 1
+    assert "entitlements-members outcome: group_rejected" in result.stdout
+    assert "users.datalake.delegation was not created (403)" in result.stdout
+    assert result.routed("post") == []
 
 
 def test_members_treats_conflict_as_already_a_member(init_scripts, monkeypatch, capsys):
