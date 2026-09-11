@@ -198,12 +198,22 @@ def read_init_values() -> str:
     return _read_configmap_data(INIT_VALUES_CONFIGMAP).get("values.yaml", "")
 
 
+def read_workload_identity_client_id() -> str:
+    """Client id on the osdu workload-identity-sa annotation. Empty if missing."""
+    data = kubectl_json(["get", "serviceaccount", "workload-identity-sa", "-n", "osdu"])
+    if not data:
+        return ""
+    annotations = (data.get("metadata") or {}).get("annotations") or {}
+    return annotations.get("azure.workload.identity/client-id", "")
+
+
 def refresh_spi_init_values() -> None:
     """Re-render spi-init-values from the live partition list and deploy identity.
 
     ``spi reconcile`` has no Config, so the partitions and legal tag come from
-    the ConfigMap already on the cluster and the member list from
-    spi-cluster-config. A cluster bootstrapped before either existed is left
+    the ConfigMap already on the cluster, the member list from
+    spi-cluster-config, and the tenant service account from the
+    workload-identity-sa annotation. A cluster bootstrapped before either existed is left
     alone: there is nothing to re-render from, and ``spi up`` writes both.
     """
     try:
@@ -215,17 +225,22 @@ def refresh_spi_init_values() -> None:
         cluster_cfg = read_cluster_config()
         client_id = cluster_cfg.get("DEPLOY_IDENTITY_CLIENT_ID", "")
         member_id = cluster_cfg.get("MEMBER_IDENTITY_CLIENT_ID", "")
+        tenant_account = read_workload_identity_client_id()
     except ClusterConfigError as exc:
         console.print(f"[warning]{exc}; leaving {INIT_VALUES_CONFIGMAP} unchanged.[/warning]")
         return
     members = [client_id] if client_id else []
     member_users = [member_id] if member_id else []
-    if members == list(values.get("entitlementsMembers") or []) and member_users == list(
-        values.get("entitlementsMemberUsers") or []
+    if (
+        members == list(values.get("entitlementsMembers") or [])
+        and member_users == list(values.get("entitlementsMemberUsers") or [])
+        and tenant_account == (values.get("tenantServiceAccount") or "")
     ):
         return
     legal_tag = values.get("legalTag") or LEGAL_TAG_BASE
-    yaml_content = spi_init_values_configmap(partitions, members, legal_tag, member_users)
+    yaml_content = spi_init_values_configmap(
+        partitions, members, legal_tag, member_users, tenant_account
+    )
     display_yaml(yaml_content, f"ConfigMap: {INIT_VALUES_CONFIGMAP}")
     kubectl_apply_yaml(yaml_content, f"refresh {INIT_VALUES_CONFIGMAP} ConfigMap")
 

@@ -76,7 +76,7 @@ def _mint(
     with (
         patch("spi.token.read_cluster_config", return_value=CLUSTER_CFG),
         patch("spi.token._read_osdu_config", return_value={"AAD_CLIENT_ID": aad}),
-        patch("spi.token._read_workload_identity_client_id", return_value="uami-id"),
+        patch("spi.token.read_workload_identity_client_id", return_value="uami-id"),
         patch("spi.token.run_process", side_effect=kubectl) as run_process,
         patch("spi.token.urllib.request.urlopen", side_effect=urlopen),
     ):
@@ -154,7 +154,7 @@ def test_a_socket_timeout_is_a_token_error():
     with (
         patch("spi.token.read_cluster_config", return_value=CLUSTER_CFG),
         patch("spi.token._read_osdu_config", return_value={}),
-        patch("spi.token._read_workload_identity_client_id", return_value=""),
+        patch("spi.token.read_workload_identity_client_id", return_value=""),
         patch("spi.token.run_process", side_effect=_kubectl_ok),
         patch("spi.token.urllib.request.urlopen", side_effect=TimeoutError("timed out")),
     ):
@@ -183,7 +183,7 @@ def test_missing_federated_credential_names_spi_up():
     with (
         patch("spi.token.read_cluster_config", return_value=CLUSTER_CFG),
         patch("spi.token._read_osdu_config", return_value={}),
-        patch("spi.token._read_workload_identity_client_id", return_value=""),
+        patch("spi.token.read_workload_identity_client_id", return_value=""),
         patch("spi.token.run_process", side_effect=_kubectl_ok),
         patch("spi.token.urllib.request.urlopen", side_effect=error),
     ):

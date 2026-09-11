@@ -97,6 +97,53 @@ def test_legal_init_renders_one_job_per_partition():
     ]
 
 
+def partition_init_job_name(docs: list[dict]) -> str:
+    return _jobs(docs, "partition-init")[0]["metadata"]["name"]
+
+
+def _partition_records(docs: list[dict]) -> dict[str, dict]:
+    configmap = next(
+        doc
+        for doc in docs
+        if doc.get("kind") == "ConfigMap"
+        and doc["metadata"]["name"] == "osdu-spi-init-partition-records"
+    )
+    return {name: json.loads(body) for name, body in configmap["data"].items()}
+
+
+def test_partition_record_carries_the_tenant_service_account():
+    """core-lib-azure fills TenantInfo.serviceAccount from app-dev-sp-username
+    and the community suites read the same account as serviceAccount, so both
+    keys carry the OSDU identity's client id; neither renders while it is
+    unset, so an older CLI's values still produce the record they did."""
+    records = _partition_records(
+        _render(["opendes", "second"], {"tenantServiceAccount": "osdu-client-id"})
+    )
+    for partition in ("opendes", "second"):
+        props = records[f"{partition}.json"]["properties"]
+        assert props["app-dev-sp-username"] == {"sensitive": False, "value": "osdu-client-id"}
+        assert props["serviceAccount"] == {"sensitive": False, "value": "osdu-client-id"}
+
+    props = _partition_records(_render(["opendes"]))["opendes.json"]["properties"]
+    assert "app-dev-sp-username" not in props
+    assert "serviceAccount" not in props
+
+
+def test_partition_init_job_name_follows_the_record():
+    """The Job is immutable once created and only ever POSTs or PATCHes the
+    record it mounts, so a changed record has to rename the Job for Helm to
+    run it again on an environment that already has a partition."""
+    plain = partition_init_job_name(_render(["opendes"]))
+    with_account = partition_init_job_name(
+        _render(["opendes"], {"tenantServiceAccount": "osdu-client-id"})
+    )
+    assert plain.startswith("partition-init-opendes-")
+    assert with_account != plain
+    assert with_account == partition_init_job_name(
+        _render(["opendes"], {"tenantServiceAccount": "osdu-client-id"})
+    )
+
+
 _MEMBERS = {"entitlementsMembers[0]": "deployer-client-id"}
 
 
@@ -112,7 +159,7 @@ def test_component_split_matches_the_three_releases():
         "entitlements-init-opendes",
         "osdu-spi-init-partition-records",
         "osdu-spi-init-scripts",
-        "partition-init-opendes",
+        partition_init_job_name(gating),
     ]
 
     legal = _render(["opendes"], {"coreEnabled": "false", "membersEnabled": "false", **_MEMBERS})
@@ -786,6 +833,97 @@ def test_members_times_out_waiting_for_entitlements(init_scripts, monkeypatch, c
 def test_members_fails_on_transport_error(init_scripts, monkeypatch, capsys):
     with pytest.raises(urllib.error.URLError):
         _run_members(init_scripts, monkeypatch, capsys, groups=_transport_error())
+
+
+_RECORD = json.dumps(
+    {
+        "properties": {
+            "compliance-ruleset": {"sensitive": False, "value": "shared"},
+            "app-dev-sp-username": {"sensitive": False, "value": "osdu-client-id"},
+            "serviceAccount": {"sensitive": False, "value": "osdu-client-id"},
+        }
+    }
+)
+
+
+def _run_partition_init(init_scripts, tmp_path, monkeypatch, capsys, *, post, patch=None):
+    """Execute init_partition.py against a routed fake of urlopen: ``post``
+    answers the create, ``patch`` the update a 409 falls back to."""
+    records = tmp_path / "partition-records"
+    records.mkdir()
+    (records / "opendes.json").write_text(_RECORD, encoding="utf-8")
+    monkeypatch.setenv("PARTITION", "opendes")
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "test-token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+    calls: list[_Call] = []
+
+    def urlopen(req, timeout):
+        route = req.get_method().lower()
+        calls.append(_Call(route, req.full_url, req.get_method(), dict(req.headers), req.data))
+        handler = {"post": post, "patch": patch}[route]
+        assert handler is not None, f"unexpected {route}"
+        return handler(req.full_url)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    source = init_scripts["init_partition.py"].replace(
+        'RECORD_PATH = f"/partition-records/{PARTITION}.json"',
+        f'RECORD_PATH = f"{records}/{{PARTITION}}.json"',
+    )
+    capsys.readouterr()
+    try:
+        exec(source, {"__name__": "__main__"})
+        exit_code = 0
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else 1
+    return _Result(exit_code, capsys.readouterr().out, calls)
+
+
+def test_partition_init_creates_the_record(init_scripts, tmp_path, monkeypatch, capsys):
+    result = _run_partition_init(init_scripts, tmp_path, monkeypatch, capsys, post=_responds(201))
+
+    assert result.exit_code == 0
+    assert [c.route for c in result.calls] == ["post"]
+    assert json.loads(result.calls[0].body) == json.loads(_RECORD)
+
+
+def test_partition_init_updates_an_existing_record(init_scripts, tmp_path, monkeypatch, capsys):
+    """A record created by an older template is brought up to date: the
+    properties are PATCHed without the id the service added at create time,
+    which it refuses in an update."""
+    result = _run_partition_init(
+        init_scripts,
+        tmp_path,
+        monkeypatch,
+        capsys,
+        post=_http_error(409, b"exists"),
+        patch=_responds(204, b""),
+    )
+
+    assert result.exit_code == 0
+    assert [c.route for c in result.calls] == ["post", "patch"]
+    patched = json.loads(result.calls[1].body)["properties"]
+    assert "id" not in patched
+    assert patched["serviceAccount"] == {"sensitive": False, "value": "osdu-client-id"}
+    assert "updating its properties" in result.stdout
+
+
+def test_partition_init_fails_when_the_update_is_rejected(
+    init_scripts, tmp_path, monkeypatch, capsys
+):
+    result = _run_partition_init(
+        init_scripts,
+        tmp_path,
+        monkeypatch,
+        capsys,
+        post=_http_error(409, b"exists"),
+        patch=_http_error(403, b"forbidden"),
+    )
+
+    assert result.exit_code == 1
 
 
 # The properties init_legal.py POSTs. Pinned to the script itself by

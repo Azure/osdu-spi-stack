@@ -7,14 +7,16 @@ you may not use this file except in compliance with the License.
 
 {{- if .Values.coreEnabled }}
 # One Job per partition. POSTs the partition record from
-# osdu-spi-init-partition-records; the caller's appid becomes
-# TenantInfo.service-account. 409 is treated as success.
+# osdu-spi-init-partition-records, or PATCHes it onto a record that already
+# exists. The name carries a hash of the record so a changed record reruns
+# the Job; the CLI does not compute this name, status finds it by label.
+{{- $recordHash := include "osdu-spi-init.partitionRecord" . | sha256sum | trunc 8 }}
 {{- range $partition := .Values.partitions }}
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: partition-init-{{ $partition }}
+  name: partition-init-{{ $partition }}-{{ $recordHash }}
   namespace: {{ $.Values.namespace }}
   labels:
     {{- include "osdu-spi-init.labels" $ | nindent 4 }}

@@ -290,6 +290,7 @@ def spi_init_values_configmap(
     members: Sequence[str] = (),
     legal_tag: str = LEGAL_TAG_BASE,
     member_users: Sequence[str] = (),
+    tenant_service_account: str = "",
 ) -> str:
     """ConfigMap consumed by the osdu-spi-init HelmRelease via valuesFrom.
 
@@ -300,13 +301,16 @@ def spi_init_values_configmap(
     is the one the init Jobs rendered from. ``members`` are the principals
     entitlements-members seeds into the root groups; omitted entirely when
     empty so the chart renders no Job. ``member_users`` are seeded into
-    users and the service user groups only.
+    users and the service user groups only. ``tenant_service_account`` is the
+    OSDU workload identity's client id, written to every partition record.
     """
     partition_lines = "\n".join(f"    - {p}" for p in partitions)
     member_lines = "".join(f"    - {m}\n" for m in sorted(set(members)))
     members_block = f"    entitlementsMembers:\n{member_lines}" if member_lines else ""
     user_lines = "".join(f"    - {m}\n" for m in sorted(set(member_users)))
     members_block += f"    entitlementsMemberUsers:\n{user_lines}" if user_lines else ""
+    if tenant_service_account:
+        members_block += f"    tenantServiceAccount: {tenant_service_account}\n"
     return f"""\
 apiVersion: v1
 kind: ConfigMap
@@ -328,8 +332,8 @@ def parse_init_values(text: str) -> dict:
 
     The shape is fixed: scalar keys and list keys whose items are ``- x``
     lines. Returns ``{"partitions": [...], "legalTag": "...",
-    "entitlementsMembers": [...], "entitlementsMemberUsers": [...]}`` with
-    absent keys missing.
+    "entitlementsMembers": [...], "entitlementsMemberUsers": [...],
+    "tenantServiceAccount": "..."}`` with absent keys missing.
     """
     parsed: dict = {}
     current: list | None = None

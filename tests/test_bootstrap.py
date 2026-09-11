@@ -215,7 +215,7 @@ class TestRefreshSpiInitValues:
     """`spi reconcile` re-renders spi-init-values from the cluster so the
     members Job seeds whatever deploy identity the cluster config names."""
 
-    def _run(self, values_yaml: str | None, client_id: str):
+    def _run(self, values_yaml: str | None, client_id: str, tenant_account: str = ""):
         with (
             patch(
                 "spi.bootstrap.run_process",
@@ -230,6 +230,7 @@ class TestRefreshSpiInitValues:
                 "spi.bootstrap.read_cluster_config",
                 return_value={"DEPLOY_IDENTITY_CLIENT_ID": client_id} if client_id else {},
             ),
+            patch("spi.bootstrap.read_workload_identity_client_id", return_value=tenant_account),
             patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
         ):
             refresh_spi_init_values()
@@ -257,10 +258,21 @@ class TestRefreshSpiInitValues:
 
         assert "legalTag: custom-tag\n" in apply_yaml.call_args.args[0]
 
-    def test_leaves_current_values_alone(self):
+    def test_adds_the_tenant_service_account_to_values_written_before_it_existed(self):
         apply_yaml = self._run(
             "partitions:\n  - opendes\nlegalTag: demo-legaltag\nentitlementsMembers:\n  - id\n",
             "id",
+            tenant_account="osdu-id",
+        )
+
+        assert "tenantServiceAccount: osdu-id\n" in apply_yaml.call_args.args[0]
+
+    def test_leaves_current_values_alone(self):
+        apply_yaml = self._run(
+            "partitions:\n  - opendes\nlegalTag: demo-legaltag\nentitlementsMembers:\n  - id\n"
+            "tenantServiceAccount: osdu-id\n",
+            "id",
+            tenant_account="osdu-id",
         )
 
         apply_yaml.assert_not_called()

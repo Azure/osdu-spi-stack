@@ -31,7 +31,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .azure_infra import _cosmos_sql_name, _sb_name, _storage_name
-from .bootstrap import read_cluster_config
+from .bootstrap import read_cluster_config, read_workload_identity_client_id
 from .config import BASE_NAME
 from .console import console
 from .deploy_record import environment_facts, read_deploy_record
@@ -87,15 +87,6 @@ def _read_osdu_config() -> dict:
     if not data:
         return {}
     return data.get("data", {}) or {}
-
-
-def _read_workload_identity_client_id() -> str:
-    """Client id on the osdu workload-identity-sa annotation. Empty if missing."""
-    data = kubectl_json(["get", "serviceaccount", "workload-identity-sa", "-n", "osdu"])
-    if not data:
-        return ""
-    annotations = (data.get("metadata") or {}).get("annotations") or {}
-    return annotations.get("azure.workload.identity/client-id", "")
 
 
 def token_audience(aad_client_id: str, identity_client_id: str) -> str:
@@ -376,7 +367,7 @@ def _collect_info() -> dict:
             _read_init_values_yaml,
             get_suspend_status,
             _read_deploy_record,
-            _read_workload_identity_client_id,
+            read_workload_identity_client_id,
         ]
     )
     mode, base, endpoints, middleware = _compute_endpoints(cfg)

@@ -31,8 +31,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Optional
 
-from .bootstrap import read_cluster_config
-from .info import _read_osdu_config, _read_workload_identity_client_id, token_audience
+from .bootstrap import read_cluster_config, read_workload_identity_client_id
+from .info import _read_osdu_config, token_audience
 from .shell import run_process
 from .templates import (
     DEPLOYER_SERVICE_ACCOUNT,
@@ -182,7 +182,7 @@ def mint_token(
             "release to provision it and refresh spi-cluster-config."
         )
     audience = resource or token_audience(
-        _read_osdu_config().get("AAD_CLIENT_ID", ""), _read_workload_identity_client_id()
+        _read_osdu_config().get("AAD_CLIENT_ID", ""), read_workload_identity_client_id()
     )
     assertion = _projected_token(service_account)
     payload = _exchange(tenant_id, client_id, assertion, audience)
