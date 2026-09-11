@@ -25,6 +25,11 @@ membersEnabled: true
 #    through spi-init-values; no Job renders while the list is empty.
 entitlementsMembers: []
 
+# -- Bumped when entitlements-members seeds something new, so an environment
+#    whose member list is unchanged still renders a fresh Job. Must equal
+#    ENTITLEMENTS_MEMBERS_GENERATION in the CLI, which computes the Job name.
+membersGeneration: 2
+
 # -- Namespace where the Jobs run; the CLI bootstrap creates
 #    workload-identity-sa here.
 namespace: osdu
@@ -67,6 +72,10 @@ activeDeadlineSeconds: 600
 # -- activeDeadlineSeconds for the legal Jobs. init_legal.py's worst case is
 #    3300 s; test_legal_init_deadline_covers_its_wait_budget recomputes it.
 legalActiveDeadlineSeconds: 3600
+
+# -- activeDeadlineSeconds for the members Jobs. init_members.py's worst case
+#    is 660 s; test_members_deadline_covers_its_wait_budget recomputes it.
+membersActiveDeadlineSeconds: 720
 
 # -- The scripts treat 409 as success, so a retried failure is a real error.
 backoffLimit: 2

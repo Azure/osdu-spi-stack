@@ -5,12 +5,13 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */}}
 
-# One Job per partition, adding each member to the four root entitlement
-# groups. The name hashes the member list so a changed list renders a new
-# Job; templates.entitlements_members_job_name computes the same name.
+# One Job per partition, adding each member to the root entitlement groups.
+# The name hashes the member list and the seed generation so a changed list
+# or a changed seed renders a new Job; templates.entitlements_members_job_name
+# computes the same name.
 {{- if and .Values.membersEnabled .Values.entitlementsMembers }}
 {{- $members := .Values.entitlementsMembers | sortAlpha }}
-{{- $hash := $members | join "," | sha256sum | trunc 8 }}
+{{- $hash := printf "%s#%v" ($members | join ",") .Values.membersGeneration | sha256sum | trunc 8 }}
 {{- range $partition := .Values.partitions }}
 ---
 apiVersion: batch/v1
@@ -24,7 +25,7 @@ metadata:
     osdu.spi/partition: {{ $partition }}
 spec:
   backoffLimit: {{ $.Values.backoffLimit }}
-  activeDeadlineSeconds: {{ $.Values.activeDeadlineSeconds }}
+  activeDeadlineSeconds: {{ $.Values.membersActiveDeadlineSeconds }}
   template:
     metadata:
       labels:

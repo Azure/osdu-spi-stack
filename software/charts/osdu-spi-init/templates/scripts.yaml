@@ -579,18 +579,29 @@ data:
     mints would fail authorization. This Job runs as the workload identity,
     which tenant-provisioning made OWNER of the root groups, and adds each
     configured member as x-user-id to users, users.datalake.ops,
-    users.datalake.admins, and users.data.root for the partition.
+    users.datalake.admins, users.data.root, and users.datalake.delegation
+    for the partition.
+
+    The Azure provider's tenant-provisioning does not create the two
+    impersonation groups the core defines, users.datalake.delegation (who may
+    impersonate) and users.datalake.impersonation (who may be impersonated).
+    The entitlements acceptance suite requires both, so the Job creates them
+    when absent; the creator is their OWNER and ops membership lets any
+    configured member manage them afterwards.
 
     Flow:
       1. Wait for entitlements /info to return 200.
-      2. GET /groups as the owner and select the four root groups by name;
-         the email domain is whatever entitlements was deployed with.
-      3. POST each member to each group. 200 adds, 409 is already a member.
-      4. GET each group's members back and require every member present.
+      2. GET /groups as the owner; the email domain is whatever entitlements
+         was deployed with.
+      3. POST /groups for each impersonation group the listing lacks.
+      4. Select the five root groups by name.
+      5. POST each member to each group. 200 adds, 409 is already a member.
+      6. GET each group's members back and require every member present.
 
     Every exit prints "entitlements-members outcome: <code>", one of: seeded,
-    already_member, group_missing, member_rejected, verify_failed,
-    config_missing, service_timeout, auth_failed, unexpected_error, and
+    already_member, group_missing, group_rejected, member_rejected,
+    verify_failed, config_missing, service_timeout, auth_failed,
+    unexpected_error, and
     writes the same line, with the failure detail, to the pod termination
     message so spi status can name the member and group that failed.
     The Job renders only in the non-gating osdu-spi-members release; spi
@@ -607,12 +618,25 @@ data:
     from auth import get_token
     from wait import wait_for_status
 
-    ROOT_GROUPS = ("users", "users.datalake.ops", "users.datalake.admins", "users.data.root")
+    ROOT_GROUPS = (
+        "users",
+        "users.datalake.ops",
+        "users.datalake.admins",
+        "users.data.root",
+        "users.datalake.delegation",
+    )
+    CREATED_GROUPS = {
+        "users.datalake.delegation": "Users who can impersonate",
+        "users.datalake.impersonation": "Users who can be impersonated",
+    }
     REQUIRED_ENV = ("PARTITION", "MEMBERS")
-    # Entitlements is Ready before this Job starts; the wait plus the nine
-    # requests must fit the core activeDeadlineSeconds.
+    # The Job's activeDeadlineSeconds must cover the worst case or the pod dies
+    # before printing an outcome: each poll attempt costs WAIT_DELAY plus
+    # WAIT_SOCKET_TIMEOUT; REQUEST_BUDGET covers the 60 s token exchange and
+    # thirteen 30 s calls (one listing, two creates, then a write and a read
+    # per root group for the one member the CLI seeds).
     REQUEST_TIMEOUT = 30
-    REQUEST_BUDGET = 270
+    REQUEST_BUDGET = 450
     INFO_ATTEMPTS = 30
     WAIT_DELAY = 2.0
     WAIT_SOCKET_TIMEOUT = 5.0
@@ -689,8 +713,24 @@ data:
             return 1
         emails = {}
         for group in parse(payload).get("groups") or []:
-            if isinstance(group, dict) and group.get("name") in ROOT_GROUPS:
+            if isinstance(group, dict) and group.get("name"):
                 emails[group["name"]] = group.get("email", "")
+        for name, description in CREATED_GROUPS.items():
+            if emails.get(name):
+                continue
+            code, payload = request(
+                f"{base}/groups", headers, "POST", {"name": name, "description": description}
+            )
+            if code in (200, 201):
+                emails[name] = parse(payload).get("email", "")
+            elif code == 409:
+                print(f"  {name} already exists")
+            else:
+                print(payload)
+                outcome("group_rejected", f"{name} was not created ({code})")
+                return 1
+            if not emails.get(name) and emails.get("users", "").startswith("users@"):
+                emails[name] = f"{name}@{emails['users'].split('@', 1)[1]}"
         absent = [name for name in ROOT_GROUPS if not emails.get(name)]
         if absent:
             outcome(
