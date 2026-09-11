@@ -37,11 +37,10 @@ annotation schema live in `docs/design/fork-deployment.md`.
   `reconcile.fluxcd.io/watch: Enabled` label, so Flux reconciles the
   consuming Kustomizations when the ConfigMap changes; fork CI mutates
   nothing in Flux and holds no Flux write permission (ADR-032).
-- **Verified deploys.** Deploy success is the running pod carrying the
-  digest, asserted by the CLI after the pin and re-asserted by the test job
-  before it runs, so a deploy overwritten by a colliding pipeline fails fast,
-  naming the colliding run from the pin annotation, instead of producing a
-  silently wrong test result.
+- **Verified deploys.** The CLI verifies the running image digest after the
+  pin, before the lane mints callers and runs suites. The shipped lane does
+  not re-assert the digest immediately before each suite; a replacement
+  after verification is outside that check's coverage.
 - **Ownership-conditional return.** The always-run restore resets a pin only
   while the live pin still belongs to its own workflow run; a newer run's pin
   is left standing. The weekday backstop (ADR-029) sweeps only ephemeral pins
@@ -91,9 +90,9 @@ services under the same owner, the mechanism ADR-017 already declined.
 
 ## Consequences
 
-- A test job can still observe a sibling service's rolling restart mid-run;
-  the acceptance jobs' dependency health gate absorbs the window rather than
-  any lock preventing it. A candidate that passes readiness but is
+- A test job can still observe a sibling service's rolling restart mid-run.
+  The shipped lane does not enforce descriptor dependency health checks,
+  so that window can fail the suite. A candidate that passes readiness but is
   behaviorally broken can also fail a concurrently running sibling suite;
   the exposure lasts until the pin's restore or sweep, and the accepted
   recovery is that sibling's re-run, not isolation.
@@ -106,9 +105,10 @@ services under the same owner, the mechanism ADR-017 already declined.
 - Chart-contract changes do not ride this seam: a service PR that needs a new
   env var or chart behavior lands a stack PR first, the environment picks it
   up on upgrade, and the fork PR deploys against it.
-- Fork CI becomes a CLI consumer: the deploy job installs the wheel matching
-  the environment's declared `stackVersion` (read from the declaration file
-  on the stack's `main`), so the client and the cluster contract move
-  together rather than latest-wheel skewing ahead of an unbumped or
-  rolled-back environment. Annotation-schema changes must still keep old
-  pins decodable across the bump window.
+- Fork CI becomes a CLI consumer: the deploy job installs the latest release
+  to connect, reads `environment.stackVersion` from `spi status --json`, and
+  installs the matching wheel when the value names a release tag. Branch or
+  unrecorded versions keep the latest release. Version discovery comes from
+  the connected environment, not a declaration file on the stack's `main`.
+  Annotation-schema changes must still keep old pins decodable across the
+  bump window.
