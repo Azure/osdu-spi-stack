@@ -25,7 +25,7 @@ metadata:
     osdu.spi/partition: {{ $partition }}
 spec:
   backoffLimit: {{ $.Values.backoffLimit }}
-  activeDeadlineSeconds: {{ $.Values.activeDeadlineSeconds }}
+  activeDeadlineSeconds: {{ $.Values.membersActiveDeadlineSeconds }}
   template:
     metadata:
       labels:

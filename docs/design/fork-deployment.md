@@ -258,12 +258,12 @@ run with those gates active.
 Mint the two test callers in fork CI. The deploy identity is the positive
 caller: the `entitlements-members` Job adds its client id to `users`,
 `users.datalake.ops`, `users.datalake.admins`, `users.data.root`, and
-`users.datalake.delegation` for every partition when the environment is
-built or the identity changes, creating the delegation group and
-`users.datalake.impersonation` first when the Azure tenant bootstrap has not,
-and
-`spi info --json` reports `entitlements_seeded.<partition>` once that Job
-has completed. The no-access identity is the negative caller: it carries
+`users.datalake.delegation` for every partition, creating the delegation group
+and `users.datalake.impersonation` first when the Azure tenant bootstrap has
+not. A new Job runs when the environment is built, the identity changes, or
+the chart's seed generation is bumped. `spi info --json` reports
+`entitlements_seeded.<partition>` once that Job has completed.
+The no-access identity is the negative caller: it carries
 the same federated credential and belongs to no group. Entitlements is
 expected to answer such a caller with 403, distinct from the 401 an
 unauthenticated request draws; if a partition answers 401 instead, the

@@ -630,11 +630,13 @@ data:
         "users.datalake.impersonation": "Users who can be impersonated",
     }
     REQUIRED_ENV = ("PARTITION", "MEMBERS")
-    # Entitlements is Ready before this Job starts; the wait plus the requests
-    # (one listing, up to two creates, then two per root group per member)
-    # must fit the core activeDeadlineSeconds.
+    # The Job's activeDeadlineSeconds must cover the worst case or the pod dies
+    # before printing an outcome: each poll attempt costs WAIT_DELAY plus
+    # WAIT_SOCKET_TIMEOUT; REQUEST_BUDGET covers the 60 s token exchange and
+    # thirteen 30 s calls (one listing, two creates, then a write and a read
+    # per root group for the one member the CLI seeds).
     REQUEST_TIMEOUT = 30
-    REQUEST_BUDGET = 270
+    REQUEST_BUDGET = 450
     INFO_ATTEMPTS = 30
     WAIT_DELAY = 2.0
     WAIT_SOCKET_TIMEOUT = 5.0

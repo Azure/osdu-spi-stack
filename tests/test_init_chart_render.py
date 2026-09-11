@@ -177,13 +177,18 @@ def test_no_access_identity_never_reaches_the_chart():
 def _script_constants(source: str) -> dict:
     """Module-level literal constants, read without importing: init_legal.py
     pulls auth and wait off /scripts, which only exists inside the Job."""
-    return {
-        target.id: node.value.value
-        for node in ast.parse(source).body
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    }
+    constants: dict = {}
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.Assign):
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except ValueError:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                constants[target.id] = value
+    return constants
 
 
 def test_legal_release_declares_no_volume_it_does_not_own():
@@ -246,15 +251,22 @@ def test_legal_init_deadline_covers_its_wait_budget(init_scripts):
     assert core["spec"]["activeDeadlineSeconds"] == 600
 
 
+# auth.get_token's urlopen call in scripts.yaml uses timeout=60.
+_TOKEN_TIMEOUT = 60
+
+
 def test_members_deadline_covers_its_wait_budget(init_scripts):
-    """The members Job renders with the core deadline, so the script's wait
-    and request budget must fit inside it or the pod dies before printing a
-    typed outcome."""
+    """The members Job renders with its own deadline; the script's wait plus
+    REQUEST_BUDGET must fit inside it, and REQUEST_BUDGET itself must cover
+    the token exchange and the calls the script actually makes, or the pod
+    dies before printing a typed outcome."""
     const = _script_constants(init_scripts["init_members.py"])
     budget = (
         const["INFO_ATTEMPTS"] * (const["WAIT_DELAY"] + const["WAIT_SOCKET_TIMEOUT"])
         + const["REQUEST_BUDGET"]
     )
+    calls = 1 + len(const["CREATED_GROUPS"]) + 2 * len(const["ROOT_GROUPS"])
+    assert const["REQUEST_BUDGET"] >= _TOKEN_TIMEOUT + calls * const["REQUEST_TIMEOUT"]
 
     docs = _render(["opendes"], _MEMBERS)
     job = _jobs(docs, "entitlements-members")[0]
