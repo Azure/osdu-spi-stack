@@ -24,65 +24,6 @@ metadata:
 data:
 {{- range $partition := .Values.partitions }}
   {{ $partition }}.json: |
-    {
-      "properties": {
-        "compliance-ruleset": {
-          "sensitive": false,
-          "value": "shared"
-        },
-        "cosmos-connection": {
-          "sensitive": true,
-          "value": "cosmos-connection"
-        },
-        "cosmos-endpoint": {
-          "sensitive": true,
-          "value": "cosmos-endpoint"
-        },
-        "cosmos-primary-key": {
-          "sensitive": true,
-          "value": "cosmos-primary-key"
-        },
-        "sb-connection": {
-          "sensitive": true,
-          "value": "sb-connection"
-        },
-        "sb-namespace": {
-          "sensitive": true,
-          "value": "sb-namespace"
-        },
-        "storage-account-key": {
-          "sensitive": true,
-          "value": "storage-account-key"
-        },
-        "storage-account-name": {
-          "sensitive": true,
-          "value": "storage"
-        },
-        "storage-account-blob-endpoint": {
-          "sensitive": true,
-          "value": "storage-account-blob-endpoint"
-        },
-        "elastic-endpoint": {
-          "sensitive": true,
-          "value": "elastic-endpoint"
-        },
-        "elastic-username": {
-          "sensitive": true,
-          "value": "elastic-username"
-        },
-        "elastic-password": {
-          "sensitive": true,
-          "value": "elastic-password"
-        },
-        "elastic-ssl-enabled": {
-          "sensitive": false,
-          "value": "true"
-        },
-        "indexer-decimation-enabled": {
-          "sensitive": false,
-          "value": "true"
-        }
-      }
-    }
+    {{- include "osdu-spi-init.partitionRecord" $ | nindent 4 }}
 {{- end }}
 {{- end }}

@@ -51,3 +51,80 @@ volumes:
       name: osdu-spi-init-partition-records
 {{- end }}
 {{- end }}
+
+{{/* The partition record every partition-init Job POSTs. Identical for every
+     partition: the sensitive values are Key Vault secret suffixes the service
+     prefixes with the partition id. partition-init hashes this body into its
+     Job name, so a changed record reruns the Job on an existing environment. */}}
+{{- define "osdu-spi-init.partitionRecord" -}}
+{
+  "properties": {
+    "compliance-ruleset": {
+      "sensitive": false,
+      "value": "shared"
+    },
+    "cosmos-connection": {
+      "sensitive": true,
+      "value": "cosmos-connection"
+    },
+    "cosmos-endpoint": {
+      "sensitive": true,
+      "value": "cosmos-endpoint"
+    },
+    "cosmos-primary-key": {
+      "sensitive": true,
+      "value": "cosmos-primary-key"
+    },
+    "sb-connection": {
+      "sensitive": true,
+      "value": "sb-connection"
+    },
+    "sb-namespace": {
+      "sensitive": true,
+      "value": "sb-namespace"
+    },
+    "storage-account-key": {
+      "sensitive": true,
+      "value": "storage-account-key"
+    },
+    "storage-account-name": {
+      "sensitive": true,
+      "value": "storage"
+    },
+    "storage-account-blob-endpoint": {
+      "sensitive": true,
+      "value": "storage-account-blob-endpoint"
+    },
+    "elastic-endpoint": {
+      "sensitive": true,
+      "value": "elastic-endpoint"
+    },
+    "elastic-username": {
+      "sensitive": true,
+      "value": "elastic-username"
+    },
+    "elastic-password": {
+      "sensitive": true,
+      "value": "elastic-password"
+    },
+    "elastic-ssl-enabled": {
+      "sensitive": false,
+      "value": "true"
+    },
+{{- with .Values.tenantServiceAccount }}
+    "app-dev-sp-username": {
+      "sensitive": false,
+      "value": {{ . | quote }}
+    },
+    "serviceAccount": {
+      "sensitive": false,
+      "value": {{ . | quote }}
+    },
+{{- end }}
+    "indexer-decimation-enabled": {
+      "sensitive": false,
+      "value": "true"
+    }
+  }
+}
+{{- end }}

@@ -12,7 +12,12 @@ from typer.testing import CliRunner
 
 from spi import cli, info
 from spi.deploy_record import DeployRecord
-from spi.templates import LEGAL_TAG_BASE, entitlements_members_job_name, spi_init_values_configmap
+from spi.templates import (
+    LEGAL_TAG_BASE,
+    entitlements_members_job_name,
+    parse_init_values,
+    spi_init_values_configmap,
+)
 
 _RECORD = DeployRecord(
     ref="v0.9.1",
@@ -96,7 +101,7 @@ def _wire(
         lambda partition, members, member_users=(): bool(members) and members_seeded,
     )
     monkeypatch.setattr(info, "_read_deploy_record", lambda: record)
-    monkeypatch.setattr(info, "_read_workload_identity_client_id", lambda: "application-id")
+    monkeypatch.setattr(info, "read_workload_identity_client_id", lambda: "application-id")
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: True)
 
 
@@ -276,6 +281,15 @@ def test_info_table_shows_entitlements_seeding(monkeypatch):
 
     assert "Groups" in output
     assert "not seeded" in output
+
+
+def test_init_values_carry_the_tenant_service_account():
+    rendered = spi_init_values_configmap(["opendes"], tenant_service_account="osdu-client-id")
+    values_yaml = rendered.split("values.yaml: |\n", 1)[1]
+    values_yaml = "\n".join(line[4:] for line in values_yaml.splitlines())
+
+    assert parse_init_values(values_yaml)["tenantServiceAccount"] == "osdu-client-id"
+    assert "tenantServiceAccount" not in spi_init_values_configmap(["opendes"])
 
 
 def test_init_values_parser_reads_every_list_block():

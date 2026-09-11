@@ -20,6 +20,12 @@ coreEnabled: true
 legalEnabled: true
 membersEnabled: true
 
+# -- Client id of the OSDU workload identity, the appid the services present
+#    on service-to-service calls. Written to the partition record as the tenant
+#    service account under the key the Azure provider reads and the key the
+#    community acceptance suites read; both are omitted while empty.
+tenantServiceAccount: ""
+
 # -- Principals entitlements-members adds to the root groups, as the
 #    x-user-id each presents. The CLI writes the deploy identity here
 #    through spi-init-values; no Job renders while the list is empty.

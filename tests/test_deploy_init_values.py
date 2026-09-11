@@ -43,3 +43,10 @@ def test_no_member_is_written_without_a_deploy_identity():
 
     assert "entitlementsMembers" not in applied
     assert "    - opendes\n" in applied
+
+
+def test_osdu_identity_client_id_is_written_as_the_tenant_service_account():
+    applied = _applied({"identity_client_id": "osdu-client-id"})
+
+    assert "tenantServiceAccount: osdu-client-id\n" in applied
+    assert "tenantServiceAccount" not in _applied({})
