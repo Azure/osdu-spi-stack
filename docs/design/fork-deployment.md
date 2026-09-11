@@ -257,10 +257,10 @@ token to prove those steps itself.
 
 The stack provisions three test identities and the CLI can mint each with
 `spi token`, `spi token --member`, or `spi token --no-access`. The shipped
-fork CI lane supplies `token` (`RESOLVER_TOKEN`) and optional `noAccessToken`
-(`RESOLVER_NO_ACCESS_TOKEN`) bindings. Member-token support is pending in
-[template PR #190](https://github.com/Azure/osdu-spi/pull/190); a suite requiring
-the member caller cannot obtain it from that lane until its template revision
+  (`RESOLVER_NO_ACCESS_TOKEN`) and, when provisioned, member-token
+  (`RESOLVER_MEMBER_TOKEN`) bindings. Template PR #190 is merged, so suites
+  requiring the member caller can use it with a template revision that includes
+  that support.
 includes that support.
 
 The deploy identity is the positive caller: the `entitlements-members` Job
