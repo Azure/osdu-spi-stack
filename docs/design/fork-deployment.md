@@ -18,76 +18,65 @@ ownership-checked `reset --if-run`, the separate stale sweep
 roster-derived pin validation, repository-derived GHCR package validation)
 are implemented.
 Phase 4 source policy (`--canonical-source`, the `spi-source-<service>`
-tags), declaration enforcement, `spi service refresh`, the refresh
-workflow's backstop step, and the fork-side jobs are ahead of the code
+tags), declaration enforcement, `spi service refresh`, and the refresh
+workflow's backstop step are ahead of the code
 (phases 4 and 5 of the roadmap in
 [environment-lifecycle.md](environment-lifecycle.md)). Remove the marks as
 they land.
 
 ## The sequence
 
-Each job authenticates fresh (the OIDC JWT lives ~5 minutes; one
-`azure/login` per job, the smoke pipeline's discipline) and installs the
-`spi` wheel matching the environment's declared `stackVersion`, read from
-`ops/environments/shared.yaml` on the stack's `main`, so the client never
-skews ahead of the cluster contract (ADR-031).
+The template's [validation workflow](https://github.com/Azure/osdu-spi/blob/main/.github/template-workflows/validate.yml)
+implements one credentialed `deploy-test` job, described by
+[ADR-041](https://github.com/Azure/osdu-spi/blob/main/doc/src/adr/041-borrow-prove-restore-lane.md).
+It runs for eligible same-repository pull requests and pushes to `main` or
+`fork_integration`. A separate `deploy-gate` reports eligibility or a skip
+reason, including missing onboarding values, descriptor, or published image.
+Outside-repository PRs do not enter the credentialed lane.
 
-1. **Authenticate.** The deploy and test jobs run in the fork's
-   `spi-stack` GitHub environment, the subject of the federated credential
-   `spi onboard` added to the environment's deploy identity (ADR-032);
-   `azure/login@v3` uses `AZURE_CLIENT_ID` and the tenant and subscription
-   variables, which are the same for every fork trusting that environment.
-2. **Connect.** `spi connect --resource-group $SPI_STACK_RESOURCE_GROUP
-   --cluster $SPI_STACK_CLUSTER` wraps the hardened kubeconfig
-   sequence living in `src/spi/azure_infra.py`: `az aks get-credentials`,
-   `kubelogin convert-kubeconfig -l azurecli`, tenant-pinned exec
-   environment. The context name carries the `spi-stack` prefix, so
-   `guard.verify_spi_cluster()` passes without `SPI_SKIP_GUARD`.
-3. **Gate.** `spi status --json`; exit 0 means deployable and the
-   job proceeds, exit 2 names the blocker: a convergence failure, the
-   `maintenance` flag, or a missing deploy record (ADR-029, ADR-030).
-4. **Deploy.** PR and push events run the same command; the fork build
-   publishes to `ghcr.io/<lowercase-owner>/<service>`, where the owner comes
-   from the fork repository and `SERVICE` is its short `SERVICE_NAME`
-   (ADR-033):
+1. **Authenticate and install.** The job uses `azure/login` as the deploy
+   identity in the fork's `spi-stack` GitHub environment. It installs the latest
+   released `spi` wheel to reach the environment.
+2. **Connect and match versions.** `spi connect` uses the repository's resource
+   group and cluster pointers. The job reads `environment.stackVersion` from
+   `spi status --json` and installs that exact release when it names a release
+   tag. Branch-based or unrecorded versions keep the latest release; the job
+   does not read a hardcoded shared-environment declaration.
+3. **Gate.** The job polls `spi status --json` every 20 seconds for up to ten
+   minutes until `deployable` is true. On timeout it reports the status reason,
+   including maintenance or convergence failures. It then reads environment
+   facts with `spi info --json`.
+4. **Borrow.** `spi service pin` writes the published service image by digest
+   with `--ephemeral`, the workflow run id, and source provenance. Flux
+   reconciles the image-lock change. A pin refusal while the environment is
+   not deployable is retried for up to ten minutes; a refusal while deployable
+   fails immediately.
+5. **Verify.** The job polls `spi service verify` until the expected digest is
+   live, with a 15-minute limit. `lock_mismatch` fails immediately. The CLI
+   checks the Deployment's template, a running pod's `imageID`, and rollout
+   completion. The lane does not perform another verify immediately before
+   each suite.
+6. **Prove.** The descriptor resolver binds each suite's inputs from environment
+   facts and minted tokens. The job runs each declared suite from the acceptance
+   image under its own timeout. Surefire and Failsafe reports establish the
+   verdict: zero exit status, at least one non-skipped test, and no failures
+   or errors. A successful container exit alone is insufficient.
+7. **Restore.** After both PR and push tests, the Restore step runs even after
+   earlier failure when CLI installation succeeded. It calls
+   `spi service reset` with `--if-run` and the workflow run id. Reset changes
+   the pin only while that run still owns it, preserving a newer run's pin.
+   Exit 2 is an ownership/no-pin refusal treated as success by the lane;
+   exit 1 is a restore failure. A lost runner can still strand a pin.
 
-   ```bash
-   IMAGE_OWNER=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
-   spi service pin "$SERVICE" \
-     --image "ghcr.io/${IMAGE_OWNER}/${SERVICE}@${DIGEST}" \
-     --ephemeral --run-id "$GITHUB_RUN_ID" \
-     --source-repo "$GITHUB_REPOSITORY" --source-sha "$GITHUB_SHA" \
-     --source-run-url "$RUN_URL"
-   ```
+Key Vault binding materialization and pre-borrow checks of descriptor loads,
+groups, and dependencies are not wired into the lane. The resolver accepts
+those contract fields, but this does not establish that the environment meets
+them. See [template #175](https://github.com/Azure/osdu-spi/issues/175) and
+[template #176](https://github.com/Azure/osdu-spi/issues/176).
 
-   Push events skip the restore job; the weekday refresh converges the
-   canonical afterward, forward to the fork's `main` once the service has
-   flipped (ADR-031, ADR-033).
-5. **Verify.** `spi service verify "$SERVICE" --image <ref>`
-   asserts the Deployment's pod template and a running pod's `imageID` carry
-   the digest and the rollout is complete. Deployment and container names
-   default to `osdu-<service>`, the Flux Helm release name;
-   `K8S_DEPLOYMENT_NAME` and `K8S_CONTAINER_NAME` cover deviants. With
-   `--json` the last stdout line is a `{outcome, code, detail}` envelope;
-   exit 2 carries the typed code, exit 1 means the cluster was unreachable.
-   A verified envelope also carries `environment` (name, stack version,
-   profile), the same block `spi status --json` and `spi info --json`
-   publish, so the job's verdict can name the environment that proved it.
-6. **Test.** The integration-test job re-runs the verify as a pre-flight
-   (the cross-pipeline guard: a colliding deploy fails fast, naming the
-   colliding run from the pin annotation), resolves endpoints from
-   `spi info --json`, resolves the secret map from Key Vault, health-gates
-   the declared dependencies, then runs the suite. Its callers are the two
-   stack identities, minted per run and never stored; see the two-token
-   recipe below.
-7. **Restore.** An always-run job on PR pipelines:
-   `spi service reset "$SERVICE" --if-run "$GITHUB_RUN_ID"`. The reset is
-   conditional on ownership: it acts only while the live pin's `run_id` still
-   matches, so a newer run's pin is left standing. Exit 0 means restored;
-   exit 2 is the typed no-op refusal (`run_mismatch` when another pin owns
-   the slot, `not_pinned` when nothing remains), which the restore job
-   treats as success; exit 1 is a real failure. `--json` emits the same
-   final-line `{outcome, code, detail}` envelope.
+Both PR and push tests restore the captured canonical image. Advancing the
+canonical image follows the environment's source policy and refresh lifecycle;
+a successful push test does not leave its candidate image installed.
 
 ## Pin annotation schema
 
@@ -130,10 +119,10 @@ workflow step is unbuilt; the sweep verb exists):
 - `spi service refresh` (unbuilt) per GitHub-origin service then advances
   the environment to the current retained canonical (ADR-033).
 
-A pin swept mid-run cannot happen silently: the test job's pre-flight verify
-fails with the pin's replacement named, and the re-run is the recovery.
-Push-deployed pins are swept the same way; after a service's flip the
-refresh resolves the same or a newer `main` image, so nothing regresses.
+The post-pin verify detects a replacement observed during that step. There is
+no second verification before each suite, so replacement after verification
+is not covered by that check. A stranded push-test pin follows the same
+recovery path as a stranded PR-test pin.
 
 ## Fork repository configuration
 
@@ -141,15 +130,19 @@ refresh resolves the same or a newer `main` image, so nothing regresses.
 |---|---|---|
 | `AZURE_CLIENT_ID` (secret), `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | `spi onboard`, or by hand from `spi info` | the environment's deploy identity and its home; identical for every fork in an organization, so `--org` sets them once |
 | `SPI_STACK_RESOURCE_GROUP`, `SPI_STACK_CLUSTER` | `spi onboard`, or by hand from `spi info` | environment coordinates for `spi connect` |
-| `K8S_DEPLOYMENT_NAME`, `K8S_CONTAINER_NAME` | operator, rarely | verify targets; default to `osdu-<service>` |
-| `ACCEPTANCE_TEST_DIR` | operator | Maven module path of the suite |
-| `ACCEPTANCE_TEST_SECRET_MAP` | operator | `ENV_VAR=keyvault-secret-name` pairs; an unknown or unresolvable entry fails the job before Maven starts |
-| `ACCEPTANCE_TEST_DEPENDENCIES` | operator | services whose health endpoints gate the suite; also absorbs a sibling's rolling restart |
+| `.spi/service.yaml` | service repository | versioned suite paths, Maven arguments, bindings, and declared requirements |
+
+Suite configuration lives in the descriptor. The current lane does not consume
+`ACCEPTANCE_TEST_DIR`, `ACCEPTANCE_TEST_SECRET_MAP`, or
+`ACCEPTANCE_TEST_DEPENDENCIES` repository variables. The CLI supports
+`K8S_DEPLOYMENT_NAME` and `K8S_CONTAINER_NAME` environment overrides, but the
+lane does not export those repository variables.
 
 The repository-to-package mapping is deterministic: onboarding `partition`
 from `<owner>/<fork>` selects `ghcr.io/<lowercase-owner>/partition`, even
 when the repository basename is not `partition`. The descriptor's
-`SERVICE_NAME` must match the short service identifier. The build publishes
+`service.name` and the workflow's `SERVICE_NAME` repository variable must
+identify the same service when that variable is set. The build publishes
 that public package, the deploy job pins it by digest, and canonical refresh
 resolves its `main` line after promotion. No separate package-path state or
 Azure namespace fallback is involved.
@@ -246,13 +239,15 @@ projections during bootstrap. A standing environment changes its resolved
 image only on refresh; policy changes and projection repairs preserve active
 pins and their captured restore targets.
 
-Once trust, the five values, and the descriptor are present, the template's
-readiness tooling activates the reserved required checks `🚀 Deploy to
-spi-stack` and `🧪 Integration Tests` on the fork; the jobs themselves live
-in the template's workflows, not in this repo. The first run of those jobs
-is the verification: onboard cannot mint the fork's OIDC token itself. The
-shared environment's source promotion follows a successful deploy and test
-run with those gates active.
+Once trust, the five values, and the descriptor are present, the next eligible
+build can enter `deploy-test`. The template's `validation-summary` job reports
+build, push, and deploy results through the required Validation Summary check.
+A skipped deploy lane can leave that summary green, so inspect the gate reason
+and suite results to establish live acceptance coverage. Separate reserved
+`Deploy to spi-stack` and `Integration Tests` checks are not the shipped lane's
+required-check model. A successful lane run proves the fork can authenticate,
+borrow, test, and attempt restoration; onboarding cannot mint the fork's OIDC
+token to prove those steps itself.
 
 ## Recipes
 
@@ -281,23 +276,14 @@ Partition is not a witness for either caller. Its Azure provider admits any
 app-only token from the tenant and refuses any token that names a user, so
 the no-access identity gets 200 there and a human's own token gets 403.
 
-```yaml
-- id: facts
-  run: |
-    spi info --json > facts.json
-    echo "audience=$(jq -r .azure.token_audience facts.json)" >> "$GITHUB_OUTPUT"
-    echo "member=$(jq -r .deploy_identity.member_client_id facts.json)" >> "$GITHUB_OUTPUT"
-    echo "noaccess=$(jq -r .deploy_identity.no_access_client_id facts.json)" >> "$GITHUB_OUTPUT"
-- uses: azure/login@v2            # the deploy identity, AZURE_CLIENT_ID from the repository
-  with: { client-id: ${{ secrets.AZURE_CLIENT_ID }}, tenant-id: ..., subscription-id: ... }
-- run: echo "TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"
-- uses: azure/login@v2            # the member identity holds no subscription role
-  with: { client-id: ${{ steps.facts.outputs.member }}, tenant-id: ..., allow-no-subscriptions: true }
-- run: echo "MEMBER_TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"
-- uses: azure/login@v2            # the no-access identity holds no subscription role
-  with: { client-id: ${{ steps.facts.outputs.noaccess }}, tenant-id: ..., allow-no-subscriptions: true }
-- run: echo "NO_ACCESS_TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"
-```
+The template's Mint test callers step exchanges the run's OIDC token directly
+with Entra for additional callers, preserving the deploy identity's Azure CLI
+session for Restore. Switching the job's Azure CLI login to a test-only identity
+would leave Restore without the deploy identity. Use the
+[workflow implementation](https://github.com/Azure/osdu-spi/blob/main/.github/template-workflows/validate.yml)
+and its resolver binding contract for the callers supported by the deployed
+template revision. Provisioning a stack identity alone does not wire it into a
+service's CI lane.
 
 Hand-pin a fork image against a standing environment and return it:
 

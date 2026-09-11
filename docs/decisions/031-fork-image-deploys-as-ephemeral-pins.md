@@ -49,11 +49,11 @@ annotation schema live in `docs/design/fork-deployment.md`.
   threshold when that state is unreachable. Operator pins never carry the
   marker and are never swept.
 - **Push builds deploy the same way.** A push to a trusted branch pins its
-  digest ephemerally with no restore job; the weekday refresh then converges
-  the canonical under the service's source policy (ADR-033), backward to the
-  community image before a service's flip and forward to its fork `main`
-  after it. One deploy path, and the template never needs to know a
-  service's flip state.
+  digest ephemerally, tests it, and attempts ownership-checked restoration,
+  as a pull request does. The template's
+  [ADR-041](https://github.com/Azure/osdu-spi/blob/main/doc/src/adr/041-borrow-prove-restore-lane.md)
+  owns this lane. Canonical advancement follows the service's source policy
+  (ADR-033) and environment refresh, independently of the test transaction.
 - **Digest rendering.** The `osdu-spi-service` chart accepts `image.digest`
   and renders `repository@digest` when present, `repository:tag` otherwise
   (ADR-017); GitLab-resolved canonicals gain pull-by-digest against upstream
