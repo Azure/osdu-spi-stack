@@ -249,7 +249,7 @@
   <!-- row 2 -->
   <div class="grid">
     <div class="panel a-green span-2">
-      <div class="p-head"><span class="p-num">4</span> The PR Proof Loop · Minutes, One Service Moves</div>
+      <div class="p-head"><span class="p-num">4</span> The PR and Push Proof Loop · One Service Moves</div>
       <div class="p-body">
         <div class="flow">
           <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#cube"/></svg></div><div class="fs-title">Build</div><div class="fs-sub">GHCR image, digest identity</div></div>
@@ -262,11 +262,11 @@
           <div class="flow-arrow"><svg class="icon"><use href="#arrow-right"/></svg></div>
           <div class="flow-step"><div class="fs-icon"><svg class="icon"><use href="#refresh"/></svg></div><div class="fs-title">Restore</div><div class="fs-sub">ownership-checked reset</div></div>
         </div>
-        <div class="note a-green"><svg class="icon"><use href="#idea"/></svg><span><span class="b">Pushes pin too:</span> a merge to main deploys the same ephemeral pin with no restore; the weekday refresh converges the canonical and sweeps pins whose owning run has ended. A colliding deploy fails fast, naming the collider.</span></div>
+        <div class="note a-green"><svg class="icon"><use href="#idea"/></svg><span><span class="b">PRs and pushes restore:</span> both test the ephemeral pin and attempt an ownership-checked reset. A newer run's pin is preserved. A lost runner can strand a pin; canonical advancement is separate from this proof loop.</span></div>
         <div class="chips">
           <span class="chip"><svg class="icon"><use href="#check"/></svg> Survives GitOps reconciles</span>
           <span class="chip"><svg class="icon"><use href="#check"/></svg> Siblings keep serving</span>
-          <span class="chip"><svg class="icon"><use href="#check"/></svg> Failed rollouts self-revert</span>
+          <span class="chip"><svg class="icon"><use href="#check"/></svg> Restore attempted after failure</span>
         </div>
       </div>
     </div>
