@@ -6,13 +6,18 @@ you may not use this file except in compliance with the License.
 */}}
 
 # One Job per partition, adding each member to the root entitlement groups and
-# each member user to users and the service user groups. The name hashes both
+# each member user to users and the service user groups. The name hashes the
 # lists and the seed generation so a changed list or a changed seed renders a
-# new Job; templates.entitlements_members_job_name computes the same name.
+# new Job, leaving out the member-user list when it is empty so existing Jobs
+# keep their name; templates.entitlements_members_job_name computes the same.
 {{- if and .Values.membersEnabled .Values.entitlementsMembers }}
 {{- $members := .Values.entitlementsMembers | sortAlpha }}
 {{- $memberUsers := .Values.entitlementsMemberUsers | default list | sortAlpha }}
-{{- $hash := printf "%s|%s#%v" ($members | join ",") ($memberUsers | join ",") .Values.membersGeneration | sha256sum | trunc 8 }}
+{{- $seed := printf "%s#%v" ($members | join ",") .Values.membersGeneration }}
+{{- if $memberUsers }}
+{{- $seed = printf "%s|%s#%v" ($members | join ",") ($memberUsers | join ",") .Values.membersGeneration }}
+{{- end }}
+{{- $hash := $seed | sha256sum | trunc 8 }}
 {{- range $partition := .Values.partitions }}
 ---
 apiVersion: batch/v1

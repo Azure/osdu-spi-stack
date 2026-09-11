@@ -142,6 +142,14 @@ def test_missing_tenant_alone_is_named_alone():
             token.mint_token()
 
 
+def test_missing_member_identity_names_the_key_not_the_deploy_identity():
+    partial = {k: v for k, v in CLUSTER_CFG.items() if k != "MEMBER_IDENTITY_CLIENT_ID"}
+    with patch("spi.token.read_cluster_config", return_value=partial):
+        with pytest.raises(token.TokenError, match="carries no MEMBER_IDENTITY_CLIENT_ID;") as exc:
+            token.mint_token(caller="member")
+    assert "deploy identity" not in str(exc.value)
+
+
 def test_a_socket_timeout_is_a_token_error():
     with (
         patch("spi.token.read_cluster_config", return_value=CLUSTER_CFG),

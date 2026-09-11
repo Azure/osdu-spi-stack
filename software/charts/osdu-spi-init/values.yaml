@@ -78,8 +78,8 @@ activeDeadlineSeconds: 600
 legalActiveDeadlineSeconds: 3600
 
 # -- activeDeadlineSeconds for the members Jobs. init_members.py's worst case
-#    is 660 s; test_members_deadline_covers_its_wait_budget recomputes it.
-membersActiveDeadlineSeconds: 720
+#    is 1650 s; test_members_deadline_covers_its_wait_budget recomputes it.
+membersActiveDeadlineSeconds: 1800
 
 # -- The scripts treat 409 as success, so a retried failure is a real error.
 backoffLimit: 2

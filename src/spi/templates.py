@@ -360,11 +360,13 @@ def entitlements_members_job_name(
     """The Job name the chart renders for these member lists.
 
     Must match templates/entitlements-members.yaml: each list sortAlpha and
-    join ",", the two joined by "|", then "#" and the generation, sha256sum,
+    join ",", seeded as "<admins>|<users>#<generation>", or "<admins>#<generation>"
+    with no member users so existing Jobs keep their name, then sha256sum,
     trunc 8. A render test holds the two together.
     """
     admins = ",".join(sorted(set(members)))
     users = ",".join(sorted(set(member_users)))
-    seed = f"{admins}|{users}#{ENTITLEMENTS_MEMBERS_GENERATION}"
+    generation = ENTITLEMENTS_MEMBERS_GENERATION
+    seed = f"{admins}|{users}#{generation}" if users else f"{admins}#{generation}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
     return f"{ENTITLEMENTS_MEMBERS_COMPONENT}-{partition}-{digest}"

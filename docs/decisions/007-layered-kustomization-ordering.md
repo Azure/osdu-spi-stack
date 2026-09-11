@@ -32,7 +32,7 @@ The `minimal` profile (ADR-021) declares layers 0a through 4b verbatim and stops
 
 All Kustomizations use `wait: true` so each layer's Ready gate reflects actual workload health; per-layer `timeout` is tuned to the slowest workload in that layer (15 min for Elasticsearch and Airflow, 10 min for the other middleware, 30 min for the OSDU service layers; schema-load's 155 min tracks the Job's `activeDeadlineSeconds` of 9000 s, a pod-startup allowance plus the cold-cluster wait and the throttled load, with headroom for reconcile overhead).
 
-`spi-osdu-legal` and `spi-osdu-members` are the layers nothing depends on. Both carry `spi-stack.gating: "false"`, so a failed seed stays visible with its typed reason without holding back the Ready verdict; legal's 70 min timeout tracks its Job's own deadline rather than any downstream layer, and members' 20 min does the same. A failed members Job still blocks deploys through `spi status` (ADR-030) because a fork cannot run a positive test without the seed.
+`spi-osdu-legal` and `spi-osdu-members` are the layers nothing depends on. Both carry `spi-stack.gating: "false"`, so a failed seed stays visible with its typed reason without holding back the Ready verdict; legal's 70 min timeout tracks its Job's own deadline rather than any downstream layer, and members' 40 min does the same. A failed members Job still blocks deploys through `spi status` (ADR-030) because a fork cannot run a positive test without the seed.
 
 Rejected: one flat Kustomization with an implicit apply order. Apply order in kustomize is not a dependency graph; it gives no ordering guarantees across independent sources.
 

@@ -9,7 +9,8 @@
 // (spi token); repositories are trusted later by spi onboard. The member
 // identity is seeded into users and the service user groups only, and the
 // no-access identity never receives a role assignment or an entitlements
-// group; fork CI uses them to prove non-admin and unauthenticated paths.
+// group; fork CI uses them to prove the non-admin 403 path and the
+// unknown-caller 401 path.
 
 @description('Resource name for the OSDU workload identity.')
 param name string
@@ -20,7 +21,7 @@ param deployIdentityName string
 @description('Resource name for the member identity fork CI federates to for non-admin tests.')
 param memberIdentityName string
 
-@description('Resource name for the no-access identity fork CI federates to for 403 tests.')
+@description('Resource name for the no-access identity fork CI federates to for the unknown-caller 401 path.')
 param noAccessIdentityName string
 
 @description('Azure region where the managed identity is deployed.')

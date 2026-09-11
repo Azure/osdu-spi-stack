@@ -178,8 +178,8 @@ def mint_token(
     ]
     if missing:
         raise TokenError(
-            f"spi-cluster-config carries no {', '.join(missing)}; run 'spi up' on a release "
-            "that provisions the deploy identity first."
+            f"spi-cluster-config carries no {', '.join(missing)}; run 'spi up' on the current "
+            "release to provision it and refresh spi-cluster-config."
         )
     audience = resource or token_audience(
         _read_osdu_config().get("AAD_CLIENT_ID", ""), _read_workload_identity_client_id()

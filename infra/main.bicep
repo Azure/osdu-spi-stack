@@ -25,7 +25,7 @@ param deployIdentityName string
 @description('Resource name for the member identity fork CI federates to for non-admin tests.')
 param memberIdentityName string
 
-@description('Resource name for the no-access identity fork CI federates to for 403 tests.')
+@description('Resource name for the no-access identity fork CI federates to for the unknown-caller 401 path.')
 param noAccessIdentityName string
 
 @description('Name of the existing AKS cluster from aks.bicep; scopes the deploy identity Cluster User grant.')

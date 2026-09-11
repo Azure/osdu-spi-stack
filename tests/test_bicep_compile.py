@@ -108,8 +108,8 @@ def test_main_bicep_publishes_both_fork_identity_client_ids():
 
 
 def test_no_access_identity_holds_no_role_assignment():
-    """The identity exists so fork CI can prove 403 paths; wiring it into the
-    rbac module would defeat that."""
+    """The identity exists so fork CI can prove the unknown-caller 401 path;
+    wiring it into the rbac module would defeat that."""
     rbac = (INFRA_DIR / "modules" / "rbac.bicep").read_text()
     main = (INFRA_DIR / "main.bicep").read_text()
 

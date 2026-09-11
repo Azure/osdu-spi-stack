@@ -22,6 +22,7 @@ is not installed.
 
 import ast
 import email.message
+import hashlib
 import importlib.util
 import io
 import json
@@ -177,6 +178,30 @@ def test_members_job_name_covers_member_users():
     assert env["MEMBER_USERS"] == "member-client-id"
 
 
+def test_members_job_name_keeps_the_legacy_seed_without_member_users():
+    """Before member users existed the seed was "<admins>#<generation>"; an
+    environment with none must still render under that name, or a chart
+    upgrade reruns the Job and an older chart never renders what a newer
+    CLI looks for."""
+    members = ["deployer-client-id"]
+    docs = _render(
+        ["opendes"],
+        {
+            "coreEnabled": "false",
+            "legalEnabled": "false",
+            "entitlementsMembers[0]": members[0],
+        },
+    )
+    job = _jobs(docs, "entitlements-members")[0]
+
+    seed = f"deployer-client-id#{ENTITLEMENTS_MEMBERS_GENERATION}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
+    expected = f"entitlements-members-opendes-{digest}"
+
+    assert job["metadata"]["name"] == expected
+    assert entitlements_members_job_name("opendes", members) == expected
+
+
 def test_members_generation_agrees_between_chart_and_cli():
     """The chart's default generation and the CLI constant feed the same
     hash; a bump on one side alone would make spi info miss every seeded Job."""
@@ -192,8 +217,8 @@ def test_members_job_never_renders_without_members():
 
 
 def test_no_access_identity_never_reaches_the_chart():
-    """The no-access identity exists so 403 tests have a caller entitlements
-    has never met; the only value the chart takes is the member list."""
+    """The no-access identity exists so 401 tests have a caller entitlements
+    has never met; the chart takes only the member and member-user lists."""
     rendered = json.dumps(_render(["opendes"], _MEMBERS))
     assert "noaccess" not in rendered.lower()
     assert "no_access" not in rendered.lower()
@@ -290,7 +315,13 @@ def test_members_deadline_covers_its_wait_budget(init_scripts):
         const["INFO_ATTEMPTS"] * (const["WAIT_DELAY"] + const["WAIT_SOCKET_TIMEOUT"])
         + const["REQUEST_BUDGET"]
     )
-    calls = 1 + len(const["CREATED_GROUPS"]) + 2 * len(const["ROOT_GROUPS"])
+    calls = (
+        1
+        + len(const["CREATED_GROUPS"])
+        + 2 * len(const["ROOT_GROUPS"])
+        + 1
+        + 2 * const["MAX_USER_GROUPS"]
+    )
     assert const["REQUEST_BUDGET"] >= _TOKEN_TIMEOUT + calls * const["REQUEST_TIMEOUT"]
 
     docs = _render(["opendes"], _MEMBERS)
@@ -600,6 +631,36 @@ def test_members_seeds_member_users_into_users_and_the_service_user_groups_only(
     assert member_posts == set(_USER_GROUPS.values())
     admin_posts = {g for m, g in posts if m == "deployer-client-id"}
     assert admin_posts == set(_GROUPS.values())
+
+
+def test_members_fails_closed_when_the_listing_exceeds_max_user_groups(
+    init_scripts, monkeypatch, capsys
+):
+    """The deadline is only a true upper bound if the number of
+    service.<name>.user groups seeded per member user is itself bounded, so
+    a listing carrying more than MAX_USER_GROUPS must refuse to seed."""
+    const = _script_constants(init_scripts["init_members.py"])
+    max_groups = const["MAX_USER_GROUPS"]
+    extra = {
+        f"service.svc{i}.user": f"service.svc{i}.user@opendes.dataservices.energy"
+        for i in range(max_groups + 1)
+    }
+    groups = {**_GROUPS, **_CREATED_GROUPS, **extra}
+    listing = json.dumps(
+        {"groups": [{"name": n, "email": e, "description": ""} for n, e in groups.items()]}
+    ).encode()
+
+    result = _run_members(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        member_users="member-client-id",
+        groups=_responds(200, listing),
+    )
+
+    assert result.exit_code == 1
+    assert "entitlements-members outcome: too_many_user_groups" in result.stdout
+    assert result.routed("post") == []
 
 
 def test_members_creates_the_impersonation_groups_the_bootstrap_lacks(

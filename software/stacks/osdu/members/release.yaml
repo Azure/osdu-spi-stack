@@ -8,11 +8,11 @@ spec:
   interval: 30m
   install:
     # Outlasts the Job's activeDeadlineSeconds so helm observes its outcome.
-    timeout: 15m
+    timeout: 35m
     remediation:
       retries: 3
   upgrade:
-    timeout: 15m
+    timeout: 35m
     remediation:
       retries: 3
       # A rollback would delete the failed Job spi status reports on.

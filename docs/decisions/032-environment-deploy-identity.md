@@ -133,10 +133,10 @@ config.
 - **CI passes the guard, never bypasses it.** Fork jobs acquire their
   kubeconfig through the CLI, which yields a context the guard's fingerprint
   check accepts; `SPI_SKIP_GUARD` stays out of CI.
-- **Two more identities prove the non-admin and unauthenticated paths.**
-  `spi up` also creates UAMI `spi-stack-<env>-member`, which the
-  entitlements-members Job seeds into `users` and every
-  `service.<name>.user` group and nothing else, and UAMI
+- **Two more identities prove the non-admin 403 path and the
+  unknown-caller 401 path.** `spi up` also creates UAMI
+  `spi-stack-<env>-member`, which the entitlements-members Job seeds into
+  `users` and every `service.<name>.user` group and nothing else, and UAMI
   `spi-stack-<env>-noaccess` with no Azure role and no entitlements group.
   These are the two negative callers the OSDU acceptance suites declare: a
   member who may call a service but holds no admin role, and a caller

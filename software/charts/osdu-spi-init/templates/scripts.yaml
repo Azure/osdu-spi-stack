@@ -597,15 +597,16 @@ data:
          was deployed with.
       3. POST /groups for each impersonation group the listing lacks.
       4. Select the five root groups by name, and users plus every
-         service.<name>.user group for the member users.
+         service.<name>.user group for the member users, refusing to seed
+         when the listing carries more of those than MAX_USER_GROUPS.
       5. POST each principal to each of its groups. 200 adds, 409 is
          already a member.
       6. GET each group's members back and require every principal present.
 
     Every exit prints "entitlements-members outcome: <code>", one of: seeded,
     already_member, group_missing, group_rejected, member_rejected,
-    verify_failed, config_missing, service_timeout, auth_failed,
-    unexpected_error, and
+    verify_failed, too_many_user_groups, config_missing, service_timeout,
+    auth_failed, unexpected_error, and
     writes the same line, with the failure detail, to the pod termination
     message so spi status can name the member and group that failed.
     The Job renders only in the non-gating osdu-spi-members release; spi
@@ -635,14 +636,20 @@ data:
         "users.datalake.impersonation": "Users who can be impersonated",
     }
     MEMBER_USER_GROUP_RE = re.compile(r"^service\.[a-z0-9-]+\.user$")
+    # Azure's tenant provisioning creates 7 service.<name>.user groups and
+    # other OSDU services define a further 7; 16 covers that known set with
+    # headroom, and bounds REQUEST_BUDGET below.
+    MAX_USER_GROUPS = 16
     REQUIRED_ENV = ("PARTITION", "MEMBERS")
     # The Job's activeDeadlineSeconds must cover the worst case or the pod dies
     # before printing an outcome: each poll attempt costs WAIT_DELAY plus
-    # WAIT_SOCKET_TIMEOUT; REQUEST_BUDGET covers the 60 s token exchange and
-    # thirteen 30 s calls (one listing, two creates, then a write and a read
-    # per root group for the one member the CLI seeds).
+    # WAIT_SOCKET_TIMEOUT; REQUEST_BUDGET covers the 60 s token exchange,
+    # thirteen 30 s calls for the one member the CLI seeds (one listing, two
+    # creates, then a write and a read per root group), and up to
+    # MAX_USER_GROUPS more write-and-read pairs plus a users write for the
+    # one member user.
     REQUEST_TIMEOUT = 30
-    REQUEST_BUDGET = 450
+    REQUEST_BUDGET = 1440
     INFO_ATTEMPTS = 30
     WAIT_DELAY = 2.0
     WAIT_SOCKET_TIMEOUT = 5.0
@@ -751,7 +758,16 @@ data:
             )
             return 1
 
-        user_groups = ["users"] + sorted(n for n in emails if MEMBER_USER_GROUP_RE.match(n))
+        matched_groups = sorted(n for n in emails if MEMBER_USER_GROUP_RE.match(n))
+        if member_users and len(matched_groups) > MAX_USER_GROUPS:
+            outcome(
+                "too_many_user_groups",
+                f"{len(matched_groups)} service user groups exceed the "
+                f"{MAX_USER_GROUPS} the deadline budgets for; "
+                f"{', '.join(member_users)} not seeded",
+            )
+            return 1
+        user_groups = ["users"] + matched_groups
         seeds = [(member, name) for member in members for name in ROOT_GROUPS]
         seeds += [(member, name) for member in member_users for name in user_groups]
 
