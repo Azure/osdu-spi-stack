@@ -31,7 +31,8 @@ implements one credentialed `deploy-test` job, described by
 [ADR-041](https://github.com/Azure/osdu-spi/blob/main/doc/src/adr/041-borrow-prove-restore-lane.md).
 It runs for eligible same-repository pull requests and pushes to `main` or
 `fork_integration`. A separate `deploy-gate` reports eligibility or a skip
-reason, including missing onboarding values, descriptor, or published image.
+reason, including missing onboarding values, descriptor, or published image,
+and an acceptance build reporting that the descriptor declares no test suite.
 Outside-repository PRs do not enter the credentialed lane.
 
 1. **Authenticate and install.** The job uses `azure/login` as the deploy
@@ -141,8 +142,11 @@ lane does not export those repository variables.
 The repository-to-package mapping is deterministic: onboarding `partition`
 from `<owner>/<fork>` selects `ghcr.io/<lowercase-owner>/partition`, even
 when the repository basename is not `partition`. The descriptor's
-`service.name` and the workflow's `SERVICE_NAME` repository variable must
-identify the same service when that variable is set. The build publishes
+`service.name` must match the workflow's effective service identifier:
+`SERVICE_NAME` when set, otherwise the repository name. A repository named
+`osdu-spi-partition` therefore needs `SERVICE_NAME=partition` to target the
+`partition` service and package; the workflow does not read the descriptor
+to choose this fallback. The build publishes
 that public package, the deploy job pins it by digest, and canonical refresh
 resolves its `main` line after promotion. No separate package-path state or
 Azure namespace fallback is involved.
@@ -251,8 +255,16 @@ token to prove those steps itself.
 
 ## Recipes
 
-Mint the three test callers in fork CI. The deploy identity is the positive
-caller: the `entitlements-members` Job adds its client id to `users`,
+The stack provisions three test identities and the CLI can mint each with
+`spi token`, `spi token --member`, or `spi token --no-access`. The shipped
+fork CI lane supplies `token` (`RESOLVER_TOKEN`) and optional `noAccessToken`
+(`RESOLVER_NO_ACCESS_TOKEN`) bindings. Member-token support is pending in
+[template PR #190](https://github.com/Azure/osdu-spi/pull/190); a suite requiring
+the member caller cannot obtain it from that lane until its template revision
+includes that support.
+
+The deploy identity is the positive caller: the `entitlements-members` Job
+adds its client id to `users`,
 `users.datalake.ops`, `users.datalake.admins`, `users.data.root`, and
 `users.datalake.delegation` for every partition, creating the delegation group
 and `users.datalake.impersonation` first when the Azure tenant bootstrap has
@@ -266,7 +278,7 @@ suites name `NO_ACCESS_USER`: the same Job seeds it into `users` and every
 role, and entitlements answers its admin-only requests with 403. The
 no-access identity belongs to no group at all, and entitlements answers it
 with 401 before any group check; suites use it where they expect an
-unknown caller. All three tokens are minted for `azure.token_audience`, read
+unknown caller. The CLI mints each caller for `azure.token_audience`, read
 per run because it depends on the environment: the management audience by
 default, or an operator's app registration. The Istio identity filter
 projects each token's own application id, so the three callers reach
