@@ -89,6 +89,19 @@ def _read_osdu_config() -> dict:
     return data.get("data", {}) or {}
 
 
+def _read_entitlements_domain() -> str:
+    """Read the entitlements service domain from its Deployment. Empty if missing."""
+    data = kubectl_json(["get", "deployment", "osdu-entitlements", "-n", "osdu"])
+    pod_spec = ((((data or {}).get("spec") or {}).get("template") or {}).get("spec") or {})
+    containers = pod_spec.get("containers") or []
+    if not containers:
+        return ""
+    for entry in containers[0].get("env") or []:
+        if entry.get("name") == "SERVICE_DOMAIN_NAME":
+            return entry.get("value") or ""
+    return ""
+
+
 def token_audience(aad_client_id: str, identity_client_id: str) -> str:
     """The resource acceptance callers mint a bearer for.
 
@@ -358,13 +371,24 @@ def _read_deploy_record():
 def _collect_info() -> dict:
     from .guard import get_suspend_status
 
-    cfg, osdu, azure_ext, cluster_cfg, init_values, suspended, record, wi_client_id = gather_reads(
+    (
+        cfg,
+        osdu,
+        azure_ext,
+        cluster_cfg,
+        init_values,
+        entitlements_domain,
+        suspended,
+        record,
+        wi_client_id,
+    ) = gather_reads(
         [
             _read_ingress_config,
             _read_osdu_config,
             _read_flux_extension_values,
             _read_cluster_config,
             _read_init_values_yaml,
+            _read_entitlements_domain,
             get_suspend_status,
             _read_deploy_record,
             read_workload_identity_client_id,
@@ -444,6 +468,8 @@ def _collect_info() -> dict:
         # Observed from the members Job: true only once the deploy
         # identity holds the four root groups for that partition.
         "entitlements_seeded": {name: bool(members_seeded[i]) for i, name in enumerate(partitions)},
+        # Observed from the running Deployment; empty until entitlements is deployed.
+        "entitlements_domain": entitlements_domain,
         "suspended": suspended,
     }
 
@@ -574,7 +600,13 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
         console.print()
 
     if partition_rows:
-        ptable = Table(title="Partitions", border_style="cyan", expand=True)
+        domain = info["entitlements_domain"] or "not deployed"
+        ptable = Table(
+            title="Partitions",
+            caption=f"Entitlements domain: {domain}",
+            border_style="cyan",
+            expand=True,
+        )
         ptable.add_column("Partition", style="bold")
         ptable.add_column("Cosmos Account", style="cyan")
         ptable.add_column("Service Bus Namespace", style="cyan")

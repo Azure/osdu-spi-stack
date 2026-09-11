@@ -46,6 +46,7 @@ def _wire(
     record=_RECORD,
     members=("deployer-client-id",),
     members_seeded=True,
+    entitlements_domain="dataservices.energy",
 ):
     monkeypatch.setattr(
         info,
@@ -100,6 +101,7 @@ def _wire(
         "_entitlements_seeded",
         lambda partition, members, member_users=(): bool(members) and members_seeded,
     )
+    monkeypatch.setattr(info, "_read_entitlements_domain", lambda: entitlements_domain)
     monkeypatch.setattr(info, "_read_deploy_record", lambda: record)
     monkeypatch.setattr(info, "read_workload_identity_client_id", lambda: "application-id")
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: True)
@@ -273,6 +275,56 @@ def test_info_json_reports_entitlements_seeded_per_partition(monkeypatch):
     assert info.collect_info()["entitlements_seeded"] == {"opendes": False}
 
 
+def test_info_json_reports_entitlements_domain_from_deployment(monkeypatch):
+    read_entitlements_domain = info._read_entitlements_domain
+    _wire(monkeypatch)
+    seen = []
+
+    def fake_kubectl_json(args):
+        seen.append(args)
+        return {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "env": [
+                                    {"name": "OTHER", "value": "ignored"},
+                                    {
+                                        "name": "SERVICE_DOMAIN_NAME",
+                                        "value": "dataservices.energy",
+                                    },
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(info, "kubectl_json", fake_kubectl_json)
+    monkeypatch.setattr(info, "_read_entitlements_domain", read_entitlements_domain)
+
+    assert info.collect_info()["entitlements_domain"] == "dataservices.energy"
+    assert seen == [["get", "deployment", "osdu-entitlements", "-n", "osdu"]]
+
+
+def test_info_json_reports_empty_entitlements_domain_without_deployment(monkeypatch):
+    read_entitlements_domain = info._read_entitlements_domain
+    _wire(monkeypatch)
+    seen = []
+
+    def fake_kubectl_json(args):
+        seen.append(args)
+        return None
+
+    monkeypatch.setattr(info, "kubectl_json", fake_kubectl_json)
+    monkeypatch.setattr(info, "_read_entitlements_domain", read_entitlements_domain)
+
+    assert info.collect_info()["entitlements_domain"] == ""
+    assert seen == [["get", "deployment", "osdu-entitlements", "-n", "osdu"]]
+
+
 def test_info_table_shows_entitlements_seeding(monkeypatch):
     _wire(monkeypatch, members_seeded=False)
     monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
@@ -281,6 +333,7 @@ def test_info_table_shows_entitlements_seeding(monkeypatch):
 
     assert "Groups" in output
     assert "not seeded" in output
+    assert "dataservices.energy" in output
 
 
 def test_init_values_carry_the_tenant_service_account():

@@ -270,7 +270,9 @@ adds its client id to `users`,
 and `users.datalake.impersonation` first when the Azure tenant bootstrap has
 not. A new Job runs when the environment is built, the identity changes, or
 the chart's seed generation is bumped. `spi info --json` reports
-`entitlements_seeded.<partition>` once that Job has completed.
+`entitlements_domain` from `SERVICE_DOMAIN_NAME` on the live
+`osdu-entitlements` Deployment, with an empty value before that Deployment
+exists. It reports `entitlements_seeded.<partition>` once the Job has completed.
 Two identities carry the negative paths, and both hold the same federated
 credential as the deployer. The member identity is the caller the OSDU
 suites name `NO_ACCESS_USER`: the same Job seeds it into `users` and every
