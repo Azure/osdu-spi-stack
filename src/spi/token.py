@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Mint an app-only Entra token as the environment's deploy or no-access identity.
+"""Mint an app-only Entra token as the environment's deploy, member, or no-access identity.
 
 Every OSDU Azure service admits only app-only tokens, so a developer's own
 ``az account get-access-token`` (which carries ``upn``) is refused. A
@@ -34,7 +34,12 @@ from typing import Optional
 from .bootstrap import read_cluster_config
 from .info import _read_osdu_config, _read_workload_identity_client_id, token_audience
 from .shell import run_process
-from .templates import DEPLOYER_SERVICE_ACCOUNT, NO_ACCESS_SERVICE_ACCOUNT, TESTER_NAMESPACE
+from .templates import (
+    DEPLOYER_SERVICE_ACCOUNT,
+    MEMBER_SERVICE_ACCOUNT,
+    NO_ACCESS_SERVICE_ACCOUNT,
+    TESTER_NAMESPACE,
+)
 
 EXCHANGE_AUDIENCE = "api://AzureADTokenExchange"
 PROJECTED_TOKEN_DURATION = "10m"
@@ -140,15 +145,32 @@ def _exchange(tenant_id: str, client_id: str, assertion: str, resource: str) -> 
     return payload
 
 
-def mint_token(*, no_access: bool = False, resource: Optional[str] = None) -> MintedToken:
-    """An app-only bearer as the deploy identity, or the no-access identity.
+# The three test callers: the cluster-config key that holds each client id and
+# the ServiceAccount spi token mints through.
+CALLERS = {
+    "deploy": ("DEPLOY_IDENTITY_CLIENT_ID", DEPLOYER_SERVICE_ACCOUNT),
+    "member": ("MEMBER_IDENTITY_CLIENT_ID", MEMBER_SERVICE_ACCOUNT),
+    "no_access": ("NO_ACCESS_IDENTITY_CLIENT_ID", NO_ACCESS_SERVICE_ACCOUNT),
+}
+
+
+def mint_token(
+    *, caller: str = "deploy", no_access: bool = False, resource: Optional[str] = None
+) -> MintedToken:
+    """An app-only bearer as one of the environment's test callers.
+
+    ``caller`` is ``deploy`` (admin), ``member`` (users and service user
+    groups only), or ``no_access`` (no entitlements). ``no_access=True`` is
+    the older spelling of ``caller="no_access"``.
 
     ``resource`` defaults to the audience ``spi info`` publishes as
     ``azure.token_audience``: the management audience unless the operator
     overrode ``AAD_CLIENT_ID`` with an app registration.
     """
     cluster_cfg = read_cluster_config()
-    key = "NO_ACCESS_IDENTITY_CLIENT_ID" if no_access else "DEPLOY_IDENTITY_CLIENT_ID"
+    if no_access:
+        caller = "no_access"
+    key, service_account = CALLERS[caller]
     client_id = cluster_cfg.get(key, "")
     tenant_id = cluster_cfg.get("AZURE_TENANT_ID", "")
     missing = [
@@ -156,10 +178,9 @@ def mint_token(*, no_access: bool = False, resource: Optional[str] = None) -> Mi
     ]
     if missing:
         raise TokenError(
-            f"spi-cluster-config carries no {', '.join(missing)}; run 'spi up' on a release "
-            "that provisions the deploy identity first."
+            f"spi-cluster-config carries no {', '.join(missing)}; run 'spi up' on the current "
+            "release to provision it and refresh spi-cluster-config."
         )
-    service_account = NO_ACCESS_SERVICE_ACCOUNT if no_access else DEPLOYER_SERVICE_ACCOUNT
     audience = resource or token_audience(
         _read_osdu_config().get("AAD_CLIENT_ID", ""), _read_workload_identity_client_id()
     )

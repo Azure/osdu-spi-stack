@@ -572,7 +572,7 @@ data:
             rc = 1
         sys.exit(rc)
   init_members.py: |
-    """Add the environment's deploy identity to the root entitlement groups.
+    """Add the environment's test callers to their entitlement groups.
 
     The deploy identity fork CI authenticates as is unknown to
     entitlements until something adds it, so every acceptance request it
@@ -580,7 +580,9 @@ data:
     which tenant-provisioning made OWNER of the root groups, and adds each
     configured member as x-user-id to users, users.datalake.ops,
     users.datalake.admins, users.data.root, and users.datalake.delegation
-    for the partition.
+    for the partition. Each configured member user, the non-admin test
+    caller, is added to users and to every service.<name>.user group the
+    listing carries, and nothing else.
 
     The Azure provider's tenant-provisioning does not create the two
     impersonation groups the core defines, users.datalake.delegation (who may
@@ -592,16 +594,20 @@ data:
     Flow:
       1. Wait for entitlements /info to return 200.
       2. GET /groups as the owner; the email domain is whatever entitlements
-         was deployed with.
+         was deployed with. With member users, refuse before any write when
+         the listing carries more than MAX_USER_GROUPS service.<name>.user
+         groups.
       3. POST /groups for each impersonation group the listing lacks.
-      4. Select the five root groups by name.
-      5. POST each member to each group. 200 adds, 409 is already a member.
-      6. GET each group's members back and require every member present.
+      4. Select the five root groups by name, and users plus every
+         service.<name>.user group for the member users.
+      5. POST each principal to each of its groups. 200 adds, 409 is
+         already a member.
+      6. GET each group's members back and require every principal present.
 
     Every exit prints "entitlements-members outcome: <code>", one of: seeded,
     already_member, group_missing, group_rejected, member_rejected,
-    verify_failed, config_missing, service_timeout, auth_failed,
-    unexpected_error, and
+    verify_failed, too_many_user_groups, config_missing, service_timeout,
+    auth_failed, unexpected_error, and
     writes the same line, with the failure detail, to the pod termination
     message so spi status can name the member and group that failed.
     The Job renders only in the non-gating osdu-spi-members release; spi
@@ -610,6 +616,7 @@ data:
     """
     import json
     import os
+    import re
     import sys
     import urllib.error
     import urllib.request
@@ -629,14 +636,21 @@ data:
         "users.datalake.delegation": "Users who can impersonate",
         "users.datalake.impersonation": "Users who can be impersonated",
     }
+    MEMBER_USER_GROUP_RE = re.compile(r"^service\.[a-z0-9-]+\.user$")
+    # Azure's tenant provisioning creates 7 service.<name>.user groups and
+    # other OSDU services define a further 7; 16 covers that known set with
+    # headroom, and bounds REQUEST_BUDGET below.
+    MAX_USER_GROUPS = 16
     REQUIRED_ENV = ("PARTITION", "MEMBERS")
     # The Job's activeDeadlineSeconds must cover the worst case or the pod dies
     # before printing an outcome: each poll attempt costs WAIT_DELAY plus
-    # WAIT_SOCKET_TIMEOUT; REQUEST_BUDGET covers the 60 s token exchange and
-    # thirteen 30 s calls (one listing, two creates, then a write and a read
-    # per root group for the one member the CLI seeds).
+    # WAIT_SOCKET_TIMEOUT; REQUEST_BUDGET covers the 60 s token exchange,
+    # thirteen 30 s calls for the one member the CLI seeds (one listing, two
+    # creates, then a write and a read per root group), and up to
+    # MAX_USER_GROUPS more write-and-read pairs plus a users write for the
+    # one member user.
     REQUEST_TIMEOUT = 30
-    REQUEST_BUDGET = 450
+    REQUEST_BUDGET = 1440
     INFO_ATTEMPTS = 30
     WAIT_DELAY = 2.0
     WAIT_SOCKET_TIMEOUT = 5.0
@@ -684,9 +698,14 @@ data:
             return 1
         partition = os.environ["PARTITION"]
         members = sorted({m.strip() for m in os.environ["MEMBERS"].split(",") if m.strip()})
+        member_users = sorted(
+            {m.strip() for m in os.environ.get("MEMBER_USERS", "").split(",") if m.strip()}
+        )
         host = os.environ.get("ENTITLEMENTS_HOST", "http://entitlements.osdu.svc.cluster.local")
         base = f"{host}/api/entitlements/v2"
         print(f"Entitlements members for '{partition}': {', '.join(members)}")
+        if member_users:
+            print(f"Entitlements member users for '{partition}': {', '.join(member_users)}")
 
         if not wait_for_status(
             f"{base}/info",
@@ -715,6 +734,15 @@ data:
         for group in parse(payload).get("groups") or []:
             if isinstance(group, dict) and group.get("name"):
                 emails[group["name"]] = group.get("email", "")
+        matched_groups = sorted(n for n in emails if MEMBER_USER_GROUP_RE.match(n))
+        if member_users and len(matched_groups) > MAX_USER_GROUPS:
+            outcome(
+                "too_many_user_groups",
+                f"{len(matched_groups)} service user groups exceed the "
+                f"{MAX_USER_GROUPS} the deadline budgets for; "
+                f"{', '.join(member_users)} not seeded",
+            )
+            return 1
         for name, description in CREATED_GROUPS.items():
             if emails.get(name):
                 continue
@@ -740,31 +768,40 @@ data:
             )
             return 1
 
-        added = False
-        for member in members:
-            for name in ROOT_GROUPS:
-                url = f"{base}/groups/{emails[name]}/members"
-                code, payload = request(url, headers, "POST", {"email": member, "role": "MEMBER"})
-                if code == 200:
-                    added = True
-                elif code == 409:
-                    print(f"  {member} is already a member of {emails[name]}")
-                else:
-                    print(payload)
-                    outcome("member_rejected", f"{member} was not added to {emails[name]} ({code})")
-                    return 1
+        user_groups = ["users"] + matched_groups
+        seeds = [(member, name) for member in members for name in ROOT_GROUPS]
+        seeds += [(member, name) for member in member_users for name in user_groups]
 
-        for name in ROOT_GROUPS:
-            code, payload = request(f"{base}/groups/{emails[name]}/members", headers)
-            present = {
-                str(m.get("email", "")).lower()
-                for m in parse(payload).get("members") or []
-                if isinstance(m, dict)
-            }
-            for member in members:
-                if code != 200 or member.lower() not in present:
-                    outcome("verify_failed", f"{member} is not a member of {emails[name]} after seeding")
-                    return 1
+        added = False
+        for member, name in seeds:
+            url = f"{base}/groups/{emails[name]}/members"
+            code, payload = request(url, headers, "POST", {"email": member, "role": "MEMBER"})
+            if code == 200:
+                added = True
+            elif code == 409:
+                print(f"  {member} is already a member of {emails[name]}")
+            else:
+                print(payload)
+                outcome("member_rejected", f"{member} was not added to {emails[name]} ({code})")
+                return 1
+
+        listings = {}
+        for member, name in seeds:
+            if name not in listings:
+                code, payload = request(f"{base}/groups/{emails[name]}/members", headers)
+                listings[name] = (
+                    {
+                        str(m.get("email", "")).lower()
+                        for m in parse(payload).get("members") or []
+                        if isinstance(m, dict)
+                    }
+                    if code == 200
+                    else None
+                )
+            present = listings[name]
+            if present is None or member.lower() not in present:
+                outcome("verify_failed", f"{member} is not a member of {emails[name]} after seeding")
+                return 1
 
         outcome("seeded" if added else "already_member")
         return 0

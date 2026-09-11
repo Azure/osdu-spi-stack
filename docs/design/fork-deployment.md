@@ -171,7 +171,7 @@ phases; source promotion is separate from enabling trust:
 | Phase | Change | Needs |
 |---|---|---|
 | 1. Repository protection | Create the `spi-stack` environment, or open one restricted to a branch list, then stamp the five values | repository admin for environment rules; organization admin for organization values with `--org` |
-| 2. Azure trust | Enable `fork-<service>` on `spi-stack-<env>-deployer` and on `spi-stack-<env>-noaccess` for `repo:<org>/<fork>:environment:spi-stack`, after reading back that the environment exists and admits every branch | write on both identities and read access to repository rules |
+| 2. Azure trust | Enable `fork-<service>` on `spi-stack-<env>-deployer`, `spi-stack-<env>-member`, and `spi-stack-<env>-noaccess` for `repo:<org>/<fork>:environment:spi-stack`, after reading back that the environment exists and admits every branch | write on the three identities and read access to repository rules |
 | 3. Cluster trust | Project the observed credential roster and existing source policy into `osdu-image-lock` without changing resolved images or pins | the operator's kube context |
 | 4. Source policy | When requested, validate promotion preconditions, write `spi-source-<service>` on the RG, and update the lock's source projection (ADR-033) | RG tag write and the operator's kube context |
 
@@ -181,12 +181,13 @@ services and no lock for phase 3 to project into (ADR-032). It then
 resolves the repository through the GitHub API and carries its
 canonical casing into every later write, since Entra matches the federated
 subject exactly. It reads the credential roster next and refuses before
-phase 1 when the repository already backs another service or either
-identity holds twenty credentials (ADR-032); neither failure is recoverable
-in phase 2. The no-access identity carries the same credentials and nothing
-else, so a fork's 403 tests run as a caller entitlements has never met;
-its client id is read from `deploy_identity.no_access_client_id` in
-`spi info --json` at run time.
+phase 1 when the repository already backs another service or any of the
+identities holds twenty credentials (ADR-032); neither failure is recoverable
+in phase 2. The member and no-access identities carry the same credentials
+and no Azure role, so a fork's non-admin tests run as a member entitlements
+knows and its 401 tests as a caller it has never met; their client ids are
+read from `deploy_identity.member_client_id` and
+`deploy_identity.no_access_client_id` in `spi info --json` at run time.
 Without `--write` the command prints the `gh`, `az`, and `kubectl` commands
 for each phase and changes nothing; the plan is the handoff for whoever holds
 the rights on each side. `--write` applies the phases in order. `--skip-repo`
@@ -255,7 +256,7 @@ run with those gates active.
 
 ## Recipes
 
-Mint the two test callers in fork CI. The deploy identity is the positive
+Mint the three test callers in fork CI. The deploy identity is the positive
 caller: the `entitlements-members` Job adds its client id to `users`,
 `users.datalake.ops`, `users.datalake.admins`, `users.data.root`, and
 `users.datalake.delegation` for every partition, creating the delegation group
@@ -263,16 +264,18 @@ and `users.datalake.impersonation` first when the Azure tenant bootstrap has
 not. A new Job runs when the environment is built, the identity changes, or
 the chart's seed generation is bumped. `spi info --json` reports
 `entitlements_seeded.<partition>` once that Job has completed.
-The no-access identity is the negative caller: it carries
-the same federated credential and belongs to no group. Entitlements is
-expected to answer such a caller with 403, distinct from the 401 an
-unauthenticated request draws; if a partition answers 401 instead, the
-members Job seeds the no-access identity into `users` alone so the
-distinction holds. Both tokens are minted for `azure.token_audience`, read
+Two identities carry the negative paths, and both hold the same federated
+credential as the deployer. The member identity is the caller the OSDU
+suites name `NO_ACCESS_USER`: the same Job seeds it into `users` and every
+`service.<name>.user` group, so it may call each service and holds no admin
+role, and entitlements answers its admin-only requests with 403. The
+no-access identity belongs to no group at all, and entitlements answers it
+with 401 before any group check; suites use it where they expect an
+unknown caller. All three tokens are minted for `azure.token_audience`, read
 per run because it depends on the environment: the management audience by
 default, or an operator's app registration. The Istio identity filter
-projects each token's own application id, so the two callers reach
-entitlements as two different principals whatever audience they minted for.
+projects each token's own application id, so the three callers reach
+entitlements as three different principals whatever audience they minted for.
 
 Partition is not a witness for either caller. Its Azure provider admits any
 app-only token from the tenant and refuses any token that names a user, so
@@ -283,10 +286,14 @@ the no-access identity gets 200 there and a human's own token gets 403.
   run: |
     spi info --json > facts.json
     echo "audience=$(jq -r .azure.token_audience facts.json)" >> "$GITHUB_OUTPUT"
+    echo "member=$(jq -r .deploy_identity.member_client_id facts.json)" >> "$GITHUB_OUTPUT"
     echo "noaccess=$(jq -r .deploy_identity.no_access_client_id facts.json)" >> "$GITHUB_OUTPUT"
 - uses: azure/login@v2            # the deploy identity, AZURE_CLIENT_ID from the repository
   with: { client-id: ${{ secrets.AZURE_CLIENT_ID }}, tenant-id: ..., subscription-id: ... }
 - run: echo "TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"
+- uses: azure/login@v2            # the member identity holds no subscription role
+  with: { client-id: ${{ steps.facts.outputs.member }}, tenant-id: ..., allow-no-subscriptions: true }
+- run: echo "MEMBER_TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"
 - uses: azure/login@v2            # the no-access identity holds no subscription role
   with: { client-id: ${{ steps.facts.outputs.noaccess }}, tenant-id: ..., allow-no-subscriptions: true }
 - run: echo "NO_ACCESS_TOKEN=$(az account get-access-token --resource ${{ steps.facts.outputs.audience }} --query accessToken -o tsv)" >> "$GITHUB_ENV"

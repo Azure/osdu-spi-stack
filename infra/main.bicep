@@ -22,7 +22,10 @@ param identityName string
 @description('Resource name for the deploy identity fork CI federates to.')
 param deployIdentityName string
 
-@description('Resource name for the no-access identity fork CI federates to for 403 tests.')
+@description('Resource name for the member identity fork CI federates to for non-admin tests.')
+param memberIdentityName string
+
+@description('Resource name for the no-access identity fork CI federates to for the unknown-caller 401 path.')
 param noAccessIdentityName string
 
 @description('Name of the existing AKS cluster from aks.bicep; scopes the deploy identity Cluster User grant.')
@@ -112,6 +115,7 @@ module identityModule 'modules/identity.bicep' = {
   params: {
     name: identityName
     deployIdentityName: deployIdentityName
+    memberIdentityName: memberIdentityName
     noAccessIdentityName: noAccessIdentityName
     location: location
     oidcIssuerUrl: oidcIssuerUrl
@@ -355,6 +359,12 @@ output deployIdentityPrincipalId string = identityModule.outputs.deployIdentityP
 
 @description('Azure resource ID of the deploy identity.')
 output deployIdentityResourceId string = identityModule.outputs.deployIdentityResourceId
+
+@description('Client ID of the member identity; spi info publishes it as member_client_id.')
+output memberIdentityClientId string = identityModule.outputs.memberIdentityClientId
+
+@description('Principal ID of the member identity; holds no role assignment.')
+output memberIdentityPrincipalId string = identityModule.outputs.memberIdentityPrincipalId
 
 @description('Client ID of the no-access identity; spi info publishes it as no_access_client_id.')
 output noAccessIdentityClientId string = identityModule.outputs.noAccessIdentityClientId

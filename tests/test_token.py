@@ -31,6 +31,7 @@ from spi.bootstrap import ensure_namespaces
 from spi.config import Config
 from spi.templates import (
     DEPLOYER_SERVICE_ACCOUNT,
+    MEMBER_SERVICE_ACCOUNT,
     NO_ACCESS_SERVICE_ACCOUNT,
     TESTER_NAMESPACE,
     workload_identity_sa,
@@ -39,6 +40,7 @@ from spi.templates import (
 INFRA_DIR = Path(__file__).resolve().parent.parent / "infra"
 CLUSTER_CFG = {
     "DEPLOY_IDENTITY_CLIENT_ID": "deployer-client-id",
+    "MEMBER_IDENTITY_CLIENT_ID": "member-client-id",
     "NO_ACCESS_IDENTITY_CLIENT_ID": "no-access-client-id",
     "AZURE_TENANT_ID": "tenant-id",
 }
@@ -52,7 +54,15 @@ def _kubectl_ok(argv, **kwargs):
     return CompletedProcess(argv, 0, stdout="projected-sa-token\n", stderr="")
 
 
-def _mint(no_access=False, resource=None, *, entra=None, kubectl=_kubectl_ok, aad="uami-id"):
+def _mint(
+    no_access=False,
+    resource=None,
+    *,
+    caller="deploy",
+    entra=None,
+    kubectl=_kubectl_ok,
+    aad="uami-id",
+):
     entra = entra if entra is not None else {"access_token": "bearer", "expires_on": "1"}
     captured = {}
 
@@ -70,7 +80,7 @@ def _mint(no_access=False, resource=None, *, entra=None, kubectl=_kubectl_ok, aa
         patch("spi.token.run_process", side_effect=kubectl) as run_process,
         patch("spi.token.urllib.request.urlopen", side_effect=urlopen),
     ):
-        minted = token.mint_token(no_access=no_access, resource=resource)
+        minted = token.mint_token(caller=caller, no_access=no_access, resource=resource)
     captured["kubectl"] = run_process.call_args.args[0]
     return minted, captured
 
@@ -95,6 +105,14 @@ def test_no_access_selects_the_other_identity_and_account():
     assert captured["kubectl"][3] == NO_ACCESS_SERVICE_ACCOUNT
     assert captured["body"]["client_id"] == "no-access-client-id"
     assert minted.client_id == "no-access-client-id"
+
+
+def test_member_selects_the_member_identity_and_account():
+    minted, captured = _mint(caller="member")
+
+    assert captured["kubectl"][3] == MEMBER_SERVICE_ACCOUNT
+    assert captured["body"]["client_id"] == "member-client-id"
+    assert minted.client_id == "member-client-id"
 
 
 def test_audience_follows_an_aad_client_id_override():
@@ -122,6 +140,14 @@ def test_missing_tenant_alone_is_named_alone():
     with patch("spi.token.read_cluster_config", return_value=partial):
         with pytest.raises(token.TokenError, match="carries no AZURE_TENANT_ID;"):
             token.mint_token()
+
+
+def test_missing_member_identity_names_the_key_not_the_deploy_identity():
+    partial = {k: v for k, v in CLUSTER_CFG.items() if k != "MEMBER_IDENTITY_CLIENT_ID"}
+    with patch("spi.token.read_cluster_config", return_value=partial):
+        with pytest.raises(token.TokenError, match="carries no MEMBER_IDENTITY_CLIENT_ID;") as exc:
+            token.mint_token(caller="member")
+    assert "deploy identity" not in str(exc.value)
 
 
 def test_a_socket_timeout_is_a_token_error():
@@ -172,11 +198,16 @@ def test_bicep_federates_both_identities_to_the_tester_accounts():
 
     assert f"param testerNamespace string = '{TESTER_NAMESPACE}'" in source
     assert f"param deployerServiceAccountName string = '{DEPLOYER_SERVICE_ACCOUNT}'" in source
+    assert f"param memberServiceAccountName string = '{MEMBER_SERVICE_ACCOUNT}'" in source
     assert f"param noAccessServiceAccountName string = '{NO_ACCESS_SERVICE_ACCOUNT}'" in source
     subjects = re.findall(
         r"subject: 'system:serviceaccount:\$\{testerNamespace\}:\$\{(\w+)\}'", source
     )
-    assert sorted(subjects) == ["deployerServiceAccountName", "noAccessServiceAccountName"]
+    assert sorted(subjects) == [
+        "deployerServiceAccountName",
+        "memberServiceAccountName",
+        "noAccessServiceAccountName",
+    ]
     for parent in ("deployIdentity", "noAccessIdentity"):
         assert f"parent: {parent}\n  name: 'cluster-${{testerNamespace}}'" in source
 
@@ -186,6 +217,7 @@ def test_deploy_applies_annotated_tester_accounts():
         "identity_client_id": "uami-id",
         "tenant_id": "tenant-id",
         "deploy_identity_client_id": "deployer-client-id",
+        "member_identity_client_id": "member-client-id",
         "no_access_identity_client_id": "no-access-client-id",
     }
     with (
@@ -200,6 +232,8 @@ def test_deploy_applies_annotated_tester_accounts():
     assert 'azure.workload.identity/client-id: "deployer-client-id"' in deployer
     no_access = next(y for y in applied if f"name: {NO_ACCESS_SERVICE_ACCOUNT}\n" in y)
     assert 'azure.workload.identity/client-id: "no-access-client-id"' in no_access
+    member = next(y for y in applied if f"name: {MEMBER_SERVICE_ACCOUNT}\n" in y)
+    assert 'azure.workload.identity/client-id: "member-client-id"' in member
 
 
 def test_deploy_skips_tester_accounts_without_identity_outputs():

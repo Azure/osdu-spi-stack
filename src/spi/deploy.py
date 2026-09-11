@@ -158,7 +158,12 @@ def _create_spi_init_values(config: Config, infra_outputs: dict) -> None:
     """
     console.print("\n[bold]Creating SPI init values ConfigMap...[/bold]")
     members = [infra_outputs.get("deploy_identity_client_id", "")]
-    yaml_content = spi_init_values_configmap(config.data_partitions, [m for m in members if m])
+    member_users = [infra_outputs.get("member_identity_client_id", "")]
+    yaml_content = spi_init_values_configmap(
+        config.data_partitions,
+        [m for m in members if m],
+        member_users=[m for m in member_users if m],
+    )
     display_yaml(yaml_content, "ConfigMap: spi-init-values")
     kubectl_apply_yaml(yaml_content, "apply spi-init-values ConfigMap")
     display_result(

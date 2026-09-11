@@ -133,26 +133,32 @@ config.
 - **CI passes the guard, never bypasses it.** Fork jobs acquire their
   kubeconfig through the CLI, which yields a context the guard's fingerprint
   check accepts; `SPI_SKIP_GUARD` stays out of CI.
-- **A second identity proves the negative path.** `spi up` also creates
-  UAMI `spi-stack-<env>-noaccess` with no Azure role and no entitlements
-  group. `spi onboard` federates it on the same `fork-<service>` credential
-  and subject as the deployer and revokes both together, so a trusted
-  repository can mint a token whose data-plane calls must answer 403 rather
-  than 401. `spi info --json` publishes it as
-  `deploy_identity.no_access_client_id`; forks read it per run instead of
-  holding a sixth repository value.
+- **Two more identities prove the non-admin 403 path and the
+  unknown-caller 401 path.** `spi up` also creates UAMI
+  `spi-stack-<env>-member`, which the entitlements-members Job seeds into
+  `users` and every `service.<name>.user` group and nothing else, and UAMI
+  `spi-stack-<env>-noaccess` with no Azure role and no entitlements group.
+  These are the two negative callers the OSDU acceptance suites declare: a
+  member who may call a service but holds no admin role, and a caller
+  entitlements does not know, who draws 401. `spi onboard` federates both on
+  the same `fork-<service>` credential and subject as the deployer and
+  revokes all three together. `spi info --json` publishes them as
+  `deploy_identity.member_client_id` and `deploy_identity.no_access_client_id`;
+  forks read them per run instead of holding more repository values.
 - **The cluster is a second issuer for the same identities.**
   `infra/modules/identity.bicep` federates the deployer to
-  `system:serviceaccount:spi-test:spi-deployer` and the no-access identity
+  `system:serviceaccount:spi-test:spi-deployer`, the member identity to
+  `system:serviceaccount:spi-test:spi-member`, and the no-access identity
   to `system:serviceaccount:spi-test:spi-no-access` on the AKS OIDC issuer,
-  and `spi up` applies both ServiceAccounts, annotated for workload
+  and `spi up` applies the three ServiceAccounts, annotated for workload
   identity, in the `spi-test` namespace it creates outside the mesh. Every
   Azure-provider service admits app-only tokens alone, so a developer's own
   `az account get-access-token`, which carries `upn`, is refused on every
   endpoint. `spi token` requests a ten-minute projected token for the
   ServiceAccount and exchanges it at the Entra v1 endpoint for a bearer
   whose `appid` is the deploy identity, the same principal fork CI holds
-  through GitHub federation; `--no-access` mints the negative-path bearer.
+  through GitHub federation; `--member` and `--no-access` mint the two
+  negative-path bearers.
   Who may mint is who may create tokens for those ServiceAccounts, a
   Kubernetes RBAC question the fork Roles answer with no: CI stays on the
   GitHub path. A Job on the `spi-deployer` account mints in-cluster through

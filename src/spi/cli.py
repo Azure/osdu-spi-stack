@@ -703,8 +703,11 @@ def info(
 
 @app.command()
 def token(
+    member: bool = typer.Option(
+        False, "--member", help="Mint as the member identity: users and service user groups only"
+    ),
     no_access: bool = typer.Option(
-        False, "--no-access", help="Mint as the no-access identity for 403 tests"
+        False, "--no-access", help="Mint as the no-access identity for 401 tests"
     ),
     resource: Optional[str] = typer.Option(
         None,
@@ -713,9 +716,10 @@ def token(
     ),
     output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
 ):
-    """Mint an app-only bearer token as the environment's deploy identity.
+    """Mint an app-only bearer token as the deploy, member, or no-access identity.
 
-    The token is written to stdout alone, so it composes:
+    The deploy identity is the default. The token is written to stdout alone,
+    so it composes:
     INTEGRATION_TESTER_ACCESS_TOKEN=$(spi token).
     """
     ctx = verify_spi_cluster()
@@ -724,8 +728,12 @@ def token(
     from .token import TokenError, mint_token
 
     error_console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+    if member and no_access:
+        error_console.print("[error]Choose one of --member and --no-access.[/error]")
+        raise typer.Exit(code=1)
+    caller = "member" if member else "no_access" if no_access else "deploy"
     try:
-        minted = mint_token(no_access=no_access, resource=resource)
+        minted = mint_token(caller=caller, resource=resource)
     except (ClusterConfigError, TokenError) as exc:
         error_console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)

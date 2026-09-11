@@ -91,14 +91,17 @@ data:
 """
 
 
-# The subjects infra/modules/identity.bicep federates the deploy and no-access
-# identities to; spi up applies the accounts and spi token mints through them.
+# The subjects infra/modules/identity.bicep federates the deploy, member, and
+# no-access identities to; spi up applies the accounts and spi token mints
+# through them.
 # The namespace is outside the mesh: test Jobs reach services through the gateway.
 TESTER_NAMESPACE = "spi-test"
 DEPLOYER_SERVICE_ACCOUNT = "spi-deployer"
+MEMBER_SERVICE_ACCOUNT = "spi-member"
 NO_ACCESS_SERVICE_ACCOUNT = "spi-no-access"
 TESTER_SERVICE_ACCOUNTS = (
     (DEPLOYER_SERVICE_ACCOUNT, "deploy_identity_client_id"),
+    (MEMBER_SERVICE_ACCOUNT, "member_identity_client_id"),
     (NO_ACCESS_SERVICE_ACCOUNT, "no_access_identity_client_id"),
 )
 
@@ -108,8 +111,8 @@ def workload_identity_sa(
 ) -> str:
     """Workload Identity ServiceAccount for OSDU services.
 
-    The default name is what every OSDU pod binds; the deploy and no-access
-    identities each trust a differently named account in the same namespace,
+    The default name is what every OSDU pod binds; the deploy, member, and
+    no-access identities each trust a differently named account in the same namespace,
     which spi token mints through and an in-cluster test Job can run as.
     """
     return f"""\
@@ -283,7 +286,10 @@ ENTITLEMENTS_MEMBERS_GENERATION = 2
 
 
 def spi_init_values_configmap(
-    partitions: list[str], members: Sequence[str] = (), legal_tag: str = LEGAL_TAG_BASE
+    partitions: list[str],
+    members: Sequence[str] = (),
+    legal_tag: str = LEGAL_TAG_BASE,
+    member_users: Sequence[str] = (),
 ) -> str:
     """ConfigMap consumed by the osdu-spi-init HelmRelease via valuesFrom.
 
@@ -292,12 +298,15 @@ def spi_init_values_configmap(
     enabling a new partition is a CLI argument change, not a git edit.
     `spi info` reads the same ConfigMap back, so the legal tag name it reports
     is the one the init Jobs rendered from. ``members`` are the principals
-    entitlements-members seeds; omitted entirely when empty so the chart
-    renders no Job.
+    entitlements-members seeds into the root groups; omitted entirely when
+    empty so the chart renders no Job. ``member_users`` are seeded into
+    users and the service user groups only.
     """
     partition_lines = "\n".join(f"    - {p}" for p in partitions)
     member_lines = "".join(f"    - {m}\n" for m in sorted(set(members)))
     members_block = f"    entitlementsMembers:\n{member_lines}" if member_lines else ""
+    user_lines = "".join(f"    - {m}\n" for m in sorted(set(member_users)))
+    members_block += f"    entitlementsMemberUsers:\n{user_lines}" if user_lines else ""
     return f"""\
 apiVersion: v1
 kind: ConfigMap
@@ -319,7 +328,8 @@ def parse_init_values(text: str) -> dict:
 
     The shape is fixed: scalar keys and list keys whose items are ``- x``
     lines. Returns ``{"partitions": [...], "legalTag": "...",
-    "entitlementsMembers": [...]}`` with absent keys missing.
+    "entitlementsMembers": [...], "entitlementsMemberUsers": [...]}`` with
+    absent keys missing.
     """
     parsed: dict = {}
     current: list | None = None
@@ -344,13 +354,19 @@ def parse_init_values(text: str) -> dict:
     return parsed
 
 
-def entitlements_members_job_name(partition: str, members: Sequence[str]) -> str:
-    """The Job name the chart renders for this member list.
+def entitlements_members_job_name(
+    partition: str, members: Sequence[str], member_users: Sequence[str] = ()
+) -> str:
+    """The Job name the chart renders for these member lists.
 
-    Must match templates/entitlements-members.yaml: sortAlpha, join ",",
-    "#" and the generation, sha256sum, trunc 8. A render test holds the
-    two together.
+    Must match templates/entitlements-members.yaml: each list sortAlpha and
+    join ",", seeded as "<admins>|<users>#<generation>", or "<admins>#<generation>"
+    with no member users so existing Jobs keep their name, then sha256sum,
+    trunc 8. A render test holds the two together.
     """
-    seed = f"{','.join(sorted(set(members)))}#{ENTITLEMENTS_MEMBERS_GENERATION}"
+    admins = ",".join(sorted(set(members)))
+    users = ",".join(sorted(set(member_users)))
+    generation = ENTITLEMENTS_MEMBERS_GENERATION
+    seed = f"{admins}|{users}#{generation}" if users else f"{admins}#{generation}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
     return f"{ENTITLEMENTS_MEMBERS_COMPONENT}-{partition}-{digest}"

@@ -48,6 +48,7 @@ TARGET = Target(
     identity_name="spi-stack-dev1-deployer",
     resource_group="spi-stack-dev1",
     no_access_identity_name="spi-stack-dev1-noaccess",
+    member_identity_name="spi-stack-dev1-member",
     values={
         "AZURE_CLIENT_ID": "client-id",
         "AZURE_TENANT_ID": "tenant-id",
@@ -114,12 +115,13 @@ class TestPlanning:
             State(roster=(), projection={}, protection=ABSENT, values=dict.fromkeys(TARGET.values))
         )
 
-        assert [s.phase for s in plan.steps] == ["repository"] * 6 + ["azure"] * 2 + ["cluster"]
+        assert [s.phase for s in plan.steps] == ["repository"] * 6 + ["azure"] * 3 + ["cluster"]
         assert verbs(plan)[0] == "gh api --method PUT"
         assert verbs(plan)[1] == "gh secret set AZURE_CLIENT_ID"
-        assert verbs(plan)[-3:-1] == ["az identity federated-credential create"] * 2
-        assert [s.argv[s.argv.index("--identity-name") + 1] for s in plan.steps[-3:-1]] == [
+        assert verbs(plan)[-4:-1] == ["az identity federated-credential create"] * 3
+        assert [s.argv[s.argv.index("--identity-name") + 1] for s in plan.steps[-4:-1]] == [
             TARGET.identity_name,
+            TARGET.member_identity_name,
             TARGET.no_access_identity_name,
         ]
         assert (
@@ -135,6 +137,7 @@ class TestPlanning:
             PROTECTED,
             correct_values(),
             no_access_roster=(cred("partition", REPO),),
+            member_roster=(cred("partition", REPO),),
         )
 
         plan = make_plan(state)
@@ -147,7 +150,14 @@ class TestPlanning:
         values = correct_values() | {"SPI_STACK_CLUSTER": "old-cluster"}
         roster = (cred("partition", REPO),)
         plan = make_plan(
-            State(roster, {"partition": REPO}, PROTECTED, values, no_access_roster=roster)
+            State(
+                roster,
+                {"partition": REPO},
+                PROTECTED,
+                values,
+                no_access_roster=roster,
+                member_roster=roster,
+            )
         )
 
         assert verbs(plan) == ["gh secret set AZURE_CLIENT_ID", "gh variable set SPI_STACK_CLUSTER"]
@@ -193,6 +203,7 @@ class TestPlanning:
         assert states(plan) == {
             "spi-stack environment on Acme/osdu-spi-partition": "missing",
             "fork-partition on spi-stack-dev1-deployer": "missing",
+            "fork-partition on spi-stack-dev1-member": "missing",
             "fork-partition on spi-stack-dev1-noaccess": "missing",
             f"{TRUSTED_REPOS_ANNOTATION} on osdu-image-lock": "missing",
         }
@@ -200,31 +211,47 @@ class TestPlanning:
     def test_skip_repo_with_rules_in_place_plans_only_trust_and_projection(self):
         plan = make_plan(State((), {}, PROTECTED), skip_repo=True)
 
-        assert [s.phase for s in plan.steps] == ["azure", "azure", "cluster"]
+        assert [s.phase for s in plan.steps] == ["azure", "azure", "azure", "cluster"]
         assert not any("AZURE_CLIENT_ID" in row.item for row in plan.rows)
 
-    def test_the_no_access_identity_is_trusted_alongside_the_deployer(self):
-        """One identity trusted and the other not is the drift a partial write
-        leaves behind; the plan repairs only the missing half."""
-        plan = make_plan(
-            State((cred("partition", REPO),), {"partition": REPO}, PROTECTED), skip_repo=True
+    @pytest.mark.parametrize(
+        "member_trusted, mirror_identity",
+        [
+            (True, TARGET.no_access_identity_name),
+            (False, TARGET.member_identity_name),
+        ],
+    )
+    def test_a_mirror_identity_is_trusted_alongside_the_deployer(
+        self, member_trusted, mirror_identity
+    ):
+        """One identity trusted and another not is the drift a partial write
+        leaves behind; the plan repairs only the missing piece."""
+        trusted_roster = (cred("partition", REPO),)
+        state = State(
+            (cred("partition", REPO),),
+            {"partition": REPO},
+            PROTECTED,
+            member_roster=trusted_roster if member_trusted else (),
+            no_access_roster=() if member_trusted else trusted_roster,
         )
+        plan = make_plan(state, skip_repo=True)
 
         assert verbs(plan) == ["az identity federated-credential create"]
         step = plan.steps[0]
-        assert step.argv[step.argv.index("--identity-name") + 1] == TARGET.no_access_identity_name
+        assert step.argv[step.argv.index("--identity-name") + 1] == mirror_identity
         assert step.argv[step.argv.index("--subject") + 1] == credential_subject(REPO)
         assert states(plan)["fork-partition on spi-stack-dev1-deployer"] == "correct"
-        assert states(plan)["fork-partition on spi-stack-dev1-noaccess"] == "missing"
+        assert states(plan)[f"fork-partition on {mirror_identity}"] == "missing"
 
-    def test_a_target_without_a_no_access_identity_plans_the_deployer_alone(self):
-        target = replace(TARGET, no_access_identity_name="")
+    def test_a_target_without_mirror_identities_plans_the_deployer_alone(self):
+        target = replace(TARGET, no_access_identity_name="", member_identity_name="")
         plan = Plan(target, "partition", REPO, skip_repo=True, state=State((), {}, PROTECTED))
         plan.steps = plan_steps(plan)
         plan.rows = plan_rows(plan)
 
         assert [s.phase for s in plan.steps] == ["azure", "cluster"]
         assert "fork-partition on spi-stack-dev1-noaccess" not in states(plan)
+        assert "fork-partition on spi-stack-dev1-member" not in states(plan)
 
     def test_the_subscription_is_pinned_on_the_az_command(self):
         plan = make_plan(State((), {}, PROTECTED), skip_repo=True)
@@ -254,6 +281,7 @@ class TestPlanning:
                 roster,
                 {"partition": REPO, "schema": "Acme/osdu-spi-schema"},
                 no_access_roster=roster,
+                member_roster=roster,
             ),
             repo="",
             remove=True,
@@ -262,13 +290,15 @@ class TestPlanning:
         assert verbs(plan) == [
             "az identity federated-credential delete",
             "az identity federated-credential delete",
+            "az identity federated-credential delete",
             "kubectl annotate configmap osdu-image-lock",
         ]
-        assert [s.argv[s.argv.index("--identity-name") + 1] for s in plan.steps[:2]] == [
+        assert [s.argv[s.argv.index("--identity-name") + 1] for s in plan.steps[:3]] == [
             TARGET.identity_name,
+            TARGET.member_identity_name,
             TARGET.no_access_identity_name,
         ]
-        assert json.loads(plan.steps[2].argv[-1].split("=", 1)[1]) == {
+        assert json.loads(plan.steps[3].argv[-1].split("=", 1)[1]) == {
             "schema": "Acme/osdu-spi-schema"
         }
         assert plan.rows[0].detail == f"trusts {REPO}"
@@ -303,11 +333,26 @@ class TestRefusals:
 
         refuse(make_plan(State(roster, {}, PROTECTED, correct_values())))
 
-    def test_the_cap_applies_to_the_no_access_identity_too(self):
+    @pytest.mark.parametrize(
+        "full_member, mirror_identity",
+        [
+            (True, TARGET.member_identity_name),
+            (False, TARGET.no_access_identity_name),
+        ],
+    )
+    def test_the_cap_applies_to_each_mirror_identity_too(self, full_member, mirror_identity):
         full = tuple(cred(f"svc{i}", f"Acme/fork{i}") for i in range(MAX_CREDENTIALS))
+        state = State(
+            (),
+            {},
+            PROTECTED,
+            correct_values(),
+            member_roster=full if full_member else (),
+            no_access_roster=() if full_member else full,
+        )
 
-        with pytest.raises(OnboardError, match="spi-stack-dev1-noaccess already holds"):
-            refuse(make_plan(State((), {}, PROTECTED, correct_values(), no_access_roster=full)))
+        with pytest.raises(OnboardError, match=f"{mirror_identity} already holds"):
+            refuse(make_plan(state))
 
     def test_the_target_must_be_a_core_environment_publishing_the_identity(self):
         with pytest.raises(OnboardError, match="needs a core environment"):
@@ -441,32 +486,43 @@ class TestReads:
         assert roster == (cred("partition", REPO),)
         assert shell.calls[0][shell.calls[0].index("--subscription") + 1] == "sub-id"
 
-    def test_a_missing_no_access_identity_names_the_fix(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "label, identity_field, read_mirror_roster",
+        [
+            ("No-access", "no_access_identity_name", "read_no_access_roster"),
+            ("Member", "member_identity_name", "read_member_roster"),
+        ],
+    )
+    def test_a_missing_mirror_identity_names_the_fix(
+        self, monkeypatch, label, identity_field, read_mirror_roster
+    ):
         """An environment provisioned before the identity existed must say
         which command creates it rather than echoing the ARM error."""
+        mirror_identity = getattr(TARGET, identity_field)
         monkeypatch.setattr(
             onboard,
             "run_command",
             Shell(
                 az=failed(
                     "(ResourceNotFound) The Resource 'Microsoft.ManagedIdentity/"
-                    "userAssignedIdentities/spi-stack-dev1-noaccess' was not found."
+                    f"userAssignedIdentities/{mirror_identity}' was not found."
                 )
             ),
         )
 
-        with pytest.raises(OnboardError, match="spi-stack-dev1-noaccess not found; run 'spi up'"):
-            onboard.read_no_access_roster(TARGET)
+        with pytest.raises(OnboardError, match=f"{label} identity {mirror_identity} not found"):
+            getattr(onboard, read_mirror_roster)(TARGET)
 
-        assert onboard.read_no_access_roster(replace(TARGET, no_access_identity_name="")) == ()
+        assert getattr(onboard, read_mirror_roster)(replace(TARGET, **{identity_field: ""})) == ()
 
-    def test_other_no_access_read_failures_pass_through(self, monkeypatch):
+    @pytest.mark.parametrize("read_mirror_roster", ["read_no_access_roster", "read_member_roster"])
+    def test_other_mirror_read_failures_pass_through(self, monkeypatch, read_mirror_roster):
         monkeypatch.setattr(onboard, "run_command", Shell(az=failed("AuthorizationFailed")))
 
         with pytest.raises(OnboardError, match="AuthorizationFailed"):
-            onboard.read_no_access_roster(TARGET)
+            getattr(onboard, read_mirror_roster)(TARGET)
 
-    def test_load_target_derives_both_identity_names_from_the_cluster(self, monkeypatch):
+    def test_load_target_derives_all_identity_names_from_the_cluster(self, monkeypatch):
         monkeypatch.setattr(
             "spi.info.collect_info",
             lambda: {
@@ -486,7 +542,9 @@ class TestReads:
 
         assert target.identity_name == "spi-stack-dev1-deployer"
         assert target.no_access_identity_name == "spi-stack-dev1-noaccess"
+        assert target.member_identity_name == "spi-stack-dev1-member"
         assert target.no_access().az_scope()[:2] == ["--identity-name", "spi-stack-dev1-noaccess"]
+        assert target.member().az_scope()[:2] == ["--identity-name", "spi-stack-dev1-member"]
         assert "noaccess-id" not in target.values.values()
 
     def test_malformed_subjects_never_read_as_a_repository(self):
@@ -540,6 +598,7 @@ class Live:
     """Observed state that recorded writes mutate, without a gh/az simulator."""
 
     roster: tuple[Credential, ...] = ()
+    member_roster: tuple[Credential, ...] = ()
     no_access_roster: tuple[Credential, ...] = ()
     protection: Protection = ABSENT
     values: dict = field(default_factory=lambda: dict.fromkeys(TARGET.values))
@@ -557,13 +616,19 @@ class Live:
             self.protection,
             dict(self.values) if values else {},
             no_access_roster=self.no_access_roster,
+            member_roster=self.member_roster,
         )
 
+    def _attr(self, identity_name: str) -> str:
+        if identity_name == TARGET.member_identity_name:
+            return "member_roster"
+        if identity_name == TARGET.no_access_identity_name:
+            return "no_access_roster"
+        assert identity_name == TARGET.identity_name
+        return "roster"
+
     def roster_of(self, target) -> tuple[Credential, ...]:
-        if target.identity_name == TARGET.no_access_identity_name:
-            return self.no_access_roster
-        assert target.identity_name == TARGET.identity_name
-        return self.roster
+        return getattr(self, self._attr(target.identity_name))
 
     def run(self, argv, **_):
         self.calls.append(list(argv))
@@ -579,16 +644,13 @@ class Live:
         if argv[:3] == ["az", "identity", "federated-credential"]:
             service = argv[5].removeprefix("fork-")
             identity = argv[argv.index("--identity-name") + 1]
-            no_access = identity == TARGET.no_access_identity_name
-            current = self.no_access_roster if no_access else self.roster
+            attr = self._attr(identity)
+            current = getattr(self, attr)
             others = tuple(c for c in current if c.service != service)
             if argv[3] != "delete":
                 repo = argv[argv.index("--subject") + 1].split(":")[1]
                 others += (cred(service, repo),)
-            if no_access:
-                self.no_access_roster = others
-            else:
-                self.roster = others
+            setattr(self, attr, others)
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     def project(self, target, description=""):
@@ -617,8 +679,10 @@ class TestApply:
         rows = apply_plan(plan)
 
         tools = [call[0] for call in live.calls]
-        assert tools == ["gh"] * 6 + ["az"] * 2
-        assert live.no_access_roster == live.roster == (cred("partition", REPO),)
+        assert tools == ["gh"] * 6 + ["az"] * 3
+        assert (
+            live.member_roster == live.no_access_roster == live.roster == (cred("partition", REPO),)
+        )
         assert live.projected == 1
         assert {row.state for row in rows} == {"correct"}
         assert next(r.detail for r in rows if r.item.startswith("AZURE_CLIENT_ID")) == "stamped"
@@ -655,8 +719,10 @@ class TestApply:
 
         rows = apply_plan(make_plan(live.observed(values=False), skip_repo=True))
 
-        assert [c[3] for c in live.calls if c[0] == "az"] == ["create", "create", "create"]
-        assert live.roster == live.no_access_roster == (cred("partition", REPO),)
+        assert [c[3] for c in live.calls if c[0] == "az"] == ["create"] * 4
+        assert (
+            live.roster == live.member_roster == live.no_access_roster == (cred("partition", REPO),)
+        )
         assert {row.state for row in rows} == {"correct"}
 
     def test_a_non_conflict_credential_failure_stops_after_one_attempt(self, live):
@@ -671,18 +737,20 @@ class TestApply:
 
     def test_remove_revokes_then_reprojects(self, live):
         live.roster = (cred("partition", REPO), cred("schema", "Acme/osdu-spi-schema"))
-        live.no_access_roster = live.roster
+        live.member_roster = live.no_access_roster = live.roster
         live.projection = onboard.roster_repos(live.roster)
 
         rows = apply_plan(make_plan(live.observed(), repo="", remove=True))
 
-        assert [c[3] for c in live.calls] == ["delete", "delete"]
+        assert [c[3] for c in live.calls] == ["delete"] * 3
         assert live.projection == {"schema": "Acme/osdu-spi-schema"}
-        assert live.no_access_roster == (cred("schema", "Acme/osdu-spi-schema"),)
-        assert [(r.state, r.detail) for r in rows[:2]] == [("correct", "absent")] * 2
+        assert (
+            live.member_roster == live.no_access_roster == (cred("schema", "Acme/osdu-spi-schema"),)
+        )
+        assert [(r.state, r.detail) for r in rows[:3]] == [("correct", "absent")] * 3
 
     def test_nothing_to_change_touches_nothing(self, live):
-        live.roster = live.no_access_roster = (cred("partition", REPO),)
+        live.roster = live.member_roster = live.no_access_roster = (cred("partition", REPO),)
         live.projection = {"partition": REPO}
         live.protection = PROTECTED
 
@@ -754,42 +822,55 @@ class TestProjection:
             "cluster issuer; system:serviceaccount:spi-test:spi-deployer",
         )
         assert rows["fork-partition on spi-stack-dev1-noaccess"] == ("correct", REPO)
+        assert rows["fork-partition on spi-stack-dev1-member"] == ("correct", REPO)
 
-    def test_list_still_answers_when_the_no_access_identity_is_missing(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "mirror_identity, read_mirror_roster",
+        [
+            (TARGET.no_access_identity_name, "read_no_access_roster"),
+            (TARGET.member_identity_name, "read_member_roster"),
+        ],
+    )
+    def test_list_still_answers_when_a_mirror_identity_is_missing(
+        self, monkeypatch, mirror_identity, read_mirror_roster
+    ):
         """An environment provisioned before the identity existed keeps its
         deployer listing and gets one row naming the fix."""
         monkeypatch.setattr(onboard, "read_roster", lambda target: (cred("partition", REPO),))
         monkeypatch.setattr(onboard, "read_projection", lambda: {"partition": REPO})
         monkeypatch.setattr(
             onboard,
-            "read_no_access_roster",
-            lambda target: (_ for _ in ()).throw(OnboardError("spi-stack-dev1-noaccess not found")),
+            read_mirror_roster,
+            lambda target: (_ for _ in ()).throw(OnboardError(f"{mirror_identity} not found")),
         )
 
         rows = {row.item: (row.state, row.detail) for row in onboard.list_trust(TARGET)}
 
         assert rows["partition"] == ("correct", REPO)
-        assert rows["spi-stack-dev1-noaccess"][0] == "missing"
-        assert "not found" in rows["spi-stack-dev1-noaccess"][1]
+        assert rows[mirror_identity][0] == "missing"
+        assert "not found" in rows[mirror_identity][1]
 
-    def test_list_reports_the_no_access_identity_lagging_or_leading(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "mirror_identity", [TARGET.no_access_identity_name, TARGET.member_identity_name]
+    )
+    def test_list_reports_a_mirror_identity_lagging_or_leading(self, monkeypatch, mirror_identity):
         deployer = (cred("partition", REPO), cred("schema", "Acme/osdu-spi-schema"))
-        no_access = (cred("schema", "Acme/other-schema"), cred("legal", "Acme/legal"))
+        lagging = (cred("schema", "Acme/other-schema"), cred("legal", "Acme/legal"))
         monkeypatch.setattr(
             onboard,
             "read_roster",
-            lambda target: no_access if "noaccess" in target.identity_name else deployer,
+            lambda target: lagging if target.identity_name == mirror_identity else deployer,
         )
         monkeypatch.setattr(onboard, "read_projection", lambda: onboard.roster_repos(deployer))
 
         rows = {row.item: (row.state, row.detail) for row in onboard.list_trust(TARGET)}
 
-        assert rows["fork-partition on spi-stack-dev1-noaccess"][0] == "missing"
-        assert rows["fork-schema on spi-stack-dev1-noaccess"] == (
+        assert rows[f"fork-partition on {mirror_identity}"][0] == "missing"
+        assert rows[f"fork-schema on {mirror_identity}"] == (
             "drifted",
             "trusts Acme/other-schema, not Acme/osdu-spi-schema",
         )
-        assert rows["fork-legal on spi-stack-dev1-noaccess"][0] == "drifted"
+        assert rows[f"fork-legal on {mirror_identity}"][0] == "drifted"
 
 
 # ---------------------------------------------------------------------------
