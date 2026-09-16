@@ -1330,9 +1330,28 @@ class TestPinServiceImage:
         assert pin.repository == "ghcr.io/acme/storage"
         assert calls["patch"] is not None
 
+    def test_ephemeral_pin_accepts_the_repository_package(self, monkeypatch):
+        """A prefixed repository publishes under its own name, not the service's."""
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        image = f"ghcr.io/azure/osdu-spi-storage@{_GHCR_DIGEST}"
+        pin = pin_service_image(
+            "storage",
+            image,
+            ephemeral=True,
+            run_id="1",
+            source_repo="Azure/osdu-spi-storage",
+            source_sha="b" * 40,
+        )
+        assert pin.repository == "ghcr.io/azure/osdu-spi-storage"
+        assert calls["manifest_checks"] == [("ghcr.io/azure/osdu-spi-storage", _GHCR_DIGEST)]
+        assert calls["patch"] is not None
+
     def test_ephemeral_pin_must_use_the_forks_package(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
-        with pytest.raises(PinError, match="must use the fork's package ghcr.io/azure/storage"):
+        with pytest.raises(
+            PinError,
+            match="must use the fork's package ghcr.io/azure/osdu-spi-storage or ghcr.io/azure/storage",
+        ):
             pin_service_image(
                 "storage",
                 f"ghcr.io/evil/storage@{_GHCR_DIGEST}",

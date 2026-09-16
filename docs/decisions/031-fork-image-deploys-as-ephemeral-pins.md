@@ -23,9 +23,11 @@ annotation schema live in `docs/design/fork-deployment.md`.
   from a GHCR digest reference and records provenance in the pin annotation:
   source repository, commit, owning workflow run, and the `ephemeral` marker.
   An ephemeral pin requires `source_repo` to match the projected trust roster
-  and the image path to match `ghcr.io/<lowercase-owner>/<service>`, derived
-  from that repository and the target service (ADR-033). The manifest digest
-  must resolve from the public package. GHCR host and path validation remain,
+  and the image path to match a package that repository publishes:
+  `ghcr.io/<lowercase-owner>/<lowercase-repository>`, or
+  `ghcr.io/<lowercase-owner>/<service>` when the fork's `SERVICE_NAME`
+  variable names the service (ADR-033). The manifest digest must resolve
+  from the public package. GHCR host and path validation remain,
   but there is no fleet-wide Azure-owner restriction. These are provenance
   consistency checks, not authentication of a repository against a writable
   lock (ADR-032). Operator pins without the ephemeral marker can still name

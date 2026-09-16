@@ -480,11 +480,16 @@ def require_ghcr_repository(repository: str) -> None:
         )
 
 
-def fork_package_repository(source_repo: str, service: str) -> str:
-    """The GHCR package a fork of ``source_repo`` publishes for ``service``."""
+def fork_package_repositories(source_repo: str, service: str) -> tuple[str, ...]:
+    """The GHCR packages a fork at ``source_repo`` may publish for ``service``.
 
-    owner = source_repo.split("/", 1)[0].lower()
-    return f"{GHCR_HOST}/{owner}/{service}"
+    The template names the image after the repository, so ``Azure/osdu-spi-partition``
+    publishes ``ghcr.io/azure/osdu-spi-partition``. A fork whose ``SERVICE_NAME``
+    variable names the service publishes ``ghcr.io/<owner>/<service>`` instead.
+    """
+
+    owner, _, name = source_repo.lower().partition("/")
+    return tuple(dict.fromkeys((f"{GHCR_HOST}/{owner}/{name}", f"{GHCR_HOST}/{owner}/{service}")))
 
 
 def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> None:
