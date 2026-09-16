@@ -140,9 +140,9 @@ Suite configuration lives in the descriptor. The current lane does not consume
 lane does not export those repository variables.
 
 The repository-to-package mapping is deterministic: onboarding `partition`
-from `<owner>/<fork>` selects `ghcr.io/<lowercase-owner>/<fork>`, the
-package the template publishes when the `SERVICE_NAME` repository variable
-is unset, so `Azure/osdu-spi-partition` publishes
+from `<owner>/<fork>` selects `ghcr.io/<lowercase-owner>/<lowercase-fork>`,
+the package the template publishes when the `SERVICE_NAME` repository
+variable is unset, so `Azure/osdu-spi-partition` publishes
 `ghcr.io/azure/osdu-spi-partition`. A fork that sets `SERVICE_NAME` to the
 service name publishes `ghcr.io/<lowercase-owner>/partition`, which the
 ephemeral pin check also accepts. The descriptor's `service.name` is the

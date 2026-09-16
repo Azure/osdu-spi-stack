@@ -26,11 +26,12 @@ selects the fork's GHCR `main` image, one service at a time.
   survive `spi down` (ADR-034). A fork source must match the trusted
   repository for that service.
 - A source repository `<owner>/<fork>` maps to the public GHCR package
-  `ghcr.io/<lowercase-owner>/<fork>`, the name GHCR gives an image built
-  from that repository and one that cannot collide with another repository's
-  package in the same organization. A fork whose `SERVICE_NAME` repository
-  variable names the service publishes `ghcr.io/<lowercase-owner>/<service>`
-  instead, and the ephemeral pin check accepts either. The canonical resolver
+  `ghcr.io/<lowercase-owner>/<lowercase-fork>`: the template names the image
+  after the repository when the `SERVICE_NAME` variable is unset, and a
+  repository name cannot collide with another repository's package in the
+  same organization. A fork whose `SERVICE_NAME` variable names the service
+  publishes `ghcr.io/<lowercase-owner>/<service>` instead, and the ephemeral
+  pin check accepts either. The canonical resolver
   uses the same mapping, including non-Azure owners. Schema's paired loader is
   `ghcr.io/<lowercase-owner>/schema-load` at the selected schema commit.
   An onboarded fork must publish under this convention; a missing or private

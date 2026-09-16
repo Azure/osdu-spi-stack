@@ -2,9 +2,11 @@
 
 ## Context
 
-The `Azure/osdu-spi` engineering system builds service images to GHCR
-(`ghcr.io/azure/<service>`, public packages) and mandates the manifest digest,
-not a tag, as the deploy identity; its `sha-*` tags are pruned after 30 days.
+The `Azure/osdu-spi` engineering system builds service images to public GHCR
+packages named after the repository, `ghcr.io/<lowercase-owner>/<lowercase-repository>`,
+or after the service when the fork's `SERVICE_NAME` variable names it, and
+mandates the manifest digest, not a tag, as the deploy identity; its `sha-*`
+tags are pruned after 30 days.
 A fork's PR pipeline must deploy that digest into the shared environment
 (ADR-028), test against it, and restore, without breaking sibling services.
 Under ADR-014 the Kustomizations keep reconciling from the cached source
