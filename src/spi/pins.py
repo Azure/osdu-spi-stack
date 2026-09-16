@@ -51,7 +51,7 @@ from .images import (
     ResolvedImage,
     build_lock_annotations,
     build_lock_data,
-    fork_package_repository,
+    fork_package_repositories,
     ghcr_index_child_digests,
     gitlab_get,
     image_lock_key,
@@ -944,11 +944,11 @@ def pin_service_image(
     if source_repo and not _REPO_PATH_RE.match(source_repo):
         raise PinError(f"--source-repo must be <owner>/<repo>, got {source_repo!r}.")
     if ephemeral:
-        expected = fork_package_repository(source_repo, service)
-        if repository.lower() != expected:
+        expected = fork_package_repositories(source_repo, service)
+        if repository.lower() not in expected:
             raise PinError(
                 f"An ephemeral {service} pin from {source_repo} must use the fork's package "
-                f"{expected}, got {repository!r}."
+                f"{' or '.join(expected)}, got {repository!r}."
             )
 
     _refuse_unless_deployable()

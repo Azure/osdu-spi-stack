@@ -2,9 +2,11 @@
 
 ## Context
 
-The `Azure/osdu-spi` engineering system builds service images to GHCR
-(`ghcr.io/azure/<service>`, public packages) and mandates the manifest digest,
-not a tag, as the deploy identity; its `sha-*` tags are pruned after 30 days.
+The `Azure/osdu-spi` engineering system builds service images to public GHCR
+packages named after the repository, `ghcr.io/<lowercase-owner>/<lowercase-repository>`,
+or after the service when the fork's `SERVICE_NAME` variable names it, and
+mandates the manifest digest, not a tag, as the deploy identity; its `sha-*`
+tags are pruned after 30 days.
 A fork's PR pipeline must deploy that digest into the shared environment
 (ADR-028), test against it, and restore, without breaking sibling services.
 Under ADR-014 the Kustomizations keep reconciling from the cached source
@@ -23,9 +25,11 @@ annotation schema live in `docs/design/fork-deployment.md`.
   from a GHCR digest reference and records provenance in the pin annotation:
   source repository, commit, owning workflow run, and the `ephemeral` marker.
   An ephemeral pin requires `source_repo` to match the projected trust roster
-  and the image path to match `ghcr.io/<lowercase-owner>/<service>`, derived
-  from that repository and the target service (ADR-033). The manifest digest
-  must resolve from the public package. GHCR host and path validation remain,
+  and the image path to match a package that repository publishes:
+  `ghcr.io/<lowercase-owner>/<lowercase-repository>`, or
+  `ghcr.io/<lowercase-owner>/<service>` when the fork's `SERVICE_NAME`
+  variable names the service (ADR-033). The manifest digest must resolve
+  from the public package. GHCR host and path validation remain,
   but there is no fleet-wide Azure-owner restriction. These are provenance
   consistency checks, not authentication of a repository against a writable
   lock (ADR-032). Operator pins without the ephemeral marker can still name

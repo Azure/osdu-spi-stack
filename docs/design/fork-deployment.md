@@ -140,13 +140,13 @@ Suite configuration lives in the descriptor. The current lane does not consume
 lane does not export those repository variables.
 
 The repository-to-package mapping is deterministic: onboarding `partition`
-from `<owner>/<fork>` selects `ghcr.io/<lowercase-owner>/partition`, even
-when the repository basename is not `partition`. The descriptor's
-`service.name` must match the workflow's effective service identifier:
-`SERVICE_NAME` when set, otherwise the repository name. A repository named
-`osdu-spi-partition` therefore needs `SERVICE_NAME=partition` to target the
-`partition` service and package; the workflow does not read the descriptor
-to choose this fallback. The build publishes
+from `<owner>/<fork>` selects `ghcr.io/<lowercase-owner>/<lowercase-fork>`,
+the package the template publishes when the `SERVICE_NAME` repository
+variable is unset, so `Azure/osdu-spi-partition` publishes
+`ghcr.io/azure/osdu-spi-partition`. A fork that sets `SERVICE_NAME` to the
+service name publishes `ghcr.io/<lowercase-owner>/partition`, which the
+ephemeral pin check also accepts. The descriptor's `service.name` is the
+stack's service name, `partition`, whatever the package is called. The build publishes
 that public package, the deploy job pins it by digest, and canonical refresh
 resolves its `main` line after promotion. No separate package-path state or
 Azure namespace fallback is involved.

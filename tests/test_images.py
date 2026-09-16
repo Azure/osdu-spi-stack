@@ -716,3 +716,16 @@ class TestResolveGhcrManifest:
         )
 
         assert images._ghcr_pull_token("azure/storage") == ""
+
+
+class TestForkPackageRepositories:
+    def test_prefixed_repository_publishes_under_its_own_name_or_the_service(self):
+        assert images.fork_package_repositories("Azure/osdu-spi-partition", "partition") == (
+            "ghcr.io/azure/osdu-spi-partition",
+            "ghcr.io/azure/partition",
+        )
+
+    def test_repository_named_after_the_service_yields_one_package(self):
+        assert images.fork_package_repositories("danielscholl-osdu/partition", "partition") == (
+            "ghcr.io/danielscholl-osdu/partition",
+        )
