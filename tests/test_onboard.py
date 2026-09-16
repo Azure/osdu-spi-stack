@@ -606,6 +606,8 @@ class Live:
     calls: list[list[str]] = field(default_factory=list)
     fail: dict[str, list[str]] = field(default_factory=dict)
     projected: int = 0
+    # What gh api repositories/<id> answers; empty means GitHub is unreadable.
+    github: dict = field(default_factory=dict)
 
     def observed(self, *, values: bool = True) -> State:
         """What observe() would return; --skip-repo never reads the values."""
@@ -648,14 +650,16 @@ class Live:
             current = getattr(self, attr)
             others = tuple(c for c in current if c.service != service)
             if argv[3] != "delete":
-                repo = argv[argv.index("--subject") + 1].split(":")[1]
-                others += (cred(service, repo),)
+                subject = argv[argv.index("--subject") + 1]
+                others += (cred(service, "", subject=subject),)
             setattr(self, attr, others)
+        if argv[:2] == ["gh", "api"] and argv[2].startswith("repositories/"):
+            return subprocess.CompletedProcess(argv, 0, json.dumps(self.github), "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     def project(self, target, description=""):
         self.projected += 1
-        self.projection = onboard.roster_repos(self.roster)
+        self.projection = onboard.roster_repos(self.roster, self.projection)
         return self.projection
 
 
@@ -1004,3 +1008,273 @@ class TestSubjectForms:
 
         with pytest.raises(OnboardError, match="customizes its OIDC subject"):
             onboard.read_subject(REPO)
+
+
+# ---------------------------------------------------------------------------
+# Custom templates: an organization can sign repository ids instead of the name
+# ---------------------------------------------------------------------------
+
+OWNER_ID, REPO_ID = "6844498", "1167996450"
+ID_KEYS = ["repository_owner_id", "repository_id", "context"]
+CLAIM_SUBJECT = f"repository_owner_id:{OWNER_ID}:repository_id:{REPO_ID}:environment:spi-stack"
+
+
+@pytest.fixture(autouse=True)
+def _forget_github_repositories():
+    onboard.github_repository.cache_clear()
+    yield
+    onboard.github_repository.cache_clear()
+
+
+def github(keys=ID_KEYS, owner_id: str = OWNER_ID) -> Shell:
+    shell = Shell()
+    shell.add(
+        f"gh__api__repos/{REPO}/actions/oidc/customization/sub",
+        {"use_default": False, "include_claim_keys": keys, "sub_claim_prefix": f"repo:{REPO}"},
+    )
+    repository = {"id": int(REPO_ID), "full_name": REPO, "owner": {"id": int(owner_id)}}
+    shell.add(f"gh__api__repos/{REPO}", repository)
+    shell.add(f"gh__api__repositories/{REPO_ID}", repository)
+    return shell
+
+
+def no_gh(argv, **_):
+    raise FileNotFoundError(argv[0])
+
+
+def claim_plan(state: State, service: str = "partition") -> Plan:
+    plan = Plan(TARGET, service, REPO, subject=CLAIM_SUBJECT, skip_repo=True, state=state)
+    plan.steps = plan_steps(plan)
+    plan.rows = plan_rows(plan)
+    return plan
+
+
+class TestClaimKeyTemplate:
+    def test_the_subject_follows_the_template_not_the_reported_prefix(self, monkeypatch):
+        """The Azure organization's template; GitHub still reports repo:<owner>/<name>."""
+        monkeypatch.setattr(onboard, "run_command", github())
+
+        assert onboard.read_subject(REPO) == CLAIM_SUBJECT
+
+    def test_the_subject_keeps_the_template_key_order(self, monkeypatch):
+        monkeypatch.setattr(onboard, "run_command", github(keys=["context", "repository_id"]))
+
+        subject = onboard.read_subject(REPO)
+
+        assert subject == f"environment:spi-stack:repository_id:{REPO_ID}"
+        assert cred("partition", REPO, subject=subject).ids == {"repository_id": REPO_ID}
+
+    @pytest.mark.parametrize(
+        "keys",
+        [
+            [],
+            ["repository_id"],
+            ["repository_owner_id", "context"],
+            ["repository_id", "context", "job_workflow_ref"],
+            ["repository_id", "repository_id", "context"],
+        ],
+    )
+    def test_a_template_without_both_anchors_or_with_other_claims_is_refused(
+        self, monkeypatch, keys
+    ):
+        """Without context any workflow in the repository could mint the identity."""
+        monkeypatch.setattr(onboard, "run_command", github(keys=keys))
+
+        with pytest.raises(OnboardError, match="customizes its OIDC subject"):
+            onboard.read_subject(REPO)
+
+    @pytest.mark.parametrize(
+        "subject",
+        [
+            f"repository_id:{REPO_ID}:environment:other",
+            f"repository_owner_id:{OWNER_ID}:environment:spi-stack",
+            f"repository_id:{REPO_ID}:ref:refs/heads/main",
+            "repository_id:abc:environment:spi-stack",
+            f"repository_id:{REPO_ID}:repository_id:1:environment:spi-stack",
+        ],
+    )
+    def test_other_claim_subjects_are_not_this_clis(self, subject):
+        credential = cred("partition", REPO, subject=subject)
+
+        assert credential.ids == {}
+        assert not credential.well_formed
+
+    def test_an_id_credential_resolves_its_name_through_github(self, monkeypatch):
+        credential = cred("partition", REPO, subject=CLAIM_SUBJECT)
+        monkeypatch.setattr(onboard, "run_command", github())
+
+        assert credential.repo == ""
+        assert credential.well_formed
+        assert onboard.roster_repos((credential,)) == {"partition": REPO}
+
+    @pytest.mark.parametrize("runner", [Shell(), no_gh], ids=["unreadable", "no-gh"])
+    def test_without_github_the_last_projected_name_is_kept(self, monkeypatch, runner):
+        """spi up in CI or on a laptop without gh must not drop a trusted fork."""
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "run_command", runner)
+
+        assert onboard.roster_repos(roster, {"partition": REPO}) == {"partition": REPO}
+        assert onboard.roster_repos(roster) == {}
+
+    def test_a_repository_under_another_owner_is_not_trusted(self, monkeypatch):
+        """A transferred repository keeps its id, but GitHub signs the new owner's id."""
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "run_command", github(owner_id="1"))
+
+        assert onboard.roster_repos(roster, {"partition": REPO}) == {}
+
+    def test_a_fresh_repository_is_trusted_under_the_rendered_subject(self):
+        plan = claim_plan(State((), {}, PROTECTED))
+
+        creates = [s for s in plan.steps if s.phase == "azure"]
+        assert [s.argv[s.argv.index("--subject") + 1] for s in creates] == [CLAIM_SUBJECT] * 3
+        assert plan.steps[-1].argv[-1] == (
+            f"{TRUSTED_REPOS_ANNOTATION}={json.dumps({'partition': REPO})}"
+        )
+
+    def test_a_matching_id_credential_needs_no_change(self, monkeypatch):
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "run_command", github())
+
+        plan = claim_plan(
+            State(
+                roster,
+                {"partition": REPO},
+                PROTECTED,
+                no_access_roster=roster,
+                member_roster=roster,
+            )
+        )
+
+        assert plan.steps == []
+        assert {row.state for row in plan.rows} == {"correct"}
+
+    def test_a_repository_already_backing_a_service_is_refused_by_its_subject(self, monkeypatch):
+        monkeypatch.setattr(onboard, "run_command", Shell())
+        plan = claim_plan(State((cred("schema", REPO, subject=CLAIM_SUBJECT),), {}, PROTECTED))
+
+        with pytest.raises(OnboardError, match="already backs schema"):
+            refuse(plan)
+
+    def test_bootstrap_without_gh_leaves_the_projection_alone(self, monkeypatch):
+        calls = []
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(onboard, "read_projection", lambda: {"partition": REPO})
+        monkeypatch.setattr(onboard, "project_roster", lambda *a: calls.append(a))
+
+        assert onboard.sync_projection_from_identity("id", "rg") == {"partition": REPO}
+        assert calls == []
+
+    def test_project_roster_names_an_id_credential_from_github(self, monkeypatch):
+        lock = {"data": {}, "metadata": {"annotations": {}}}
+        written = {}
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "run_command", github())
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(
+            onboard, "mutate_lock", lambda compute, description: written.update(compute(lock))
+        )
+
+        assert onboard.project_roster(TARGET) == {"partition": REPO}
+        assert written["metadata"]["annotations"] == {
+            TRUSTED_REPOS_ANNOTATION: json.dumps({"partition": REPO})
+        }
+
+    def test_list_names_an_id_credential(self, monkeypatch):
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "run_command", github())
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(onboard, "read_projection", lambda: {"partition": REPO})
+
+        rows = {row.item: (row.state, row.detail) for row in onboard.list_trust(TARGET)}
+
+        assert rows["partition"] == ("correct", REPO)
+        assert rows["fork-partition on spi-stack-dev1-member"] == ("correct", REPO)
+
+    def test_the_apply_path_writes_and_reobserves_the_rendered_subject(self, live):
+        live.protection = PROTECTED
+        live.github = {"id": int(REPO_ID), "full_name": REPO, "owner": {"id": int(OWNER_ID)}}
+        plan = Plan(TARGET, "partition", REPO, subject=CLAIM_SUBJECT, skip_repo=True)
+        plan.state = live.observed(values=False)
+        plan.steps = plan_steps(plan)
+        plan.rows = plan_rows(plan)
+
+        rows = apply_plan(plan)
+
+        written = {c.subject for c in live.roster + live.member_roster + live.no_access_roster}
+        assert written == {CLAIM_SUBJECT}
+        assert live.projection == {"partition": REPO}
+        assert {row.state for row in rows} == {"correct"}
+
+    def test_refuse_resolves_an_id_credential_in_another_key_order(self, monkeypatch):
+        monkeypatch.setattr(onboard, "run_command", github())
+        other_order = (
+            f"repository_id:{REPO_ID}:repository_owner_id:{OWNER_ID}:environment:spi-stack"
+        )
+        plan = claim_plan(State((cred("schema", REPO, subject=other_order),), {}, PROTECTED))
+
+        with pytest.raises(OnboardError, match="already backs schema"):
+            refuse(plan)
+
+    def test_non_ascii_digits_are_not_ids(self):
+        assert cred("partition", REPO, subject="repository_id:²:environment:spi-stack").ids == {}
+
+
+class TestUnnamedCredentials:
+    """An id credential GitHub cannot name is reported, never silently dropped or trusted."""
+
+    def test_bootstrap_warns_about_each_unnamed_credential(self, monkeypatch, capsys):
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(onboard, "read_projection", dict)
+        monkeypatch.setattr(onboard, "project_roster", lambda *a: {})
+
+        assert onboard.sync_projection_from_identity("id", "rg") == {}
+        out = capsys.readouterr().out
+        assert "fork-partition trusts" in out and "not projected" in out
+
+    def test_list_marks_a_projected_name_unverified_and_an_unnamed_one_too(self, monkeypatch):
+        roster = (
+            cred("partition", REPO, subject=CLAIM_SUBJECT),
+            cred("schema", REPO, subject="repository_id:7:environment:spi-stack"),
+        )
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(onboard, "read_projection", lambda: {"partition": REPO})
+
+        rows = {row.item: (row.state, row.detail) for row in onboard.list_trust(TARGET)}
+
+        assert rows["partition"] == ("unverified", f"{REPO} per the projection; GitHub unreadable")
+        assert rows["fork-schema"][0] == "unverified"
+        assert "repository_id:7" in rows["fork-schema"][1]
+        assert rows["fork-partition on spi-stack-dev1-member"] == ("correct", REPO)
+
+    def test_list_marks_an_owner_mismatch_as_drift(self, monkeypatch):
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "run_command", github(owner_id="1"))
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(onboard, "read_projection", dict)
+
+        rows = {row.item: (row.state, row.detail) for row in onboard.list_trust(TARGET)}
+
+        assert rows["fork-partition"][0] == "drifted"
+        assert "owner id" in rows["fork-partition"][1]
+
+    def test_list_compares_mirrors_by_subject_not_by_projected_name(self, monkeypatch):
+        deployer = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        mirror = (cred("partition", REPO, subject="repository_id:999:environment:spi-stack"),)
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+        monkeypatch.setattr(
+            onboard,
+            "read_roster",
+            lambda target: deployer if target.identity_name == TARGET.identity_name else mirror,
+        )
+        monkeypatch.setattr(onboard, "read_projection", lambda: {"partition": REPO})
+
+        rows = {row.item: (row.state, row.detail) for row in onboard.list_trust(TARGET)}
+
+        assert rows["fork-partition on spi-stack-dev1-member"][0] == "drifted"
+        assert "repository_id:999" in rows["fork-partition on spi-stack-dev1-member"][1]

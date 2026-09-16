@@ -63,10 +63,20 @@ config.
   for the repository (`sub_claim_prefix` from the OIDC customization
   endpoint), which by default carries the owner and repository ids,
   `repo:<owner>@<id>/<name>@<id>`; onboard reads it rather than composing
-  the classic form, refuses a repository with a custom template, and treats
-  a credential in the other form as drift to rewrite. A repository deleted
-  and recreated under the same name gets a new id and must be onboarded
-  again.
+  the classic form, and treats a credential in another form as drift to
+  rewrite. A custom template is rendered from its claim keys, in the
+  template's order, when they are `repository_id` and `context`, optionally
+  with `repository_owner_id`; the `Azure` organization signs
+  `repository_owner_id:<id>:repository_id:<id>:environment:spi-stack`, which
+  `sub_claim_prefix` does not describe. Any other template is refused. That
+  subject carries no name, so the roster resolves it through GitHub's
+  `repositories/<id>` and drops a repository whose owner id no longer
+  matches; where GitHub cannot be read (`spi up` without `gh`), the name the
+  lock last projected stands and `--list` reports it as unverified. A rebuilt
+  cluster has no last projection, so `spi up` there names each id credential
+  it could not resolve and projects the rest; the lifecycle workflows pass
+  `GH_TOKEN` so that case does not arise for them. A repository deleted and
+  recreated under the same name gets a new id and must be onboarded again.
 - **The roster is keyed by repository and capped by Azure.** Azure keeps
   the issuer and subject pair unique on an identity and allows twenty
   federated credentials per UAMI. The cluster credential holds one slot,
