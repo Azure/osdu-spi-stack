@@ -57,9 +57,10 @@ config.
   resolves `<org>/<fork>` case-insensitively but mints the OIDC subject
   with the repository's stored casing, and Entra matches a federated
   subject exactly. Onboarding resolves `--repo` through the GitHub API and
-  writes the returned `full_name` into the credential subject, the RG tags,
-  and the lock's roster and `source_repo` fields; those fields compare
-  exactly. A declaration entry matches its repository case-insensitively
+  writes the returned `full_name` into the RG tags, the lock's roster and
+  `source_repo` fields, and the credential subject where its form carries a
+  name; those fields compare exactly. A declaration entry matches its
+  repository case-insensitively
   and is reported as drift, not as a different repository, when only the
   casing differs. The subject itself is what GitHub reports it will sign
   for the repository (`sub_claim_prefix` from the OIDC customization
