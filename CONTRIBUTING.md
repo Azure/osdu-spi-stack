@@ -199,7 +199,8 @@ that version.
 End users install via:
 
 ```bash
-uv tool install https://github.com/Azure/osdu-spi-stack/releases/download/vX.Y.Z/spi-X.Y.Z-py3-none-any.whl
+uv tool install --default-index https://packagefeedproxy.microsoft.io/pypi/simple/ \
+  https://github.com/Azure/osdu-spi-stack/releases/download/vX.Y.Z/spi-X.Y.Z-py3-none-any.whl
 ```
 
 After install, the `spi` binary is on PATH; no `uv run` prefix.

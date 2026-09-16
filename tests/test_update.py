@@ -144,7 +144,15 @@ def test_run_upgrade_uv_uses_force_install():
         rv = upd.run_upgrade("uv", wheel_url, display=False)
     assert rv == 0
     cmd = rc.call_args.args[0]
-    assert cmd == ["uv", "tool", "install", "--force", wheel_url]
+    assert cmd == [
+        "uv",
+        "tool",
+        "install",
+        "--force",
+        "--default-index",
+        upd.MICROSOFT_PYPI_PROXY,
+        wheel_url,
+    ]
 
 
 def test_run_upgrade_uv_blocks_in_process_windows_replacement():
@@ -152,7 +160,7 @@ def test_run_upgrade_uv_blocks_in_process_windows_replacement():
     with (
         patch("spi.update.platform.system", return_value="Windows"),
         patch("spi.update.run_command") as rc,
-        pytest.raises(upd.UpdateError, match="disabled on Windows"),
+        pytest.raises(upd.UpdateError, match=upd.MICROSOFT_PYPI_PROXY),
     ):
         upd.run_upgrade("uv", wheel_url, display=False)
     rc.assert_not_called()
