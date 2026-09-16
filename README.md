@@ -22,14 +22,16 @@ Install [`uv`](https://docs.astral.sh/uv/), then install the latest SPI Stack re
 **macOS and Linux**
 
 ```bash
-uv tool install "$(curl -fsSL https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest \
+uv tool install --default-index https://packagefeedproxy.microsoft.io/pypi/simple/ \
+  "$(curl -fsSL https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest \
   | grep -o 'https://github.com/Azure/osdu-spi-stack/releases/download/[^"]*-py3-none-any.whl')"
 ```
 
 **Windows PowerShell**
 
 ```powershell
-uv tool install (irm https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest).assets.where({ $_.name -like '*-py3-none-any.whl' }).browser_download_url
+$wheel = (irm https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest).assets.where({ $_.name -like '*-py3-none-any.whl' }).browser_download_url
+uv tool install --default-index https://packagefeedproxy.microsoft.io/pypi/simple/ $wheel
 ```
 
 Verify the installation:

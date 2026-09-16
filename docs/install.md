@@ -12,15 +12,21 @@ contain a version number.
 **macOS and Linux**
 
 ```bash
-uv tool install "$(curl -fsSL https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest \
+uv tool install --default-index https://packagefeedproxy.microsoft.io/pypi/simple/ \
+  "$(curl -fsSL https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest \
   | grep -o 'https://github.com/Azure/osdu-spi-stack/releases/download/[^"]*-py3-none-any.whl')"
 ```
 
 **Windows PowerShell**
 
 ```powershell
-uv tool install (irm https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest).assets.where({ $_.name -like '*-py3-none-any.whl' }).browser_download_url
+$wheel = (irm https://api.github.com/repos/Azure/osdu-spi-stack/releases/latest).assets.where({ $_.name -like '*-py3-none-any.whl' }).browser_download_url
+uv tool install --default-index https://packagefeedproxy.microsoft.io/pypi/simple/ $wheel
 ```
+
+The explicit index is the anonymous Microsoft PyPI proxy. A released wheel does
+not inherit the index declared in this repository's `pyproject.toml`, and uv does
+not read the corporate `pip.ini`.
 
 Verify the installed version:
 
@@ -36,7 +42,8 @@ the `uv run` prefix.
 Install a specific wheel for CI, reproducible environments, or bug reports:
 
 ```bash
-uv tool install https://github.com/Azure/osdu-spi-stack/releases/download/v0.1.0/spi-0.1.0-py3-none-any.whl
+uv tool install --default-index https://packagefeedproxy.microsoft.io/pypi/simple/ \
+  https://github.com/Azure/osdu-spi-stack/releases/download/v0.1.0/spi-0.1.0-py3-none-any.whl
 ```
 
 Copy the wheel URL for another version from its
@@ -57,7 +64,7 @@ replacing its active tool environment. Run the recovery command it prints from a
 new terminal:
 
 ```powershell
-uv tool install --force <wheel-url>
+uv tool install --force --default-index https://packagefeedproxy.microsoft.io/pypi/simple/ <wheel-url>
 ```
 
 ## Git installation
@@ -65,7 +72,8 @@ uv tool install --force <wheel-url>
 `uv` can install directly from a Git tag:
 
 ```bash
-uv tool install git+https://github.com/Azure/osdu-spi-stack.git@v0.1.0
+uv tool install --default-index https://packagefeedproxy.microsoft.io/pypi/simple/ \
+  git+https://github.com/Azure/osdu-spi-stack.git@v0.1.0
 ```
 
 Release wheels are preferred because they preserve the tag-derived value reported

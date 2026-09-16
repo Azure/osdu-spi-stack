@@ -40,6 +40,7 @@ GITHUB_REPO = "osdu-spi-stack"
 GITHUB_API_BASE = "https://api.github.com"
 RELEASES_LATEST = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 RELEASES_LIST = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=30"
+MICROSOFT_PYPI_PROXY = "https://packagefeedproxy.microsoft.io/pypi/simple/"
 
 Installer = Literal["uv", "pipx"]
 
@@ -274,9 +275,18 @@ def run_upgrade(
                 "uv self-update is disabled on Windows because replacing the "
                 "active tool environment can orphan the spi launcher. Run this "
                 "from a new terminal instead:\n"
-                f"uv tool install --force {wheel_url}"
+                "uv tool install --force "
+                f"--default-index {MICROSOFT_PYPI_PROXY} {wheel_url}"
             )
-        cmd = ["uv", "tool", "install", "--force", wheel_url]
+        cmd = [
+            "uv",
+            "tool",
+            "install",
+            "--force",
+            "--default-index",
+            MICROSOFT_PYPI_PROXY,
+            wheel_url,
+        ]
     else:
         cmd = ["pipx", "install", "--force", wheel_url]
     result = run_command(cmd, description="Upgrade spi", display=display, check=False)
