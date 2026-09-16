@@ -168,7 +168,7 @@ phases; source promotion is separate from enabling trust:
 | Phase | Change | Needs |
 |---|---|---|
 | 1. Repository protection | Create the `spi-stack` environment, or open one restricted to a branch list, then stamp the five values | repository admin for environment rules; organization admin for organization values with `--org` |
-| 2. Azure trust | Enable `fork-<service>` on `spi-stack-<env>-deployer`, `spi-stack-<env>-member`, and `spi-stack-<env>-noaccess` for `repo:<org>/<fork>:environment:spi-stack`, after reading back that the environment exists and admits every branch | write on the three identities and read access to repository rules |
+| 2. Azure trust | Enable `fork-<service>` on `spi-stack-<env>-deployer`, `spi-stack-<env>-member`, and `spi-stack-<env>-noaccess` for the subject GitHub signs for the repository's `spi-stack` environment (`repo:<org>/<fork>:environment:spi-stack` under the default template; ADR-032 lists the forms), after reading back that the environment exists and admits every branch | write on the three identities and read access to repository rules |
 | 3. Cluster trust | Project the observed credential roster and existing source policy into `osdu-image-lock` without changing resolved images or pins | the operator's kube context |
 | 4. Source policy | When requested, validate promotion preconditions, write `spi-source-<service>` on the RG, and update the lock's source projection (ADR-033) | RG tag write and the operator's kube context |
 

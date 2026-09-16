@@ -365,6 +365,8 @@ jobs:
       - name: spi up
         env:
           SPI_DEPLOYER_OID: ${{ steps.prelogin.outputs.oid }}
+          # Resolves id-subject fork credentials to repository names for the lock's roster.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           ARGS=(

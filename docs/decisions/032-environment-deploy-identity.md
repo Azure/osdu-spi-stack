@@ -35,8 +35,10 @@ config.
   tenant, subscription, resource group, and cluster: the five values a
   fork holds.
 - **Activated per repository.** `spi onboard <service> --repo <org>/<fork>`
-  adds one federated credential for `repo:<org>/<fork>:environment:spi-stack`
-  (`src/spi/onboard.py`). The credential list on the identity is the roster
+  adds one federated credential for the subject GitHub signs for the
+  repository's `spi-stack` environment (`src/spi/onboard.py`); the forms
+  are under "Repository names are canonical" below. The credential list on
+  the identity is the roster
   of trusted repositories; deleting one credential revokes one repository.
   The `spi-stack` environment exists and admits every branch before the
   credential is enabled; the deploy and test jobs run there on pushes to
@@ -55,18 +57,29 @@ config.
   resolves `<org>/<fork>` case-insensitively but mints the OIDC subject
   with the repository's stored casing, and Entra matches a federated
   subject exactly. Onboarding resolves `--repo` through the GitHub API and
-  writes the returned `full_name` into the credential subject, the RG tags,
-  and the lock's roster and `source_repo` fields; those fields compare
-  exactly. A declaration entry matches its repository case-insensitively
+  writes the returned `full_name` into the RG tags, the lock's roster and
+  `source_repo` fields, and the credential subject where its form carries a
+  name; those fields compare exactly. A declaration entry matches its
+  repository case-insensitively
   and is reported as drift, not as a different repository, when only the
   casing differs. The subject itself is what GitHub reports it will sign
   for the repository (`sub_claim_prefix` from the OIDC customization
   endpoint), which by default carries the owner and repository ids,
   `repo:<owner>@<id>/<name>@<id>`; onboard reads it rather than composing
-  the classic form, refuses a repository with a custom template, and treats
-  a credential in the other form as drift to rewrite. A repository deleted
-  and recreated under the same name gets a new id and must be onboarded
-  again.
+  the classic form, and treats a credential in another form as drift to
+  rewrite. A custom template is rendered from its claim keys, in the
+  template's order, when they are `repository_id` and `context`, optionally
+  with `repository_owner_id`; the `Azure` organization signs
+  `repository_owner_id:<id>:repository_id:<id>:environment:spi-stack`, which
+  `sub_claim_prefix` does not describe. Any other template is refused. That
+  subject carries no name, so the roster resolves it through GitHub's
+  `repositories/<id>` and drops a repository whose owner id no longer
+  matches; where GitHub cannot be read (`spi up` without `gh`), the name the
+  lock last projected stands and `--list` reports it as unverified. A rebuilt
+  cluster has no last projection, so `spi up` there names each id credential
+  it could not resolve and projects the rest; the lifecycle workflows pass
+  `GH_TOKEN` so that case does not arise for them. A repository deleted and
+  recreated under the same name gets a new id and must be onboarded again.
 - **The roster is keyed by repository and capped by Azure.** Azure keeps
   the issuer and subject pair unique on an identity and allows twenty
   federated credentials per UAMI. The cluster credential holds one slot,
