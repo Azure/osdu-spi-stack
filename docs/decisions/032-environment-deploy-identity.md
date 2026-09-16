@@ -35,8 +35,10 @@ config.
   tenant, subscription, resource group, and cluster: the five values a
   fork holds.
 - **Activated per repository.** `spi onboard <service> --repo <org>/<fork>`
-  adds one federated credential for `repo:<org>/<fork>:environment:spi-stack`
-  (`src/spi/onboard.py`). The credential list on the identity is the roster
+  adds one federated credential for the subject GitHub signs for the
+  repository's `spi-stack` environment (`src/spi/onboard.py`); the forms
+  are under "Repository names are canonical" below. The credential list on
+  the identity is the roster
   of trusted repositories; deleting one credential revokes one repository.
   The `spi-stack` environment exists and admits every branch before the
   credential is enabled; the deploy and test jobs run there on pushes to

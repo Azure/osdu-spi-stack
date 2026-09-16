@@ -262,6 +262,10 @@ def claim_subject(keys: list[str], ids: dict[str, str]) -> str:
     )
 
 
+def subject_ids(subject: str) -> dict[str, str]:
+    return Credential("", GITHUB_ISSUER, subject, (GITHUB_AUDIENCE,)).ids
+
+
 def find_credential(roster: tuple[Credential, ...], service: str) -> Optional[Credential]:
     name = credential_name(service)
     return next((cred for cred in roster if cred.name == name), None)
@@ -848,11 +852,14 @@ def refuse(plan: Plan) -> None:
             "visible to that organization's repositories."
         )
     mine = credential_name(plan.service)
+    planned = subject_ids(plan.subject).get("repository_id")
     for cred in plan.state.roster:
         if cred.name == mine:
             continue
+        # Ids settle it without GitHub; a template reordering its keys changes the subject only.
+        same_id = planned is not None and cred.ids.get("repository_id") == planned
         same_repo = (credential_repo(cred) or "").lower() == plan.repo.lower()
-        if cred.subject == plan.subject or same_repo:
+        if cred.subject == plan.subject or same_id or same_repo:
             raise OnboardError(
                 f"{plan.repo} already backs {cred.service or cred.name}; one repository "
                 "backs one service. Remove that credential first."
@@ -1011,12 +1018,15 @@ def _is_conflict(stderr: str) -> bool:
 
 
 def project_roster(
-    target: Target, description: str = "Project the trusted-repository roster"
+    target: Target,
+    description: str = "Project the trusted-repository roster",
+    named: Optional[dict[str, str]] = None,
 ) -> dict[str, str]:
     """Write the identity's roster onto the lock, leaving data and pins alone.
 
     The roster is read inside the mutator, so a retry after a concurrent lock
-    write projects the current roster rather than a stale snapshot.
+    write projects the current roster rather than a stale snapshot. ``named``
+    carries names planning already resolved, ahead of the lock's older ones.
     """
 
     written: dict[str, str] = {}
@@ -1029,7 +1039,7 @@ def project_roster(
             known = decode_trusted_repos(lock)
         except PinError:
             known = {}
-        written = roster_repos(read_roster(target), known)
+        written = roster_repos(read_roster(target), {**known, **(named or {})})
         annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
         annotations[TRUSTED_REPOS_ANNOTATION] = json.dumps(written, sort_keys=True)
         return {"data": dict(lock.get("data") or {}), "metadata": {"annotations": annotations}}
@@ -1089,7 +1099,8 @@ def apply_plan(plan: Plan) -> list[Row]:
 
     def cluster() -> None:
         if any(step.phase == "cluster" for step in plan.steps):
-            project_roster(plan.target)
+            named = {} if plan.remove else {plan.service: plan.repo}
+            project_roster(plan.target, named=named)
 
     if "repository" in phases:
         phase("repository", repository)
@@ -1142,7 +1153,7 @@ def list_trust(target: Target) -> list[Row]:
             rows.append(
                 Row("azure", cred.name, "unverified", f"GitHub did not name {cred.subject}")
             )
-        elif cred.well_formed:
+        elif cred.service and cred.well_formed:
             rows.append(
                 Row("azure", cred.name, "drifted", f"owner id no longer matches; {cred.subject}")
             )
@@ -1160,6 +1171,7 @@ def list_trust(target: Target) -> list[Row]:
         (target.no_access_identity_name, read_no_access_roster),
     ]
     # A mirror carries the deployer's subject verbatim, so the comparison needs no GitHub.
+    deployers = {c.service: c for c in roster if c.service and c.well_formed}
     for mirror_name, read_mirror in mirrors:
         if not mirror_name:
             continue
@@ -1168,20 +1180,18 @@ def list_trust(target: Target) -> list[Row]:
         except OnboardError as exc:
             rows.append(Row("azure", mirror_name, "missing", str(exc)))
             continue
-        for service, repo in sorted(trusted.items()):
+        for service, deployer in sorted(deployers.items()):
             item = f"{credential_name(service)} on {mirror_name}"
-            deployer, mirrored = (
-                find_credential(roster, service),
-                find_credential(mirror_roster, service),
-            )
+            repo = trusted.get(service) or deployer.subject
+            mirrored = find_credential(mirror_roster, service)
             if mirrored is None:
                 rows.append(Row("azure", item, "missing", f"{target.identity_name} trusts {repo}"))
-            elif deployer is not None and mirrored.trusts(deployer.subject):
+            elif mirrored.trusts(deployer.subject):
                 rows.append(Row("azure", item, "correct", repo))
             else:
                 rows.append(Row("azure", item, "drifted", f"trusts {_name(mirrored)}, not {repo}"))
         for mirrored in mirror_roster:
-            if mirrored.service and mirrored.well_formed and mirrored.service not in trusted:
+            if mirrored.service and mirrored.well_formed and mirrored.service not in deployers:
                 item = f"{credential_name(mirrored.service)} on {mirror_name}"
                 rows.append(
                     Row(
@@ -1211,8 +1221,8 @@ def sync_projection_from_identity(identity_name: str, resource_group: str) -> di
     for cred in resolved.unnamed:
         console.print(
             f"  [warning]{cred.name} trusts {cred.subject} but GitHub could not name the "
-            "repository, so it is not projected; run 'spi onboard --list' with gh signed in, "
-            "or onboard it again.[/warning]"
+            "repository, so it is not projected; run 'spi up' again with gh signed in, or "
+            "'spi onboard <service> --repo <owner>/<name> --write'.[/warning]"
         )
     desired = resolved.repos
     if observed != desired:

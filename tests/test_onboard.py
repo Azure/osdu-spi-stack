@@ -657,9 +657,9 @@ class Live:
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.github), "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    def project(self, target, description=""):
+    def project(self, target, description="", named=None):
         self.projected += 1
-        self.projection = onboard.roster_repos(self.roster, self.projection)
+        self.projection = onboard.roster_repos(self.roster, {**self.projection, **(named or {})})
         return self.projection
 
 
@@ -1278,3 +1278,70 @@ class TestUnnamedCredentials:
 
         assert rows["fork-partition on spi-stack-dev1-member"][0] == "drifted"
         assert "repository_id:999" in rows["fork-partition on spi-stack-dev1-member"][1]
+
+
+class TestLookupFailures:
+    """GitHub failing between plan and apply, or during --list, must not change trust."""
+
+    def test_apply_projects_the_planned_name_over_a_stale_projection(self, live):
+        live.protection = PROTECTED
+        live.projection = {"partition": "Acme/old"}
+        plan = Plan(TARGET, "partition", REPO, subject=CLAIM_SUBJECT, skip_repo=True)
+        plan.state = live.observed(values=False)
+        plan.steps = plan_steps(plan)
+        plan.rows = plan_rows(plan)
+
+        apply_plan(plan)
+
+        assert live.projection == {"partition": REPO}
+
+    def test_project_roster_prefers_a_planned_name_to_the_lock(self, monkeypatch):
+        lock = {
+            "data": {},
+            "metadata": {"annotations": {TRUSTED_REPOS_ANNOTATION: '{"partition": "Acme/old"}'}},
+        }
+        written = {}
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(
+            onboard, "mutate_lock", lambda compute, description: written.update(compute(lock))
+        )
+
+        assert onboard.project_roster(TARGET, named={"partition": REPO}) == {"partition": REPO}
+        assert onboard.project_roster(TARGET) == {"partition": "Acme/old"}
+
+    def test_refuse_matches_repository_ids_when_github_is_unreadable(self, monkeypatch):
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+        other_order = (
+            f"repository_id:{REPO_ID}:repository_owner_id:{OWNER_ID}:environment:spi-stack"
+        )
+        plan = claim_plan(State((cred("schema", REPO, subject=other_order),), {}, PROTECTED))
+
+        with pytest.raises(OnboardError, match="already backs schema"):
+            refuse(plan)
+
+    def test_list_compares_mirrors_to_an_unnamed_deployer_credential(self, monkeypatch):
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(onboard, "read_projection", dict)
+
+        rows = {row.item: (row.state, row.detail) for row in onboard.list_trust(TARGET)}
+
+        assert rows["fork-partition on spi-stack-dev1-member"] == ("correct", CLAIM_SUBJECT)
+        assert rows["fork-partition on spi-stack-dev1-noaccess"] == ("correct", CLAIM_SUBJECT)
+        assert not any("does not" in detail for _, detail in rows.values())
+
+    def test_list_does_not_call_a_hand_made_credential_a_transfer(self, monkeypatch):
+        roster = (
+            Credential("by-hand", GITHUB_ISSUER, credential_subject("Acme/x"), (GITHUB_AUDIENCE,)),
+        )
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(onboard, "read_projection", dict)
+
+        rows = {row.item: (row.state, row.detail) for row in onboard.list_trust(TARGET)}
+
+        assert rows["by-hand"][0] == "unverified"
+        assert "owner id" not in rows["by-hand"][1]
