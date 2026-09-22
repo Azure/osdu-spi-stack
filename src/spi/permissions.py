@@ -100,36 +100,33 @@ def group_scope(subscription_id: str, resource_group: str) -> str:
 
 
 def read_permissions(scope: str) -> Tuple[Optional[List[Dict[str, Any]]], str]:
-    """The caller's role-based permission entries at a scope, or None and the reason."""
-    result = run_command(
-        [
-            "az",
-            "rest",
-            "--method",
-            "get",
-            "--url",
-            (
-                f"https://management.azure.com{scope}"
-                "/providers/Microsoft.Authorization/permissions"
-                f"?api-version={PERMISSIONS_API_VERSION}"
-            ),
-            "--output",
-            "json",
-        ],
-        description=f"Read permissions at {scope}",
-        display=False,
-        check=False,
+    """The caller's role-based permission entries at a scope, every page, or None and the reason."""
+    url: Optional[str] = (
+        f"https://management.azure.com{scope}"
+        "/providers/Microsoft.Authorization/permissions"
+        f"?api-version={PERMISSIONS_API_VERSION}"
     )
-    if result.returncode != 0:
-        lines = (result.stderr or "").strip().splitlines()
-        return None, lines[0] if lines else f"az exited {result.returncode}"
-    try:
-        value = json.loads(result.stdout or "").get("value")
-    except (ValueError, AttributeError):
-        value = None
-    if not isinstance(value, list):
-        return None, "unexpected response from the permissions API"
-    return value, ""
+    entries: List[Dict[str, Any]] = []
+    while url:
+        result = run_command(
+            ["az", "rest", "--method", "get", "--url", url, "--output", "json"],
+            description=f"Read permissions at {scope}",
+            display=False,
+            check=False,
+        )
+        if result.returncode != 0:
+            lines = (result.stderr or "").strip().splitlines()
+            return None, lines[0] if lines else f"az exited {result.returncode}"
+        try:
+            page = json.loads(result.stdout or "")
+        except ValueError:
+            page = None
+        if not isinstance(page, dict) or not isinstance(page.get("value"), list):
+            return None, "unexpected response from the permissions API"
+        value = page["value"]
+        entries.extend(value)
+        url = page.get("nextLink")
+    return entries, ""
 
 
 def _matches(pattern: str, action: str) -> bool:

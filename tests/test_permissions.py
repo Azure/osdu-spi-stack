@@ -136,6 +136,36 @@ class TestEvaluate:
             result = permissions.evaluate(SUB_SCOPE, "subscription scope", DEPLOY_ACTIONS)
         assert result.error and result.denied == []
 
+    def test_entries_on_later_pages_are_evaluated(self):
+        base = f"https://management.azure.com{SUB_SCOPE}/providers/"
+        pages = {
+            "first": {"value": [CONTRIBUTOR], "nextLink": f"{base}page2"},
+            "page2": {"value": [CONSTRAINED_GRANT]},
+        }
+        urls = []
+
+        def run(cmd, **_kwargs):
+            url = cmd[cmd.index("--url") + 1]
+            urls.append(url)
+            page = pages["page2" if url.endswith("page2") else "first"]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(page), "")
+
+        with patch("spi.permissions.run_command", side_effect=run):
+            result = permissions.evaluate(SUB_SCOPE, "subscription scope", DEPLOY_ACTIONS)
+        assert len(urls) == 2 and urls[1] == f"{base}page2"
+        assert result.denied == []
+
+    def test_a_failed_later_page_is_an_error_not_a_denial(self):
+        def run(cmd, **_kwargs):
+            if cmd[cmd.index("--url") + 1].endswith("page2"):
+                return subprocess.CompletedProcess(cmd, 1, "", "throttled")
+            page = {"value": [CONTRIBUTOR], "nextLink": "https://management.azure.com/page2"}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(page), "")
+
+        with patch("spi.permissions.run_command", side_effect=run):
+            result = permissions.evaluate(SUB_SCOPE, "subscription scope", DEPLOY_ACTIONS)
+        assert result.error == "throttled" and result.denied == []
+
     def test_a_grant_inherited_from_the_subscription_is_read_at_group_scope(self):
         run, calls = _az({RG_SCOPE: [CONTRIBUTOR, CONSTRAINED_GRANT]}, group_exists=True)
         with patch("spi.permissions.run_command", side_effect=run):
