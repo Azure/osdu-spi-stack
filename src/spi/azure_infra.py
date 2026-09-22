@@ -516,9 +516,9 @@ def _verify_role_assignment_recorded(user_oid: str, cluster_resource_id: str):
     """
     # Raw ARM rather than `az role assignment`, which resolves principals
     # through Graph and can be blocked by Conditional Access (AADSTS530084)
-    # while ARM access is fine. The GUID is the built-in AKS RBAC Cluster
-    # Admin role.
-    aks_rbac_cluster_admin_role_id = "b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b"
+    # while ARM access is fine.
+    from .permissions import AKS_RBAC_CLUSTER_ADMIN_ROLE_ID
+
     result = run_command(
         [
             "az",
@@ -534,7 +534,7 @@ def _verify_role_assignment_recorded(user_oid: str, cluster_resource_id: str):
             "--query",
             (
                 f"length(value[?properties.principalId=='{user_oid}' && "
-                f"contains(properties.roleDefinitionId, '{aks_rbac_cluster_admin_role_id}')])"
+                f"contains(properties.roleDefinitionId, '{AKS_RBAC_CLUSTER_ADMIN_ROLE_ID}')])"
             ),
             "--output",
             "tsv",

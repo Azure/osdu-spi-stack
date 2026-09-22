@@ -24,7 +24,7 @@ App Registration `osdu-spi-stack-github` exists in the
 | Federated context (main builds) | `refs/heads/main` |
 | Federated context (Smoke + Sweeper) | Environment `azure-smoke` |
 | Federated context (env-upgrade + env-refresh) | Environment `azure-shared` |
-| RBAC | `Contributor` + `User Access Administrator` at subscription scope |
+| RBAC | `Contributor` + conditioned `Role Based Access Control Administrator` at subscription scope ([Permissions](install.md#permissions)) |
 
 The exact `sub` values are controlled by the repository's GitHub OIDC subject
 customization and must match the Entra federated credentials exactly. Do not
@@ -64,10 +64,20 @@ for ENTRY in \
   }"
 done
 
-# 3. RBAC at subscription scope (Contributor + UAA for smoke deploys)
-SUB="/subscriptions/<SUBSCRIPTION_ID>"
-az role assignment create --role "Contributor" --assignee "$APP_ID" --scope "$SUB"
-az role assignment create --role "User Access Administrator" --assignee "$APP_ID" --scope "$SUB"
+# 3. RBAC at subscription scope: Contributor plus the conditioned grant
+SP_OID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
+az role assignment create \
+  --role "Contributor" \
+  --assignee-object-id "$SP_OID" \
+  --assignee-principal-type ServicePrincipal \
+  --scope /subscriptions/<SUBSCRIPTION_ID>
+az role assignment create \
+  --role "Role Based Access Control Administrator" \
+  --assignee-object-id "$SP_OID" \
+  --assignee-principal-type ServicePrincipal \
+  --scope /subscriptions/<SUBSCRIPTION_ID> \
+  --condition-version 2.0 \
+  --condition '((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/write'\''})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {4d97b98b-1d4f-4787-a291-c67834d212e7, b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b, 4abbcc35-e782-43d8-92c5-2d3f1bd2253f, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, ba92f5b4-2d11-453d-a403-e96b0029c9fe, 0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3, 69a216fc-b8fb-44d8-bc22-1f3c2cd27a39, 4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0, 7f951dda-4ed3-4680-a7ca-43fe172d538d, befefa01-2a29-4197-83a8-272ff33ce314})) AND ((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/delete'\''})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {4d97b98b-1d4f-4787-a291-c67834d212e7, b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b, 4abbcc35-e782-43d8-92c5-2d3f1bd2253f, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, ba92f5b4-2d11-453d-a403-e96b0029c9fe, 0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3, 69a216fc-b8fb-44d8-bc22-1f3c2cd27a39, 4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0, 7f951dda-4ed3-4680-a7ca-43fe172d538d, befefa01-2a29-4197-83a8-272ff33ce314}))'
 
 # 4. GitHub repository secrets
 gh secret set AZURE_CLIENT_ID --body "$APP_ID" --repo Azure/osdu-spi-stack
@@ -93,18 +103,18 @@ gh api -X PUT "repos/Azure/osdu-spi-stack/environments/azure-smoke" \
 EOF
 ```
 
+An identity set up before the conditioned grant existed holds User Access
+Administrator instead. Once the two assignments above are in place, remove it:
+
+```bash
+az role assignment delete --role "User Access Administrator" \
+  --assignee "$APP_ID" --scope /subscriptions/<SUBSCRIPTION_ID>
+```
+
 The environment-scoped OIDC subject is branch-agnostic. Restricting deployments
 to protected branches prevents a workflow modified on an arbitrary branch from
 obtaining the subscription-scoped identity, while scheduled runs from protected
 `main` remain reviewer-free.
-
-### Tightening the RBAC scope (follow-up)
-
-`Contributor + UAA at subscription scope` is broad. The CI uses
-sub-scope today only because `spi up` creates resource groups dynamically
-under the subscription, and Workload Identity wiring requires `UAA`. A
-follow-up could tighten this to a parent `spi-ci-sandbox` RG and have
-`smoke.yml` create child RGs inside it.
 
 ## Branch protection on `main`
 

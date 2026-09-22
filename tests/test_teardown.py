@@ -78,6 +78,7 @@ class FakeAzure:
         self.subnets = []
         self.identities = []
         self.grants = {}
+        self.permissions = [{"actions": ["*"], "notActions": []}]
         self.delete_failures = {}
         self.calls = []
         self.group_delete_polls_until_gone = 0
@@ -147,6 +148,8 @@ class FakeAzure:
         if verb == ("role", "assignment", "list"):
             pid = cmd[cmd.index("--assignee") + 1]
             return self._ok(json.dumps(self.grants.get(pid, [])))
+        if verb[0] == "rest":
+            return self._ok(json.dumps({"value": self.permissions}))
         if verb == ("role", "assignment", "delete"):
             gid = cmd[cmd.index("--ids") + 1]
             for pid, items in self.grants.items():
@@ -179,6 +182,7 @@ def az():
     fake = FakeAzure()
     with (
         patch("spi.teardown.run_command", side_effect=fake.run_command),
+        patch("spi.permissions.run_command", side_effect=fake.run_command),
         patch("spi.teardown.time.sleep"),
         patch("spi.teardown.time.monotonic", side_effect=fake.monotonic),
         patch("spi.teardown.prune_kube_context") as prune,
@@ -608,6 +612,34 @@ class TestPurge:
         assert az.calls.index(removed[0]) < group_delete
         assert az.groups[RG] is False
         az.prune.assert_called_once_with("spi-stack-dev1", server_fqdn=FQDN)
+
+    def test_a_missing_delete_permission_stops_before_any_delete(self, az):
+        self._identities(az)
+        az.permissions = [
+            {"actions": ["*"], "notActions": ["Microsoft.Authorization/*/Delete"]},
+        ]
+
+        with pytest.raises(TeardownError, match="roleAssignments/delete"):
+            purge_environment(config())
+
+        assert not any(c[1:4] == ["role", "assignment", "delete"] for c in az.calls)
+        assert not any(c[1:3] == ["group", "delete"] for c in az.calls)
+        rest = next(c for c in az.calls if c[1] == "rest")
+        assert "/dnsZones/example.com/providers/Microsoft.Authorization/permissions" in rest[5]
+
+    def test_an_unanswered_permission_read_does_not_block_purge(self, az):
+        self._identities(az)
+        original = az.run_command
+
+        def flaky(cmd, **kw):
+            if cmd[1] == "rest":
+                return az._fail("ARM unavailable")
+            return original(cmd, **kw)
+
+        with patch("spi.permissions.run_command", side_effect=flaky):
+            purge_environment(config())
+
+        assert az.groups[RG] is False
 
     def test_a_lingering_nodes_group_is_purged_with_the_environment(self, az):
         self._identities(az)

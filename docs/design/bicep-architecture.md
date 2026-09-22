@@ -87,7 +87,7 @@ and deployment. It does not bypass zone or ephemeral-disk checks. See
 ## Previewing changes
 
 This command does not deploy AKS or workloads, but **it creates or updates the
-resource group and naming tag**:
+resource group and naming tag** once the deployer permission check passes:
 
 ```bash
 spi up --env dev1 --dry-run
