@@ -31,6 +31,8 @@ from .console import console, display_result, error_console
 from .guard import get_suspend_status, verify_spi_cluster
 from .images import (
     DEFAULT_IMAGE_BRANCH,
+    SCHEMA_LOAD_SERVICE_NAME,
+    SCHEMA_SERVICE_NAME,
     ImageResolutionError,
     resolve_image_lock,
 )
@@ -1126,7 +1128,7 @@ def service_pin(
 
     if image is not None:
         try:
-            pin = pin_service_image(
+            applied = pin_service_image(
                 service,
                 image,
                 ephemeral=ephemeral,
@@ -1138,11 +1140,23 @@ def service_pin(
         except (PinError, ImageResolutionError) as exc:
             console.print(f"[error]{exc}[/error]")
             raise typer.Exit(code=1)
+        pin = dict(applied)[service]
         marker = f" (ephemeral, run {pin.run_id})" if pin.ephemeral else ""
         console.print(
             f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker} "
             f"on {_environment_label()}"
         )
+        for name, paired in applied:
+            if name != service:
+                console.print(
+                    f"  [success]{name}[/success] paired to {paired.digest[:19]} "
+                    "from the same commit"
+                )
+        if pin.ephemeral and service == SCHEMA_SERVICE_NAME and len(applied) == 1:
+            console.print(
+                f"  [dim]{SCHEMA_LOAD_SERVICE_NAME} stays canonical: the fork published "
+                "no loader image for this commit[/dim]"
+            )
         if pin.ephemeral:
             console.print(
                 f"[dim]Release with: spi service reset {service} --if-run {pin.run_id}[/dim]"
