@@ -30,6 +30,7 @@ from typing import Callable, Iterable, List, Optional, Sequence
 
 from .config import Config
 from .console import console, display_result
+from .permissions import DELETE_ASSIGNMENT, DOCS_POINTER, evaluate
 from .shell import prune_kube_context, run_command
 
 TEARDOWN_DEADLINE_SECONDS = 45 * 60
@@ -580,6 +581,22 @@ def is_stack_owned(grant: ExternalGrant, config: Config) -> bool:
     )
 
 
+def _require_delete_permission(grants: Sequence[ExternalGrant]) -> None:
+    """Stop before the first delete when the caller cannot remove a grant it must."""
+    for scope in sorted({g.scope for g in grants}):
+        result = evaluate(scope, "external grant", [DELETE_ASSIGNMENT])
+        if result.error:
+            console.print(
+                f"  [warning]Permissions not checked at {scope}: {result.error}. "
+                "Continuing.[/warning]"
+            )
+        elif result.denied:
+            raise TeardownError(
+                f"Missing {DELETE_ASSIGNMENT} at {scope}; purge cannot remove the stack's "
+                f"grant there. Nothing was deleted. See {DOCS_POINTER}."
+            )
+
+
 def remove_external_grants(config: Config) -> List[ExternalGrant]:
     """Remove the stack-owned external grants; anything else stops the purge."""
     grants = discover_external_grants(config)
@@ -590,6 +607,7 @@ def remove_external_grants(config: Config) -> List[ExternalGrant]:
             "did not create; remove them before purging:\n  "
             + "\n  ".join(f"{g.role} at {g.scope} ({g.id})" for g in foreign)
         )
+    _require_delete_permission(grants)
     for grant in grants:
         removed = run_command(
             ["az", "role", "assignment", "delete", "--ids", grant.id],

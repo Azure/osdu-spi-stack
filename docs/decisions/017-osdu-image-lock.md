@@ -44,6 +44,6 @@ Rejected:
 - A `spi up` deploys exactly one resolved image set. The set is reproducible from the ConfigMap; `spi info` surfaces the lock's resolution timestamp and per-service tags.
 - Canonical refreshes are deliberate, not ambient. `--refresh-images` is the supported path; nothing else moves the canonical entries (pins move a single service through their own flow), and a re-run `spi up` without it leaves an existing lock as it stands.
 - Adding a new OSDU service to the stack is one entry in `IMAGE_REGISTRY` plus one service YAML that consumes `${SERVICE_IMAGE}`. No template changes.
-- The image lock depends on the configured source registry being reachable from the CLI host. `spi check` covers tool prerequisites; registry reachability surfaces as a hard error during K8s bootstrap.
+- The image lock depends on the configured source registry being reachable from the CLI host. `spi check` covers tool prerequisites and Azure permissions; registry reachability surfaces as a hard error during K8s bootstrap.
 - Adding a one-shot image to the live lock requires its Kustomization to tolerate immutable resource updates, for example `force: true` on Jobs whose Pod templates include lock substitutions.
 - MR validation uses only pipeline-built, provenance-clean images, and pin state is declared on the cluster in the lock annotation.

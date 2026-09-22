@@ -169,14 +169,17 @@ def run_checks() -> list:
     return results
 
 
-def results_to_json(results: list) -> str:
+def results_to_json(results: list, azure: Optional[dict] = None) -> str:
+    payload = {
+        "platform": detect_platform(),
+        "total": len(results),
+        "installed": sum(1 for r in results if r["installed"]),
+        "missing": sum(1 for r in results if not r["installed"]),
+        "tools": results,
+    }
+    if azure is not None:
+        payload["azure"] = azure
     return json.dumps(
-        {
-            "platform": detect_platform(),
-            "total": len(results),
-            "installed": sum(1 for r in results if r["installed"]),
-            "missing": sum(1 for r in results if not r["installed"]),
-            "tools": results,
-        },
+        payload,
         indent=2,
     )

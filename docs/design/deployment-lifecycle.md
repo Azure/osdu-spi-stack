@@ -26,6 +26,7 @@ resolves only when no lock exists. `minimal` and `bare` skip image resolution. T
 
 | Stage | Work performed | State available afterward |
 |---|---|---|
+| Permission check | Read the deployer's permissions at the environment group, or at the subscription when the group is absent | A missing create or role-assignment permission stops the command, with the administrator's grant printed, before any change to Azure |
 | Subscription preflight | Resolve the system pool SKU's usable zones and ephemeral-disk capability | Invalid or restricted zone sets rejected before resource-group creation |
 | Resource group | Verify Azure login, create or reuse the group, persist the naming suffix | Stable resource names for retries |
 | AKS | Deploy `infra/aks.bicep`, obtain kubeconfig, enable Istio CNI chaining, grant the deployer cluster access | An accessible cluster and OIDC issuer |

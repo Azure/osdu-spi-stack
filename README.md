@@ -44,9 +44,11 @@ See [Installation](docs/install.md) for pinned versions, upgrades, and troublesh
 
 ### 2. Check prerequisites
 
-Deployment requires `az`, Bicep, `kubectl`, `kubelogin`, Flux, and an Azure subscription
-where your identity can create resource groups, deploy the listed Azure services, and
-create role assignments.
+Deployment requires `az`, Bicep, `kubectl`, `kubelogin`, Flux, and two role assignments
+on the Azure subscription: Contributor, and Role Based Access Control Administrator
+limited by a condition to the roles the stack assigns. `spi check` verifies the tools and
+the signed-in identity's permissions, and prints the grant an administrator runs when one
+is missing. See [Permissions](docs/install.md#permissions).
 
 ```bash
 spi check
@@ -146,7 +148,7 @@ See [Ingress modes](docs/architecture.md#ingress-profiles) and
 
 | Command | Purpose |
 |---------|---------|
-| `spi check` | Validate deployment prerequisites |
+| `spi check` | Validate tools and Azure permissions |
 | `spi up` | Provision Azure resources and activate GitOps |
 | `spi connect` | Point `kubectl` at an existing environment's cluster |
 | `spi status` | Show deployment health and reconciliation progress |

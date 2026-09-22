@@ -370,11 +370,13 @@ def _resolve_up_context(
     env: str,
     requested_suffix: str | None = None,
 ) -> Tuple[str, Dict[str, Any], Tuple[str, str]]:
-    """Resolve read-only Azure identity state before suffix persistence."""
+    """Resolve read-only Azure identity state and permissions before suffix persistence."""
     from .azure_infra import _get_azure_account, _resolve_deployer_principal
+    from .permissions import require_deploy_permissions
 
     account = _get_azure_account()
     deployer_principal = _resolve_deployer_principal(account)
+    require_deploy_permissions(account, deployer_principal, Config.from_env(env).resource_group)
     name_suffix = _resolve_name_suffix(
         env,
         for_up=True,
@@ -387,15 +389,19 @@ def _resolve_up_context(
 def check(
     output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
 ):
-    """Validate that required CLI tools are installed."""
+    """Validate the required CLI tools and the signed-in identity's Azure permissions."""
     from .checks import results_to_json, run_checks
+    from .permissions import check_azure, print_azure_check
 
     results = run_checks()
     missing = sum(1 for r in results if not r["installed"])
+    az_installed = any(r["name"] == "az" and r["installed"] for r in results)
+    azure = check_azure(az_installed)
+    failed = bool(missing) or not azure.ok
 
     if output_json:
-        print(results_to_json(results))
-        raise typer.Exit(code=1 if missing else 0)
+        print(results_to_json(results, azure=azure.to_json()))
+        raise typer.Exit(code=1 if failed else 0)
 
     table = Table(title="SPI Stack Prerequisites", border_style="cyan")
     table.add_column("Tool", style="cyan", min_width=10)
@@ -422,6 +428,9 @@ def check(
         console.print(
             f"\n[warning]{installed}/{len(results)} installed, {missing} missing.[/warning]"
         )
+
+    print_azure_check(azure)
+    if failed:
         raise typer.Exit(code=1)
 
 
