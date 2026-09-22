@@ -492,6 +492,69 @@ def fork_package_repositories(source_repo: str, service: str) -> tuple[str, ...]
     return tuple(dict.fromkeys((f"{GHCR_HOST}/{owner}/{name}", f"{GHCR_HOST}/{owner}/{service}")))
 
 
+def resolve_ghcr_tag_digest(repository: str, tag: str, attempts: int = 3) -> str | None:
+    """Return the manifest digest a GHCR tag points at, or None when it is not published.
+
+    GHCR answers 403 on the pull token for a package that does not exist (or is
+    private) and 404 for a missing tag; both read as "not published". Transient
+    failures retry like ``resolve_ghcr_manifest`` and then raise
+    ImageResolutionError, fail-closed.
+    """
+
+    path = repository[len(GHCR_HOST) + 1 :]
+    manifest_url = f"https://{GHCR_HOST}/v2/{path}/manifests/{tag}"
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            token = _ghcr_pull_token(path)
+            manifest_req = urllib.request.Request(
+                manifest_url,
+                method="HEAD",
+                headers={
+                    "User-Agent": "spi-stack-resolver",
+                    "Accept": _MANIFEST_ACCEPT,
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+            with urllib.request.urlopen(manifest_req, timeout=15) as resp:  # nosec B310
+                digest = resp.headers.get("Docker-Content-Digest", "")
+            if not _MANIFEST_DIGEST_RE.match(digest):
+                raise ImageResolutionError(
+                    f"GHCR returned no manifest digest for {repository}:{tag}"
+                )
+            return digest
+        except urllib.error.HTTPError as exc:
+            if exc.code in (403, 404):
+                return None
+            if exc.code < 500 and exc.code != 429:
+                raise ImageResolutionError(
+                    f"GHCR refused the tag lookup for {repository}:{tag}: HTTP {exc.code}"
+                ) from exc
+            last_error = exc
+        except (TimeoutError, urllib.error.URLError, ConnectionError, json.JSONDecodeError) as exc:
+            last_error = exc
+        if attempt < attempts:
+            time.sleep(5 * attempt)
+    raise ImageResolutionError(
+        f"GHCR unreachable after {attempts} attempts resolving {repository}:{tag}: {last_error}"
+    )
+
+
+def resolve_fork_loader(repository: str, source_sha: str) -> tuple[str, str] | None:
+    """Find the loader the fork built beside the schema image at ``source_sha``.
+
+    The template names the loader ``<image>-load`` after the same image name as
+    the service and tags both ``sha-<12>`` from one commit (template ADR-042), so
+    the loader for ``ghcr.io/<owner>/<image>`` is ``ghcr.io/<owner>/<image>-load``
+    at that tag and nothing else. Returns ``(repository, digest)``, or None when
+    the fork published no loader for the commit.
+    """
+
+    loader_repository = f"{repository}-load"
+    digest = resolve_ghcr_tag_digest(loader_repository, f"sha-{source_sha[:12]}")
+    return (loader_repository, digest) if digest else None
+
+
 def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> None:
     """Assert the digest's manifest exists in GHCR before it is pinned.
 
