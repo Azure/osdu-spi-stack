@@ -1594,7 +1594,8 @@ class TestPinServiceImage:
         pin = applied[0][1]
         assert applied[1][1].digest == loader_digest
         assert pin.repository == "ghcr.io/azure/schema"
-        assert calls["tag_lookups"] == [("ghcr.io/azure/schema", "sha-" + "b" * 12)]
+        # The service tag is read before and after the loader lookup.
+        assert calls["tag_lookups"] == [("ghcr.io/azure/schema", "sha-" + "b" * 12)] * 2
         assert calls["loader_lookups"] == [("ghcr.io/azure/schema", "b" * 40)]
         assert calls["description"] == f"Pin schema, schema-load to {_GHCR_DIGEST[:19]}"
         data, saved = calls["patch"]
@@ -1650,6 +1651,27 @@ class TestPinServiceImage:
             )
 
         assert calls["loader_lookups"] == []
+        assert calls["patch"] is None
+
+    def test_schema_ephemeral_pin_refuses_when_the_tag_moves_during_the_loader_lookup(
+        self, monkeypatch
+    ):
+        """docker-push pushes the service before the loader, so a loader tag that moved
+        means the service tag moved too; the second read catches the rebuild."""
+        lock = _lock(data=_canonical_data("schema", "schema-load"))
+        calls = self._wire(monkeypatch, lock, loader=("ghcr.io/azure/schema-load", _GHCR_DIGEST))
+        answers = iter([_GHCR_DIGEST, "sha256:" + "d" * 64])
+        monkeypatch.setattr(pins, "resolve_ghcr_tag_digest", lambda repository, tag: next(answers))
+
+        with pytest.raises(PinError, match="moved while the loader was being resolved"):
+            pin_service_image(
+                "schema",
+                f"ghcr.io/azure/schema@{_GHCR_DIGEST}",
+                ephemeral=True,
+                run_id="1234",
+                source_repo="Azure/osdu-spi-schema",
+                source_sha="b" * 40,
+            )
         assert calls["patch"] is None
 
     def test_schema_ephemeral_pin_refuses_when_the_commit_tag_is_gone(self, monkeypatch):
@@ -2270,6 +2292,68 @@ class TestSweepStaleEphemeralPins:
         assert result.kept == (("storage", "run state unreachable and pin younger than threshold"),)
         _, saved = calls["patch"]
         assert set(saved) == {"storage"}
+
+    def test_a_paired_run_is_swept_as_one(self, monkeypatch):
+        """schema and the loader its run paired share one staleness decision and one
+        restore; the run is queried once for both."""
+        lock = _lock(
+            pins_annotation=encode_pins(
+                {
+                    "schema": _image_pin(
+                        repository="ghcr.io/azure/schema",
+                        canonical_repository="repo/schema-master",
+                        run_id="55",
+                        source_repo="Azure/osdu-spi-schema",
+                    ),
+                    "schema-load": _image_pin(
+                        repository="ghcr.io/azure/schema-load",
+                        canonical_repository="repo/schema-load-master",
+                        run_id="55",
+                        source_repo="Azure/osdu-spi-schema",
+                    ),
+                }
+            )
+        )
+        calls = self._wire(monkeypatch, lock, run_states={"55": "completed"})
+
+        result = sweep_stale_ephemeral_pins()
+
+        assert result.swept == ("schema", "schema-load")
+        assert calls["lookups"] == [("Azure/osdu-spi-schema", "55")]
+        data, saved = calls["patch"]
+        assert saved == {}
+        assert data["SCHEMA_IMAGE_REPOSITORY"] == "repo/schema-master"
+        assert data["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "repo/schema-load-master"
+        assert calls["reconciled"] == ["schema", "schema-load"]
+
+    def test_a_pair_with_one_moved_member_is_left_standing_together(self, monkeypatch):
+        schema = _image_pin(repository="ghcr.io/azure/schema", run_id="55")
+        loader = _image_pin(repository="ghcr.io/azure/schema-load", run_id="55")
+        lock = _lock(pins_annotation=encode_pins({"schema": schema, "schema-load": loader}))
+        calls = self._wire(monkeypatch, lock, run_states={"55": "completed"})
+
+        newer = _image_pin(repository="ghcr.io/azure/schema", run_id="56")
+        reads = {"n": 0}
+
+        def read_and_swap(required=True):
+            reads["n"] += 1
+            if reads["n"] == 2:
+                calls["box"][0] = _lock(
+                    pins_annotation=encode_pins({"schema": newer, "schema-load": loader}),
+                    resource_version="2",
+                )
+            return calls["box"][0]
+
+        monkeypatch.setattr(pins, "read_lock", read_and_swap)
+
+        result = sweep_stale_ephemeral_pins()
+
+        assert result.swept == ()
+        assert result.kept == (
+            ("schema", "pin replaced by run 56 during the sweep"),
+            ("schema-load", "left standing with its pair"),
+        )
+        assert set(decode_pins(calls["box"][0])) == {"schema", "schema-load"}
 
     def test_replaced_pin_during_sweep_is_reported_kept(self, monkeypatch):
         """A pin re-placed between the staleness check and the lock write is

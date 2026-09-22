@@ -980,6 +980,14 @@ def pin_service_image(
                     "the tag; re-run the lane."
                 )
             loader = resolve_fork_loader(repository, source_sha)
+            # docker-push publishes the service image before the loader, so a
+            # rebuild that moved the loader tag between the two reads has moved
+            # the service tag too; reading it again closes that window.
+            if loader is not None and resolve_ghcr_tag_digest(repository, commit_tag) != digest:
+                raise PinError(
+                    f"{repository}:{commit_tag} moved while the loader was being resolved; "
+                    "a rebuild of the same commit is in progress. Re-run the lane."
+                )
         except ImageResolutionError as exc:
             raise PinError(str(exc)) from exc
 
@@ -1429,20 +1437,30 @@ def sweep_stale_ephemeral_pins() -> SweepResult:
     if not candidates:
         return SweepResult((), (), ())
 
-    now = datetime.now(timezone.utc)
-    stale: dict[str, ServicePin] = {}
-    kept: list[tuple[str, str]] = []
+    # Pins from one run (schema and its paired loader) get one staleness
+    # decision and are restored together, so a pair never half-survives.
+    groups: dict[tuple[str, str], dict[str, ServicePin]] = {}
     for name, pin in sorted(candidates.items()):
-        run_state = _github_run_status(pin.source_repo, pin.run_id)
+        groups.setdefault((pin.source_repo, pin.run_id), {})[name] = pin
+
+    now = datetime.now(timezone.utc)
+    stale: dict[tuple[str, str], dict[str, ServicePin]] = {}
+    kept: list[tuple[str, str]] = []
+    for key, members in groups.items():
+        source_repo, run_id = key
+        run_state = _github_run_status(source_repo, run_id)
         if run_state == "completed":
-            stale[name] = pin
+            stale[key] = members
         elif run_state is None:
-            if _pin_age_exceeds_threshold(pin, now):
-                stale[name] = pin
+            if all(_pin_age_exceeds_threshold(pin, now) for pin in members.values()):
+                stale[key] = members
             else:
-                kept.append((name, "run state unreachable and pin younger than threshold"))
+                kept.extend(
+                    (name, "run state unreachable and pin younger than threshold")
+                    for name in members
+                )
         else:
-            kept.append((name, f"run {pin.run_id} is {run_state}"))
+            kept.extend((name, f"run {run_id} is {run_state}") for name in members)
 
     if not stale:
         return SweepResult((), tuple(kept), ())
@@ -1463,31 +1481,41 @@ def sweep_stale_ephemeral_pins() -> SweepResult:
         restored = []
         refresh_required = []
         replaced = []
-        for name, expected in stale.items():
-            live = pins.get(name)
-            # A pin re-placed since the staleness check stands, but is
-            # reported so the outcome never reads as "nothing to do".
-            if live is None:
-                replaced.append((name, "pin was already released when the sweep wrote"))
-                continue
-            if live != expected:
-                owner = f"run {live.run_id}" if live.run_id else "another pin"
-                replaced.append((name, f"pin replaced by {owner} during the sweep"))
-                continue
-            pins.pop(name)
-            if not live.canonical_repository or not live.canonical_tag:
-                refresh_required.append(name)
-                continue
-            data.update(
-                _lock_entry_patch(
-                    name,
-                    live.canonical_repository,
-                    live.canonical_tag,
-                    live.canonical_created_at,
-                    live.canonical_digest,
+        for members in stale.values():
+            # A pin re-placed since the staleness check stands, and takes its
+            # pair with it, but is reported so the outcome never reads as
+            # "nothing to do".
+            moved: list[tuple[str, str]] = []
+            for name, expected in members.items():
+                live = pins.get(name)
+                if live is None:
+                    moved.append((name, "pin was already released when the sweep wrote"))
+                elif live != expected:
+                    owner = f"run {live.run_id}" if live.run_id else "another pin"
+                    moved.append((name, f"pin replaced by {owner} during the sweep"))
+            if moved:
+                replaced.extend(moved)
+                replaced.extend(
+                    (name, "left standing with its pair")
+                    for name in members
+                    if name not in dict(moved)
                 )
-            )
-            restored.append(name)
+                continue
+            for name in members:
+                live = pins.pop(name)
+                if not live.canonical_repository or not live.canonical_tag:
+                    refresh_required.append(name)
+                    continue
+                data.update(
+                    _lock_entry_patch(
+                        name,
+                        live.canonical_repository,
+                        live.canonical_tag,
+                        live.canonical_created_at,
+                        live.canonical_digest,
+                    )
+                )
+                restored.append(name)
 
         annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
         if pins:
@@ -1496,7 +1524,8 @@ def sweep_stale_ephemeral_pins() -> SweepResult:
             annotations.pop(PINS_ANNOTATION, None)
         return {"data": data, "metadata": {"annotations": annotations}}
 
-    mutate_lock(compute, f"Sweep stale ephemeral pins ({', '.join(sorted(stale))})")
+    stale_names = sorted(name for members in stale.values() for name in members)
+    mutate_lock(compute, f"Sweep stale ephemeral pins ({', '.join(stale_names)})")
     if restored:
         reconcile_consumers(restored)
     return SweepResult(
