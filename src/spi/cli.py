@@ -1128,7 +1128,7 @@ def service_pin(
 
     if image is not None:
         try:
-            pin = pin_service_image(
+            applied = pin_service_image(
                 service,
                 image,
                 ephemeral=ephemeral,
@@ -1140,23 +1140,23 @@ def service_pin(
         except (PinError, ImageResolutionError) as exc:
             console.print(f"[error]{exc}[/error]")
             raise typer.Exit(code=1)
+        pin = dict(applied)[service]
         marker = f" (ephemeral, run {pin.run_id})" if pin.ephemeral else ""
         console.print(
             f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker} "
             f"on {_environment_label()}"
         )
-        if pin.ephemeral and service == SCHEMA_SERVICE_NAME:
-            loader = live_pins().get(SCHEMA_LOAD_SERVICE_NAME)
-            if loader is not None and loader.run_id == pin.run_id:
+        for name, paired in applied:
+            if name != service:
                 console.print(
-                    f"  [success]{SCHEMA_LOAD_SERVICE_NAME}[/success] paired to "
-                    f"{loader.digest[:19]} from the same commit"
+                    f"  [success]{name}[/success] paired to {paired.digest[:19]} "
+                    "from the same commit"
                 )
-            else:
-                console.print(
-                    f"  [dim]{SCHEMA_LOAD_SERVICE_NAME} stays canonical: the fork published "
-                    "no loader image for this commit[/dim]"
-                )
+        if pin.ephemeral and service == SCHEMA_SERVICE_NAME and len(applied) == 1:
+            console.print(
+                f"  [dim]{SCHEMA_LOAD_SERVICE_NAME} stays canonical: the fork published "
+                "no loader image for this commit[/dim]"
+            )
         if pin.ephemeral:
             console.print(
                 f"[dim]Release with: spi service reset {service} --if-run {pin.run_id}[/dim]"

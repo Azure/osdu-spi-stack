@@ -731,19 +731,6 @@ class TestForkPackageRepositories:
         )
 
 
-class TestForkLoaderRepositories:
-    def test_prefixed_repository_publishes_a_prefixed_loader_or_schema_load(self):
-        assert images.fork_loader_repositories("Azure/osdu-spi-schema") == (
-            "ghcr.io/azure/osdu-spi-schema-load",
-            "ghcr.io/azure/schema-load",
-        )
-
-    def test_repository_named_schema_yields_one_package(self):
-        assert images.fork_loader_repositories("danielscholl-osdu/schema") == (
-            "ghcr.io/danielscholl-osdu/schema-load",
-        )
-
-
 class TestResolveGhcrTagDigest:
     class _Response:
         def __init__(self, body=b'{"token": "t"}', digest=""):
@@ -821,24 +808,21 @@ class TestResolveGhcrTagDigest:
 
 
 class TestResolveForkLoader:
-    def test_first_published_package_wins_at_the_commit_tag(self, monkeypatch):
+    def test_loader_is_the_pinned_repository_plus_load_at_the_commit_tag(self, monkeypatch):
         seen = []
 
         def fake_tag(repository, tag):
             seen.append((repository, tag))
-            return "sha256:" + "e" * 64 if repository.endswith("/schema-load") else None
+            return "sha256:" + "e" * 64
 
         monkeypatch.setattr(images, "resolve_ghcr_tag_digest", fake_tag)
 
-        assert images.resolve_fork_loader("Azure/osdu-spi-schema", "b" * 40) == (
-            "ghcr.io/azure/schema-load",
+        assert images.resolve_fork_loader("ghcr.io/azure/osdu-spi-schema", "b" * 40) == (
+            "ghcr.io/azure/osdu-spi-schema-load",
             "sha256:" + "e" * 64,
         )
-        assert seen == [
-            ("ghcr.io/azure/osdu-spi-schema-load", "sha-" + "b" * 12),
-            ("ghcr.io/azure/schema-load", "sha-" + "b" * 12),
-        ]
+        assert seen == [("ghcr.io/azure/osdu-spi-schema-load", "sha-" + "b" * 12)]
 
-    def test_no_package_at_the_commit_is_none(self, monkeypatch):
+    def test_no_loader_at_the_commit_is_none(self, monkeypatch):
         monkeypatch.setattr(images, "resolve_ghcr_tag_digest", lambda repository, tag: None)
-        assert images.resolve_fork_loader("Azure/osdu-spi-schema", "b" * 40) is None
+        assert images.resolve_fork_loader("ghcr.io/azure/schema", "b" * 40) is None

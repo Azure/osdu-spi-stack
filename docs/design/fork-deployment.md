@@ -156,9 +156,9 @@ beside the service image from the same commit (osdu-spi ADR-042), so
 `spi service pin schema --image ... --ephemeral --source-sha <sha>` first
 requires the schema package's own `sha-<12>` tag to name the pinned digest,
 so the pair cannot straddle two builds of one commit, then looks up
-`ghcr.io/<lowercase-owner>/<lowercase-fork>-load:sha-<12>`, or
-`ghcr.io/<lowercase-owner>/schema-load:sha-<12>` for a fork that sets
-`SERVICE_NAME`, resolves the tag to its manifest digest
+`<pinned repository>-load:sha-<12>` (the template names the loader after the
+same image name as the service, so `ghcr.io/azure/osdu-spi-schema` pairs only
+`ghcr.io/azure/osdu-spi-schema-load`), resolves the tag to its manifest digest
 (`resolve_fork_loader` in `src/spi/images.py`), and pins `schema-load` under
 the same run id. A fork that published no loader for that commit keeps the
 canonical loader, and a loader left pinned by an earlier MR or run is

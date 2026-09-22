@@ -910,7 +910,7 @@ def pin_service_image(
     source_repo: str = "",
     source_sha: str = "",
     source_run_url: str = "",
-) -> ServicePin:
+) -> list[tuple[str, ServicePin]]:
     """Pin a service to a fork-built GHCR image by manifest digest.
 
     The target is the named service. An ephemeral schema pin also pairs the
@@ -920,7 +920,9 @@ def pin_service_image(
     or run is released to its canonical image so no mismatched pair survives.
     An ephemeral pin returns right after the lock write: reconciliation
     follows the lock's watch label, and ``verify`` is the deploy gate.
-    Returns the applied service pin.
+    Returns the applied (service, pin) pairs, the named service first, so the
+    caller reports the pairing from the write itself and never re-reads the
+    lock.
     """
 
     if service not in IMAGE_REGISTRY:
@@ -977,7 +979,7 @@ def pin_service_image(
                     "image must be the build it names. A rebuild of the same commit moved "
                     "the tag; re-run the lane."
                 )
-            loader = resolve_fork_loader(source_repo, source_sha)
+            loader = resolve_fork_loader(repository, source_sha)
         except ImageResolutionError as exc:
             raise PinError(str(exc)) from exc
 
@@ -1083,7 +1085,7 @@ def pin_service_image(
     # converges through the lock's watch label and verify gates the deploy.
     if not ephemeral:
         reconcile_consumers([service] + released)
-    return applied
+    return [(name, written_pins[name]) for name, _, _ in targets]
 
 
 def reset_service(service: str, if_run: str = "") -> ResetResult:

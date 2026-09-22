@@ -492,26 +492,6 @@ def fork_package_repositories(source_repo: str, service: str) -> tuple[str, ...]
     return tuple(dict.fromkeys((f"{GHCR_HOST}/{owner}/{name}", f"{GHCR_HOST}/{owner}/{service}")))
 
 
-def fork_loader_repositories(source_repo: str) -> tuple[str, ...]:
-    """The GHCR packages a fork at ``source_repo`` may publish for schema's paired loader.
-
-    The template names the loader ``<image>-load`` beside the service image, so
-    ``Azure/osdu-spi-schema`` publishes ``ghcr.io/azure/osdu-spi-schema-load`` and a
-    fork whose ``SERVICE_NAME`` variable names the service publishes
-    ``ghcr.io/<owner>/schema-load``.
-    """
-
-    owner, _, name = source_repo.lower().partition("/")
-    return tuple(
-        dict.fromkeys(
-            (
-                f"{GHCR_HOST}/{owner}/{name}-load",
-                f"{GHCR_HOST}/{owner}/{SCHEMA_LOAD_SERVICE_NAME}",
-            )
-        )
-    )
-
-
 def resolve_ghcr_tag_digest(repository: str, tag: str, attempts: int = 3) -> str | None:
     """Return the manifest digest a GHCR tag points at, or None when it is not published.
 
@@ -560,21 +540,19 @@ def resolve_ghcr_tag_digest(repository: str, tag: str, attempts: int = 3) -> str
     )
 
 
-def resolve_fork_loader(source_repo: str, source_sha: str) -> tuple[str, str] | None:
-    """Find the loader the fork built beside its schema image at ``source_sha``.
+def resolve_fork_loader(repository: str, source_sha: str) -> tuple[str, str] | None:
+    """Find the loader the fork built beside the schema image at ``source_sha``.
 
-    The template tags both images ``sha-<12>`` from one commit (template ADR-042),
-    so the loader is looked up by that tag in the fork's loader package and
-    returned as ``(repository, digest)``. None means the fork published no loader
-    for the commit.
+    The template names the loader ``<image>-load`` after the same image name as
+    the service and tags both ``sha-<12>`` from one commit (template ADR-042), so
+    the loader for ``ghcr.io/<owner>/<image>`` is ``ghcr.io/<owner>/<image>-load``
+    at that tag and nothing else. Returns ``(repository, digest)``, or None when
+    the fork published no loader for the commit.
     """
 
-    tag = f"sha-{source_sha[:12]}"
-    for repository in fork_loader_repositories(source_repo):
-        digest = resolve_ghcr_tag_digest(repository, tag)
-        if digest:
-            return repository, digest
-    return None
+    loader_repository = f"{repository}-load"
+    digest = resolve_ghcr_tag_digest(loader_repository, f"sha-{source_sha[:12]}")
+    return (loader_repository, digest) if digest else None
 
 
 def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> None:

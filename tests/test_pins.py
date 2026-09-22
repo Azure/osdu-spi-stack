@@ -1342,7 +1342,7 @@ class TestPinServiceImage:
     def test_operator_pin_accepts_any_ghcr_owner(self, monkeypatch):
         """An operator pin names its image explicitly and needs no onboarding."""
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage"), trusted={}))
-        pin = pin_service_image("storage", f"ghcr.io/acme/storage@{_GHCR_DIGEST}")
+        [(_, pin), *_] = pin_service_image("storage", f"ghcr.io/acme/storage@{_GHCR_DIGEST}")
         assert pin.repository == "ghcr.io/acme/storage"
         assert calls["patch"] is not None
 
@@ -1350,7 +1350,7 @@ class TestPinServiceImage:
         """A prefixed repository publishes under its own name, not the service's."""
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
         image = f"ghcr.io/azure/osdu-spi-storage@{_GHCR_DIGEST}"
-        pin = pin_service_image(
+        [(_, pin), *_] = pin_service_image(
             "storage",
             image,
             ephemeral=True,
@@ -1458,7 +1458,7 @@ class TestPinServiceImage:
     def test_pin_writes_digest_entry_and_provenance(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
 
-        pin = pin_service_image(
+        [(_, pin), *_] = pin_service_image(
             "storage",
             _GHCR_IMAGE,
             ephemeral=True,
@@ -1488,7 +1488,7 @@ class TestPinServiceImage:
     def test_mixed_case_repository_is_stored_lowercase(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
 
-        pin = pin_service_image(
+        [(_, pin), *_] = pin_service_image(
             "storage",
             f"ghcr.io/Azure/Storage@{_GHCR_DIGEST}",
             ephemeral=True,
@@ -1505,7 +1505,7 @@ class TestPinServiceImage:
 
     def test_operator_pin_carries_no_ephemeral_marker(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
-        pin = pin_service_image("storage", _GHCR_IMAGE)
+        [(_, pin), *_] = pin_service_image("storage", _GHCR_IMAGE)
         _, saved = calls["patch"]
         assert saved["storage"] == pin
         assert pin.ephemeral is False
@@ -1581,7 +1581,7 @@ class TestPinServiceImage:
             monkeypatch, lock, loader=("ghcr.io/azure/osdu-spi-schema-load", loader_digest)
         )
 
-        pin = pin_service_image(
+        applied = pin_service_image(
             "schema",
             f"ghcr.io/azure/schema@{_GHCR_DIGEST}",
             ephemeral=True,
@@ -1590,9 +1590,12 @@ class TestPinServiceImage:
             source_sha="b" * 40,
         )
 
+        assert [name for name, _ in applied] == ["schema", "schema-load"]
+        pin = applied[0][1]
+        assert applied[1][1].digest == loader_digest
         assert pin.repository == "ghcr.io/azure/schema"
         assert calls["tag_lookups"] == [("ghcr.io/azure/schema", "sha-" + "b" * 12)]
-        assert calls["loader_lookups"] == [("Azure/osdu-spi-schema", "b" * 40)]
+        assert calls["loader_lookups"] == [("ghcr.io/azure/schema", "b" * 40)]
         assert calls["description"] == f"Pin schema, schema-load to {_GHCR_DIGEST[:19]}"
         data, saved = calls["patch"]
         assert set(saved) == {"schema", "schema-load"}
@@ -1612,7 +1615,7 @@ class TestPinServiceImage:
         lock = _lock(data=_canonical_data("schema", "schema-load"))
         calls = self._wire(monkeypatch, lock, loader=None)
 
-        pin_service_image(
+        applied = pin_service_image(
             "schema",
             f"ghcr.io/azure/schema@{_GHCR_DIGEST}",
             ephemeral=True,
@@ -1621,7 +1624,8 @@ class TestPinServiceImage:
             source_sha="b" * 40,
         )
 
-        assert calls["loader_lookups"] == [("Azure/osdu-spi-schema", "b" * 40)]
+        assert [name for name, _ in applied] == ["schema"]
+        assert calls["loader_lookups"] == [("ghcr.io/azure/schema", "b" * 40)]
         assert calls["description"] == f"Pin schema to {_GHCR_DIGEST[:19]}"
         data, saved = calls["patch"]
         assert set(saved) == {"schema"}
@@ -2418,7 +2422,7 @@ class TestServicePinCli:
 
         def fake_pin(service, image, **kwargs):
             captured.update(service=service, image=image, **kwargs)
-            return _image_pin()
+            return [(service, _image_pin())]
 
         monkeypatch.setattr(cli, "pin_service_image", fake_pin)
 
@@ -2451,9 +2455,9 @@ class TestServicePinCli:
         monkeypatch.setattr(
             cli,
             "pin_service_image",
-            lambda service, image, **kwargs: _image_pin(
-                ephemeral=False, run_id="", source_repo="", source_sha=""
-            ),
+            lambda service, image, **kwargs: [
+                (service, _image_pin(ephemeral=False, run_id="", source_repo="", source_sha=""))
+            ],
         )
 
         result = CliRunner().invoke(cli.app, ["service", "pin", "storage", "--image", _GHCR_IMAGE])
@@ -2842,9 +2846,9 @@ class TestConfirmationsNameTheEnvironment:
         monkeypatch.setattr(
             cli,
             "pin_service_image",
-            lambda service, image, **kwargs: _image_pin(
-                ephemeral=False, run_id="", source_repo="", source_sha=""
-            ),
+            lambda service, image, **kwargs: [
+                (service, _image_pin(ephemeral=False, run_id="", source_repo="", source_sha=""))
+            ],
         )
 
         result = CliRunner().invoke(cli.app, ["service", "pin", "storage", "--image", _GHCR_IMAGE])
@@ -2894,9 +2898,9 @@ class TestConfirmationsNameTheEnvironment:
         monkeypatch.setattr(
             cli,
             "pin_service_image",
-            lambda service, image, **kwargs: _image_pin(
-                ephemeral=False, run_id="", source_repo="", source_sha=""
-            ),
+            lambda service, image, **kwargs: [
+                (service, _image_pin(ephemeral=False, run_id="", source_repo="", source_sha=""))
+            ],
         )
 
         result = CliRunner().invoke(cli.app, ["service", "pin", "storage", "--image", _GHCR_IMAGE])
