@@ -60,6 +60,7 @@ from .images import (
     parse_image_digest_ref,
     render_image_lock_configmap,
     require_ghcr_repository,
+    resolve_fork_loader,
     resolve_ghcr_manifest,
     resolve_image_commit,
     schema_load_lock_patch,
@@ -911,12 +912,14 @@ def pin_service_image(
 ) -> ServicePin:
     """Pin a service to a fork-built GHCR image by manifest digest.
 
-    Unlike an MR pin the target is exactly the named service: a fork build
-    ships one image, so a schema pin never pins the loader, and a loader
-    left pinned by an earlier MR is released to its canonical image so no
-    mismatched pair survives. An ephemeral pin returns right after the lock
-    write: reconciliation follows the lock's watch label, and ``verify`` is
-    the deploy gate. Returns the applied pin.
+    The target is the named service. An ephemeral schema pin also pairs the
+    loader the fork built beside the service image at ``source_sha`` (template
+    ADR-042), under the same run; a fork that published no loader for that
+    commit keeps the canonical loader. A loader left pinned by an earlier MR
+    or run is released to its canonical image so no mismatched pair survives.
+    An ephemeral pin returns right after the lock write: reconciliation
+    follows the lock's watch label, and ``verify`` is the deploy gate.
+    Returns the applied service pin.
     """
 
     if service not in IMAGE_REGISTRY:
@@ -924,8 +927,8 @@ def pin_service_image(
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
     if service == SCHEMA_LOAD_SERVICE_NAME:
         raise PinError(
-            f"{SCHEMA_LOAD_SERVICE_NAME} cannot be pinned directly; fork builds "
-            "ship the schema service image, and the loader stays canonical."
+            f"{SCHEMA_LOAD_SERVICE_NAME} cannot be pinned directly; pin schema, and an "
+            "ephemeral pin pairs the fork's loader from the same commit."
         )
 
     try:
@@ -957,8 +960,22 @@ def pin_service_image(
     except ImageResolutionError as exc:
         raise PinError(str(exc)) from exc
 
+    # Resolved once, outside the mutator, so the registry round trip does not
+    # repeat on every CAS retry. Only a run-owned pin knows the commit to pair on.
+    loader: tuple[str, str] | None = None
+    if service == SCHEMA_SERVICE_NAME and ephemeral:
+        try:
+            loader = resolve_fork_loader(source_repo, source_sha)
+        except ImageResolutionError as exc:
+            raise PinError(str(exc)) from exc
+
+    targets = [(service, repository, digest)]
+    if loader is not None:
+        targets.append((SCHEMA_LOAD_SERVICE_NAME, loader[0], loader[1]))
+
     applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     applied: ServicePin | None = None
+    written_pins: dict[str, ServicePin] = {}
     released: list[str] = []
     prior_pins: dict[str, ServicePin | None] = {}
     prior_entries: dict[str, dict[str, str]] = {}
@@ -969,22 +986,26 @@ def pin_service_image(
                 f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
                 "is this a core-profile cluster?"
             )
-        nonlocal applied, released, prior_pins, prior_entries
+        nonlocal applied, written_pins, released, prior_pins, prior_entries
         if ephemeral:
             _require_trusted_source(lock, service, source_repo)
         lock_data = lock.get("data") or {}
         pins = decode_pins(lock)
         data = dict(lock_data)
-        existing = pins.get(service)
-        prior_pins = {service: existing}
-        prior_entries = {
-            service: {key: lock_data[key] for key in _lock_entry_keys(service) if key in lock_data}
-        }
+        written_pins = {}
+        prior_pins = {}
+        prior_entries = {}
+
+        def capture(name: str) -> None:
+            prior_pins[name] = pins.get(name)
+            prior_entries[name] = {
+                key: lock_data[key] for key in _lock_entry_keys(name) if key in lock_data
+            }
 
         released_now: dict[str, ServicePin] = {}
-        if service == SCHEMA_SERVICE_NAME:
-            # A loader pinned by an earlier MR must not pair with the fork
-            # schema image; release it.
+        if service == SCHEMA_SERVICE_NAME and loader is None:
+            # A loader pinned by an earlier MR or run must not pair with the
+            # fork schema image; release it.
             stale = pins.get(SCHEMA_LOAD_SERVICE_NAME)
             if stale:
                 if not stale.canonical_repository or not stale.canonical_tag:
@@ -993,36 +1014,36 @@ def pin_service_image(
                         "canonical image recorded; run 'spi service reset schema' to remove "
                         "the invalid pin, then 'spi reconcile --refresh-images' before re-pinning."
                     )
-                prior_pins[SCHEMA_LOAD_SERVICE_NAME] = stale
-                prior_entries[SCHEMA_LOAD_SERVICE_NAME] = {
-                    key: lock_data[key]
-                    for key in _lock_entry_keys(SCHEMA_LOAD_SERVICE_NAME)
-                    if key in lock_data
-                }
+                capture(SCHEMA_LOAD_SERVICE_NAME)
                 pins.pop(SCHEMA_LOAD_SERVICE_NAME)
                 released_now[SCHEMA_LOAD_SERVICE_NAME] = stale
 
-        canonical = _captured_canonical(service, existing, lock_data)
-        applied = ServicePin(
-            mr="",
-            branch="",
-            repository=repository,
-            tag="",
-            canonical_repository=canonical[0],
-            canonical_tag=canonical[1],
-            canonical_created_at=canonical[2],
-            canonical_digest=canonical[3],
-            applied_at=applied_at,
-            digest=digest,
-            origin=GITHUB_ORIGIN,
-            ephemeral=ephemeral,
-            run_id=run_id,
-            source_repo=source_repo,
-            source_sha=source_sha,
-            source_run_url=source_run_url,
-        )
-        pins[service] = applied
-        data.update(_lock_entry_patch(service, repository, "", "", digest))
+        for name, target_repository, target_digest in targets:
+            existing = pins.get(name)
+            capture(name)
+            canonical = _captured_canonical(name, existing, lock_data)
+            pin = ServicePin(
+                mr="",
+                branch="",
+                repository=target_repository,
+                tag="",
+                canonical_repository=canonical[0],
+                canonical_tag=canonical[1],
+                canonical_created_at=canonical[2],
+                canonical_digest=canonical[3],
+                applied_at=applied_at,
+                digest=target_digest,
+                origin=GITHUB_ORIGIN,
+                ephemeral=ephemeral,
+                run_id=run_id,
+                source_repo=source_repo,
+                source_sha=source_sha,
+                source_run_url=source_run_url,
+            )
+            pins[name] = pin
+            written_pins[name] = pin
+            data.update(_lock_entry_patch(name, target_repository, "", "", target_digest))
+        applied = written_pins[service]
         for name, stale in released_now.items():
             data.update(
                 _lock_entry_patch(
@@ -1039,9 +1060,9 @@ def pin_service_image(
         annotations[PINS_ANNOTATION] = encode_pins(pins)
         return {"data": data, "metadata": {"annotations": annotations}}
 
-    mutate_lock(compute, f"Pin {service} to {digest[:19]}")
+    mutate_lock(compute, f"Pin {', '.join(name for name, _, _ in targets)} to {digest[:19]}")
     assert applied is not None
-    written: dict[str, ServicePin | None] = {service: applied}
+    written: dict[str, ServicePin | None] = dict(written_pins)
     written.update({name: None for name in released})
     mutation = _LockMutation(written=written, prior_pins=prior_pins, prior_entries=prior_entries)
     _abort_if_maintenance_intervened(mutation, service)
@@ -1059,10 +1080,11 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
     With ``if_run`` the reset is ownership-conditional: it acts
     only while the live pin still records that owning run, so a crashed
     run's always-run restore job cannot clobber a newer sibling's pin. A
-    refusal is a typed ``ResetRefusedError`` and mutates nothing. Run-owned
-    pins are single-service, so ``if_run`` never pairs the schema loader,
-    and the restore converges through the lock's watch label rather than an
-    explicit reconciliation.
+    refusal is a typed ``ResetRefusedError`` and mutates nothing. A run-owned
+    schema pin may have paired the loader under the same run, so ``if_run``
+    releases that loader with it and leaves a loader owned by anything else
+    standing; the restore converges through the lock's watch label rather
+    than an explicit reconciliation.
     """
 
     if service not in IMAGE_REGISTRY:
@@ -1070,7 +1092,7 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
 
     targets_all = [service]
-    if service == SCHEMA_SERVICE_NAME and not if_run:
+    if service == SCHEMA_SERVICE_NAME:
         targets_all.append(SCHEMA_LOAD_SERVICE_NAME)
 
     restored: list[str] = []
@@ -1093,7 +1115,12 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
                 )
             raise PinError(f"{service} is not pinned.")
         if if_run:
-            live = pins[service]
+            live = pins.get(service)
+            if live is None:
+                raise ResetRefusedError(
+                    "not_pinned",
+                    f"{service} is not pinned; nothing to restore for run {if_run}.",
+                )
             if live.run_id != if_run:
                 owner = (
                     f"run {live.run_id}"
@@ -1104,6 +1131,7 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
                     "run_mismatch",
                     f"{service} is pinned by {owner}, not run {if_run}; leaving the pin standing.",
                 )
+            targets = [name for name in targets if name == service or pins[name].run_id == if_run]
 
         data = dict(lock.get("data") or {})
         restored = []

@@ -729,3 +729,116 @@ class TestForkPackageRepositories:
         assert images.fork_package_repositories("danielscholl-osdu/partition", "partition") == (
             "ghcr.io/danielscholl-osdu/partition",
         )
+
+
+class TestForkLoaderRepositories:
+    def test_prefixed_repository_publishes_a_prefixed_loader_or_schema_load(self):
+        assert images.fork_loader_repositories("Azure/osdu-spi-schema") == (
+            "ghcr.io/azure/osdu-spi-schema-load",
+            "ghcr.io/azure/schema-load",
+        )
+
+    def test_repository_named_schema_yields_one_package(self):
+        assert images.fork_loader_repositories("danielscholl-osdu/schema") == (
+            "ghcr.io/danielscholl-osdu/schema-load",
+        )
+
+
+class TestResolveGhcrTagDigest:
+    class _Response:
+        def __init__(self, body=b'{"token": "t"}', digest=""):
+            self._body = body
+            self.headers = {"Docker-Content-Digest": digest} if digest else {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self._body
+
+    def test_returns_the_digest_behind_the_tag(self, monkeypatch):
+        digest = "sha256:" + "e" * 64
+        seen = []
+
+        def fake_urlopen(req, timeout=15):
+            seen.append((req.get_method(), req.full_url))
+            if "/manifests/" in req.full_url:
+                return self._Response(digest=digest)
+            return self._Response()
+
+        monkeypatch.setattr(images.urllib.request, "urlopen", fake_urlopen)
+
+        assert (
+            images.resolve_ghcr_tag_digest("ghcr.io/azure/schema-load", "sha-abc123def456")
+            == digest
+        )
+        assert seen[1] == (
+            "HEAD",
+            "https://ghcr.io/v2/azure/schema-load/manifests/sha-abc123def456",
+        )
+
+    @pytest.mark.parametrize("code", [403, 404])
+    def test_missing_package_or_tag_reads_as_not_published(self, monkeypatch, code):
+        """GHCR answers 403 on the pull token for a package that does not exist and
+        404 for a missing tag; neither is an error for a fork that ships no loader."""
+
+        def fake_urlopen(req, timeout=15):
+            if code == 403 or "/manifests/" in req.full_url:
+                raise urllib.error.HTTPError(req.full_url, code, "nope", Message(), None)
+            return self._Response()
+
+        monkeypatch.setattr(images.urllib.request, "urlopen", fake_urlopen)
+
+        assert (
+            images.resolve_ghcr_tag_digest("ghcr.io/azure/schema-load", "sha-abc123def456") is None
+        )
+
+    def test_server_errors_retry_then_fail_closed(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=15):
+            calls["n"] += 1
+            raise urllib.error.HTTPError(req.full_url, 502, "Bad Gateway", Message(), None)
+
+        monkeypatch.setattr(images.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(images.time, "sleep", lambda s: None)
+
+        with pytest.raises(images.ImageResolutionError, match="unreachable after 2 attempts"):
+            images.resolve_ghcr_tag_digest("ghcr.io/azure/schema-load", "sha-abc", attempts=2)
+        assert calls["n"] == 2
+
+    def test_a_missing_digest_header_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(
+            images.urllib.request, "urlopen", lambda req, timeout=15: self._Response()
+        )
+        monkeypatch.setattr(images.time, "sleep", lambda s: None)
+
+        with pytest.raises(images.ImageResolutionError, match="no manifest digest"):
+            images.resolve_ghcr_tag_digest("ghcr.io/azure/schema-load", "sha-abc", attempts=1)
+
+
+class TestResolveForkLoader:
+    def test_first_published_package_wins_at_the_commit_tag(self, monkeypatch):
+        seen = []
+
+        def fake_tag(repository, tag):
+            seen.append((repository, tag))
+            return "sha256:" + "e" * 64 if repository.endswith("/schema-load") else None
+
+        monkeypatch.setattr(images, "resolve_ghcr_tag_digest", fake_tag)
+
+        assert images.resolve_fork_loader("Azure/osdu-spi-schema", "b" * 40) == (
+            "ghcr.io/azure/schema-load",
+            "sha256:" + "e" * 64,
+        )
+        assert seen == [
+            ("ghcr.io/azure/osdu-spi-schema-load", "sha-" + "b" * 12),
+            ("ghcr.io/azure/schema-load", "sha-" + "b" * 12),
+        ]
+
+    def test_no_package_at_the_commit_is_none(self, monkeypatch):
+        monkeypatch.setattr(images, "resolve_ghcr_tag_digest", lambda repository, tag: None)
+        assert images.resolve_fork_loader("Azure/osdu-spi-schema", "b" * 40) is None

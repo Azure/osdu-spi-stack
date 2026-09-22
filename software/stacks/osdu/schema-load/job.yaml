@@ -1,8 +1,12 @@
 # One-shot Job that loads the OSDU shared schemas into the primary
-# partition, authenticating through workload-identity-sa. The loader
-# image's entrypoint runs bootstrap.sh from /home/osdu/deployments/scripts/azure,
-# so the wrapper and Token.py are mounted over that path rather than
-# overriding `command`.
+# partition, authenticating through workload-identity-sa. Two loader images
+# run here. Upstream's community image runs bootstrap.sh from
+# /home/osdu/deployments/scripts/azure, so the wrapper and Token.py are
+# mounted over that path rather than overriding `command`. The schema fork's
+# paired image (osdu-spi ADR-042) carries its own entrypoint, which reads
+# SCHEMA_URL and the workload identity variables and never looks at the
+# mounted path. The mounts and script.yaml go once schema's canonical source
+# is a fork (#192).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -54,6 +58,10 @@ spec:
           env:
             - name: NAMESPACE
               value: "osdu"
+            # Read by the fork-built loader's entrypoint; the community wrapper
+            # hardcodes the same service.
+            - name: SCHEMA_URL
+              value: "http://schema.osdu.svc.cluster.local/api/schema-service/v1"
             # The loader reads DATA_PARTITION; system-db is primary-only,
             # so it is aliased from PRIMARY_PARTITION.
             - name: DATA_PARTITION

@@ -31,6 +31,8 @@ from .console import console, display_result, error_console
 from .guard import get_suspend_status, verify_spi_cluster
 from .images import (
     DEFAULT_IMAGE_BRANCH,
+    SCHEMA_LOAD_SERVICE_NAME,
+    SCHEMA_SERVICE_NAME,
     ImageResolutionError,
     resolve_image_lock,
 )
@@ -1143,6 +1145,18 @@ def service_pin(
             f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker} "
             f"on {_environment_label()}"
         )
+        if pin.ephemeral and service == SCHEMA_SERVICE_NAME:
+            loader = live_pins().get(SCHEMA_LOAD_SERVICE_NAME)
+            if loader is not None and loader.run_id == pin.run_id:
+                console.print(
+                    f"  [success]{SCHEMA_LOAD_SERVICE_NAME}[/success] paired to "
+                    f"{loader.digest[:19]} from the same commit"
+                )
+            else:
+                console.print(
+                    f"  [dim]{SCHEMA_LOAD_SERVICE_NAME} stays canonical: the fork published "
+                    "no loader image for this commit[/dim]"
+                )
         if pin.ephemeral:
             console.print(
                 f"[dim]Release with: spi service reset {service} --if-run {pin.run_id}[/dim]"
