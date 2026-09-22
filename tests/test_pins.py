@@ -1312,8 +1312,16 @@ class TestPinServiceImage:
                 raise loader
             return loader
 
+        def fake_tag(repository, tag):
+            calls["tag_lookups"].append((repository, tag))
+            return calls["tagged"]
+
+        calls["tag_lookups"] = []
+        # The fork's sha-<12> tag names the pinned digest unless a test moves it.
+        calls["tagged"] = _GHCR_DIGEST
         monkeypatch.setattr(pins, "resolve_ghcr_manifest", fake_manifest)
         monkeypatch.setattr(pins, "resolve_fork_loader", fake_loader)
+        monkeypatch.setattr(pins, "resolve_ghcr_tag_digest", fake_tag)
         return calls
 
     def test_unknown_service_rejected(self):
@@ -1583,6 +1591,7 @@ class TestPinServiceImage:
         )
 
         assert pin.repository == "ghcr.io/azure/schema"
+        assert calls["tag_lookups"] == [("ghcr.io/azure/schema", "sha-" + "b" * 12)]
         assert calls["loader_lookups"] == [("Azure/osdu-spi-schema", "b" * 40)]
         assert calls["description"] == f"Pin schema, schema-load to {_GHCR_DIGEST[:19]}"
         data, saved = calls["patch"]
@@ -1619,6 +1628,42 @@ class TestPinServiceImage:
         assert data["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "repo/schema-load-master"
         assert data["SCHEMA_LOAD_IMAGE_TAG"] == "c" * 40
 
+    def test_schema_ephemeral_pin_refuses_a_digest_the_commit_tag_does_not_name(self, monkeypatch):
+        """The loader is found by the commit's tag, so a service digest that tag does not
+        point at would pair images from two builds."""
+        lock = _lock(data=_canonical_data("schema", "schema-load"))
+        calls = self._wire(monkeypatch, lock, loader=("ghcr.io/azure/schema-load", _GHCR_DIGEST))
+        calls["tagged"] = "sha256:" + "d" * 64
+
+        with pytest.raises(PinError, match="points at sha256:ddd.*re-run the lane"):
+            pin_service_image(
+                "schema",
+                f"ghcr.io/azure/schema@{_GHCR_DIGEST}",
+                ephemeral=True,
+                run_id="1234",
+                source_repo="Azure/osdu-spi-schema",
+                source_sha="b" * 40,
+            )
+
+        assert calls["loader_lookups"] == []
+        assert calls["patch"] is None
+
+    def test_schema_ephemeral_pin_refuses_when_the_commit_tag_is_gone(self, monkeypatch):
+        lock = _lock(data=_canonical_data("schema", "schema-load"))
+        calls = self._wire(monkeypatch, lock)
+        calls["tagged"] = None
+
+        with pytest.raises(PinError, match="points at no image"):
+            pin_service_image(
+                "schema",
+                f"ghcr.io/azure/schema@{_GHCR_DIGEST}",
+                ephemeral=True,
+                run_id="1234",
+                source_repo="Azure/osdu-spi-schema",
+                source_sha="b" * 40,
+            )
+        assert calls["patch"] is None
+
     def test_operator_schema_pin_never_looks_for_a_loader(self, monkeypatch):
         """Without provenance there is no commit to pair on; the loader stays canonical."""
         lock = _lock(data=_canonical_data("schema", "schema-load"))
@@ -1626,6 +1671,7 @@ class TestPinServiceImage:
 
         pin_service_image("schema", f"ghcr.io/azure/schema@{_GHCR_DIGEST}")
 
+        assert calls["tag_lookups"] == []
         assert calls["loader_lookups"] == []
         _, saved = calls["patch"]
         assert set(saved) == {"schema"}

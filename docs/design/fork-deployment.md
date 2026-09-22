@@ -153,7 +153,9 @@ Azure namespace fallback is involved.
 
 Schema's ephemeral pin pairs the loader. The template builds `<image>-load`
 beside the service image from the same commit (osdu-spi ADR-042), so
-`spi service pin schema --image ... --ephemeral --source-sha <sha>` looks up
+`spi service pin schema --image ... --ephemeral --source-sha <sha>` first
+requires the schema package's own `sha-<12>` tag to name the pinned digest,
+so the pair cannot straddle two builds of one commit, then looks up
 `ghcr.io/<lowercase-owner>/<lowercase-fork>-load:sha-<12>`, or
 `ghcr.io/<lowercase-owner>/schema-load:sha-<12>` for a fork that sets
 `SERVICE_NAME`, resolves the tag to its manifest digest
@@ -163,9 +165,9 @@ canonical loader, and a loader left pinned by an earlier MR or run is
 released to its canonical entry so no mismatched pair runs. `spi service
 reset schema --if-run <id>` releases the loader the run paired and leaves a
 loader owned by anything else standing. The `schema-load` Job passes
-`SCHEMA_URL` and the workload identity to the fork-built image; the mounted
-wrapper scripts serve only the community image and go with the canonical
-flip (#192).
+`SCHEMA_URL` and the workload identity to the fork-built image; the wrapper
+ConfigMap is mounted as the community image's `scripts/azure` directory,
+serves only that image, and goes with the canonical flip (#192).
 
 `require_ghcr_repository` in `src/spi/images.py` checks GHCR host, path,
 and digest shape without naming an owner. An ephemeral pin additionally

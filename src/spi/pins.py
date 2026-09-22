@@ -62,6 +62,7 @@ from .images import (
     require_ghcr_repository,
     resolve_fork_loader,
     resolve_ghcr_manifest,
+    resolve_ghcr_tag_digest,
     resolve_image_commit,
     schema_load_lock_patch,
 )
@@ -960,11 +961,22 @@ def pin_service_image(
     except ImageResolutionError as exc:
         raise PinError(str(exc)) from exc
 
-    # Resolved once, outside the mutator, so the registry round trip does not
-    # repeat on every CAS retry. Only a run-owned pin knows the commit to pair on.
+    # Resolved once, outside the mutator, so the registry round trips do not
+    # repeat on every CAS retry. Only a run-owned pin knows the commit to pair
+    # on, and the loader is found by that commit's tag, so the service digest
+    # must be the build the same tag names or the pair would straddle commits.
     loader: tuple[str, str] | None = None
     if service == SCHEMA_SERVICE_NAME and ephemeral:
+        commit_tag = f"sha-{source_sha[:12]}"
         try:
+            tagged = resolve_ghcr_tag_digest(repository, commit_tag)
+            if tagged != digest:
+                raise PinError(
+                    f"{repository}:{commit_tag} points at {tagged or 'no image'}, not the "
+                    f"pinned {digest[:19]}; the loader is paired by that tag, so the schema "
+                    "image must be the build it names. A rebuild of the same commit moved "
+                    "the tag; re-run the lane."
+                )
             loader = resolve_fork_loader(source_repo, source_sha)
         except ImageResolutionError as exc:
             raise PinError(str(exc)) from exc
