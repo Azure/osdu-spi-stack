@@ -69,7 +69,8 @@ the same check and stops before creating anything. The check does not evaluate
 assignment conditions or deny assignments.
 
 An administrator grants both for a deployer. `--assignee-principal-type` is
-`ServicePrincipal` for an automation identity:
+`ServicePrincipal` for an automation identity. On native Windows, `spi check`
+prints the same commands in PowerShell form:
 
 ```bash
 DEPLOYER=<deployer-object-id>

@@ -58,7 +58,8 @@ caveat for a small population.
 - The check evaluates role-based permissions only. Assignment conditions and
   deny assignments are not evaluated, so a grant conditioned to fewer than the
   eleven roles passes and fails at the first template outside its list. The
-  panel prints any condition it finds for comparison.
+  permissions API does not return assignment conditions, so an administrator
+  compares an existing grant with the role table in `docs/install.md`.
 - A new role in a template requires the same id in `STACK_ROLES` and a condition
   update by every administrator who granted the old set.
 - A deployer learns the exact grant to request before any resource exists, and

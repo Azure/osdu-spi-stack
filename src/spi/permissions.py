@@ -30,6 +30,7 @@ import typer
 from rich.panel import Panel
 from rich.table import Table
 
+from .checks import detect_platform
 from .console import console
 from .shell import run_command
 
@@ -75,7 +76,6 @@ class ScopeResult:
     scope: str
     reason: str
     actions: Dict[str, bool] = field(default_factory=dict)
-    condition: Optional[str] = None
     error: Optional[str] = None
 
     @property
@@ -87,7 +87,6 @@ class ScopeResult:
             "scope": self.scope,
             "reason": self.reason,
             "actions": self.actions,
-            "condition": self.condition,
             "error": self.error,
         }
 
@@ -149,13 +148,6 @@ def action_allowed(action: str, entries: Sequence[Dict[str, Any]]) -> bool:
     return any(_entry_allows(e, action) for e in entries)
 
 
-def _grant_condition(entries: Sequence[Dict[str, Any]]) -> Optional[str]:
-    for entry in entries:
-        if entry.get("condition") and any(_entry_allows(entry, a) for a in GRANT_ACTIONS):
-            return entry["condition"]
-    return None
-
-
 def evaluate(scope: str, reason: str, actions: Sequence[str]) -> ScopeResult:
     entries, error = read_permissions(scope)
     if entries is None:
@@ -164,7 +156,6 @@ def evaluate(scope: str, reason: str, actions: Sequence[str]) -> ScopeResult:
         scope,
         reason,
         actions={a: action_allowed(a, entries) for a in actions},
-        condition=_grant_condition(entries),
     )
 
 
@@ -181,31 +172,44 @@ def stack_condition() -> str:
     )
 
 
-def _shell_single_quote(text: str) -> str:
-    # Single quotes keep bash history expansion off the condition's `!`.
-    return "'" + text.replace("'", "'\\''") + "'"
-
-
 def grant_commands(
-    object_id: str, principal_type: str, subscription_id: str, denied: Sequence[str]
+    object_id: str,
+    principal_type: str,
+    subscription_id: str,
+    denied: Sequence[str],
+    powershell: Optional[bool] = None,
 ) -> List[str]:
-    """The admin commands that close the gap, only for what is missing."""
-    assignee = (
-        f"--assignee-object-id {object_id} \\\n"
-        f"  --assignee-principal-type {principal_type} \\\n"
-        f"  --scope {subscription_scope(subscription_id)}"
-    )
+    """The admin commands that close the gap, only for what is missing.
+
+    Bash form by default, PowerShell on native Windows; both single-quote the
+    condition so neither shell expands its `!`, `$`, or braces.
+    """
+    if powershell is None:
+        powershell = detect_platform() == "windows"
+    if powershell:
+        cont = " `\n  "
+        condition = "'" + stack_condition().replace("'", "''") + "'"
+    else:
+        cont = " \\\n  "
+        condition = "'" + stack_condition().replace("'", "'\\''") + "'"
+    assignee = [
+        f"--assignee-object-id {object_id}",
+        f"--assignee-principal-type {principal_type}",
+        f"--scope {subscription_scope(subscription_id)}",
+    ]
     commands = []
     if any(a in denied for a in CONTRIBUTOR_ACTIONS):
-        commands.append(f'az role assignment create \\\n  --role "Contributor" \\\n  {assignee}')
+        parts = ["az role assignment create", '--role "Contributor"', *assignee]
+        commands.append(cont.join(parts))
     if any(a in denied for a in GRANT_ACTIONS):
-        commands.append(
-            "az role assignment create \\\n"
-            '  --role "Role Based Access Control Administrator" \\\n'
-            f"  {assignee} \\\n"
-            "  --condition-version 2.0 \\\n"
-            f"  --condition {_shell_single_quote(stack_condition())}"
-        )
+        parts = [
+            "az role assignment create",
+            '--role "Role Based Access Control Administrator"',
+            *assignee,
+            "--condition-version 2.0",
+            f"--condition {condition}",
+        ]
+        commands.append(cont.join(parts))
     return commands
 
 
@@ -231,13 +235,6 @@ def report_denial(results: Sequence[ScopeResult], commands: Sequence[str], comma
         lines.append(
             f"{command} assigns {len(STACK_ROLES)} Azure roles to the identities it creates "
             "and to you.\nContributor cannot create role assignments."
-        )
-    condition = next((r.condition for r in results if r.condition), None)
-    if condition:
-        lines.append(
-            "A role-assignment grant with a condition is present. The condition is not "
-            "evaluated; compare it with the role ids in the requirement:\n"
-            f"[dim]{condition}[/dim]"
         )
     noun = "command" if len(commands) == 1 else "commands"
     lines.append(f"Ask a subscription admin to run the {noun} below.")

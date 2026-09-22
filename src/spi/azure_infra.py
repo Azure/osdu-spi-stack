@@ -43,6 +43,7 @@ from .bicep import run_bicep_deployment
 from .config import RG_SUFFIX_TAG, Config
 from .console import console, display_result
 from .paths import INFRA_ROOT
+from .permissions import AKS_RBAC_CLUSTER_ADMIN_ROLE_ID
 from .shell import run_command
 
 INFRA_MAIN_BICEP = INFRA_ROOT / "main.bicep"
@@ -443,7 +444,7 @@ def _grant_deployer_cluster_admin(
             "assignment",
             "create",
             "--role",
-            "Azure Kubernetes Service RBAC Cluster Admin",
+            AKS_RBAC_CLUSTER_ADMIN_ROLE_ID,
             "--assignee-object-id",
             deployer_principal_id,
             "--assignee-principal-type",
@@ -517,7 +518,6 @@ def _verify_role_assignment_recorded(user_oid: str, cluster_resource_id: str):
     # Raw ARM rather than `az role assignment`, which resolves principals
     # through Graph and can be blocked by Conditional Access (AADSTS530084)
     # while ARM access is fine.
-    from .permissions import AKS_RBAC_CLUSTER_ADMIN_ROLE_ID
 
     result = run_command(
         [

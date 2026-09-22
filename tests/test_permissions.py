@@ -68,8 +68,6 @@ CONSTRAINED_GRANT = {
         "*/read",
     ],
     "notActions": [],
-    "condition": "((!(ActionMatches{'Microsoft.Authorization/roleAssignments/write'})) OR ...)",
-    "conditionVersion": "2.0",
 }
 
 
@@ -138,12 +136,6 @@ class TestEvaluate:
             result = permissions.evaluate(SUB_SCOPE, "subscription scope", DEPLOY_ACTIONS)
         assert result.error and result.denied == []
 
-    def test_the_grant_condition_is_reported_verbatim(self):
-        run, _ = _az({SUB_SCOPE: [CONTRIBUTOR, CONSTRAINED_GRANT]})
-        with patch("spi.permissions.run_command", side_effect=run):
-            result = permissions.evaluate(SUB_SCOPE, "subscription scope", DEPLOY_ACTIONS)
-        assert result.condition == CONSTRAINED_GRANT["condition"]
-
     def test_a_grant_inherited_from_the_subscription_is_read_at_group_scope(self):
         run, calls = _az({RG_SCOPE: [CONTRIBUTOR, CONSTRAINED_GRANT]}, group_exists=True)
         with patch("spi.permissions.run_command", side_effect=run):
@@ -160,24 +152,39 @@ class TestGrantText:
             assert condition.count(role_id) == 2
 
     def test_only_the_missing_grant_is_printed(self):
-        only_grant = grant_commands(OID, "User", SUB_ID, [WRITE_ASSIGNMENT, DELETE_ASSIGNMENT])
+        denied = [WRITE_ASSIGNMENT, DELETE_ASSIGNMENT]
+        only_grant = grant_commands(OID, "User", SUB_ID, denied, powershell=False)
         assert len(only_grant) == 1
         assert '"Role Based Access Control Administrator"' in only_grant[0]
         assert f"--assignee-object-id {OID}" in only_grant[0]
         assert f"--scope {SUB_SCOPE}" in only_grant[0]
 
-        both = grant_commands(OID, "User", SUB_ID, [CREATE_CLUSTER, WRITE_ASSIGNMENT])
+        both = grant_commands(
+            OID, "User", SUB_ID, [CREATE_CLUSTER, WRITE_ASSIGNMENT], powershell=False
+        )
         assert [c.splitlines()[1].strip() for c in both] == [
             '--role "Contributor" \\',
             '--role "Role Based Access Control Administrator" \\',
         ]
         assert grant_commands(OID, "User", SUB_ID, []) == []
 
-    def test_the_condition_is_single_quoted_for_the_shell(self):
-        command = grant_commands(OID, "User", SUB_ID, [WRITE_ASSIGNMENT])[0]
+    def test_the_bash_form_single_quotes_the_condition(self):
+        command = grant_commands(OID, "User", SUB_ID, [WRITE_ASSIGNMENT], powershell=False)[0]
         quoted = command.split("--condition ", 1)[1]
         assert quoted.startswith("'((!(") and quoted.endswith("))'")
-        assert '"' not in quoted
+        assert quoted[1:-1].replace("'\\''", "'") == stack_condition()
+        assert all(line.endswith(" \\") for line in command.splitlines()[:-1])
+
+    def test_the_powershell_form_uses_backticks_and_doubled_quotes(self):
+        command = grant_commands(OID, "User", SUB_ID, [WRITE_ASSIGNMENT], powershell=True)[0]
+        quoted = command.split("--condition ", 1)[1]
+        assert quoted[1:-1].replace("''", "'") == stack_condition()
+        assert all(line.endswith(" `") for line in command.splitlines()[:-1])
+
+    def test_native_windows_gets_the_powershell_form(self):
+        with patch("spi.permissions.detect_platform", return_value="windows"):
+            command = grant_commands(OID, "User", SUB_ID, [WRITE_ASSIGNMENT])[0]
+        assert command.splitlines()[0].endswith(" `")
 
 
 class TestRoleSetMatchesTheBicep:
@@ -190,9 +197,24 @@ class TestRoleSetMatchesTheBicep:
             if "Microsoft.Authorization/roleDefinitions" not in text:
                 continue
             assigned |= {g for g in guid.findall(text) if not g.startswith("00000000-")}
-        # The cluster-admin grant is made by the CLI, not a template.
-        assigned.add(permissions.AKS_RBAC_CLUSTER_ADMIN_ROLE_ID)
+        assigned.add(self._cli_cluster_admin_role())
         assert assigned == set(STACK_ROLES.values())
+
+    @staticmethod
+    def _cli_cluster_admin_role():
+        """The role the CLI itself assigns, read from the create call it makes."""
+        from spi.azure_infra import _grant_deployer_cluster_admin
+        from spi.config import Config
+
+        ok = subprocess.CompletedProcess([], 0, "", "")
+        with (
+            patch("spi.azure_infra.run_command", return_value=ok) as run,
+            patch("spi.azure_infra._verify_role_assignment_recorded"),
+            patch("spi.azure_infra._wait_for_cluster_rbac"),
+        ):
+            _grant_deployer_cluster_admin(Config.from_env("dev1"), "/cluster", OID, "User")
+        create = run.call_args_list[0].args[0]
+        return create[create.index("--role") + 1]
 
 
 class TestCheckCommand:
