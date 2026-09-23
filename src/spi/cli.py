@@ -717,7 +717,7 @@ def token(
     member: bool = typer.Option(
         False,
         "--member",
-        help="Mint as the member identity: service user groups and storage admin only",
+        help="Mint as the member identity: users, service user groups, and storage admin",
     ),
     no_access: bool = typer.Option(
         False, "--no-access", help="Mint as the no-access identity for 401 tests"

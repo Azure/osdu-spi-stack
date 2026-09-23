@@ -7,10 +7,10 @@
 // trusts one cluster ServiceAccount, so a developer with cluster access can
 // mint the same app-only token fork CI mints through GitHub federation
 // (spi token); repositories are trusted later by spi onboard. The member
-// identity is seeded into users and the service user groups only, and the
-// no-access identity never receives a role assignment or an entitlements
-// group; fork CI uses them to prove the non-admin 403 path and the
-// unknown-caller 401 path.
+// identity is seeded into users, the service user groups, and
+// service.storage.admin only, and the no-access identity never receives a
+// role assignment or an entitlements group; fork CI uses them to prove the
+// 403 path for a caller who is no data manager and the unknown-caller 401 path.
 
 @description('Resource name for the OSDU workload identity.')
 param name string
