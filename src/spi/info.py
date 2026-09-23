@@ -129,7 +129,7 @@ def _read_cluster_config() -> dict:
 
 def _read_flux_extension_values() -> dict:
     """Read Azure metadata injected by the AKS Flux extension."""
-    data = kubectl_json(["get", "configmap", "flux-extension-values", "-n", "osdu-flux"])
+    data = kubectl_json(["get", "configmap", "flux-extension-values", "-n", "flux-system"])
     if not data:
         return {}
     return data.get("data", {}) or {}
@@ -396,8 +396,8 @@ def _collect_info() -> dict:
     )
     mode, base, endpoints, middleware = _compute_endpoints(cfg)
 
-    # The Flux extension ConfigMap is absent on some clusters; the CLI's own
-    # cluster config carries the same value.
+    # The fork deploy identity cannot read flux-system; the CLI's own cluster
+    # config carries the same resource group.
     rg = azure_ext.get("AZURE_RESOURCE_GROUP", "") or cluster_cfg.get("AZURE_RESOURCE_GROUP", "")
     env = _env_from_resource_group(rg)
     partitions = _parse_partitions_from_values_yaml(init_values)
