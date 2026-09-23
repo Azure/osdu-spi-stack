@@ -198,7 +198,7 @@ def _parse_members_from_values_yaml(text: str) -> list[str]:
 
 
 def _parse_member_users_from_values_yaml(text: str) -> list[str]:
-    """The principals seeded into users and the service user groups only."""
+    """The principals seeded into users, the service user groups, and service.storage.admin."""
     return list(parse_init_values(text).get("entitlementsMemberUsers") or [])
 
 
