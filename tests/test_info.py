@@ -236,6 +236,21 @@ def test_legal_tag_seeded_reads_the_job_outcome(monkeypatch):
     assert info._legal_tag_seeded("opendes") is False
 
 
+def test_region_comes_from_the_flux_extension_values_in_flux_system(monkeypatch):
+    """The AKS Flux extension writes flux-extension-values to flux-system, not
+    to the osdu-flux namespace the stack's own ConfigMaps live in."""
+    seen = []
+
+    def fake_kubectl_json(args):
+        seen.append(args)
+        return {"data": {"AZURE_REGION": "westus3"}}
+
+    monkeypatch.setattr(info, "kubectl_json", fake_kubectl_json)
+
+    assert info._read_flux_extension_values() == {"AZURE_REGION": "westus3"}
+    assert seen == [["get", "configmap", "flux-extension-values", "-n", "flux-system"]]
+
+
 def test_entitlements_seeded_asks_for_the_job_the_member_list_names(monkeypatch):
     """A Job that seeded a previous deploy identity keeps its old hashed name,
     so the read targets the name the current list renders and nothing else."""
