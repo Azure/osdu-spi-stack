@@ -23,7 +23,8 @@ record written at the end of `spi up` supplies the version fields.
   `suspended`, `maintenance`, Kustomization counts with a not-ready
   list, `environment` (name, stack version, resolved commit, profile,
   deploy timestamp, CLI version), `images` (branch, resolved-at, count,
-  pinned services), and `baseUrl`. `stack` repeats the version fields
+  pinned service names, and a `pins` map carrying each pin's provenance),
+  and `baseUrl`. `stack` repeats the version fields
   without the name and is kept one release for existing consumers.
 - `environment` is built by one function from the deploy record and
   published unchanged by `spi info --json` too, so a fork job binding facts

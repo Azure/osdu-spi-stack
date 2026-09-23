@@ -480,7 +480,94 @@ def test_image_lock_summary_includes_pins(monkeypatch):
         "resolvedAt": "now",
         "count": 14,
         "pinnedServices": ["storage"],
+        "pins": {
+            "storage": {
+                "repository": "registry/storage",
+                "digest": "",
+                "ephemeral": False,
+                "runId": "",
+                "sourceRepo": "",
+                "sourceSha": "",
+                "sourceRunUrl": "",
+                "appliedAt": "now",
+                "canonicalDigest": "sha256:old",
+            }
+        },
     }
+
+
+def _pinned_lock() -> dict:
+    canonical = {
+        "mr": "",
+        "branch": "",
+        "tag": "",
+        "canonical_repository": "community.opengroup.org:5555/osdu/partition",
+        "canonical_tag": "c" * 40,
+        "canonical_created_at": "then",
+        "canonical_digest": "sha256:" + "c" * 64,
+        "applied_at": "2026-09-23T10:00:00Z",
+    }
+    pins = {
+        "partition": {
+            **canonical,
+            "repository": "ghcr.io/danielscholl-osdu/partition",
+            "digest": "sha256:" + "a" * 64,
+            "ephemeral": True,
+            "run_id": "34519766164",
+            "source_repo": "danielscholl-osdu/partition",
+            "source_sha": "d" * 40,
+            "source_run_url": "https://github.com/danielscholl-osdu/partition/actions/runs/1",
+        },
+        "storage": {
+            **canonical,
+            "repository": "ghcr.io/danielscholl-osdu/storage",
+            "digest": "sha256:" + "b" * 64,
+        },
+    }
+    return {
+        "metadata": {"annotations": {"spi-stack.osdu.dev/pins": json.dumps(pins)}},
+        "data": {"IMAGE_BRANCH": "master", "IMAGE_RESOLVED_AT": "now", "IMAGE_COUNT": "14"},
+    }
+
+
+def test_status_human_lists_active_pins(monkeypatch):
+    """A borrowed environment announces itself on the dashboard, not only in
+    --json, with each pin's origin and the canonical digest it replaced."""
+    _wire(monkeypatch, lock=_pinned_lock())
+    monkeypatch.setattr(status, "kubectl_json", lambda _args: None)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+    monkeypatch.setattr(status.console, "width", 200)
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    output = _plain(result.output)
+
+    assert result.exit_code == 0
+    assert "Pinned Services" in output
+    assert "@sha256:aaaaaaaaaaaa" in output
+    assert "@sha256:bbbbbbbbbbbb" in output
+    assert "run 34519766164 (ephemeral)" in output
+    assert "operator" in output
+    assert "| PINNED: 2" in output
+    assert "Pinned: partition, storage" in output
+
+    pins = status.collect_status().to_dict()["images"]["pins"]
+    assert pins["partition"]["ephemeral"] is True
+    assert pins["partition"]["runId"] == "34519766164"
+    assert pins["storage"]["ephemeral"] is False
+
+
+def test_status_human_omits_pins_when_none_are_active(monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setattr(status, "kubectl_json", lambda _args: None)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    output = _plain(result.output)
+
+    assert result.exit_code == 0
+    assert "Pinned Services" not in output
+    assert "PINNED" not in output
+    assert status.collect_status().to_dict()["images"]["pins"] == {}
 
 
 def test_status_json_uses_contract_exit_code(monkeypatch):
