@@ -149,11 +149,17 @@ config.
 - **Two more identities prove the non-admin 403 path and the
   unknown-caller 401 path.** `spi up` also creates UAMI
   `spi-stack-<env>-member`, which the entitlements-members Job seeds into
-  `users` and every `service.<name>.user` group and nothing else, and UAMI
-  `spi-stack-<env>-noaccess` with no Azure role and no entitlements group.
-  These are the two negative callers the OSDU acceptance suites declare: a
-  member who may call a service but holds no admin role, and a caller
-  entitlements does not know, who draws 401. `spi onboard` federates both on
+  `users`, every `service.<name>.user` group, and `service.storage.admin`
+  and nothing else, and UAMI `spi-stack-<env>-noaccess` with no Azure role
+  and no entitlements group. These are the two negative callers the OSDU
+  acceptance suites declare: a member who passes a service's role check but
+  is no data manager, so record ACLs decide its 403s, and a caller
+  entitlements does not know, who draws 401. The storage admin role is the
+  one storage's suite declares for that member; it opens storage's admin
+  endpoints, where purge still requires record ownership and the by-kind
+  listing returns record ids without an ACL check. `users` itself sits in
+  `data.default.viewers` and `data.default.owners` after the Azure tenant
+  bootstrap, so the member reads and writes records ACL'd to those groups. `spi onboard` federates both on
   the same `fork-<service>` credential and subject as the deployer and
   revokes all three together. `spi info --json` publishes them as
   `deploy_identity.member_client_id` and `deploy_identity.no_access_client_id`;

@@ -368,6 +368,7 @@ def test_members_deadline_covers_its_wait_budget(init_scripts):
         + 2 * len(const["ROOT_GROUPS"])
         + 1
         + 2 * const["MAX_USER_GROUPS"]
+        + 2 * len(const["MEMBER_USER_GROUPS"])
     )
     assert const["REQUEST_BUDGET"] >= _TOKEN_TIMEOUT + calls * const["REQUEST_TIMEOUT"]
 
@@ -569,11 +570,12 @@ _CREATED_GROUPS = {
 _BOOTSTRAP_GROUPS = tuple(n for n in _GROUPS if n not in _CREATED_GROUPS)
 
 
-# Groups only member users join: users plus every service.<name>.user.
+# Groups only member users join: users, every service.<name>.user, and storage admin.
 _USER_GROUPS = {
     "users": _GROUPS["users"],
     "service.entitlements.user": "service.entitlements.user@opendes.dataservices.energy",
     "service.legal.user": "service.legal.user@opendes.dataservices.energy",
+    "service.storage.admin": "service.storage.admin@opendes.dataservices.energy",
 }
 _ALL_GROUPS = {**_GROUPS, **_CREATED_GROUPS, **_USER_GROUPS}
 
@@ -664,7 +666,7 @@ def test_members_seeds_every_root_group_and_verifies(init_scripts, monkeypatch, 
     assert len(result.routed("get")) == 5
 
 
-def test_members_seeds_member_users_into_users_and_the_service_user_groups_only(
+def test_members_seeds_member_users_into_the_user_groups_and_storage_admin_only(
     init_scripts, monkeypatch, capsys
 ):
     result = _run_members(init_scripts, monkeypatch, capsys, member_users="member-client-id")
@@ -800,6 +802,28 @@ def test_members_fails_when_a_root_group_is_missing(init_scripts, monkeypatch, c
         "entitlements-members outcome: group_missing: "
         "root groups not visible to the owner: users.datalake.admins, users.data.root; "
         "deployer-client-id not seeded"
+    )
+
+
+def test_members_fails_before_any_write_when_a_member_user_group_is_missing(
+    init_scripts, monkeypatch, capsys
+):
+    names = tuple(n for n in _ALL_GROUPS if n != "service.storage.admin")
+    result = _run_members(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        member_users="member-client-id",
+        groups=_responds(200, _groups_listing(names)),
+    )
+
+    assert result.exit_code == 1
+    assert result.routed("create") == []
+    assert result.routed("post") == []
+    assert result.termination_message == (
+        "entitlements-members outcome: group_missing: "
+        "member user groups not visible to the owner: service.storage.admin; "
+        "member-client-id not seeded"
     )
 
 

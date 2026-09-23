@@ -293,9 +293,12 @@ the chart's seed generation is bumped. `spi info --json` reports
 exists. It reports `entitlements_seeded.<partition>` once the Job has completed.
 Two identities carry the negative paths, and both hold the same federated
 credential as the deployer. The member identity is the caller the OSDU
-suites name `NO_ACCESS_USER`: the same Job seeds it into `users` and every
-`service.<name>.user` group, so it may call each service and holds no admin
-role, and entitlements answers its admin-only requests with 403. The
+suites name `NO_ACCESS_USER`: the same Job seeds it into `users`, every
+`service.<name>.user` group, and `service.storage.admin`, so it may call each
+service but is no data manager. Entitlements answers its admin-only requests
+with 403; storage admits it to purge, then refuses a record it does not own
+with 403. Storage defines no `.user` group, so the admin role is the only
+storage role its suite accepts for this caller. The
 no-access identity belongs to no group at all, and entitlements answers it
 with 401 before any group check; suites use it where they expect an
 unknown caller. The CLI mints each caller for `azure.token_audience`, read

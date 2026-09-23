@@ -282,7 +282,7 @@ LEGAL_TAG_BASE = "demo-legaltag"
 
 ENTITLEMENTS_MEMBERS_COMPONENT = "entitlements-members"
 # Must equal membersGeneration in the init chart's values.yaml.
-ENTITLEMENTS_MEMBERS_GENERATION = 2
+ENTITLEMENTS_MEMBERS_GENERATION = 3
 
 
 def spi_init_values_configmap(
@@ -301,8 +301,9 @@ def spi_init_values_configmap(
     is the one the init Jobs rendered from. ``members`` are the principals
     entitlements-members seeds into the root groups; omitted entirely when
     empty so the chart renders no Job. ``member_users`` are seeded into
-    users and the service user groups only. ``tenant_service_account`` is the
-    OSDU workload identity's client id, written to every partition record.
+    users, the service user groups, and service.storage.admin only.
+    ``tenant_service_account`` is the OSDU workload identity's client id,
+    written to every partition record.
     """
     partition_lines = "\n".join(f"    - {p}" for p in partitions)
     member_lines = "".join(f"    - {m}\n" for m in sorted(set(members)))
