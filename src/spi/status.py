@@ -33,7 +33,7 @@ from .deploy_record import (
     environment_facts,
     read_deploy_record,
 )
-from .pins import PinError, decode_pins
+from .pins import PinError, ServicePin, decode_pins
 from .shell import gather_reads, kubectl_json, run_process
 from .templates import ENTITLEMENTS_MEMBERS_COMPONENT as MEMBERS_COMPONENT
 from .templates import entitlements_members_job_name, parse_init_values
@@ -136,15 +136,34 @@ class ImageState:
     branch: str
     resolved_at: str
     count: int
-    pinned_services: tuple[str, ...]
+    pins: tuple[tuple[str, ServicePin], ...] = ()
 
-    def to_dict(self) -> dict[str, str | int | list[str]]:
+    @property
+    def pinned_services(self) -> tuple[str, ...]:
+        return tuple(name for name, _ in self.pins)
+
+    def to_dict(self) -> dict:
         return {
             "branch": self.branch,
             "resolvedAt": self.resolved_at,
             "count": self.count,
             "pinnedServices": list(self.pinned_services),
+            "pins": {name: _pin_to_dict(pin) for name, pin in self.pins},
         }
+
+
+def _pin_to_dict(pin: ServicePin) -> dict[str, str | bool]:
+    return {
+        "repository": pin.repository,
+        "digest": pin.digest,
+        "ephemeral": pin.ephemeral,
+        "runId": pin.run_id,
+        "sourceRepo": pin.source_repo,
+        "sourceSha": pin.source_sha,
+        "sourceRunUrl": pin.source_run_url,
+        "appliedAt": pin.applied_at,
+        "canonicalDigest": pin.canonical_digest,
+    }
 
 
 @dataclass(frozen=True)
@@ -534,7 +553,7 @@ def collect_status() -> StatusSnapshot:
             branch=str(lock_data.get("IMAGE_BRANCH", "")),
             resolved_at=str(lock_data.get("IMAGE_RESOLVED_AT", "")),
             count=int(raw_count),
-            pinned_services=tuple(sorted(pins)),
+            pins=tuple(sorted(pins.items())),
         ),
         base_url=base_url,
         kustomization_items=items,
@@ -687,6 +706,42 @@ def resettable_helmreleases() -> list[tuple[str, str]]:
         for item in data.get("items", [])
         if isinstance(item, dict) and _stalled_condition(item).get("reason") == RETRIES_EXCEEDED
     ]
+
+
+def _pin_origin(pin: ServicePin) -> str:
+    """Where a pin came from, without the digest the Image column already shows."""
+    if pin.mr:
+        return f"MR !{pin.mr} ({pin.branch})"
+    origin = f"run {pin.run_id}" if pin.run_id else "operator"
+    return f"{origin} (ephemeral)" if pin.ephemeral else origin
+
+
+def get_pins_table(images: ImageState) -> Optional[Table]:
+    """Services pinned away from their canonical image, from the lock annotation."""
+    if not images.pins:
+        return None
+
+    table = Table(title="Pinned Services", border_style="yellow", expand=True)
+    table.add_column("Service", style="bold")
+    table.add_column("Image", overflow="fold")
+    table.add_column("Origin")
+    table.add_column("Canonical", style="dim", overflow="fold")
+    table.add_column("Age", justify="right", no_wrap=True)
+
+    for name, pin in images.pins:
+        image = (
+            f"{pin.repository}\n@{pin.digest[:19]}"
+            if pin.digest
+            else f"{pin.repository}\n:{pin.tag[:12]}"
+        )
+        table.add_row(
+            name,
+            image,
+            _pin_origin(pin),
+            pin.canonical_digest[:19],
+            age_str(pin.applied_at),
+        )
+    return table
 
 
 def get_helmrelease_table() -> Table:
@@ -1001,12 +1056,19 @@ def get_summary(snapshot: StatusSnapshot) -> Panel:
         counts += "  [bold yellow]| SUSPENDED[/bold yellow]"
     if snapshot.maintenance:
         counts += "  [bold red]| MAINTENANCE[/bold red]"
+    pinned = snapshot.images.pinned_services
+    if pinned:
+        counts += f"  [bold yellow]| PINNED: {len(pinned)}[/bold yellow]"
 
     body = Text("Environment: ", style="ready")
     body.append(describe_environment(environment_facts(snapshot.record)))
     body.append("\n")
     body.append_text(Text.from_markup(counts))
     body.append("\n")
+    if pinned:
+        body.append("Pinned: ", style="warning")
+        body.append(", ".join(pinned))
+        body.append("\n")
 
     # The verdict the JSON envelope reports, in the same words, so an operator
     # reading the dashboard and a fork job reading --json cannot disagree.
@@ -1061,8 +1123,11 @@ def render_status(snapshot: StatusSnapshot | None = None):
     sections = [
         get_kustomization_table(snapshot.kustomization_items),
         helmreleases,
-        custom_resources,
     ]
+    pins_table = get_pins_table(snapshot.images)
+    if pins_table:
+        sections.append(pins_table)
+    sections.append(custom_resources)
 
     partition_table = get_partition_init_table(jobs)
     if partition_table:
