@@ -75,10 +75,13 @@ spec:
         value: http://legal/api/legal/v1
       - name: LEGAL_SERVICE_REGION
         value: southcentralus
+      # Legal publishes tag changes to legaltags; the *eg topic is only fed by Event Grid.
+      - name: AZURE_FEATUREFLAG_LEGALTAGCOMPLIANCEUPDATEENABLED
+        value: "true"
       - name: LEGAL_SERVICEBUS_TOPIC_NAME
-        value: legaltagschangedtopiceg
+        value: legaltags
       - name: LEGAL_SERVICEBUS_TOPIC_SUBSCRIPTION
-        value: eg_sb_legaltagchangedsubscription
+        value: legaltagssubscription
       - name: CRS_CONVERSION_SERVICE_ENDPOINT
         value: http://crs-conversion/api/crs/converter/v2
       - name: POLICY_SERVICE_ENDPOINT
