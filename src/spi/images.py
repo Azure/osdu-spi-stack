@@ -123,6 +123,12 @@ def image_lock_key(service_name: str) -> str:
     return service_name.upper().replace("-", "_")
 
 
+def do_not_disrupt_key(service_name: str) -> str:
+    """Return the lock key the service's HelmRelease reads for its Karpenter annotation."""
+
+    return f"{image_lock_key(service_name)}_DO_NOT_DISRUPT"
+
+
 def gitlab_get(url: str, attempts: int = 3):
     """GET a GitLab API URL and return parsed JSON.
 
@@ -686,14 +692,20 @@ IMAGE_RESOLVED_AT_ANNOTATION = "spi-stack.osdu.dev/resolved-at"
 
 
 def build_lock_data(
-    resolved: dict[str, ResolvedImage], branch: str, timestamp: str
+    resolved: dict[str, ResolvedImage],
+    branch: str,
+    timestamp: str,
+    do_not_disrupt: Iterable[str] = (),
 ) -> dict[str, str]:
     """Return the complete image-lock ConfigMap ``data`` for a resolved image set.
 
     Shared by the YAML renderer below and the live-cluster compare-and-retry
     mutation in ``pins.py``, so both build the same keys from one place.
+    ``do_not_disrupt`` names the services whose pods Karpenter must not
+    voluntarily disrupt; every other service's flag is written as false.
     """
 
+    protected = frozenset(do_not_disrupt)
     data: dict[str, str] = {
         "IMAGE_BRANCH": branch,
         "IMAGE_RESOLVED_AT": timestamp,
@@ -711,6 +723,7 @@ def build_lock_data(
         data[f"{key}_IMAGE_CREATED_AT"] = image.created_at
         data[f"{key}_IMAGE_DIGEST"] = image.digest
         data[f"{key}_IMAGE_REF"] = image_ref(image.repository, image.tag, image.digest)
+        data[do_not_disrupt_key(name)] = str(name in protected).lower()
     return data
 
 
@@ -728,11 +741,12 @@ def render_image_lock_configmap(
     branch: str = DEFAULT_IMAGE_BRANCH,
     resolved_at: datetime | None = None,
     extra_annotations: Mapping[str, str] | None = None,
+    do_not_disrupt: Iterable[str] = (),
 ) -> str:
     """Render the Flux substitution ConfigMap for service image pins."""
 
     timestamp = (resolved_at or datetime.now(timezone.utc)).isoformat()
-    data = build_lock_data(resolved, branch, timestamp)
+    data = build_lock_data(resolved, branch, timestamp, do_not_disrupt)
     base_annotations = build_lock_annotations(branch, timestamp)
 
     lines = [

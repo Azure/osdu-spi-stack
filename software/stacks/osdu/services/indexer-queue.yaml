@@ -28,6 +28,8 @@ spec:
       repository: ${INDEXER_QUEUE_IMAGE_REPOSITORY}
       tag: "${INDEXER_QUEUE_IMAGE_TAG}"
       digest: "${INDEXER_QUEUE_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${INDEXER_QUEUE_DO_NOT_DISRUPT:=false}"
     nodeSelector:
       spi-pool: osdu
     tolerations:

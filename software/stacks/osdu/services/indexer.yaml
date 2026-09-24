@@ -28,6 +28,8 @@ spec:
       repository: ${INDEXER_IMAGE_REPOSITORY}
       tag: "${INDEXER_IMAGE_TAG}"
       digest: "${INDEXER_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${INDEXER_DO_NOT_DISRUPT:=false}"
     elasticTls: true
     redisTls: true
     nodeSelector:

@@ -32,6 +32,8 @@ spec:
       repository: ${LEGAL_IMAGE_REPOSITORY}
       tag: "${LEGAL_IMAGE_TAG}"
       digest: "${LEGAL_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${LEGAL_DO_NOT_DISRUPT:=false}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu

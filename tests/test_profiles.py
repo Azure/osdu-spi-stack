@@ -612,6 +612,37 @@ class TestManagedIstioIngressService:
         assert "spi-ingress-dns-label" not in _declared_names(INGRESS_DIR / mode)
 
 
+class TestBorrowedPodDisruptionSubstitution:
+    """Every service HelmRelease reads its own do-not-disrupt key from the image lock."""
+
+    def test_every_service_release_substitutes_its_own_key(self):
+        from spi.images import IMAGE_REGISTRY, do_not_disrupt_key
+
+        releases = {
+            entry.file: name
+            for name, entry in IMAGE_REGISTRY.items()
+            if entry.file.startswith(("services/", "services-reference/"))
+        }
+        manifests = sorted(
+            path
+            for directory in ("services", "services-reference")
+            for path in (STACKS / directory).glob("*.yaml")
+            if path.name != "kustomization.yaml"
+        )
+        assert {str(path.relative_to(STACKS)) for path in manifests} == set(releases)
+        for path in manifests:
+            doc = yaml.safe_load(path.read_text())
+            service = releases[str(path.relative_to(STACKS))]
+            value = doc["spec"]["values"]["karpenter"]["doNotDisrupt"]
+            assert value == f"${{{do_not_disrupt_key(service)}:=false}}", path.name
+
+    @pytest.mark.parametrize("name", ["spi-osdu-services", "spi-osdu-reference"])
+    def test_service_kustomizations_substitute_from_the_image_lock(self, name):
+        item = _kustomization(PROFILES_DIR / "core", name)
+        sources = item["spec"]["postBuild"]["substituteFrom"]
+        assert {"kind": "ConfigMap", "name": "osdu-image-lock"} in sources
+
+
 class TestForkRbac:
     """The deploy identity's namespace Roles (ADR-032) ship with the core profile."""
 

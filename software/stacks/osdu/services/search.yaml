@@ -28,6 +28,8 @@ spec:
       repository: ${SEARCH_IMAGE_REPOSITORY}
       tag: "${SEARCH_IMAGE_TAG}"
       digest: "${SEARCH_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${SEARCH_DO_NOT_DISRUPT:=false}"
     elasticTls: true
     redisTls: true
     nodeSelector:

@@ -49,7 +49,9 @@ Outside-repository PRs do not enter the credentialed lane.
    facts with `spi info --json`.
 4. **Borrow.** `spi service pin` writes the published service image by digest
    with `--ephemeral`, the workflow run id, and source provenance. Flux
-   reconciles the image-lock change. A pin refusal while the environment is
+   reconciles the image-lock change. The same write marks the rolled pod
+   `karpenter.sh/do-not-disrupt` until restore, so node consolidation does
+   not evict it during Prove. A pin refusal while the environment is
    not deployable is retried for up to ten minutes; a refusal while deployable
    fails immediately.
 5. **Verify.** The job polls `spi service verify` until the expected digest is

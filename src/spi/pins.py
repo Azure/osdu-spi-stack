@@ -51,6 +51,7 @@ from .images import (
     ResolvedImage,
     build_lock_annotations,
     build_lock_data,
+    do_not_disrupt_key,
     fork_package_repositories,
     ghcr_index_child_digests,
     gitlab_get,
@@ -357,7 +358,15 @@ def encode_pins(pins: dict[str, ServicePin]) -> str:
     return json.dumps({name: asdict(pin) for name, pin in sorted(pins.items())})
 
 
-def _lock_entry_patch(service: str, repository: str, tag: str, created_at: str, digest: str):
+def _lock_entry_patch(
+    service: str,
+    repository: str,
+    tag: str,
+    created_at: str,
+    digest: str,
+    *,
+    do_not_disrupt: bool = False,
+):
     key = image_lock_key(service)
     return {
         # A digest pin has no tag; the digest ref avoids a dangling "repository:".
@@ -367,7 +376,13 @@ def _lock_entry_patch(service: str, repository: str, tag: str, created_at: str, 
         f"{key}_IMAGE_CREATED_AT": created_at,
         f"{key}_IMAGE_DIGEST": digest,
         f"{key}_IMAGE_REF": image_ref(repository, tag, digest),
+        # Only a run-owned borrow holds its node; the refresh derives the same value.
+        do_not_disrupt_key(service): str(do_not_disrupt).lower(),
     }
+
+
+def _ephemeral_names(pins: dict[str, ServicePin]) -> frozenset[str]:
+    return frozenset(name for name, pin in pins.items() if pin.ephemeral)
 
 
 def _lock_entry_keys(service: str) -> tuple[str, ...]:
@@ -1064,7 +1079,11 @@ def pin_service_image(
             )
             pins[name] = pin
             written_pins[name] = pin
-            data.update(_lock_entry_patch(name, target_repository, "", "", target_digest))
+            data.update(
+                _lock_entry_patch(
+                    name, target_repository, "", "", target_digest, do_not_disrupt=ephemeral
+                )
+            )
         applied = written_pins[service]
         for name, stale in released_now.items():
             data.update(
@@ -1161,6 +1180,7 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
         for name in targets:
             pin = pins.pop(name)
             if not pin.canonical_repository or not pin.canonical_tag:
+                data[do_not_disrupt_key(name)] = "false"
                 refresh_required.append(name)
                 continue
             data.update(
@@ -1504,6 +1524,7 @@ def sweep_stale_ephemeral_pins() -> SweepResult:
             for name in members:
                 live = pins.pop(name)
                 if not live.canonical_repository or not live.canonical_tag:
+                    data[do_not_disrupt_key(name)] = "false"
                     refresh_required.append(name)
                     continue
                 data.update(
@@ -1568,7 +1589,12 @@ def render_lock_with_pins(
                 name, pin.repository, pin.tag, pin.created_at, pin.digest
             )
     extra = {PINS_ANNOTATION: encode_pins(pins)} if pins else None
-    return render_image_lock_configmap(overlaid, branch=branch, extra_annotations=extra)
+    return render_image_lock_configmap(
+        overlaid,
+        branch=branch,
+        extra_annotations=extra,
+        do_not_disrupt=_ephemeral_names(pins),
+    )
 
 
 def apply_image_lock(
@@ -1598,7 +1624,7 @@ def apply_image_lock(
                     name, pin.repository, pin.tag, pin.created_at, pin.digest
                 )
         timestamp = datetime.now(timezone.utc).isoformat()
-        data = build_lock_data(overlaid, branch, timestamp)
+        data = build_lock_data(overlaid, branch, timestamp, _ephemeral_names(active_pins))
         annotations = build_lock_annotations(branch, timestamp)
         if active_pins:
             annotations[PINS_ANNOTATION] = encode_pins(active_pins)

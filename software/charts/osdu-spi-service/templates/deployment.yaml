@@ -26,9 +26,16 @@ spec:
         {{- if .Values.workloadIdentity }}
         azure.workload.identity/use: "true"
         {{- end }}
-      {{- if .Values.istioProxyPin.enabled }}
+      {{- /* Flux substitutes the value as a string, and "false" is truthy in a template. */}}
+      {{- $doNotDisrupt := eq (toString .Values.karpenter.doNotDisrupt) "true" }}
+      {{- if or .Values.istioProxyPin.enabled $doNotDisrupt }}
       annotations:
+        {{- if .Values.istioProxyPin.enabled }}
         sidecar.istio.io/proxyImage: {{ .Values.istioProxyPin.image }}
+        {{- end }}
+        {{- if $doNotDisrupt }}
+        karpenter.sh/do-not-disrupt: "true"
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccountName }}

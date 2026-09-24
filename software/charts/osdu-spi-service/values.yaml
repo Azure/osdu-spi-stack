@@ -88,6 +88,10 @@ podDisruptionBudget:
 nodeSelector: {}
 tolerations: []
 
+# -- "true" stamps karpenter.sh/do-not-disrupt on the pod; set from the image lock during a borrow.
+karpenter:
+  doNotDisrupt: "false"
+
 istioProxyPin:
   enabled: false
   image: mcr.microsoft.com/oss/v2/istio/proxyv2:v1.28.3-2

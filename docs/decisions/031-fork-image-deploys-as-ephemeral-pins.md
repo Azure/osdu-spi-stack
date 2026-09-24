@@ -103,6 +103,14 @@ services under the same owner, the mechanism ADR-017 already declined.
 - The `ephemeral` marker plus the recorded owner are the boundary automation
   respects: restore and sweep act only on pins they can prove theirs or
   stale, and an operator's investigation pin survives the night.
+- An ephemeral pin also holds its pod's node. Pin, restore, sweep, and
+  refresh writes derive the service's `<SERVICE>_DO_NOT_DISRUPT` lock key from
+  the marker, and the service chart turns it into
+  `karpenter.sh/do-not-disrupt`, so the `osdu` pool's underutilization
+  consolidation cannot evict the borrowed pod mid-suite. The annotation rides
+  the pin's own rollout and clears on restore or sweep; it does not stop a
+  spot reclaim or a forced node expiry, and operator pins keep normal
+  consolidation.
 - The lock's digest keys become load-bearing; `render_lock_with_pins()` must
   carry the pin's digest and created-at through the overlay instead of
   blanking them (ADR-017).

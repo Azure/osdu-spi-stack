@@ -32,6 +32,8 @@ spec:
       repository: ${ENTITLEMENTS_IMAGE_REPOSITORY}
       tag: "${ENTITLEMENTS_IMAGE_TAG}"
       digest: "${ENTITLEMENTS_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${ENTITLEMENTS_DO_NOT_DISRUPT:=false}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu
