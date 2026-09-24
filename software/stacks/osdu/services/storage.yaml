@@ -28,6 +28,8 @@ spec:
       repository: ${STORAGE_IMAGE_REPOSITORY}
       tag: "${STORAGE_IMAGE_TAG}"
       digest: "${STORAGE_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${STORAGE_DO_NOT_DISRUPT:=false}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu

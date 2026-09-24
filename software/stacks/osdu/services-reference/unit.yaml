@@ -26,6 +26,8 @@ spec:
       repository: ${UNIT_IMAGE_REPOSITORY}
       tag: "${UNIT_IMAGE_TAG}"
       digest: "${UNIT_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${UNIT_DO_NOT_DISRUPT:=false}"
     nodeSelector:
       spi-pool: osdu
     tolerations:

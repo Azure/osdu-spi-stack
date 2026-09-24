@@ -35,10 +35,14 @@ CHART_DIR = REPO_ROOT / "software" / "charts" / "osdu-spi-service"
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="Helm not installed")
 
 
-def _rendered_deployment(extra_set: dict[str, str]) -> dict:
+def _rendered_deployment(
+    extra_set: dict[str, str], extra_set_string: dict[str, str] | None = None
+) -> dict:
     set_args = []
     for key, value in extra_set.items():
         set_args += ["--set", f"{key}={value}"]
+    for key, value in (extra_set_string or {}).items():
+        set_args += ["--set-string", f"{key}={value}"]
 
     result = run_process(
         ["helm", "template", "chart-image-test", str(CHART_DIR), *set_args],
@@ -87,3 +91,28 @@ def test_requests_the_cpu_admission_will_grant_every_container():
     for container in containers:
         requested = container["resources"]["requests"]["cpu"]
         assert _millicores(requested) >= 100, container["name"]
+
+
+_ISTIO_PROXY = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["istioProxyPin"]["image"]
+
+
+# Flux substitutes the lock key into a quoted value, so the chart sees a string.
+@pytest.mark.parametrize(
+    ("value", "istio", "expected"),
+    [
+        ("true", "false", {"karpenter.sh/do-not-disrupt": "true"}),
+        ("false", "false", {}),
+        (None, "false", {}),
+        ("false", "true", {"sidecar.istio.io/proxyImage": _ISTIO_PROXY}),
+        (
+            "true",
+            "true",
+            {"sidecar.istio.io/proxyImage": _ISTIO_PROXY, "karpenter.sh/do-not-disrupt": "true"},
+        ),
+    ],
+)
+def test_do_not_disrupt_annotation_renders_only_for_the_string_true(value, istio, expected):
+    strings = {"karpenter.doNotDisrupt": value} if value is not None else {}
+    deployment = _rendered_deployment({"istioProxyPin.enabled": istio}, strings)
+    annotations = deployment["spec"]["template"]["metadata"].get("annotations") or {}
+    assert annotations == expected

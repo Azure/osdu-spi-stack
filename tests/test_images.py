@@ -23,6 +23,7 @@ from spi.images import (
     ImageRegistryEntry,
     ImageResolutionError,
     ResolvedImage,
+    build_lock_data,
     image_lock_names,
     render_image_lock_configmap,
     resolve_image,
@@ -103,6 +104,21 @@ def test_render_image_lock_contains_schema_load_service_keys():
     assert "INDEXER_QUEUE_IMAGE_TAG" in yaml
     assert "SCHEMA_LOAD_IMAGE_REPOSITORY" in yaml
     assert "SCHEMA_LOAD_IMAGE_TAG" in yaml
+
+
+def test_lock_data_marks_only_named_services_do_not_disrupt():
+    resolved = {
+        name: ResolvedImage(name, f"repo/{name}", "1" * 40, "", "") for name in image_lock_names()
+    }
+
+    data = build_lock_data(resolved, "master", "now", do_not_disrupt={"storage"})
+    default = build_lock_data(resolved, "master", "now")
+
+    assert data["STORAGE_DO_NOT_DISRUPT"] == "true"
+    assert data["INDEXER_QUEUE_DO_NOT_DISRUPT"] == "false"
+    assert {default[f"{name.upper().replace('-', '_')}_DO_NOT_DISRUPT"] for name in resolved} == {
+        "false"
+    }
 
 
 def test_schema_load_resolves_from_selected_schema_tag(monkeypatch):

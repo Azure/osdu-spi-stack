@@ -28,6 +28,8 @@ spec:
       repository: ${FILE_IMAGE_REPOSITORY}
       tag: "${FILE_IMAGE_TAG}"
       digest: "${FILE_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${FILE_DO_NOT_DISRUPT:=false}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu

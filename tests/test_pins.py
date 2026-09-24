@@ -572,6 +572,7 @@ class TestPinService:
         assert [name for name, _ in results] == ["storage"]
         data, saved = calls["patch"]
         assert data["STORAGE_IMAGE_TAG"] == "b" * 40
+        assert data["STORAGE_DO_NOT_DISRUPT"] == "false"
         assert saved["storage"].canonical_repository == "repo/storage-master"
         assert saved["storage"].canonical_tag == "c" * 40
         assert calls["reconciled"] == ["storage"]
@@ -909,7 +910,8 @@ class TestResetService:
 
         assert result == ResetResult(restored=(), refresh_required=("storage",))
         data, saved = calls["patch"]
-        assert data == {}
+        # The image keys wait for the refresh; the node hold ends with the pin.
+        assert data == {"STORAGE_DO_NOT_DISRUPT": "false"}
         assert saved == {}
 
     def test_schema_load_reset_does_not_duplicate_target(self, monkeypatch):
@@ -992,6 +994,17 @@ class TestRefreshSurvival:
         assert 'SCHEMA_IMAGE_CREATED_AT: "2026-08-26T00:00:00Z"' in rendered
         assert 'SCHEMA_IMAGE_DIGEST: "sha256:pinned"' in rendered
         assert 'SCHEMA_IMAGE_REF: "registry/schema-service-fix-x@sha256:pinned"' in rendered
+
+    def test_render_marks_only_ephemeral_pins_do_not_disrupt(self):
+        resolved = {
+            name: ResolvedImage(name, f"repo/{name}-master", "e" * 40, "", "")
+            for name in pins.IMAGE_REGISTRY
+        }
+        rendered = pins.render_lock_with_pins(
+            resolved, "master", {"storage": _image_pin(), "schema": _pin()}
+        )
+        assert 'STORAGE_DO_NOT_DISRUPT: "true"' in rendered
+        assert 'SCHEMA_DO_NOT_DISRUPT: "false"' in rendered
 
     def test_render_without_pins_omits_annotation(self):
         resolved = {
@@ -1085,6 +1098,21 @@ class TestApplyImageLock:
         assert saved["storage"].mr == _pin().mr
         # Unpinned services get the freshly resolved canonical entries.
         assert data["PARTITION_IMAGE_TAG"] == "e" * 40
+
+    def test_refresh_keeps_a_borrowed_pod_protected(self, monkeypatch):
+        """A refresh mid-borrow must not strip the annotation from the pod under test."""
+        active = {
+            "storage": _image_pin(),
+            "search": _image_pin(repository="ghcr.io/azure/search", ephemeral=False, run_id=""),
+        }
+        calls = _wire_lock(monkeypatch, _lock(pins_annotation=encode_pins(active)))
+
+        pins.apply_image_lock(self._resolved(), "master")
+
+        data, _ = calls["patch"]
+        assert data["STORAGE_DO_NOT_DISRUPT"] == "true"
+        assert data["SEARCH_DO_NOT_DISRUPT"] == "false"
+        assert data["PARTITION_DO_NOT_DISRUPT"] == "false"
 
     def test_refresh_carries_the_trusted_roster_forward(self, monkeypatch):
         calls = _wire_lock(monkeypatch, _lock())
@@ -1474,6 +1502,8 @@ class TestPinServiceImage:
         assert data["STORAGE_IMAGE_DIGEST"] == _GHCR_DIGEST
         assert data["STORAGE_IMAGE_REF"] == _GHCR_IMAGE
         assert data["STORAGE_IMAGE"] == _GHCR_IMAGE
+        # A borrowed pod holds its node until restore or sweep.
+        assert data["STORAGE_DO_NOT_DISRUPT"] == "true"
         assert saved["storage"] == pin
         assert pin.origin == "github"
         assert pin.ephemeral is True
@@ -1506,9 +1536,10 @@ class TestPinServiceImage:
     def test_operator_pin_carries_no_ephemeral_marker(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
         [(_, pin), *_] = pin_service_image("storage", _GHCR_IMAGE)
-        _, saved = calls["patch"]
+        data, saved = calls["patch"]
         assert saved["storage"] == pin
         assert pin.ephemeral is False
+        assert data["STORAGE_DO_NOT_DISRUPT"] == "false"
         assert pin.run_id == ""
         # An operator pin keeps the blocking reconciliation an MR pin gets.
         assert calls["reconciled"] == ["storage"]
@@ -1610,6 +1641,7 @@ class TestPinServiceImage:
             data["SCHEMA_LOAD_IMAGE_REF"] == f"ghcr.io/azure/osdu-spi-schema-load@{loader_digest}"
         )
         assert data["SCHEMA_LOAD_IMAGE_TAG"] == ""
+        assert data["SCHEMA_DO_NOT_DISRUPT"] == "true"
         assert calls["reconciled"] is None
 
     def test_schema_ephemeral_pin_without_a_fork_loader_keeps_the_canonical(self, monkeypatch):
@@ -1775,6 +1807,26 @@ class TestPinServiceImage:
         assert data["STORAGE_IMAGE_REPOSITORY"] == "repo/storage-master"
         assert "storage" not in saved
         assert calls["reconciled"] is None
+
+    def test_post_write_revert_restores_the_disruption_flag(self, monkeypatch):
+        data = {**_canonical_data("storage"), "STORAGE_DO_NOT_DISRUPT": "false"}
+        calls = self._wire(monkeypatch, _lock(data=data))
+        records = iter([_deploy_record(), _deploy_record(maintenance=True)])
+        monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
+
+        with pytest.raises(PinError, match="maintenance"):
+            pin_service_image(
+                "storage",
+                _GHCR_IMAGE,
+                ephemeral=True,
+                run_id="1234",
+                source_repo="Azure/osdu-spi-storage",
+                source_sha="b" * 40,
+            )
+
+        data, saved = calls["patch"]
+        assert data["STORAGE_DO_NOT_DISRUPT"] == "false"
+        assert "storage" not in saved
 
     def test_replacement_sharing_run_digest_and_applied_at_is_not_ours(self, monkeypatch):
         """A concurrent pin can share this call's run_id, digest, and
@@ -2066,11 +2118,14 @@ class TestResetIfRun:
         lock = _lock(pins_annotation=encode_pins({"storage": _image_pin(run_id="1234")}))
         calls = _wire_lock(monkeypatch, lock)
 
+        lock["data"] = {"STORAGE_DO_NOT_DISRUPT": "true"}
+
         result = reset_service("storage", if_run="1234")
 
         assert result == ResetResult(restored=("storage",), refresh_required=())
         data, saved = calls["patch"]
         assert data["STORAGE_IMAGE_TAG"] == "c" * 40
+        assert data["STORAGE_DO_NOT_DISRUPT"] == "false"
         assert data["STORAGE_IMAGE_REPOSITORY"] == "repo/storage-master"
         assert saved == {}
         # The always-run restore job holds no Flux write; the watch label
@@ -2246,6 +2301,7 @@ class TestSweepStaleEphemeralPins:
 
     def test_terminal_run_is_swept_to_canonical(self, monkeypatch):
         lock = _lock(pins_annotation=encode_pins({"storage": _image_pin(run_id="1234")}))
+        lock["data"] = {"STORAGE_DO_NOT_DISRUPT": "true"}
         calls = self._wire(monkeypatch, lock, run_states={"1234": "completed"})
 
         result = sweep_stale_ephemeral_pins()
@@ -2253,6 +2309,7 @@ class TestSweepStaleEphemeralPins:
         assert result.swept == ("storage",)
         data, saved = calls["patch"]
         assert data["STORAGE_IMAGE_TAG"] == "c" * 40
+        assert data["STORAGE_DO_NOT_DISRUPT"] == "false"
         assert saved == {}
         assert calls["reconciled"] == ["storage"]
 
