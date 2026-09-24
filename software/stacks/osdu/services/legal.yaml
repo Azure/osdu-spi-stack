@@ -67,6 +67,10 @@ spec:
         value: us
       - name: SERVICEBUS_TOPIC_NAME
         value: legaltags
+      # Gson serializes StatusChangedTag's raw Enum field by reflection; without this
+      # every tag-change publish fails on Java 17.
+      - name: JDK_JAVA_OPTIONS
+        value: --add-opens java.base/java.lang=ALL-UNNAMED
       - name: REDIS_DATABASE
         value: "2"
       - name: PARTITION_SERVICE_ENDPOINT
