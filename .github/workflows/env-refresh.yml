@@ -214,7 +214,7 @@ jobs:
           fi
           echo "$STATUS_JSON" | jq .
 
-          ACTUAL_REF=$(echo "$STATUS_JSON" | jq -r .stack.ref)
+          ACTUAL_REF=$(echo "$STATUS_JSON" | jq -r .environment.stackVersion)
           SUSPENDED=$(echo "$STATUS_JSON" | jq -r .suspended)
           READY=$(echo "$STATUS_JSON" | jq -r .ready)
           MAINTENANCE=$(echo "$STATUS_JSON" | jq -r .maintenance)
