@@ -97,7 +97,7 @@ def running_version(
     else:
         version = ""
 
-    converged = bool(revision) and all(
+    converged = bool(revision and gating_kustomizations) and all(
         (item.get("status") or {}).get("lastAppliedRevision") == revision
         for item in gating_kustomizations
     )

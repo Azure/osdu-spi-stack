@@ -34,8 +34,7 @@ end of `spi up` records how the environment was last provisioned.
   `X.Y.Z+<12-char commit>` on a branch, and `converged` once every gating
   Kustomization's `lastAppliedRevision` equals the source revision. A branch
   environment advances on `spi reconcile` without a new record, so the flat
-  record fields describe the last `spi up` and `running` describes now; a
-  consumer choosing a wheel for the environment reads `running.release`.
+  record fields describe the last `spi up` and `running` describes now.
   The dashboards print `running.version` as the environment's version, mark
   a rollout that has not converged, show the record as "Last spi up", and
   warn when the executing CLI is older than `running.release`, because pin

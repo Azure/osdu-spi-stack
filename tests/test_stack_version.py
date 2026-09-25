@@ -100,6 +100,13 @@ def test_non_gating_kustomizations_do_not_hold_convergence(monkeypatch):
     assert running.converged is True
 
 
+def test_no_visible_gating_kustomization_is_not_converged():
+    revision = f"main@sha1:{COMMIT}"
+    running = running_version(_source({"branch": "main"}, revision), [], _stamp("0.19.3"))
+
+    assert running.converged is False
+
+
 def test_unreadable_source_reads_as_nothing_applied():
     running = running_version(None, [], None)
 
