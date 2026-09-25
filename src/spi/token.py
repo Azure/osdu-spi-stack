@@ -34,6 +34,7 @@ from typing import Optional
 from .bootstrap import read_cluster_config, read_workload_identity_client_id
 from .info import _read_osdu_config, token_audience
 from .shell import run_process
+from .status import STATUS_API_VERSION
 from .templates import (
     DEPLOYER_SERVICE_ACCOUNT,
     MEMBER_SERVICE_ACCOUNT,
@@ -59,6 +60,7 @@ class MintedToken:
 
     def as_dict(self) -> dict[str, str]:
         return {
+            "apiVersion": STATUS_API_VERSION,
             "token": self.access_token,
             "expires_on": self.expires_on,
             "client_id": self.client_id,

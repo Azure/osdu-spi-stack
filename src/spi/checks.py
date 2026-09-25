@@ -23,6 +23,7 @@ import typer
 
 from .console import console
 from .shell import run_process
+from .status import STATUS_API_VERSION
 
 
 class ToolInfo(TypedDict, total=False):
@@ -171,6 +172,7 @@ def run_checks() -> list:
 
 def results_to_json(results: list, azure: Optional[dict] = None) -> str:
     payload = {
+        "apiVersion": STATUS_API_VERSION,
         "platform": detect_platform(),
         "total": len(results),
         "installed": sum(1 for r in results if r["installed"]),

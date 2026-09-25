@@ -14,15 +14,18 @@
 
 """SPI CLI - Deploy OSDU SPI Stack on Azure AKS Automatic."""
 
+import contextlib
 import json
 import os
 import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+import shellingham
 import typer
 from rich.panel import Panel
 from rich.table import Table
+from typer.completion import completion_init, install_callback, show_callback
 
 from . import __version__
 from .bootstrap import create_istio_revision_configmap, refresh_spi_init_values
@@ -69,6 +72,47 @@ app.add_typer(service_app, name="service")
 maintenance_app = typer.Typer(help="Manage backing-environment maintenance state.")
 app.add_typer(maintenance_app, name="maintenance")
 
+# Wired by hand rather than add_completion=True: Typer's stock installer runs
+# "Set-ExecutionPolicy Unrestricted" on PowerShell.
+completion_init()
+
+_POWERSHELL_SHELLS = {"powershell", "pwsh"}
+
+
+def _detected_shell() -> str:
+    try:
+        name, _cmd = shellingham.detect_shell()
+    except Exception:
+        return ""
+    return (name or "").lower()
+
+
+def _install_completion_callback(
+    ctx: typer.Context, param: typer.CallbackParam, value: object
+) -> object:
+    if not value or ctx.resilient_parsing:
+        return value
+    shell = value.lower() if isinstance(value, str) else _detected_shell()
+    if not shell:
+        console.print(
+            "[error]Could not detect your shell.[/error] Run "
+            "[cyan]spi --show-completion[/cyan] and install the script yourself."
+        )
+        raise typer.Exit(code=1)
+    if shell in _POWERSHELL_SHELLS:
+        console.print(
+            "[warning]spi does not install completion on PowerShell.[/warning] Typer's "
+            "installer runs [cyan]Set-ExecutionPolicy Unrestricted -Scope CurrentUser[/cyan], "
+            "which loosens script signing for every script under your account."
+        )
+        console.print(
+            "Run [cyan]spi --show-completion[/cyan] and append the output to your "
+            "PowerShell [cyan]$PROFILE[/cyan] instead."
+        )
+        raise typer.Exit(code=1)
+    # Forward the vetted shell: re-detecting inside Typer could resolve to PowerShell.
+    return install_callback(ctx, param, shell)
+
 
 def _version_callback(value: bool) -> None:
     if value:
@@ -111,6 +155,15 @@ def _environment_label() -> str:
     return environment_label(_environment_facts())
 
 
+def _verify_cluster(*, stderr: bool) -> str:
+    """Run the cluster guard; with ``stderr`` its diagnosis stays off stdout."""
+    if not stderr:
+        return verify_spi_cluster()
+    # Rich resolves sys.stdout on every print, so this moves the guard's console too.
+    with contextlib.redirect_stdout(sys.stderr):
+        return verify_spi_cluster()
+
+
 def _guarded_context(output_json: bool) -> str:
     """Run the cluster guard, keeping the `--json` final-line contract.
 
@@ -134,6 +187,20 @@ def main(
         callback=_version_callback,
         is_eager=True,
         help="Show the spi version and exit.",
+    ),
+    install_completion: Optional[bool] = typer.Option(
+        None,
+        "--install-completion",
+        callback=_install_completion_callback,
+        expose_value=False,
+        help="Install completion for the current shell.",
+    ),
+    show_completion: Optional[bool] = typer.Option(
+        None,
+        "--show-completion",
+        callback=show_callback,
+        expose_value=False,
+        help="Show completion for the current shell, to copy it or customize the installation.",
     ),
 ) -> None:
     """SPI Stack - deploy, monitor, and manage OSDU on Azure AKS Automatic."""
@@ -617,8 +684,8 @@ def up(
                 )
             else:
                 console.print(
-                    "[dim]Environment is pinned to the resolved branch commit. "
-                    "Run 'spi reconcile' to re-apply it when ready.[/dim]\n"
+                    f"[dim]Environment is pinned to the resolved commit on {config.repo_branch}. "
+                    "Run 'spi reconcile' when you want the latest commit on the branch.[/dim]\n"
                 )
     except Exception as e:
         console.print(f"\n[error]Deployment failed: {e}[/error]")
@@ -735,7 +802,7 @@ def info(
             param_hint="--json",
         )
 
-    ctx = verify_spi_cluster()
+    ctx = _verify_cluster(stderr=output_json)
 
     from .bootstrap import ClusterConfigError
     from .deploy_record import DeployRecordError
@@ -776,7 +843,7 @@ def token(
     so it composes:
     INTEGRATION_TESTER_ACCESS_TOKEN=$(spi token).
     """
-    ctx = verify_spi_cluster()
+    ctx = _verify_cluster(stderr=True)
 
     from .bootstrap import ClusterConfigError
     from .token import TokenError, mint_token
@@ -892,7 +959,7 @@ def status(
             param_hint="--json",
         )
 
-    ctx = verify_spi_cluster()
+    ctx = _verify_cluster(stderr=output_json)
 
     from .status import StatusError, collect_status, render_status, status_exit_code, watch_status
 
