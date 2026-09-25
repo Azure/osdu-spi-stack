@@ -91,7 +91,7 @@ gh run watch <run-id>
 ```
 
 For a named run, pass `-f env_suffix=trial1`. To exercise middleware rather
-than the default empty workload trees, choose `minimal`:
+than the default workload-free trees, choose `minimal`:
 
 ```bash
 gh workflow run smoke.yml --ref main -f profile=minimal

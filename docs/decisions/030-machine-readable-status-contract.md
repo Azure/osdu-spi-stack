@@ -63,7 +63,14 @@ record written at the end of `spi up` supplies the version fields.
   and a `spi-deploy-record` ConfigMap in `osdu-flux` (ADR-019) holding the
   ref, the resolved commit from `GitRepository.status.artifact.revision`, the
   CLI version, profile, environment name, and timestamp.
-- The ConfigMap also carries the `maintenance` flag. Status surfaces it and
+- The stack release travels with the tree it describes.
+  `software/components/stack-version` renders a `spi-stack-version`
+  ConfigMap in `osdu-flux` whose `version` is the release, every profile
+  applies it, and release-please rewrites that line on each release through
+  `extra-files` in `.release-please-config.json`. A commit between releases
+  carries the last release's number, so the stamp names the release a tree
+  descends from; the applied commit tells whether it is that release's tag.
+- `spi-deploy-record` also carries the `maintenance` flag. Status surfaces it and
   derives `deployable`; when it is set and cleared, and the fail-closed rules
   around it, are ADR-029's ruling.
 - Endpoints, partitions, and non-secret Azure coordinates stay in `spi info --json`,
@@ -93,6 +100,11 @@ record written at the end of `spi up` supplies the version fields.
   absent, so a consumer that needs a compliant tag gates on this field rather
   than on `deployable`. `partitions[].legal_tag_desired` always carries the
   configured name (ADR-015), for diagnosing a seed that has not landed.
+
+Rejected: resolve the release at read time by comparing the applied commit
+with the repository's tags. Exact for any commit, but every status read then
+needs GitHub access, and an environment deployed from another repository
+would be compared against the wrong tags.
 
 Rejected: a separate `spi facts` command. A clean consumer-facing name, but a
 third overlapping surface next to `status` and `info` with no content of its

@@ -1,0 +1,11 @@
+# The stack release this tree belongs to. release-please rewrites the version
+# line on every release, so Flux delivers it with the manifests it describes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spi-stack-version
+  namespace: osdu-flux
+  labels:
+    app.kubernetes.io/managed-by: osdu-spi-stack
+data:
+  version: "0.19.3" # x-release-please-version

@@ -21,9 +21,10 @@ Two root Kustomizations consume that source:
 | `stack` | `software/stacks/osdu/profiles/<profile>` | Operators, middleware, OSDU services, initialization |
 | `ingress` | `software/stacks/osdu/ingress/<mode>` for `core` | Certificates, DNS controller where needed, TLS overlays, routes |
 
-`minimal` selects `<mode>-minimal` without OSDU API routes. `bare` selects empty
-stack and ingress trees. These path combinations are derived in
-`infra/flux.bicep`, not selected independently by the operator.
+`minimal` selects `<mode>-minimal` without OSDU API routes. `bare` selects an
+empty ingress tree and a stack tree carrying only the release stamp. These path
+combinations are derived in `infra/flux.bicep`, not selected independently by
+the operator.
 
 OSDU HelmReleases use the local `software/charts/osdu-spi-service` chart from
 the Git source. The chart is rebuilt for each Git revision. Middleware

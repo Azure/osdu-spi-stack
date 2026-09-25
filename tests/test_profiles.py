@@ -22,6 +22,7 @@ then stalls Flux on DependencyNotReady instead of failing up front.
 """
 
 import itertools
+import json
 import re
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from spi.ingress import (
     ISTIO_INGRESS_NAMESPACE,
     ISTIO_INGRESS_SERVICE,
 )
+from spi.stack_version import STACK_VERSION_CONFIGMAP, STACK_VERSION_NAMESPACE
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STACKS = REPO_ROOT / "software" / "stacks" / "osdu"
@@ -43,6 +45,9 @@ INGRESS_DIR = STACKS / "ingress"
 
 KUSTOMIZATION_KIND = "Kustomization"
 FLUX_API_PREFIX = "kustomize.toolkit.fluxcd.io/"
+STACK_VERSION_MANIFEST = (
+    REPO_ROOT / "software" / "components" / "stack-version" / "stack-version.yaml"
+)
 NAMESPACES_MANIFEST = REPO_ROOT / "software" / "components" / "namespaces" / "namespaces.yaml"
 
 SUBSTITUTE_ANNOTATION = "kustomize.toolkit.fluxcd.io/substitute"
@@ -396,11 +401,44 @@ class TestMinimalProfileScope:
 
 
 class TestBareProfileScope:
-    def test_stack_tree_is_empty(self):
-        assert list(_flux_kustomizations(PROFILES_DIR / Profile.BARE.value)) == []
+    def test_stack_tree_renders_only_the_stamp(self):
+        rendered = [
+            (doc.get("kind"), doc["metadata"]["name"])
+            for _path, doc in _built_resources(PROFILES_DIR / Profile.BARE.value)
+        ]
+        assert rendered == [("ConfigMap", STACK_VERSION_CONFIGMAP)]
 
     def test_ingress_tree_is_empty(self):
         assert list(_flux_kustomizations(INGRESS_DIR / "bare")) == []
+
+
+class TestStackVersionStamp:
+    """Every profile carries the release its tree belongs to."""
+
+    @pytest.mark.parametrize("profile", list(Profile), ids=lambda p: p.value)
+    def test_profile_renders_the_stamp(self, profile):
+        stamps = [
+            doc
+            for _path, doc in _built_resources(PROFILES_DIR / profile.value)
+            if doc.get("kind") == "ConfigMap" and doc["metadata"]["name"] == STACK_VERSION_CONFIGMAP
+        ]
+        assert len(stamps) == 1
+        assert stamps[0]["metadata"]["namespace"] == STACK_VERSION_NAMESPACE
+
+    def test_stamp_matches_the_release_manifest(self):
+        manifest = json.loads((REPO_ROOT / ".release-please-manifest.json").read_text())
+        stamp = yaml.safe_load(STACK_VERSION_MANIFEST.read_text(encoding="utf-8"))
+        assert stamp["data"]["version"] == manifest["."]
+
+    def test_release_please_rewrites_the_stamp(self):
+        config = json.loads((REPO_ROOT / ".release-please-config.json").read_text())
+        rel = STACK_VERSION_MANIFEST.relative_to(REPO_ROOT).as_posix()
+        assert rel in config["packages"]["."]["extra-files"]
+        assert "x-release-please-version" in next(
+            line
+            for line in STACK_VERSION_MANIFEST.read_text().splitlines()
+            if line.lstrip().startswith("version:")
+        )
 
 
 class TestSingleRenderer:

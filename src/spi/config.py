@@ -42,7 +42,7 @@ def generate_name_suffix() -> str:
 
 
 class Profile(str, Enum):
-    # Infra and the CLI bootstrap only; Flux reconciles empty trees.
+    # Infra and the CLI bootstrap only; Flux applies the release stamp and no workloads.
     BARE = "bare"
     # Operators, Gateway, and middleware; no OSDU services.
     MINIMAL = "minimal"
