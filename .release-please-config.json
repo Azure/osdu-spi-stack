@@ -11,7 +11,8 @@
       "include-v-in-tag": true,
       "include-component-in-tag": false,
       "versioning": "default",
-      "exclude-paths": ["ops/environments"]
+      "exclude-paths": ["ops/environments"],
+      "extra-files": ["software/components/stack-version/stack-version.yaml"]
     }
   },
   "plugins": ["sentence-case"],
