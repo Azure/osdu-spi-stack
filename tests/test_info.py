@@ -47,6 +47,7 @@ def _wire(
     members=("deployer-client-id",),
     members_seeded=True,
     entitlements_domain="dataservices.energy",
+    image_lock=None,
 ):
     monkeypatch.setattr(
         info,
@@ -105,6 +106,21 @@ def _wire(
     monkeypatch.setattr(info, "_read_deploy_record", lambda: record)
     monkeypatch.setattr(info, "read_workload_identity_client_id", lambda: "application-id")
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: True)
+    monkeypatch.setattr(info, "_read_image_lock", lambda: image_lock)
+
+
+def _lock(pins: dict | None = None) -> dict:
+    data = {"IMAGE_BRANCH": "master", "IMAGE_RESOLVED_AT": "2026-09-22T21:50:59.576632+00:00"}
+    for name, tag in (("partition", "a48954c890b4" + "0" * 28), ("storage", "")):
+        key = name.upper()
+        data[f"{key}_IMAGE"] = f"registry/{name}:{tag}"
+        data[f"{key}_IMAGE_REPOSITORY"] = f"registry/{name}"
+        data[f"{key}_IMAGE_TAG"] = tag
+        data[f"{key}_IMAGE_DIGEST"] = "sha256:" + "d" * 64
+        data[f"{key}_IMAGE_CREATED_AT"] = "2026-09-16T14:00:00Z"
+        data[f"{key}_IMAGE_REF"] = f"registry/{name}@sha256:" + "d" * 64
+    annotations = {"spi-stack.osdu.dev/pins": json.dumps(pins)} if pins else {}
+    return {"metadata": {"annotations": annotations}, "data": data}
 
 
 def test_collect_info_includes_versioned_identity_fields(monkeypatch):
@@ -569,3 +585,62 @@ def test_info_human_header_shows_what_flux_applied_and_the_last_up(monkeypatch):
     assert "Last spi up:" in output
     assert "spi 0.9.1 is older than the stack (0.9.2); run 'spi update'." in output
     assert info.collect_info()["environment"]["running"]["version"] == "v0.9.2"
+
+
+def test_info_json_lists_each_service_image_from_the_lock(monkeypatch):
+    _wire(monkeypatch, image_lock=_lock())
+
+    versions = info.collect_info()["osdu_versions"]
+
+    assert versions["branch"] == "master"
+    assert versions["resolved_at"].startswith("2026-09-22T21:50:59")
+    assert set(versions["services"]) == {"partition", "storage"}
+    assert versions["services"]["partition"] == {
+        "repository": "registry/partition",
+        "tag": "a48954c890b4" + "0" * 28,
+        "digest": "sha256:" + "d" * 64,
+        "created_at": "2026-09-16T14:00:00Z",
+        "pinned": False,
+        "origin": "canonical",
+    }
+
+
+def test_info_marks_a_pinned_service_with_its_origin(monkeypatch):
+    pin = {
+        "mr": "",
+        "branch": "",
+        "repository": "ghcr.io/fork/storage",
+        "tag": "",
+        "canonical_repository": "registry/storage",
+        "canonical_tag": "abc",
+        "canonical_created_at": "",
+        "canonical_digest": "sha256:" + "c" * 64,
+        "applied_at": "2026-09-24T10:00:00Z",
+        "digest": "sha256:" + "d" * 64,
+        "ephemeral": True,
+        "run_id": "42",
+    }
+    _wire(monkeypatch, image_lock=_lock({"storage": pin}))
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    storage = info.collect_info()["osdu_versions"]["services"]["storage"]
+    output = _plain(CliRunner().invoke(cli.app, ["info"]).output)
+
+    assert storage["pinned"] is True
+    assert storage["origin"] == "run 42 (ephemeral)"
+    assert "OSDU Service Versions" in output
+    assert "◆ storage" in output
+    assert "run 42 (ephemeral)" in output
+    assert "master images resolved 2026-09-22T21:50:59Z" in output
+
+
+def test_info_without_a_lock_publishes_empty_versions_and_no_table(monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    assert info.collect_info()["osdu_versions"] == {
+        "branch": "",
+        "resolved_at": "",
+        "services": {},
+    }
+    assert "OSDU Service Versions" not in _plain(CliRunner().invoke(cli.app, ["info"]).output)
