@@ -31,8 +31,9 @@ end of `spi up` records how the environment was last provisioned.
   never from the record: `ref` and `commit` from the `osdu-spi-stack-system`
   GitRepository's `status.artifact.revision`, `release` from the applied
   `spi-stack-version` stamp, `version` as `vX.Y.Z` on a tag and
-  `X.Y.Z+<12-char commit>` on a branch, and `converged` once every gating
-  Kustomization's `lastAppliedRevision` equals the source revision. A branch
+  `X.Y.Z+<12-char commit>` on a branch, and `converged` once the source has
+  fetched the ref its spec requests and every gating Kustomization's
+  `lastAppliedRevision` equals that revision. A branch
   environment advances on `spi reconcile` without a new record, so the flat
   record fields describe the last `spi up` and `running` describes now.
   The dashboards print `running.version` as the environment's version, mark

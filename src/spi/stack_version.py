@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from packaging.version import InvalidVersion, Version
@@ -17,6 +18,7 @@ STACK_VERSION_CONFIGMAP = "spi-stack-version"
 STACK_VERSION_NAMESPACE = "osdu-flux"
 GIT_REPOSITORY = "osdu-spi-stack-system"
 FLUX_NAMESPACE = "osdu-flux"
+_RELEASE_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 
 
 @dataclass(frozen=True)
@@ -83,12 +85,13 @@ def running_version(
     """Combine the source revision, the applied stamp, and convergence."""
     source = git_repository or {}
     revision = _artifact_revision(source)
-    ref = _source_ref(source)
+    requested = _source_ref(source)
+    # The spec moves to a new ref before the source fetches it; report what was fetched.
+    ref = revision.split("@", 1)[0] if "@" in revision else requested
     commit = _commit(revision)
     release = str(((stamp or {}).get("data") or {}).get("version") or "").strip()
-    is_tag = bool(((source.get("spec") or {}).get("ref") or {}).get("tag"))
 
-    if is_tag:
+    if commit and _RELEASE_TAG.fullmatch(ref):
         version = ref
         # Tags cut before the stamp existed still name their release.
         release = release or ref.removeprefix("v")
@@ -97,9 +100,13 @@ def running_version(
     else:
         version = ""
 
-    converged = bool(revision and gating_kustomizations) and all(
-        (item.get("status") or {}).get("lastAppliedRevision") == revision
-        for item in gating_kustomizations
+    converged = (
+        bool(revision and gating_kustomizations)
+        and ref == requested
+        and all(
+            (item.get("status") or {}).get("lastAppliedRevision") == revision
+            for item in gating_kustomizations
+        )
     )
     return RunningVersion(
         version=version, release=release, ref=ref, commit=commit, converged=converged

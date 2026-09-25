@@ -61,6 +61,25 @@ def test_tag_cut_before_the_stamp_still_names_its_release():
     assert running.release == "0.18.0"
 
 
+def test_tag_upgrade_reports_the_fetched_tag_until_the_source_catches_up():
+    old = f"v0.19.3@sha1:{COMMIT}"
+    running = running_version(
+        _source({"tag": "v0.20.0"}, old), [_kustomization(old)], _stamp("0.19.3")
+    )
+
+    assert running.version == "v0.19.3"
+    assert running.ref == "v0.19.3"
+    assert running.converged is False
+
+
+def test_tag_without_a_fetched_artifact_reports_no_version():
+    running = running_version(_source({"tag": "v0.20.0"}, ""), [], None)
+
+    assert running.version == ""
+    assert running.ref == "v0.20.0"
+    assert running.converged is False
+
+
 def test_branch_without_a_stamp_falls_back_to_ref_and_commit():
     revision = f"main@sha1:{COMMIT}"
     running = running_version(_source({"branch": "main"}, revision), [], None)
