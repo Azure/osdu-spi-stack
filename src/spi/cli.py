@@ -641,10 +641,18 @@ def _confirm_teardown(config: Config, *, purge: bool, force: bool) -> bool:
         raise typer.Exit(code=1)
 
     rg = config.resource_group
+    nodes = config.node_resource_group
     if purge:
-        target = f"resource group '{rg}', including its managed identities"
+        target = (
+            f"resource group '{rg}' with its managed identities, the managed nodes group "
+            f"'{nodes}', and the stack's role assignments outside the group "
+            "(the ExternalDNS zone grant)"
+        )
     else:
-        target = f"every resource in '{rg}'; the managed identities and the group are kept"
+        target = (
+            f"every resource in '{rg}' and the managed nodes group '{nodes}'; "
+            "the managed identities and the group are kept"
+        )
     console.print(f"\n[warning]This permanently deletes {target}.[/warning]")
     answer = typer.prompt("Type 'y' to confirm", default="", show_default=False)
     return answer.strip() in ("y", "Y")

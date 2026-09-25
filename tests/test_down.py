@@ -66,11 +66,14 @@ class TestInteractive:
     def test_prompt_says_identities_are_kept(self):
         run = _down(answer="n\n")
         assert "spi-stack-dev1" in run.output
+        assert "managed nodes group" in run.output
         assert "managed identities and the group are kept" in run.output
 
     def test_purge_prompt_names_the_identities(self):
         run = _down("--purge", answer="y\n")
-        assert "resource group 'spi-stack-dev1', including its managed identities" in run.output
+        assert "resource group 'spi-stack-dev1' with its managed identities" in run.output
+        assert "managed nodes group" in run.output
+        assert "role assignments outside the group" in run.output
         run.purge.assert_called_once()
         run.teardown.assert_not_called()
 
