@@ -379,6 +379,11 @@ class TestVerifyReleaseAsset:
         assert "py3-none-any.whl" in step["run"]
         assert job["needs"] == "declare"
 
+    def test_env_upgrade_refuses_wheels_without_the_environment_block(self):
+        """The jq paths read `.environment`, which v0.10.0 first published."""
+        job = _workflow(ENV_UPGRADE)["jobs"]["verify-release"]
+        assert job["env"]["LIFECYCLE_CLI_MIN_VERSION"] == "v0.10.0"
+
 
 class TestRevisionGatedConvergence:
     """An upgrade re-points the source while every Kustomization is still

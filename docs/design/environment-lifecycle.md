@@ -46,7 +46,7 @@ image under `osdu_versions`, and `spi service list` details the pins.
 
 ```yaml
 env: shared
-stackVersion: v0.8.0
+stackVersion: v0.18.0
 profile: core
 location: westus3
 ingressMode: azure
