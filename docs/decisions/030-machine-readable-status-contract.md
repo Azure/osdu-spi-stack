@@ -12,8 +12,9 @@ to object names and labels this repo is free to reshape.
 
 ## Decision
 
-`spi status --json` emits a versioned envelope and typed exit codes; a deploy
-record written at the end of `spi up` supplies the version fields.
+`spi status --json` emits a versioned envelope and typed exit codes; Flux's
+applied state supplies the running version, and a deploy record written at the
+end of `spi up` records how the environment was last provisioned.
 
 - Envelope: `apiVersion: spi.osdu.dev/v1`, `ready`, `deployable`, a typed
   `reason` naming the first deployability blocker when `deployable` is false
@@ -26,8 +27,21 @@ record written at the end of `spi up` supplies the version fields.
   pinned service names, and a `pins` map carrying each pin's provenance),
   and `baseUrl`. `stack` repeats the version fields
   without the name and is kept one release for existing consumers.
-- `environment` is built by one function from the deploy record and
-  published unchanged by `spi info --json` too, so a fork job binding facts
+- `environment.running` is what Flux has applied, read on every call and
+  never from the record: `ref` and `commit` from the `osdu-spi-stack-system`
+  GitRepository's `status.artifact.revision`, `release` from the applied
+  `spi-stack-version` stamp, `version` as `vX.Y.Z` on a tag and
+  `X.Y.Z+<12-char commit>` on a branch, and `converged` once every gating
+  Kustomization's `lastAppliedRevision` equals the source revision. A branch
+  environment advances on `spi reconcile` without a new record, so the flat
+  record fields describe the last `spi up` and `running` describes now; a
+  consumer choosing a wheel for the environment reads `running.release`.
+  The dashboards print `running.version` as the environment's version, mark
+  a rollout that has not converged, show the record as "Last spi up", and
+  warn when the executing CLI is older than `running.release`, because pin
+  and reconcile logic ships in the CLI.
+- `environment` is built by one function from the deploy record and the
+  running version, and published unchanged by `spi info --json` too, so a fork job binding facts
   from `info` and gating on `status` reads one identity. The name is the
   `env` the environment was provisioned with (the declaration's `env` for a
   lifecycle-managed environment, the `--env` flag for a personal one); it is

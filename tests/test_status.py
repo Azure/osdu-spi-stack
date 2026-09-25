@@ -9,6 +9,7 @@ import re
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 from typer.testing import CliRunner
 
 from spi import cli, status
@@ -890,6 +891,13 @@ def test_status_json_publishes_the_environment_block(monkeypatch):
         "profile": "core",
         "deployedAt": "2026-08-27T18:00:00Z",
         "cliVersion": "0.6.0",
+        "running": {
+            "version": "",
+            "release": "",
+            "ref": "",
+            "commit": "",
+            "converged": False,
+        },
     }
     assert payload["stack"]["ref"] == "v0.6.0"
 
@@ -914,8 +922,9 @@ def test_status_human_ends_with_the_summary_and_names_the_environment(monkeypatc
     # Rich wraps panel text at the terminal width; compare without the box.
     unwrapped = " ".join(_plain(result.output).replace("│", " ").split())
 
-    identity = "Environment: shared v0.6.0 profile core deployed 2026-08-27T18:00:00Z"
+    identity = "Environment: shared v0.6.0 profile core"
     assert identity in unwrapped
+    assert "Last spi up: 2026-08-27T18:00:00Z with spi 0.6.0" in unwrapped
     assert unwrapped.index("Flux Kustomizations") < unwrapped.index(identity)
     assert unwrapped.index("Deployable") > unwrapped.index(identity)
     tail = [line for line in _plain(result.output).splitlines() if line.strip()][-4:]
@@ -930,3 +939,99 @@ def test_status_human_names_a_missing_record(monkeypatch):
     result = CliRunner().invoke(cli.app, ["status"])
 
     assert "Environment: unknown (no deploy record)" in _plain(result.output)
+
+
+def _wire_running(monkeypatch, *, applied: str, stamp: str = "0.19.3"):
+    """A branch source at one commit, one gating Kustomization at ``applied``."""
+    revision = "main@sha1:" + "f" * 40
+    _wire(monkeypatch, suspended=False)
+
+    def required(args, description):
+        if "kustomizations" in args:
+            items = _kustomizations(True)
+            items["items"][0]["status"]["lastAppliedRevision"] = applied
+            return items
+        if "jobs" in args:
+            return {"items": []}
+        return {
+            "spec": {"ref": {"branch": "main"}, "suspend": False},
+            "status": {"artifact": {"revision": revision}},
+        }
+
+    monkeypatch.setattr(status, "_required_kubectl_json", required)
+    monkeypatch.setattr(
+        status,
+        "_optional_configmap",
+        lambda name, namespace: (
+            {"data": {"version": stamp}} if name == "spi-stack-version" else None
+        ),
+    )
+    return revision
+
+
+def test_status_json_reports_what_flux_applied_beside_the_record(monkeypatch):
+    revision = _wire_running(monkeypatch, applied="main@sha1:" + "f" * 40)
+
+    environment = status.collect_status().to_dict()["environment"]
+
+    assert environment["stackVersion"] == "v0.6.0"
+    assert environment["running"] == {
+        "version": "0.19.3+" + "f" * 12,
+        "release": "0.19.3",
+        "ref": "main",
+        "commit": revision.split(":")[-1],
+        "converged": True,
+    }
+
+
+def test_status_marks_a_rollout_that_has_not_reached_every_kustomization(monkeypatch):
+    _wire_running(monkeypatch, applied="main@sha1:" + "a" * 40)
+    monkeypatch.setattr(status, "kubectl_json", lambda _args: None)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    unwrapped = " ".join(_plain(result.output).replace("│", " ").split())
+
+    assert "Environment: shared 0.19.3+ffffffffffff profile core rolling out" in unwrapped
+    assert status.collect_status().to_dict()["environment"]["running"]["converged"] is False
+
+
+def test_status_warns_when_the_cli_predates_the_stack(monkeypatch):
+    _wire_running(monkeypatch, applied="main@sha1:" + "f" * 40, stamp="0.20.0")
+    monkeypatch.setattr(status, "kubectl_json", lambda _args: None)
+    monkeypatch.setattr(status, "__version__", "0.19.3")
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["status"])
+    unwrapped = " ".join(_plain(result.output).replace("│", " ").split())
+
+    assert "spi 0.19.3 is older than the stack (0.20.0); run 'spi update'." in unwrapped
+
+
+def test_summary_counts_failed_kustomizations_apart_from_progressing():
+    def state(name, ready, reason):
+        return status.KustomizationState(name=name, ready=ready, reason=reason, message="")
+
+    snapshot = status.StatusSnapshot(
+        ready=False,
+        deployable=False,
+        reason=None,
+        suspended=False,
+        maintenance=False,
+        kustomizations=(
+            state("a", True, "ReconciliationSucceeded"),
+            state("b", False, "Progressing"),
+            state("c", False, "DependencyNotReady"),
+            state("d", False, "HealthCheckFailed"),
+        ),
+        stack=status.StackState.from_record(None),
+        images=status.ImageState(branch="master", resolved_at="", count=0),
+        base_url="",
+        kustomization_items=(),
+    )
+
+    renderable = status.get_summary(snapshot).renderable
+    assert isinstance(renderable, Text)
+    text = renderable.plain
+
+    assert "1 ready / 2 progressing / 1 failed  (1/4 complete)" in text

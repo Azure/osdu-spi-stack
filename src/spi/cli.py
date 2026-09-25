@@ -139,14 +139,16 @@ def _emit_outcome(outcome: str, code: Optional[str], detail: str, **extra) -> No
     print(json.dumps(payload))
 
 
-def _environment_facts() -> Dict[str, str]:
+def _environment_facts() -> Dict[str, Any]:
     """Identity of the connected environment for confirmations; never raises."""
     from .deploy_record import DeployRecordError, environment_facts, read_deploy_record
+    from .stack_version import collect_running_version
 
+    running = collect_running_version()
     try:
-        return environment_facts(read_deploy_record(required=False))
+        return environment_facts(read_deploy_record(required=False), running)
     except DeployRecordError:
-        return environment_facts(None)
+        return environment_facts(None, running)
 
 
 def _environment_label() -> str:

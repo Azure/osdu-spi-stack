@@ -25,16 +25,26 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from . import __version__
 from .console import console
 from .deploy_record import (
     DeployRecord,
     DeployRecordError,
     describe_environment,
+    describe_last_up,
     environment_facts,
     read_deploy_record,
 )
 from .pins import PinError, ServicePin, decode_pins
 from .shell import gather_reads, kubectl_json, run_process
+from .stack_version import (
+    STACK_VERSION_CONFIGMAP,
+    STACK_VERSION_NAMESPACE,
+    RunningVersion,
+    is_gating,
+    running_version,
+    skew_message,
+)
 from .templates import ENTITLEMENTS_MEMBERS_COMPONENT as MEMBERS_COMPONENT
 from .templates import entitlements_members_job_name, parse_init_values
 
@@ -179,6 +189,7 @@ class StatusSnapshot:
     base_url: str
     kustomization_items: tuple[dict, ...]
     record: DeployRecord | None = None
+    running: RunningVersion = RunningVersion()
 
     def to_dict(self) -> dict:
         not_ready = [item.to_dict() for item in self.kustomizations if not item.ready]
@@ -194,7 +205,7 @@ class StatusSnapshot:
                 "ready": sum(1 for item in self.kustomizations if item.ready),
                 "notReady": not_ready,
             },
-            "environment": environment_facts(self.record),
+            "environment": environment_facts(self.record, self.running),
             # Superseded by `environment`; kept one release for consumers.
             "stack": self.stack.to_dict(),
             "images": self.images.to_dict(),
@@ -476,7 +487,7 @@ def _read_deploy_record() -> DeployRecord | None:
 def collect_status() -> StatusSnapshot:
     from .info import collect_base_url
 
-    # Seven independent reads. Ordered results keep the failure a caller sees
+    # Eight independent reads. Ordered results keep the failure a caller sees
     # deterministic: a Kustomization error still outranks a GitRepository one.
     (
         kustomization_readiness,
@@ -485,6 +496,7 @@ def collect_status() -> StatusSnapshot:
         members_jobs,
         expected_jobs,
         image_lock,
+        stack_version,
         base_url,
     ) = gather_reads(
         [
@@ -497,6 +509,7 @@ def collect_status() -> StatusSnapshot:
             _read_members_jobs,
             _read_expected_members_jobs,
             lambda: _optional_configmap("osdu-image-lock", "osdu-flux"),
+            lambda: _optional_configmap(STACK_VERSION_CONFIGMAP, STACK_VERSION_NAMESPACE),
             collect_base_url,
         ]
     )
@@ -558,6 +571,9 @@ def collect_status() -> StatusSnapshot:
         base_url=base_url,
         kustomization_items=items,
         record=record,
+        running=running_version(
+            git_repository, [item for item in items if is_gating(item)], stack_version
+        ),
     )
 
 
@@ -1038,8 +1054,18 @@ def get_pod_table(namespace: str, title: str) -> Table:
     return table
 
 
+# Flux reasons that mean the Kustomization is still working toward Ready.
+_PROGRESSING_REASONS = {"", "Progressing", "ProgressingWithRetry", "DependencyNotReady"}
+
+
 def get_summary(snapshot: StatusSnapshot) -> Panel:
     ready_count = sum(1 for item in snapshot.kustomizations if item.ready)
+    failed_count = sum(
+        1
+        for item in snapshot.kustomizations
+        if not item.ready and item.reason not in _PROGRESSING_REASONS
+    )
+    progressing_count = len(snapshot.kustomizations) - ready_count - failed_count
     total = len(snapshot.kustomizations)
 
     if total == 0:
@@ -1048,8 +1074,10 @@ def get_summary(snapshot: StatusSnapshot) -> Panel:
         parts = []
         if ready_count:
             parts.append(f"[ready]{ready_count} ready[/ready]")
-        if total - ready_count:
-            parts.append(f"[notready]{total - ready_count} progressing[/notready]")
+        if progressing_count:
+            parts.append(f"[notready]{progressing_count} progressing[/notready]")
+        if failed_count:
+            parts.append(f"[failed]{failed_count} failed[/failed]")
         counts = f"Kustomizations: {' / '.join(parts)}  ({ready_count}/{total} complete)"
 
     if snapshot.suspended:
@@ -1060,9 +1088,16 @@ def get_summary(snapshot: StatusSnapshot) -> Panel:
     if pinned:
         counts += f"  [bold yellow]| PINNED: {len(pinned)}[/bold yellow]"
 
+    facts = environment_facts(snapshot.record, snapshot.running)
     body = Text("Environment: ", style="ready")
-    body.append(describe_environment(environment_facts(snapshot.record)))
+    body.append(describe_environment(facts))
     body.append("\n")
+    last_up = describe_last_up(facts)
+    if last_up:
+        body.append(f"Last spi up: {last_up}\n", style="dim")
+    skew = skew_message(__version__, snapshot.running.release)
+    if skew:
+        body.append(f"{skew}\n", style="warning")
     body.append_text(Text.from_markup(counts))
     body.append("\n")
     if pinned:

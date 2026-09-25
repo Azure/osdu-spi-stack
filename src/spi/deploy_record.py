@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 
 from .console import display_yaml
 from .shell import run_command, run_process
+from .stack_version import RunningVersion
 
 DEPLOY_RECORD_CONFIGMAP = "spi-deploy-record"
 DEPLOY_RECORD_NAMESPACE = "osdu-flux"
@@ -48,13 +49,15 @@ class DeployRecord:
         return asdict(self)
 
 
-def environment_facts(record: DeployRecord | None) -> dict[str, str]:
+def environment_facts(record: DeployRecord | None, running: RunningVersion | None = None) -> dict:
     """The identity block `spi status --json` and `spi info --json` both publish.
 
     One builder for both commands so a fork job binding facts from `info`
-    and gating on `status` cannot see two different environments. Empty
-    strings mean the cluster has no deploy record.
+    and gating on `status` cannot see two different environments. The flat
+    fields are the last `spi up`, empty strings when the cluster has no deploy
+    record; `running` is what Flux has applied since.
     """
+    running_facts = (running or RunningVersion()).to_dict()
     if record is None:
         return {
             "name": "",
@@ -63,6 +66,7 @@ def environment_facts(record: DeployRecord | None) -> dict[str, str]:
             "profile": "",
             "deployedAt": "",
             "cliVersion": "",
+            "running": running_facts,
         }
     return {
         "name": record.env,
@@ -71,26 +75,46 @@ def environment_facts(record: DeployRecord | None) -> dict[str, str]:
         "profile": record.profile,
         "deployedAt": record.deployed_at,
         "cliVersion": record.cli_version,
+        "running": running_facts,
     }
 
 
-def environment_label(facts: dict[str, str]) -> str:
+def _running_label(facts: dict) -> str:
+    running = facts.get("running") or {}
+    return RunningVersion(
+        version=running.get("version", ""),
+        ref=running.get("ref", ""),
+        commit=running.get("commit", ""),
+    ).label()
+
+
+def environment_label(facts: dict) -> str:
     """Short form for confirmations: `shared v0.9.1`."""
-    if not facts.get("stackVersion"):
+    version = _running_label(facts) or facts.get("stackVersion", "")
+    if not version:
         return "unknown environment (no deploy record)"
-    return f"{facts.get('name') or 'unnamed'} {facts['stackVersion']}"
+    return f"{facts.get('name') or 'unnamed'} {version}"
 
 
-def describe_environment(facts: dict[str, str]) -> str:
-    """Dashboard form: name, version, profile, deploy time. Fits an 80-column panel."""
-    if not facts.get("stackVersion"):
+def describe_environment(facts: dict) -> str:
+    """Dashboard form: name, running version, profile. Fits an 80-column panel."""
+    if not (_running_label(facts) or facts.get("stackVersion")):
         return "unknown (no deploy record)"
     parts = [environment_label(facts)]
     if facts.get("profile"):
         parts.append(f"profile {facts['profile']}")
-    if facts.get("deployedAt"):
-        parts.append(f"deployed {facts['deployedAt']}")
+    running = facts.get("running") or {}
+    if running.get("commit") and not running.get("converged"):
+        parts.append("rolling out")
     return "  ".join(parts)
+
+
+def describe_last_up(facts: dict) -> str:
+    """When the record was written and by which CLI; empty without a record."""
+    if not facts.get("deployedAt"):
+        return ""
+    by = f" with spi {facts['cliVersion']}" if facts.get("cliVersion") else ""
+    return f"{facts['deployedAt']}{by}"
 
 
 def _read_record_object(required: bool = False) -> dict | None:

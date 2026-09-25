@@ -34,6 +34,15 @@ def _offline_environment_facts(monkeypatch):
     return original
 
 
+@pytest.fixture(autouse=True)
+def _offline_running_version(monkeypatch):
+    """Keep every reader of the running version off a live cluster."""
+    from spi import stack_version
+
+    monkeypatch.setattr(stack_version, "collect_running_version", stack_version.RunningVersion)
+    monkeypatch.setattr("spi.info.collect_running_version", stack_version.RunningVersion)
+
+
 @pytest.fixture
 def real_environment_facts(_offline_environment_facts, monkeypatch):
     monkeypatch.setattr(cli, "_environment_facts", _offline_environment_facts)

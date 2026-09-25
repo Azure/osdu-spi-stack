@@ -463,7 +463,7 @@ def test_info_human_header_names_environment_and_profile(monkeypatch):
     result = CliRunner().invoke(cli.app, ["info"])
     output = _plain(result.output)
 
-    assert "Environment:   shared  v0.9.1  profile core" in output
+    assert "Environment:   shared v0.9.1  profile core" in output
     assert output.index("Environment:") < output.index("Ingress mode:")
 
 
@@ -547,3 +547,25 @@ def test_tenant_comes_from_cluster_config_when_osdu_config_is_unreadable(monkeyp
 
     assert result["deploy_identity"]["tenant_id"] == "tenant-id"
     assert result["azure"]["tenant_id"] == "tenant-id"
+
+
+def test_info_human_header_shows_what_flux_applied_and_the_last_up(monkeypatch):
+    from spi.stack_version import RunningVersion
+
+    _wire(monkeypatch)
+    monkeypatch.setattr(
+        info,
+        "collect_running_version",
+        lambda: RunningVersion(
+            version="v0.9.2", release="0.9.2", ref="v0.9.2", commit="c" * 40, converged=True
+        ),
+    )
+    monkeypatch.setattr(info, "__version__", "0.9.1")
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    output = _plain(CliRunner().invoke(cli.app, ["info"]).output)
+
+    assert "Environment:   shared v0.9.2  profile core" in output
+    assert "Last spi up:" in output
+    assert "spi 0.9.1 is older than the stack (0.9.2); run 'spi update'." in output
+    assert info.collect_info()["environment"]["running"]["version"] == "v0.9.2"
