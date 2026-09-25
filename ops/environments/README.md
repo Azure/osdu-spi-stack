@@ -13,7 +13,7 @@ reviewed PR of its own (see [Activation](#activation) below).
 
 ```yaml
 env: shared
-stackVersion: v0.8.0
+stackVersion: v0.18.0
 profile: core
 location: westus3
 ingressMode: azure
