@@ -163,15 +163,19 @@ def _osdu_versions(lock: dict | None) -> dict:
         pins = {}
     # The lock is the source of truth: a newer stack can carry services this CLI predates.
     known = {image_lock_key(name): name for name in image_lock_names()}
-    keys = {key.removesuffix("_IMAGE_REF") for key in data if key.endswith("_IMAGE_REF")}
+    # `<SERVICE>_IMAGE` is the substitution key every lock carries; older locks lack the rest.
+    keys = {key.removesuffix("_IMAGE") for key in data if key.endswith("_IMAGE")}
     ordered = [key for key in known if key in keys] + sorted(keys - known.keys())
     services = {}
     for key in ordered:
         name = known.get(key) or key.lower().replace("_", "-")
         pin = pins.get(name)
+        repository, _, tag = data[f"{key}_IMAGE"].rpartition(":")
+        if "/" in tag or "@" in repository:
+            repository, tag = "", ""
         services[name] = {
-            "repository": data.get(f"{key}_IMAGE_REPOSITORY", ""),
-            "tag": data.get(f"{key}_IMAGE_TAG", ""),
+            "repository": data.get(f"{key}_IMAGE_REPOSITORY", repository),
+            "tag": data.get(f"{key}_IMAGE_TAG", tag),
             "digest": data.get(f"{key}_IMAGE_DIGEST", ""),
             "created_at": data.get(f"{key}_IMAGE_CREATED_AT", ""),
             "pinned": pin is not None,
@@ -579,7 +583,12 @@ def _service_versions_table(versions: dict) -> Table | None:
                 f"[warning]{image['origin']}[/warning]",
             )
         else:
-            table.add_row(name, image["tag"][:12], image["created_at"][:10], "[dim]canonical[/dim]")
+            table.add_row(
+                name,
+                image["tag"][:12] or f"@{image['digest'][:19]}",
+                image["created_at"][:10],
+                "[dim]canonical[/dim]",
+            )
     return table
 
 
