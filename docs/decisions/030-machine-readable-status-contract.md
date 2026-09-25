@@ -70,7 +70,7 @@ record written at the end of `spi up` supplies the version fields.
   `extra-files` in `.release-please-config.json`. A commit between releases
   carries the last release's number, so the stamp names the release a tree
   descends from; the applied commit tells whether it is that release's tag.
-- The ConfigMap also carries the `maintenance` flag. Status surfaces it and
+- `spi-deploy-record` also carries the `maintenance` flag. Status surfaces it and
   derives `deployable`; when it is set and cleared, and the fail-closed rules
   around it, are ADR-029's ruling.
 - Endpoints, partitions, and non-secret Azure coordinates stay in `spi info --json`,
