@@ -401,8 +401,12 @@ class TestMinimalProfileScope:
 
 
 class TestBareProfileScope:
-    def test_stack_tree_is_empty(self):
-        assert list(_flux_kustomizations(PROFILES_DIR / Profile.BARE.value)) == []
+    def test_stack_tree_renders_only_the_stamp(self):
+        rendered = [
+            (doc.get("kind"), doc["metadata"]["name"])
+            for _path, doc in _built_resources(PROFILES_DIR / Profile.BARE.value)
+        ]
+        assert rendered == [("ConfigMap", STACK_VERSION_CONFIGMAP)]
 
     def test_ingress_tree_is_empty(self):
         assert list(_flux_kustomizations(INGRESS_DIR / "bare")) == []
