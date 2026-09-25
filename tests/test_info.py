@@ -687,3 +687,16 @@ def test_info_shows_an_mr_pin_by_its_image_commit(monkeypatch):
 
     assert "0123456789ab" in output
     assert "MR !812 (fix-x)" in output
+
+
+def test_info_reads_a_corrupt_pin_annotation_as_no_pins(monkeypatch):
+    """`spi status` fails on a corrupt annotation; `info` still reports the images."""
+    lock = _lock()
+    lock["metadata"]["annotations"] = {"spi-stack.osdu.dev/pins": "{not json"}
+    _wire(monkeypatch, image_lock=lock)
+
+    services = info.collect_info()["osdu_versions"]["services"]
+
+    assert set(services) == {"partition", "storage"}
+    assert all(not image["pinned"] for image in services.values())
+    assert all(image["origin"] == "canonical" for image in services.values())
