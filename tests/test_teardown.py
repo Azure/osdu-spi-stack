@@ -850,13 +850,13 @@ class TestCli:
             return result, down, purge
 
     def test_down_keeps_identities_by_default(self):
-        result, down, purge = self._run(["down", "--env", "dev1"])
+        result, down, purge = self._run(["down", "--env", "dev1", "--force"])
         assert result.exit_code == 0, result.output
         down.assert_called_once()
         purge.assert_not_called()
 
     def test_purge_routes_to_the_group_delete(self):
-        result, down, purge = self._run(["down", "--env", "dev1", "--purge"])
+        result, down, purge = self._run(["down", "--env", "dev1", "--purge", "--force"])
         assert result.exit_code == 0, result.output
         purge.assert_called_once()
         down.assert_not_called()
@@ -872,7 +872,7 @@ class TestCli:
             patch("spi.cli._show_config"),
             patch("spi.teardown.teardown_environment", side_effect=TeardownError("plan gap: x")),
         ):
-            result = CliRunner().invoke(app, ["down", "--env", "dev1"])
+            result = CliRunner().invoke(app, ["down", "--env", "dev1", "--force"])
         assert result.exit_code == 1
         assert "plan gap: x" in result.output
 

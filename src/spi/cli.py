@@ -692,6 +692,39 @@ def up(
         raise typer.Exit(code=1)
 
 
+def _stdin_is_tty() -> bool:
+    return sys.stdin.isatty()
+
+
+def _confirm_teardown(config: Config, *, purge: bool, force: bool) -> bool:
+    """Gate destructive teardown. Only 'y'/'Y' proceeds; --force skips."""
+    if force:
+        return True
+    if not _stdin_is_tty():
+        console.print(
+            "[error]spi down needs confirmation; pass --force when running "
+            "non-interactively[/error]"
+        )
+        raise typer.Exit(code=1)
+
+    rg = config.resource_group
+    nodes = config.node_resource_group
+    if purge:
+        target = (
+            f"resource group '{rg}' with its managed identities, the managed nodes group "
+            f"'{nodes}', and the stack's role assignments outside the group "
+            "(the ExternalDNS zone grant)"
+        )
+    else:
+        target = (
+            f"every resource in '{rg}' and the managed nodes group '{nodes}'; "
+            "the managed identities and the group are kept"
+        )
+    console.print(f"\n[warning]This permanently deletes {target}.[/warning]")
+    answer = typer.prompt("Type 'y' to confirm", default="", show_default=False)
+    return answer.strip() in ("y", "Y")
+
+
 @app.command()
 def down(
     env: str = typer.Option(..., "--env", help="Environment name"),
@@ -699,6 +732,9 @@ def down(
         False,
         "--purge",
         help="Delete the resource group itself, including the managed identities",
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Skip the confirmation prompt (non-interactive)."
     ),
 ):
     """Tear down the environment's resources; managed identities survive unless --purge."""
@@ -709,6 +745,10 @@ def down(
     name_suffix = _resolve_name_suffix(env, for_up=False)
     config = _build_config(env=env, name_suffix=name_suffix)
     _show_config(config)
+
+    if not _confirm_teardown(config, purge=purge, force=force):
+        console.print("[dim]Teardown cancelled. Nothing was deleted.[/dim]")
+        raise typer.Exit(code=1)
 
     from .teardown import TeardownError, purge_environment, teardown_environment
 
