@@ -72,6 +72,21 @@ def test_tag_upgrade_reports_the_fetched_tag_until_the_source_catches_up():
     assert running.converged is False
 
 
+@pytest.mark.parametrize(
+    ("spec", "revision", "ref", "version"),
+    [
+        ({"tag": "v0.19.3"}, f"refs/tags/v0.19.3@sha1:{COMMIT}", "v0.19.3", "v0.19.3"),
+        ({"branch": "main"}, f"refs/heads/main@sha1:{COMMIT}", "main", "0.19.3+fdd4b11cc78b"),
+    ],
+)
+def test_qualified_revisions_read_like_short_ones(spec, revision, ref, version):
+    running = running_version(_source(spec, revision), [_kustomization(revision)], _stamp("0.19.3"))
+
+    assert running.version == version
+    assert running.ref == ref
+    assert running.converged is True
+
+
 def test_tag_without_a_fetched_artifact_reports_no_version():
     running = running_version(_source({"tag": "v0.20.0"}, ""), [], None)
 

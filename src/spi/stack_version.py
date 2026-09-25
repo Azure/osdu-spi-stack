@@ -88,6 +88,7 @@ def running_version(
     requested = _source_ref(source)
     # The spec moves to a new ref before the source fetches it; report what was fetched.
     ref = revision.split("@", 1)[0] if "@" in revision else requested
+    ref = ref.removeprefix("refs/heads/").removeprefix("refs/tags/")
     commit = _commit(revision)
     release = str(((stamp or {}).get("data") or {}).get("version") or "").strip()
 
