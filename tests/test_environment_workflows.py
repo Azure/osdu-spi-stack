@@ -384,6 +384,14 @@ class TestVerifyReleaseAsset:
         job = _workflow(ENV_UPGRADE)["jobs"]["verify-release"]
         assert job["env"]["LIFECYCLE_CLI_MIN_VERSION"] == "v0.10.0"
 
+    def test_env_refresh_checks_the_floor_before_setting_maintenance(self):
+        job = _workflow(ENV_REFRESH)["jobs"]["refresh"]
+        assert job["env"]["LIFECYCLE_CLI_MIN_VERSION"] == "v0.10.0"
+        steps = list(_steps(job))
+        floor = steps.index("Refuse a declaration older than the lifecycle CLI")
+        maintenance = next(i for i, name in enumerate(steps) if "maintenance" in name.lower())
+        assert floor < maintenance
+
 
 class TestRevisionGatedConvergence:
     """An upgrade re-points the source while every Kustomization is still
