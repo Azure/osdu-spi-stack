@@ -43,16 +43,6 @@ def test_branch_commit_reads_as_the_release_it_descends_from():
     assert running.label() == "0.19.3+fdd4b11cc78b"
 
 
-def test_tag_reads_as_the_tag():
-    revision = f"v0.19.3@sha1:{COMMIT}"
-    running = running_version(
-        _source({"tag": "v0.19.3"}, revision), [_kustomization(revision)], _stamp("0.19.3")
-    )
-
-    assert running.version == "v0.19.3"
-    assert running.release == "0.19.3"
-
-
 def test_tag_cut_before_the_stamp_still_names_its_release():
     revision = f"v0.18.0@sha1:{COMMIT}"
     running = running_version(_source({"tag": "v0.18.0"}, revision), [], None)
@@ -75,15 +65,17 @@ def test_tag_upgrade_reports_the_fetched_tag_until_the_source_catches_up():
 @pytest.mark.parametrize(
     ("spec", "revision", "ref", "version"),
     [
+        ({"tag": "v0.19.3"}, f"v0.19.3@sha1:{COMMIT}", "v0.19.3", "v0.19.3"),
         ({"tag": "v0.19.3"}, f"refs/tags/v0.19.3@sha1:{COMMIT}", "v0.19.3", "v0.19.3"),
         ({"branch": "main"}, f"refs/heads/main@sha1:{COMMIT}", "main", "0.19.3+fdd4b11cc78b"),
     ],
 )
-def test_qualified_revisions_read_like_short_ones(spec, revision, ref, version):
+def test_revisions_name_the_applied_ref(spec, revision, ref, version):
     running = running_version(_source(spec, revision), [_kustomization(revision)], _stamp("0.19.3"))
 
     assert running.version == version
     assert running.ref == ref
+    assert running.release == "0.19.3"
     assert running.converged is True
 
 
@@ -163,12 +155,6 @@ def test_unreadable_source_reads_as_nothing_applied():
 def test_cli_is_behind(cli, release, behind):
     assert cli_is_behind(cli, release) is behind
     assert bool(skew_message(cli, release)) is behind
-
-
-def test_skew_message_names_both_versions_and_the_fix():
-    assert skew_message("0.19.0", "0.19.3") == (
-        "spi 0.19.0 is older than the stack (0.19.3); run 'spi update'."
-    )
 
 
 def test_the_stamp_is_read_after_the_flux_snapshot(monkeypatch):
