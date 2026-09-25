@@ -91,8 +91,9 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
-      # First release whose CLI carries the lifecycle commands this workflow calls.
-      LIFECYCLE_CLI_MIN_VERSION: v0.6.0
+      # First release whose CLI carries the lifecycle commands and the
+      # `environment` status block this workflow reads.
+      LIFECYCLE_CLI_MIN_VERSION: v0.10.0
     steps:
       - name: Verify the release and wheel asset exist
         run: |
@@ -477,7 +478,7 @@ jobs:
             echo "::error::spi status --json failed (exit 1); see the contract-read error above"
             exit 1
           fi
-          RESOLVED=$(echo "$STATUS_JSON" | jq -r '.stack.resolvedCommit // ""')
+          RESOLVED=$(echo "$STATUS_JSON" | jq -r '.environment.resolvedCommit // ""')
           if [ -z "$RESOLVED" ] || [ "$RESOLVED" = "null" ]; then
             echo "::error::deploy record has no resolvedCommit; cannot gate convergence on the upgraded revision"
             exit 1
@@ -513,8 +514,8 @@ jobs:
           fi
           echo "$STATUS_JSON" | jq .
 
-          ACTUAL_REF=$(echo "$STATUS_JSON" | jq -r .stack.ref)
-          RESOLVED=$(echo "$STATUS_JSON" | jq -r .stack.resolvedCommit)
+          ACTUAL_REF=$(echo "$STATUS_JSON" | jq -r .environment.stackVersion)
+          RESOLVED=$(echo "$STATUS_JSON" | jq -r .environment.resolvedCommit)
           SUSPENDED=$(echo "$STATUS_JSON" | jq -r .suspended)
           READY=$(echo "$STATUS_JSON" | jq -r .ready)
           MAINTENANCE=$(echo "$STATUS_JSON" | jq -r .maintenance)

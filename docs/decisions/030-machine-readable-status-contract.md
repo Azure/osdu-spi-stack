@@ -25,8 +25,7 @@ end of `spi up` records how the environment was last provisioned.
   list, `environment` (name, stack version, resolved commit, profile,
   deploy timestamp, CLI version), `images` (branch, resolved-at, count,
   pinned service names, and a `pins` map carrying each pin's provenance),
-  and `baseUrl`. `stack` repeats the version fields
-  without the name and is kept one release for existing consumers.
+  and `baseUrl`.
 - `environment.running` is what Flux has applied, read on every call and
   never from the record: `ref` and `commit` from the `osdu-spi-stack-system`
   GitRepository's `status.artifact.revision`, `release` from the applied

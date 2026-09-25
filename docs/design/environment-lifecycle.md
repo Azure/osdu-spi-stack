@@ -36,8 +36,9 @@ Version is three axes, not one. The stack definition is pinned by the file
 above (ADR-028). Canonical service images advance on refresh under each
 service's source policy (ADR-033) and are recorded in the image lock.
 Ephemeral test pins (ADR-031) are transient overlays. `spi status --json`
-reports all three, the pinned-service list included; `spi service list`
-details the pins.
+reports the running stack version under `environment.running`, the lock's
+branch and resolve time, and the pins; `spi info --json` adds each service's
+image under `osdu_versions`, and `spi service list` details the pins.
 
 ## The pin and the bump flow
 
@@ -45,7 +46,7 @@ details the pins.
 
 ```yaml
 env: shared
-stackVersion: v0.8.0
+stackVersion: v0.18.0
 profile: core
 location: westus3
 ingressMode: azure
@@ -235,7 +236,7 @@ spi up \
   --name-suffix "$(yq .nameSuffix $decl)" \
   --tag "$(yq .stackVersion $decl)"
 bash scripts/wait_for_flux_ready.sh --timeout 13800 \
-  --expect-revision "$(spi status --json | jq -r .stack.resolvedCommit)"
+  --expect-revision "$(spi status --json | jq -r .environment.resolvedCommit)"
 spi status --json | jq .ready   # true when converged
 ```
 

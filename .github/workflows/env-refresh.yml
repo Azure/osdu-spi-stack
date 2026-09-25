@@ -115,7 +115,17 @@ jobs:
       ENV_NAME: ${{ needs.declare.outputs.env }}
       IMAGE_BRANCH: ${{ needs.declare.outputs.image_branch }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
+      # First release whose CLI publishes the `environment` status block this job reads.
+      LIFECYCLE_CLI_MIN_VERSION: v0.10.0
     steps:
+      - name: Refuse a declaration older than the lifecycle CLI
+        run: |
+          set -euo pipefail
+          if [ "$(printf '%s\n' "$LIFECYCLE_CLI_MIN_VERSION" "$STACK_VERSION" | sort -V | head -n1)" != "$LIFECYCLE_CLI_MIN_VERSION" ]; then
+            echo "::error::stackVersion $STACK_VERSION predates the lifecycle CLI (minimum $LIFECYCLE_CLI_MIN_VERSION)"
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
 
       - name: Install kubectl
@@ -214,7 +224,7 @@ jobs:
           fi
           echo "$STATUS_JSON" | jq .
 
-          ACTUAL_REF=$(echo "$STATUS_JSON" | jq -r .stack.ref)
+          ACTUAL_REF=$(echo "$STATUS_JSON" | jq -r .environment.stackVersion)
           SUSPENDED=$(echo "$STATUS_JSON" | jq -r .suspended)
           READY=$(echo "$STATUS_JSON" | jq -r .ready)
           MAINTENANCE=$(echo "$STATUS_JSON" | jq -r .maintenance)
