@@ -161,11 +161,13 @@ def _osdu_versions(lock: dict | None) -> dict:
         pins = decode_pins(lock) if lock else {}
     except PinError:
         pins = {}
+    # The lock is the source of truth: a newer stack can carry services this CLI predates.
+    known = {image_lock_key(name): name for name in image_lock_names()}
+    keys = {key.removesuffix("_IMAGE_REF") for key in data if key.endswith("_IMAGE_REF")}
+    ordered = [key for key in known if key in keys] + sorted(keys - known.keys())
     services = {}
-    for name in image_lock_names():
-        key = image_lock_key(name)
-        if f"{key}_IMAGE_REF" not in data and f"{key}_IMAGE" not in data:
-            continue
+    for key in ordered:
+        name = known.get(key) or key.lower().replace("_", "-")
         pin = pins.get(name)
         services[name] = {
             "repository": data.get(f"{key}_IMAGE_REPOSITORY", ""),

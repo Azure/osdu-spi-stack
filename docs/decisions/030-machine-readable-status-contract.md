@@ -94,7 +94,8 @@ end of `spi up` records how the environment was last provisioned.
   request service-to-service tokens for), `azure.token_audience` (the
   resource acceptance suites mint tokens for), `azure.openid_issuer`,
   `partitions[].legal_tag`, and `osdu_versions`: the image lock's branch and
-  resolve time with each service's tag, digest, build time, and pin origin.
+  resolve time with each service's repository, tag, digest, build time,
+  `pinned` flag, and pin origin, for every service the lock carries.
 - `azure.token_audience` is `https://management.azure.com` unless an operator
   overrode `AAD_CLIENT_ID` to an app registration, in which case it is that
   id. The application id is not mintable when it names the platform's managed
