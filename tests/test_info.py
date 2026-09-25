@@ -700,22 +700,20 @@ def test_info_reads_a_corrupt_pin_annotation_as_no_pins(monkeypatch):
     assert set(services) == {"partition", "storage"}
     assert all(not image["pinned"] for image in services.values())
     assert all(image["origin"] == "canonical" for image in services.values())
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+    # storage has no tag in the fixture, so its row must fall back to the digest.
+    assert "@sha256:dddddddddddd" in _plain(CliRunner().invoke(cli.app, ["info"]).output)
 
 
 def test_info_lists_lock_services_this_cli_does_not_know(monkeypatch):
-    """An older CLI reading a newer stack still reports every locked image."""
+    """An older CLI reading a newer stack, or a lock written before the detail
+    keys existed, still reports every locked image from `<SERVICE>_IMAGE`."""
     lock = _lock()
-    for field, value in (
-        ("IMAGE_REF", "registry/seismic@sha256:" + "e" * 64),
-        ("IMAGE_REPOSITORY", "registry/seismic"),
-        ("IMAGE_TAG", "feedface" + "0" * 32),
-        ("IMAGE_DIGEST", "sha256:" + "e" * 64),
-        ("IMAGE_CREATED_AT", "2026-09-20T00:00:00Z"),
-    ):
-        lock["data"][f"SEISMIC_STORE_{field}"] = value
+    lock["data"]["SEISMIC_STORE_IMAGE"] = "registry:5000/seismic:feedface"
     _wire(monkeypatch, image_lock=lock)
 
     services = info.collect_info()["osdu_versions"]["services"]
 
     assert list(services) == ["partition", "storage", "seismic-store"]
-    assert services["seismic-store"]["repository"] == "registry/seismic"
+    assert services["seismic-store"]["repository"] == "registry:5000/seismic"
+    assert services["seismic-store"]["tag"] == "feedface"
