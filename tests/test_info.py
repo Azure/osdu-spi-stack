@@ -644,3 +644,46 @@ def test_info_without_a_lock_publishes_empty_versions_and_no_table(monkeypatch):
         "services": {},
     }
     assert "OSDU Service Versions" not in _plain(CliRunner().invoke(cli.app, ["info"]).output)
+
+
+def test_info_fails_when_the_lock_is_unreadable(monkeypatch):
+    """An empty osdu_versions means no lock; a read failure must not look like that."""
+    from spi.pins import PinError
+
+    _wire(monkeypatch)
+
+    def unreadable():
+        raise PinError("Could not read ConfigMap osdu-image-lock: forbidden")
+
+    monkeypatch.setattr(info, "_read_image_lock", unreadable)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    result = CliRunner().invoke(cli.app, ["info", "--json"])
+
+    assert result.exit_code == 1
+    assert "forbidden" in result.output
+
+
+def test_info_shows_an_mr_pin_by_its_image_commit(monkeypatch):
+    lock = _lock()
+    lock["data"]["STORAGE_IMAGE_TAG"] = "0123456789abcdef" + "0" * 24
+    pin = {
+        "mr": "812",
+        "branch": "fix-x",
+        "repository": "registry/storage",
+        "tag": "0123456789abcdef" + "0" * 24,
+        "canonical_repository": "registry/storage",
+        "canonical_tag": "abc",
+        "canonical_created_at": "",
+        "canonical_digest": "sha256:" + "c" * 64,
+        "applied_at": "2026-09-24T10:00:00Z",
+        "digest": "sha256:" + "d" * 64,
+    }
+    lock["metadata"]["annotations"] = {"spi-stack.osdu.dev/pins": json.dumps({"storage": pin})}
+    _wire(monkeypatch, image_lock=lock)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    output = _plain(CliRunner().invoke(cli.app, ["info"]).output)
+
+    assert "0123456789ab" in output
+    assert "MR !812 (fix-x)" in output

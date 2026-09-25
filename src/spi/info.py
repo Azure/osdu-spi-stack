@@ -41,9 +41,9 @@ from .deploy_record import (
     environment_facts,
     read_deploy_record,
 )
-from .images import IMAGE_LOCK_CONFIGMAP, IMAGE_LOCK_NAMESPACE, image_lock_key, image_lock_names
+from .images import image_lock_key, image_lock_names
 from .ingress import get_ingress_ip
-from .pins import PinError, decode_pins, pin_origin
+from .pins import PinError, decode_pins, pin_origin, read_lock
 from .shell import gather_reads, kubectl_json
 from .stack_version import collect_running_version, skew_message
 from .status import STATUS_API_VERSION
@@ -146,7 +146,8 @@ def _read_flux_extension_values() -> dict:
 
 
 def _read_image_lock() -> dict | None:
-    return kubectl_json(["get", "configmap", IMAGE_LOCK_CONFIGMAP, "-n", IMAGE_LOCK_NAMESPACE])
+    """The lock, or None when absent; any other read failure raises PinError."""
+    return read_lock(required=False)
 
 
 def _osdu_versions(lock: dict | None) -> dict:
@@ -571,7 +572,7 @@ def _service_versions_table(versions: dict) -> Table | None:
         if image["pinned"]:
             table.add_row(
                 f"[warning]◆[/warning] {name}",
-                f"@{image['digest'][:19]}" if image["digest"] else image["tag"][:12],
+                image["tag"][:12] or f"@{image['digest'][:19]}",
                 image["created_at"][:10],
                 f"[warning]{image['origin']}[/warning]",
             )
