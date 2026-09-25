@@ -594,7 +594,7 @@ def deploy_azure(
     )
     if config.profile is Profile.BARE:
         display_result(
-            "GitOps activated for profile: bare (empty reconciliation; no middleware or ingress)"
+            "GitOps activated for profile: bare (release stamp only; no middleware or ingress)"
         )
     else:
         display_result(

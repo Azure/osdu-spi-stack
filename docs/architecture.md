@@ -64,7 +64,7 @@ Profiles select Kubernetes workloads, not a smaller Azure resource estate.
 
 | Profile | Flux workload scope |
 |---|---|
-| `bare` | Empty stack and ingress trees; infrastructure and CLI bootstrap inputs remain |
+| `bare` | Release stamp only in the stack tree, empty ingress tree; infrastructure and CLI bootstrap inputs remain |
 | `minimal` | Operators, middleware, and CA bootstrap, without OSDU services or initialization Jobs |
 | `core` | The middleware substrate plus OSDU services, partition/entitlements initialization, schema loading, and reference APIs |
 

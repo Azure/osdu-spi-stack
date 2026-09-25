@@ -73,7 +73,7 @@ on a separate, non-gating branch. Airflow follows PostgreSQL on a
 separate branch. Ingress has its own certificate and route dependencies.
 
 That sequence describes `core`. `minimal` stops before OSDU services; `bare`
-activates empty workload trees. Neither profile skips Azure PaaS provisioning
+activates trees with no workloads. Neither profile skips Azure PaaS provisioning
 or CLI credential bootstrap. The [profile reference](../architecture.md#stack-profiles)
 defines the boundaries.
 
