@@ -2,17 +2,19 @@
 #
 # Licensed under the Apache License, Version 2.0.
 
-"""Cluster identity guard bypass output routing.
+"""Cluster identity guard output routing.
 
 SPI_SKIP_GUARD=1 still has to tell the operator it bypassed the check, but
 `status --json` and `info --json` are meant to be piped into `jq`. The
 bypass warning has to land on stderr, or a successful run under the bypass
-stops being valid JSON on stdout.
+stops being valid JSON on stdout. A guard failure under `--json` follows the
+same rule: the diagnosis goes to stderr and stdout stays empty.
 """
 
 import json
 import subprocess
 
+import pytest
 from typer.testing import CliRunner
 
 from spi import cli, info, status
@@ -91,3 +93,66 @@ def test_info_json_is_parseable_under_guard_bypass(monkeypatch):
 
     assert json.loads(result.stdout)["apiVersion"] == "spi.osdu.dev/v1"
     assert "Cluster guard bypassed" in result.stderr
+
+
+def _guard_fails_on_foreign_context(monkeypatch):
+    monkeypatch.delenv("SPI_SKIP_GUARD", raising=False)
+    monkeypatch.setattr("spi.guard.run_process", lambda *a, **k: _fake_context("kind-dev"))
+
+
+def _guard_fails_without_fingerprint(monkeypatch):
+    monkeypatch.delenv("SPI_SKIP_GUARD", raising=False)
+
+    def run_process(argv, **kwargs):
+        if argv[:3] == ["kubectl", "config", "current-context"]:
+            return _fake_context()
+        return subprocess.CompletedProcess(argv, 1, "", "not found")
+
+    monkeypatch.setattr("spi.guard.run_process", run_process)
+    monkeypatch.setattr("spi.guard.kubectl_json", lambda args: None)
+
+
+def _guard_fails_without_context(monkeypatch):
+    monkeypatch.delenv("SPI_SKIP_GUARD", raising=False)
+    monkeypatch.setattr(
+        "spi.guard.run_process",
+        lambda *a, **k: subprocess.CompletedProcess(["kubectl"], 1, "", "no context"),
+    )
+
+
+@pytest.mark.parametrize(
+    "fail_guard, message",
+    [
+        (_guard_fails_on_foreign_context, "does not look like an spi-stack cluster"),
+        (_guard_fails_without_fingerprint, "has no spi-stack deployment"),
+        (_guard_fails_without_context, "Cannot determine kubectl context"),
+    ],
+)
+@pytest.mark.parametrize("command", ["status", "info"])
+def test_json_guard_failure_leaves_stdout_empty(monkeypatch, command, fail_guard, message):
+    fail_guard(monkeypatch)
+
+    result = runner.invoke(cli.app, [command, "--json"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert message in result.stderr
+
+
+def test_token_guard_failure_leaves_stdout_empty(monkeypatch):
+    _guard_fails_on_foreign_context(monkeypatch)
+
+    result = runner.invoke(cli.app, ["token"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert "does not look like an spi-stack cluster" in result.stderr
+
+
+def test_human_status_guard_failure_stays_on_stdout(monkeypatch):
+    _guard_fails_on_foreign_context(monkeypatch)
+
+    result = runner.invoke(cli.app, ["status"])
+
+    assert result.exit_code == 1
+    assert "does not look like an spi-stack cluster" in result.stdout

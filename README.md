@@ -40,6 +40,16 @@ Verify the installation:
 spi --version
 ```
 
+Optionally, add shell completion for bash, zsh, or fish, then open a new shell:
+
+```bash
+spi --install-completion
+```
+
+On PowerShell, `--install-completion` is refused because Typer's installer runs
+`Set-ExecutionPolicy Unrestricted`; append the output of `spi --show-completion` to your
+`$PROFILE` instead.
+
 See [Installation](docs/install.md) for pinned versions, upgrades, and troubleshooting.
 
 ### 2. Check prerequisites

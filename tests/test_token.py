@@ -29,6 +29,7 @@ import pytest
 from spi import deploy, token
 from spi.bootstrap import ensure_namespaces
 from spi.config import Config
+from spi.status import STATUS_API_VERSION
 from spi.templates import (
     DEPLOYER_SERVICE_ACCOUNT,
     MEMBER_SERVICE_ACCOUNT,
@@ -97,6 +98,14 @@ def test_mints_as_the_deploy_identity_through_its_service_account():
     assert captured["body"]["resource"] == "https://management.azure.com"
     assert minted.access_token == "bearer"
     assert minted.as_dict()["service_account"] == f"{TESTER_NAMESPACE}/{DEPLOYER_SERVICE_ACCOUNT}"
+
+
+def test_token_json_leads_with_the_shared_api_version():
+    minted, _captured = _mint()
+
+    payload = minted.as_dict()
+    assert next(iter(payload)) == "apiVersion"
+    assert payload["apiVersion"] == STATUS_API_VERSION
 
 
 def test_no_access_selects_the_other_identity_and_account():

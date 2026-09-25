@@ -37,6 +37,7 @@ from .console import console
 from .deploy_record import environment_facts, read_deploy_record
 from .ingress import get_ingress_ip
 from .shell import gather_reads, kubectl_json
+from .status import STATUS_API_VERSION
 from .templates import LEGAL_TAG_BASE, entitlements_members_job_name, parse_init_values
 
 MANAGEMENT_AUDIENCE = "https://management.azure.com"
@@ -414,7 +415,7 @@ def _collect_info() -> dict:
     )
 
     info = {
-        "apiVersion": "spi.osdu.dev/v1",
+        "apiVersion": STATUS_API_VERSION,
         "environment": environment_facts(record),
         "ingress_mode": mode,
         "base_url": base,
