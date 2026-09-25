@@ -112,36 +112,6 @@ class KustomizationReadiness:
 
 
 @dataclass(frozen=True)
-class StackState:
-    ref: str
-    resolved_commit: str
-    deployed_at: str
-    cli_version: str
-    profile: str
-
-    @staticmethod
-    def from_record(record: DeployRecord | None) -> "StackState":
-        if record is None:
-            return StackState("", "", "", "", "")
-        return StackState(
-            ref=record.ref,
-            resolved_commit=record.resolved_commit,
-            deployed_at=record.deployed_at,
-            cli_version=record.cli_version,
-            profile=record.profile,
-        )
-
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "ref": self.ref,
-            "resolvedCommit": self.resolved_commit,
-            "deployedAt": self.deployed_at,
-            "cliVersion": self.cli_version,
-            "profile": self.profile,
-        }
-
-
-@dataclass(frozen=True)
 class ImageState:
     branch: str
     resolved_at: str
@@ -184,7 +154,6 @@ class StatusSnapshot:
     suspended: bool
     maintenance: bool
     kustomizations: tuple[KustomizationState, ...]
-    stack: StackState
     images: ImageState
     base_url: str
     kustomization_items: tuple[dict, ...]
@@ -206,8 +175,6 @@ class StatusSnapshot:
                 "notReady": not_ready,
             },
             "environment": environment_facts(self.record, self.running),
-            # Superseded by `environment`; kept one release for consumers.
-            "stack": self.stack.to_dict(),
             "images": self.images.to_dict(),
             "baseUrl": self.base_url,
         }
@@ -561,7 +528,6 @@ def collect_status() -> StatusSnapshot:
         suspended=suspended,
         maintenance=maintenance,
         kustomizations=states,
-        stack=StackState.from_record(record),
         images=ImageState(
             branch=str(lock_data.get("IMAGE_BRANCH", "")),
             resolved_at=str(lock_data.get("IMAGE_RESOLVED_AT", "")),

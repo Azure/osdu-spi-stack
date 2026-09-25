@@ -156,7 +156,8 @@ def test_deployable_status_contract(monkeypatch):
     assert status.status_exit_code(snapshot) == 0
     assert payload["apiVersion"] == "spi.osdu.dev/v1"
     assert payload["reason"] is None
-    assert payload["stack"]["resolvedCommit"] == "a" * 40
+    assert payload["environment"]["resolvedCommit"] == "a" * 40
+    assert "stack" not in payload
     assert payload["baseUrl"] == "https://example.test"
 
 
@@ -899,7 +900,6 @@ def test_status_json_publishes_the_environment_block(monkeypatch):
             "converged": False,
         },
     }
-    assert payload["stack"]["ref"] == "v0.6.0"
 
 
 def test_status_json_environment_is_empty_without_a_record(monkeypatch):
@@ -1024,7 +1024,6 @@ def test_summary_counts_failed_kustomizations_apart_from_progressing():
             state("c", False, "DependencyNotReady"),
             state("d", False, "HealthCheckFailed"),
         ),
-        stack=status.StackState.from_record(None),
         images=status.ImageState(branch="master", resolved_at="", count=0),
         base_url="",
         kustomization_items=(),

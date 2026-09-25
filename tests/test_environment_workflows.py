@@ -308,15 +308,15 @@ class TestAssertionsAndDeployability:
     def test_env_upgrade_verify_asserts_ref_resolved_commit_and_suspended(self):
         verify_steps = _steps(_workflow(ENV_UPGRADE)["jobs"]["verify"])
         assertion = verify_steps["Verify deployed stack matches the declaration"]["run"]
-        assert ".stack.ref" in assertion
-        assert ".stack.resolvedCommit" in assertion
+        assert ".environment.stackVersion" in assertion
+        assert ".environment.resolvedCommit" in assertion
         assert ".suspended" in assertion
         assert "STACK_VERSION" in assertion
 
     def test_env_refresh_verify_asserts_ref_and_suspended(self):
         refresh_steps = _steps(_workflow(ENV_REFRESH)["jobs"]["refresh"])
         assertion = refresh_steps["Verify stack version and source suspension are unchanged"]["run"]
-        assert ".stack.ref" in assertion
+        assert ".environment.stackVersion" in assertion
         assert ".suspended" in assertion
 
     def test_env_upgrade_verify_requires_maintenance_as_the_sole_blocker(self):
@@ -400,7 +400,7 @@ class TestRevisionGatedConvergence:
         steps = _steps(_workflow(ENV_UPGRADE)["jobs"]["verify"])
         resolve = steps["Resolve the upgraded source revision"]
         assert resolve["id"] == "revision"
-        assert ".stack.resolvedCommit" in resolve["run"]
+        assert ".environment.resolvedCommit" in resolve["run"]
         # An absent commit must fail the job, never wait on an empty string,
         # which the script treats as "no revision expected".
         assert "exit 1" in resolve["run"]
