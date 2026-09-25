@@ -69,6 +69,7 @@ def _wire_info(monkeypatch):
     monkeypatch.setattr(info, "_read_cluster_config", lambda: {})
     monkeypatch.setattr(info, "_read_init_values_yaml", lambda: "")
     monkeypatch.setattr(info, "_read_deploy_record", lambda: None)
+    monkeypatch.setattr(info, "_read_image_lock", lambda: None)
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: False)
 
 
