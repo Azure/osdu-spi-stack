@@ -473,12 +473,12 @@ class TestReleaseBumpSafeguards:
         # Both the absent-declaration and already-current cases must skip.
         assert gate_step.count("proceed=false") == 2
 
-        pr_step = steps["Open the stackVersion bump PR"]
+        pr_step = steps["Open or advance the stackVersion bump PR"]
         assert pr_step["if"] == "steps.gate.outputs.proceed == 'true'"
 
     def test_bump_pr_touches_only_the_declaration_file(self):
         steps = _steps(_workflow(RELEASE_WORKFLOW)["jobs"]["bump-environment"])
-        pr_step_run = steps["Open the stackVersion bump PR"]["run"]
+        pr_step_run = steps["Open or advance the stackVersion bump PR"]["run"]
 
         assert "git diff --cached --name-only" in pr_step_run
         assert 'CHANGED" != "$DECL"' in pr_step_run
@@ -487,10 +487,19 @@ class TestReleaseBumpSafeguards:
 
     def test_bump_commit_and_pr_title_follow_conventional_commits(self):
         steps = _steps(_workflow(RELEASE_WORKFLOW)["jobs"]["bump-environment"])
-        pr_step_run = steps["Open the stackVersion bump PR"]["run"]
+        pr_step_run = steps["Open or advance the stackVersion bump PR"]["run"]
 
         assert re.search(r"git commit -m \"chore\(env\): bump shared stackVersion", pr_step_run)
-        assert re.search(r"--title \"chore\(env\): bump shared stackVersion", pr_step_run)
+        assert re.search(r"TITLE=\"chore\(env\): bump shared stackVersion", pr_step_run)
+        assert pr_step_run.count('--title "$TITLE"') == 2
+
+    def test_bump_pr_rolls_forward_on_one_branch(self):
+        steps = _steps(_workflow(RELEASE_WORKFLOW)["jobs"]["bump-environment"])
+        pr_step_run = steps["Open or advance the stackVersion bump PR"]["run"]
+
+        assert 'BRANCH="env-bump/shared"' in pr_step_run
+        assert "gh pr create" in pr_step_run
+        assert 'gh pr edit "$PR"' in pr_step_run
 
 
 class TestTagRuleset:
