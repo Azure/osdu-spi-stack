@@ -35,7 +35,7 @@ from .deploy_record import (
     environment_facts,
     read_deploy_record,
 )
-from .pins import PinError, ServicePin, decode_pins
+from .pins import PinError, ServicePin, decode_pins, pin_origin
 from .shell import gather_reads, kubectl_json, run_process
 from .stack_version import (
     STACK_VERSION_CONFIGMAP,
@@ -724,14 +724,6 @@ def resettable_helmreleases() -> list[tuple[str, str]]:
     ]
 
 
-def _pin_origin(pin: ServicePin) -> str:
-    """Where a pin came from, without the digest the Image column already shows."""
-    if pin.mr:
-        return f"MR !{pin.mr} ({pin.branch})"
-    origin = f"run {pin.run_id}" if pin.run_id else "operator"
-    return f"{origin} (ephemeral)" if pin.ephemeral else origin
-
-
 def get_pins_table(images: ImageState) -> Optional[Table]:
     """Services pinned away from their canonical image, from the lock annotation."""
     if not images.pins:
@@ -753,7 +745,7 @@ def get_pins_table(images: ImageState) -> Optional[Table]:
         table.add_row(
             name,
             image,
-            _pin_origin(pin),
+            pin_origin(pin),
             pin.canonical_digest[:19],
             age_str(pin.applied_at),
         )

@@ -41,7 +41,9 @@ from .deploy_record import (
     environment_facts,
     read_deploy_record,
 )
+from .images import image_lock_key, image_lock_names
 from .ingress import get_ingress_ip
+from .pins import PinError, decode_pins, pin_origin, read_lock
 from .shell import gather_reads, kubectl_json
 from .stack_version import collect_running_version, skew_message
 from .status import STATUS_API_VERSION
@@ -141,6 +143,49 @@ def _read_flux_extension_values() -> dict:
     if not data:
         return {}
     return data.get("data", {}) or {}
+
+
+def _read_image_lock() -> dict | None:
+    """The lock, or None when absent; any other read failure raises PinError."""
+    return read_lock(required=False)
+
+
+def _osdu_versions(lock: dict | None) -> dict:
+    """Per-service image facts from the lock, marking the pinned ones.
+
+    A corrupt pin annotation reads as no pins here; `spi status` is the
+    surface that fails on it.
+    """
+    data = (lock or {}).get("data") or {}
+    try:
+        pins = decode_pins(lock) if lock else {}
+    except PinError:
+        pins = {}
+    # The lock is the source of truth: a newer stack can carry services this CLI predates.
+    known = {image_lock_key(name): name for name in image_lock_names()}
+    # `<SERVICE>_IMAGE` is the substitution key every lock carries; older locks lack the rest.
+    keys = {key.removesuffix("_IMAGE") for key in data if key.endswith("_IMAGE")}
+    ordered = [key for key in known if key in keys] + sorted(keys - known.keys())
+    services = {}
+    for key in ordered:
+        name = known.get(key) or key.lower().replace("_", "-")
+        pin = pins.get(name)
+        repository, _, tag = data[f"{key}_IMAGE"].rpartition(":")
+        if "/" in tag or "@" in repository:
+            repository, tag = "", ""
+        services[name] = {
+            "repository": data.get(f"{key}_IMAGE_REPOSITORY", repository),
+            "tag": data.get(f"{key}_IMAGE_TAG", tag),
+            "digest": data.get(f"{key}_IMAGE_DIGEST", ""),
+            "created_at": data.get(f"{key}_IMAGE_CREATED_AT", ""),
+            "pinned": pin is not None,
+            "origin": pin_origin(pin) if pin else "canonical",
+        }
+    return {
+        "branch": data.get("IMAGE_BRANCH", ""),
+        "resolved_at": data.get("IMAGE_RESOLVED_AT", ""),
+        "services": services,
+    }
 
 
 def _read_init_values_yaml() -> str:
@@ -390,6 +435,7 @@ def _collect_info() -> dict:
         record,
         wi_client_id,
         running,
+        image_lock,
     ) = gather_reads(
         [
             _read_ingress_config,
@@ -402,6 +448,7 @@ def _collect_info() -> dict:
             _read_deploy_record,
             read_workload_identity_client_id,
             collect_running_version,
+            _read_image_lock,
         ]
     )
     mode, base, endpoints, middleware = _compute_endpoints(cfg)
@@ -481,6 +528,7 @@ def _collect_info() -> dict:
         # Observed from the running Deployment; empty until entitlements is deployed.
         "entitlements_domain": entitlements_domain,
         "suspended": suspended,
+        "osdu_versions": _osdu_versions(image_lock),
     }
 
     return info
@@ -502,6 +550,46 @@ def collect_base_url() -> str:
 
     _mode, base, _endpoints, _middleware = _compute_endpoints(_read_ingress_config())
     return base
+
+
+def _service_versions_table(versions: dict) -> Table | None:
+    services = versions.get("services") or {}
+    if not services:
+        return None
+    caption = " ".join(
+        part
+        for part in (
+            f"{versions['branch']} images" if versions.get("branch") else "",
+            f"resolved {versions['resolved_at'][:19]}Z" if versions.get("resolved_at") else "",
+        )
+        if part
+    )
+    table = Table(
+        title="OSDU Service Versions",
+        caption=caption or None,
+        border_style="cyan",
+        expand=True,
+    )
+    table.add_column("Service", style="bold")
+    table.add_column("Image")
+    table.add_column("Built", no_wrap=True)
+    table.add_column("Source")
+    for name, image in services.items():
+        if image["pinned"]:
+            table.add_row(
+                f"[warning]◆[/warning] {name}",
+                image["tag"][:12] or f"@{image['digest'][:19]}",
+                image["created_at"][:10],
+                f"[warning]{image['origin']}[/warning]",
+            )
+        else:
+            table.add_row(
+                name,
+                image["tag"][:12] or f"@{image['digest'][:19]}",
+                image["created_at"][:10],
+                "[dim]canonical[/dim]",
+            )
+    return table
 
 
 def render_info(show_secrets: bool = False, show_apis: bool = False, output_json: bool = False):
@@ -571,6 +659,11 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
             "(--show-apis to list)[/dim]"
         )
     console.print()
+
+    versions = _service_versions_table(info["osdu_versions"])
+    if versions is not None:
+        console.print(versions)
+        console.print()
 
     endpoint_rows = _build_endpoints_table(mode, base, middleware)
     if endpoint_rows:

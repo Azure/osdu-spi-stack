@@ -311,6 +311,14 @@ def read_lock(required: bool = True) -> dict | None:
         raise PinError(f"Could not parse ConfigMap {IMAGE_LOCK_CONFIGMAP}: {exc}") from exc
 
 
+def pin_origin(pin: ServicePin) -> str:
+    """Where a pin came from, without the digest an Image column already shows."""
+    if pin.mr:
+        return f"MR !{pin.mr} ({pin.branch})"
+    origin = f"run {pin.run_id}" if pin.run_id else "operator"
+    return f"{origin} (ephemeral)" if pin.ephemeral else origin
+
+
 def decode_pins(lock: dict) -> dict[str, ServicePin]:
     """Return the active pins recorded on a lock object.
 
