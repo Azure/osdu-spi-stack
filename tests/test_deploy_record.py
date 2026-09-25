@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 
 from spi import cli, deploy_record
 from spi.deploy_record import DeployRecordError
+from spi.stack_version import RunningVersion
 
 
 def _object(*, maintenance: str = "true", resource_version: str = "7") -> dict:
@@ -280,7 +281,8 @@ def test_upsert_writes_env_and_set_maintenance_preserves_it(monkeypatch):
 
 def test_environment_descriptions_cover_the_missing_record():
     absent = deploy_record.environment_facts(None)
-    assert all(value == "" for value in absent.values())
+    assert all(value == "" for key, value in absent.items() if key != "running")
+    assert absent["running"] == RunningVersion().to_dict()
     assert deploy_record.environment_label(absent) == "unknown environment (no deploy record)"
     assert deploy_record.describe_environment(absent) == "unknown (no deploy record)"
 
@@ -296,9 +298,41 @@ def test_environment_descriptions_cover_the_missing_record():
         )
     )
     assert deploy_record.environment_label(present) == "shared v0.9.1"
-    assert deploy_record.describe_environment(present) == (
-        "shared v0.9.1  profile core  deployed 2026-09-04T14:36:46Z"
+    assert deploy_record.describe_environment(present) == "shared v0.9.1  profile core"
+    assert deploy_record.describe_last_up(present) == "2026-09-04T14:36:46Z with spi 0.9.1"
+    assert deploy_record.describe_last_up(absent) == ""
+
+
+def test_environment_descriptions_prefer_what_flux_applied():
+    """A branch environment moves on reconcile without a new record; the
+    label follows Flux, and the record stays the last `spi up`."""
+    record = deploy_record.DeployRecord(
+        ref="main",
+        resolved_commit="6c6207b9681a",
+        deployed_at="2026-09-23T16:10:06Z",
+        cli_version="0.19.0",
+        profile="core",
+        maintenance=False,
+        env="dks",
     )
+    running = RunningVersion(
+        version="0.19.3+fdd4b11cc78b",
+        release="0.19.3",
+        ref="main",
+        commit="fdd4b11cc78b23aea4b5dc6e8f9372b0951b6748",
+        converged=True,
+    )
+    facts = deploy_record.environment_facts(record, running)
+
+    assert facts["stackVersion"] == "main"
+    assert facts["running"]["version"] == "0.19.3+fdd4b11cc78b"
+    assert deploy_record.environment_label(facts) == "dks 0.19.3+fdd4b11cc78b"
+    assert deploy_record.describe_environment(facts) == "dks 0.19.3+fdd4b11cc78b  profile core"
+
+    rolling = deploy_record.environment_facts(
+        record, RunningVersion(version="0.19.3+fdd4b11cc78b", commit="fdd4b11", converged=False)
+    )
+    assert deploy_record.describe_environment(rolling).endswith("rolling out")
 
 
 def test_record_with_non_string_env_is_rejected(monkeypatch):

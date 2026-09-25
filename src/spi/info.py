@@ -30,13 +30,20 @@ from functools import partial
 from rich.panel import Panel
 from rich.table import Table
 
+from . import __version__
 from .azure_infra import _cosmos_sql_name, _sb_name, _storage_name
 from .bootstrap import read_cluster_config, read_workload_identity_client_id
 from .config import BASE_NAME
 from .console import console
-from .deploy_record import environment_facts, read_deploy_record
+from .deploy_record import (
+    describe_environment,
+    describe_last_up,
+    environment_facts,
+    read_deploy_record,
+)
 from .ingress import get_ingress_ip
 from .shell import gather_reads, kubectl_json
+from .stack_version import collect_running_version, skew_message
 from .status import STATUS_API_VERSION
 from .templates import LEGAL_TAG_BASE, entitlements_members_job_name, parse_init_values
 
@@ -382,6 +389,7 @@ def _collect_info() -> dict:
         suspended,
         record,
         wi_client_id,
+        running,
     ) = gather_reads(
         [
             _read_ingress_config,
@@ -393,6 +401,7 @@ def _collect_info() -> dict:
             get_suspend_status,
             _read_deploy_record,
             read_workload_identity_client_id,
+            collect_running_version,
         ]
     )
     mode, base, endpoints, middleware = _compute_endpoints(cfg)
@@ -416,7 +425,7 @@ def _collect_info() -> dict:
 
     info = {
         "apiVersion": STATUS_API_VERSION,
-        "environment": environment_facts(record),
+        "environment": environment_facts(record, running),
         "ingress_mode": mode,
         "base_url": base,
         "endpoints": endpoints,
@@ -536,13 +545,17 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
         )
 
     identity = info["environment"]
-    if identity["stackVersion"]:
-        label = f"{identity['name'] or 'unnamed'}  {identity['stackVersion']}"
-        if identity["profile"]:
-            label += f"  profile {identity['profile']}"
-        console.print(f"\n  [ready]Environment:  [/ready] {label}")
+    described = describe_environment(identity)
+    if described.startswith("unknown"):
+        console.print(f"\n  [warning]Environment:   {described}[/warning]")
     else:
-        console.print("\n  [warning]Environment:   unknown (no deploy record)[/warning]")
+        console.print(f"\n  [ready]Environment:  [/ready] {described}")
+    last_up = describe_last_up(identity)
+    if last_up:
+        console.print(f"  [ready]Last spi up: [/ready] [dim]{last_up}[/dim]")
+    skew = skew_message(__version__, identity["running"]["release"])
+    if skew:
+        console.print(f"  [warning]{skew}[/warning]")
     console.print(f"  [ready]Ingress mode:[/ready] {mode or 'unknown'}")
     if base:
         console.print(f"  [ready]Base URL:    [/ready] {base}")
