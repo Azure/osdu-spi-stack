@@ -37,6 +37,10 @@ def _plain(text: str) -> str:
     return _ANSI.sub("", text)
 
 
+# Captured before `_wire` stubs it, for the test that needs the real read.
+_REAL_READ_IMAGE_LOCK = info._read_image_lock
+
+
 def _wire(
     monkeypatch,
     osdu_config=None,
@@ -648,14 +652,17 @@ def test_info_without_a_lock_publishes_empty_versions_and_no_table(monkeypatch):
 
 def test_info_fails_when_the_lock_is_unreadable(monkeypatch):
     """An empty osdu_versions means no lock; a read failure must not look like that."""
-    from spi.pins import PinError
+    import subprocess
+
+    from spi import pins
 
     _wire(monkeypatch)
-
-    def unreadable():
-        raise PinError("Could not read ConfigMap osdu-image-lock: forbidden")
-
-    monkeypatch.setattr(info, "_read_image_lock", unreadable)
+    monkeypatch.setattr(info, "_read_image_lock", _REAL_READ_IMAGE_LOCK)
+    monkeypatch.setattr(
+        pins,
+        "run_process",
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 1, "", "forbidden"),
+    )
     monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
 
     result = CliRunner().invoke(cli.app, ["info", "--json"])
