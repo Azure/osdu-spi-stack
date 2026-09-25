@@ -36,7 +36,8 @@ end of `spi up` records how the environment was last provisioned.
   `lastAppliedRevision` equals that revision. A branch
   environment advances on `spi reconcile` without a new record, so the flat
   record fields describe the last `spi up` and `running` describes now.
-  The dashboards print `running.version` as the environment's version, mark
+  The dashboards print `running.version` as the environment's version, or
+  `ref@<12-char commit>` on a tree that predates the stamp, mark
   a rollout that has not converged, show the record as "Last spi up", and
   warn when the executing CLI is older than `running.release`, because pin
   and reconcile logic ships in the CLI.
