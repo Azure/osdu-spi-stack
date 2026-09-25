@@ -487,7 +487,7 @@ def _read_deploy_record() -> DeployRecord | None:
 def collect_status() -> StatusSnapshot:
     from .info import collect_base_url
 
-    # Eight independent reads. Ordered results keep the failure a caller sees
+    # Seven independent reads. Ordered results keep the failure a caller sees
     # deterministic: a Kustomization error still outranks a GitRepository one.
     (
         kustomization_readiness,
@@ -496,7 +496,6 @@ def collect_status() -> StatusSnapshot:
         members_jobs,
         expected_jobs,
         image_lock,
-        stack_version,
         base_url,
     ) = gather_reads(
         [
@@ -509,10 +508,11 @@ def collect_status() -> StatusSnapshot:
             _read_members_jobs,
             _read_expected_members_jobs,
             lambda: _optional_configmap("osdu-image-lock", "osdu-flux"),
-            lambda: _optional_configmap(STACK_VERSION_CONFIGMAP, STACK_VERSION_NAMESPACE),
             collect_base_url,
         ]
     )
+    # After the Flux reads, so a converged snapshot cannot carry the previous release.
+    stack_version = _optional_configmap(STACK_VERSION_CONFIGMAP, STACK_VERSION_NAMESPACE)
 
     items = kustomization_readiness.items
     states = kustomization_readiness.states

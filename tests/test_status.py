@@ -1035,3 +1035,26 @@ def test_summary_counts_failed_kustomizations_apart_from_progressing():
     text = renderable.plain
 
     assert "1 ready / 2 progressing / 1 failed  (1/4 complete)" in text
+
+
+def test_status_reads_the_stamp_after_the_flux_snapshot(monkeypatch):
+    _wire_running(monkeypatch, applied="main@sha1:" + "f" * 40)
+    events = []
+    real_gather = status.gather_reads
+    real_optional = status._optional_configmap
+
+    def gather(calls):
+        results = real_gather(calls)
+        events.append("snapshot-end")
+        return results
+
+    def optional(name, namespace):
+        events.append(name)
+        return real_optional(name, namespace)
+
+    monkeypatch.setattr(status, "gather_reads", gather)
+    monkeypatch.setattr(status, "_optional_configmap", optional)
+
+    status.collect_status()
+
+    assert events.index("snapshot-end") < events.index("spi-stack-version")

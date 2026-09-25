@@ -116,16 +116,18 @@ def running_version(
 
 def collect_running_version() -> RunningVersion:
     """Read what Flux has applied; an unreadable object reads as absent."""
-    source, kustomizations, stamp = gather_reads(
+    source, kustomizations = gather_reads(
         [
             lambda: kubectl_json(["get", "gitrepository", GIT_REPOSITORY, "-n", FLUX_NAMESPACE]),
             lambda: kubectl_json(
                 ["get", "kustomizations.kustomize.toolkit.fluxcd.io", "-n", FLUX_NAMESPACE]
             ),
-            lambda: kubectl_json(
-                ["get", "configmap", STACK_VERSION_CONFIGMAP, "-n", STACK_VERSION_NAMESPACE]
-            ),
         ]
+    )
+    # Read after the snapshot: a stamp older than the applied revision would pair
+    # a converged answer with the previous release.
+    stamp = kubectl_json(
+        ["get", "configmap", STACK_VERSION_CONFIGMAP, "-n", STACK_VERSION_NAMESPACE]
     )
     items = [item for item in (kustomizations or {}).get("items") or [] if isinstance(item, dict)]
     return running_version(source, [item for item in items if is_gating(item)], stamp)

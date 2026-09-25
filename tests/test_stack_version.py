@@ -169,3 +169,25 @@ def test_skew_message_names_both_versions_and_the_fix():
     assert skew_message("0.19.0", "0.19.3") == (
         "spi 0.19.0 is older than the stack (0.19.3); run 'spi update'."
     )
+
+
+def test_the_stamp_is_read_after_the_flux_snapshot(monkeypatch):
+    events = []
+
+    def gather(calls):
+        events.append("snapshot-start")
+        results = [call() for call in calls]
+        events.append("snapshot-end")
+        return results
+
+    def read(args):
+        events.append(args[1])
+        return None
+
+    monkeypatch.setattr(stack_version, "gather_reads", gather)
+    monkeypatch.setattr(stack_version, "kubectl_json", read)
+
+    _REAL_COLLECT()
+
+    assert events[-1] == "configmap"
+    assert events.index("snapshot-end") < events.index("configmap")
