@@ -68,10 +68,10 @@ selects the fork's GHCR `main` image, one service at a time.
   change records that promotion. A personal or customer operator selects
   the source explicitly. Trust-only onboarding does not require promotion.
 - `schema` has a flip precondition its siblings lack: schema-load resolves a
-  loader image at the schema service's exact commit (ADR-017), and the fork
-  publishes no loader. Schema keeps its community canonical until its fork
-  publishes a paired `schema-load` image at the same commit and promotion
-  is requested. Trust can be enabled without a loader. A refused promotion
+  loader image at the schema service's exact commit (ADR-017). Promotion is
+  refused unless the fork published that paired loader at the same commit,
+  and schema keeps its community canonical until then. Trust can be enabled
+  without a loader. A refused promotion
   leaves the durable source as community, so a rebuild cannot infer a flip
   from the retained credential. Publishing a loader alone does not promote
   the service.
