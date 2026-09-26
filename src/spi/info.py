@@ -41,7 +41,13 @@ from .deploy_record import (
     environment_facts,
     read_deploy_record,
 )
-from .images import image_lock_key, image_lock_names
+from .images import (
+    GHCR_HOST,
+    SCHEMA_LOAD_SERVICE_NAME,
+    fork_package_repositories,
+    image_lock_key,
+    image_lock_names,
+)
 from .ingress import get_ingress_ip
 from .pins import PinError, decode_canonical_sources, decode_pins, pin_origin, read_lock
 from .shell import gather_reads, kubectl_json
@@ -185,7 +191,7 @@ def _osdu_versions(lock: dict | None) -> dict:
             "pinned": pin is not None,
             "origin": pin_origin(pin) if pin else "canonical",
             # The policy the next refresh resolves; the repository shows what runs now.
-            "source": sources.get(name, "community"),
+            "source": sources.get(_policy_service(name), "community"),
         }
     return {
         "branch": data.get("IMAGE_BRANCH", ""),
@@ -593,18 +599,30 @@ def _service_versions_table(versions: dict) -> Table | None:
                 name,
                 image["tag"][:12] or f"@{image['digest'][:19]}",
                 image["created_at"][:10],
-                _canonical_source(image),
+                _canonical_source(name, image),
             )
     return table
 
 
-def _canonical_source(image: dict) -> str:
+def _policy_service(name: str) -> str:
+    """The service whose source policy governs ``name``; the loader follows schema."""
+
+    return "schema" if name == SCHEMA_LOAD_SERVICE_NAME else name
+
+
+def _canonical_source(name: str, image: dict) -> str:
     """The source policy, marked when the running image still predates it."""
 
     source = image.get("source") or "community"
-    runs_fork = image.get("repository", "").startswith("ghcr.io/")
-    if runs_fork == (source != "community"):
-        return source if runs_fork else "[dim]community[/dim]"
+    repository = image.get("repository", "")
+    if source == "community":
+        current = repository.partition("/")[0] != GHCR_HOST
+    else:
+        suffix = "-load" if name == SCHEMA_LOAD_SERVICE_NAME else ""
+        packages = fork_package_repositories(source, _policy_service(name))
+        current = repository in {f"{package}{suffix}" for package in packages}
+    if current:
+        return source if source != "community" else "[dim]community[/dim]"
     return f"{source} [dim](next refresh)[/dim]"
 
 
