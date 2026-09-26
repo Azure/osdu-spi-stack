@@ -299,6 +299,14 @@ class TestPinCodec:
             with pytest.raises(PinError, match="Corrupt"):
                 pins.decode_trusted_repos(lock)
 
+    def test_a_source_projection_naming_no_repository_raises(self):
+        lock = _lock(trusted=None)
+        lock["metadata"]["annotations"][pins.CANONICAL_SOURCES_ANNOTATION] = json.dumps(
+            {"partition": "community"}
+        )
+        with pytest.raises(PinError, match="is not <owner>/<name>"):
+            pins.decode_canonical_sources(lock)
+
 
 class TestDescribePin:
     def test_mr_pin_shows_branch_and_tag(self):
@@ -1114,12 +1122,16 @@ class TestApplyImageLock:
         assert data["SEARCH_DO_NOT_DISRUPT"] == "false"
         assert data["PARTITION_DO_NOT_DISRUPT"] == "false"
 
-    def test_refresh_carries_the_trusted_roster_forward(self, monkeypatch):
-        calls = _wire_lock(monkeypatch, _lock())
+    def test_refresh_carries_both_projections_forward(self, monkeypatch):
+        lock = _lock()
+        sources = {"partition": "Acme/osdu-spi-partition"}
+        lock["metadata"]["annotations"][pins.CANONICAL_SOURCES_ANNOTATION] = json.dumps(sources)
+        calls = _wire_lock(monkeypatch, lock)
 
         pins.apply_image_lock(self._resolved(), "master")
 
         assert pins.decode_trusted_repos(calls["box"][0]) == _TRUSTED
+        assert pins.decode_canonical_sources(calls["box"][0]) == sources
 
     def test_recomputes_pins_from_fresh_lock_on_retry(self, monkeypatch):
         """A pin applied by a concurrent `spi service pin` between the read

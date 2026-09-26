@@ -43,7 +43,7 @@ from .deploy_record import (
 )
 from .images import image_lock_key, image_lock_names
 from .ingress import get_ingress_ip
-from .pins import PinError, decode_pins, pin_origin, read_lock
+from .pins import PinError, decode_canonical_sources, decode_pins, pin_origin, read_lock
 from .shell import gather_reads, kubectl_json
 from .stack_version import collect_running_version, skew_message
 from .status import STATUS_API_VERSION
@@ -161,6 +161,10 @@ def _osdu_versions(lock: dict | None) -> dict:
         pins = decode_pins(lock) if lock else {}
     except PinError:
         pins = {}
+    try:
+        sources = decode_canonical_sources(lock) if lock else {}
+    except PinError:
+        sources = {}
     # The lock is the source of truth: a newer stack can carry services this CLI predates.
     known = {image_lock_key(name): name for name in image_lock_names()}
     # `<SERVICE>_IMAGE` is the substitution key every lock carries; older locks lack the rest.
@@ -180,6 +184,8 @@ def _osdu_versions(lock: dict | None) -> dict:
             "created_at": data.get(f"{key}_IMAGE_CREATED_AT", ""),
             "pinned": pin is not None,
             "origin": pin_origin(pin) if pin else "canonical",
+            # The policy the next refresh resolves; the repository shows what runs now.
+            "source": sources.get(name, "community"),
         }
     return {
         "branch": data.get("IMAGE_BRANCH", ""),
@@ -587,9 +593,19 @@ def _service_versions_table(versions: dict) -> Table | None:
                 name,
                 image["tag"][:12] or f"@{image['digest'][:19]}",
                 image["created_at"][:10],
-                "[dim]canonical[/dim]",
+                _canonical_source(image),
             )
     return table
+
+
+def _canonical_source(image: dict) -> str:
+    """The source policy, marked when the running image still predates it."""
+
+    source = image.get("source") or "community"
+    runs_fork = image.get("repository", "").startswith("ghcr.io/")
+    if runs_fork == (source != "community"):
+        return source if runs_fork else "[dim]community[/dim]"
+    return f"{source} [dim](next refresh)[/dim]"
 
 
 def render_info(show_secrets: bool = False, show_apis: bool = False, output_json: bool = False):

@@ -16,9 +16,11 @@
 
 A repository earns deploy access when the environment's deploy identity
 carries a federated credential for the repository's protected ``spi-stack``
-GitHub environment. Onboarding observes the repository, the identity, and
-the image lock once, derives the commands that move each from observed to
-desired, prints them, and runs them only with ``--write``.
+GitHub environment. Separately, the resource group's ``spi-source-<service>``
+tag records whether the service's canonical image follows that fork or the
+community registry. Onboarding observes the repository, the identity, the
+tags, and the image lock once, derives the commands that move each from
+observed to desired, prints them, and runs them only with ``--write``.
 """
 
 from __future__ import annotations
@@ -35,8 +37,23 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from .console import console
-from .images import IMAGE_REGISTRY, SCHEMA_LOAD_SERVICE_NAME
-from .pins import TRUSTED_REPOS_ANNOTATION, PinError, decode_trusted_repos, mutate_lock, read_lock
+from .images import (
+    IMAGE_REGISTRY,
+    SCHEMA_LOAD_SERVICE_NAME,
+    SCHEMA_SERVICE_NAME,
+    ImageResolutionError,
+    resolve_fork_image,
+    resolve_fork_loader,
+)
+from .pins import (
+    CANONICAL_SOURCES_ANNOTATION,
+    TRUSTED_REPOS_ANNOTATION,
+    PinError,
+    decode_canonical_sources,
+    decode_trusted_repos,
+    mutate_lock,
+    read_lock,
+)
 from .shell import run_command
 from .templates import TESTER_NAMESPACE
 
@@ -55,7 +72,13 @@ VARIABLE_NAMES = (
 )
 REQUIRED_PROFILE = "core"
 CONFLICT_BACKOFF_SECONDS = (5, 15, 30)
-PHASES = ("repository", "azure", "cluster")
+SOURCE_TAG_PREFIX = "spi-source-"
+COMMUNITY_SOURCE = "community"
+FORK_SOURCE = "fork"
+# The projection copies both durable records, so it runs after either is written.
+PHASES = ("repository", "azure", "source", "cluster")
+# Removal records community before revoking, so no rebuild can promote a revoked fork.
+REMOVE_PHASES = ("source", "azure", "cluster")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$)[A-Za-z0-9_.-]+$")
 # GitHub signs the subject as repo:<owner>/<name> or, by default since the
@@ -189,6 +212,9 @@ class State:
     values: dict[str, Optional[str]] = field(default_factory=dict)
     no_access_roster: tuple[Credential, ...] = ()
     member_roster: tuple[Credential, ...] = ()
+    # Service to its spi-source-<service> tag value, community or <owner>/<name>.
+    sources: dict[str, str] = field(default_factory=dict)
+    source_projection: dict[str, str] = field(default_factory=dict)
 
     def credential(self, service: str) -> Optional[Credential]:
         return find_credential(self.roster, service)
@@ -224,6 +250,10 @@ class Plan:
     org: str = ""
     skip_repo: bool = False
     remove: bool = False
+    # fork, community, or "" to keep the recorded source.
+    canonical_source: str = ""
+    # The image a promotion resolves to now, shown in the plan.
+    promotion: str = ""
     state: State = field(default_factory=lambda: State((), {}))
     steps: list[Step] = field(default_factory=list)
     rows: list[Row] = field(default_factory=list)
@@ -241,6 +271,33 @@ class Plan:
 
 def credential_name(service: str) -> str:
     return f"{CREDENTIAL_PREFIX}{service}"
+
+
+def source_tag(service: str) -> str:
+    return f"{SOURCE_TAG_PREFIX}{service}"
+
+
+def fork_sources(sources: dict[str, str]) -> dict[str, str]:
+    """Service to fork repository for the services that do not follow community."""
+
+    return {service: value for service, value in sources.items() if value != COMMUNITY_SOURCE}
+
+
+def parse_source_tags(tags: dict) -> dict[str, str]:
+    """Service to source from a resource group's tags; an invalid value is an error."""
+
+    sources: dict[str, str] = {}
+    for key, value in (tags or {}).items():
+        if not str(key).lower().startswith(SOURCE_TAG_PREFIX):
+            continue
+        service, value = str(key)[len(SOURCE_TAG_PREFIX) :].lower(), str(value)
+        if value != COMMUNITY_SOURCE and not _REPO_RE.match(value):
+            raise OnboardError(
+                f"Resource-group tag {key}={value!r} is neither {COMMUNITY_SOURCE} nor "
+                f"<owner>/<name>; correct the tag before changing images."
+            )
+        sources[service] = value
+    return sources
 
 
 def credential_subject(repo: str, prefix: str = "") -> str:
@@ -565,7 +622,7 @@ def read_values(repo: str, org: str) -> dict[str, Optional[str]]:
     return observed
 
 
-def read_projection() -> dict[str, str]:
+def _read_lock_projection(decode: Callable[[dict], dict[str, str]]) -> dict[str, str]:
     lock = read_lock(required=False)
     if lock is None:
         raise OnboardError(
@@ -573,11 +630,51 @@ def read_projection() -> dict[str, str]:
             "first spi up, so there is nothing to project the roster into."
         )
     try:
-        return decode_trusted_repos(lock)
+        return decode(lock)
     except PinError as exc:
-        # The identity is authoritative; a corrupt projection is drift to overwrite.
+        # The durable record is authoritative; a corrupt projection is drift to overwrite.
         console.print(f"  [warning]{exc}[/warning]")
         return {}
+
+
+def read_projection() -> dict[str, str]:
+    return _read_lock_projection(decode_trusted_repos)
+
+
+def read_source_projection() -> dict[str, str]:
+    return _read_lock_projection(decode_canonical_sources)
+
+
+def read_source_tags(
+    resource_group: str, subscription: str = "", *, missing_ok: bool = False
+) -> dict[str, str]:
+    """Service to canonical source from the resource group's ``spi-source-*`` tags.
+
+    ``missing_ok`` reads a group that does not exist yet as no tags, for a
+    first provision; any other failure raises, because an unread policy must
+    not resolve as community.
+    """
+
+    argv = ["az", "group", "show", "--name", resource_group, "--query", "tags", "-o", "json"]
+    result = _run_command(
+        argv + (["--subscription", subscription] if subscription else []), display=False
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        if missing_ok and "ResourceGroupNotFound" in stderr:
+            return {}
+        raise OnboardError(f"Could not read source tags on {resource_group}: {stderr}")
+    try:
+        tags = json.loads((result.stdout or "").strip() or "null")
+    except json.JSONDecodeError as exc:
+        raise OnboardError(f"Could not parse tags on {resource_group}: {exc}") from exc
+    return parse_source_tags(tags if isinstance(tags, dict) else {})
+
+
+def read_source_policy(resource_group: str) -> dict[str, str]:
+    """The fork each service follows, for resolution; nothing before the group exists."""
+
+    return fork_sources(read_source_tags(resource_group, missing_ok=True))
 
 
 def observe(
@@ -595,6 +692,10 @@ def observe(
         projection=read_projection(),
         protection=read_protection(repo) if repo else None,
         values=read_values(repo, org) if repo and values else {},
+        sources=read_source_tags(
+            target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", "")
+        ),
+        source_projection=read_source_projection(),
     )
 
 
@@ -709,7 +810,17 @@ def revoke_step(target: Target, service: str, roster: tuple[Credential, ...]) ->
     )
 
 
-def projection_step(desired: dict[str, str], observed: dict[str, str]) -> Optional[Step]:
+_PROJECTED = {
+    TRUSTED_REPOS_ANNOTATION: "trusted-repository roster",
+    CANONICAL_SOURCES_ANNOTATION: "canonical-source policy",
+}
+
+
+def projection_step(
+    desired: dict[str, str],
+    observed: dict[str, str],
+    annotation: str = TRUSTED_REPOS_ANNOTATION,
+) -> Optional[Step]:
     if desired == observed:
         return None
     return Step(
@@ -722,9 +833,9 @@ def projection_step(desired: dict[str, str], observed: dict[str, str]) -> Option
             "-n",
             "osdu-flux",
             "--overwrite",
-            f"{TRUSTED_REPOS_ANNOTATION}={json.dumps(desired, sort_keys=True)}",
+            f"{annotation}={json.dumps(desired, sort_keys=True)}",
         ],
-        "Project the trusted-repository roster into the image lock "
+        f"Project the {_PROJECTED[annotation]} into the image lock "
         "(--write applies it through the lock's compare-and-retry patch)",
     )
 
@@ -736,6 +847,52 @@ def desired_projection(plan: Plan) -> dict[str, str]:
     else:
         desired[plan.service] = plan.repo
     return desired
+
+
+def desired_source(plan: Plan) -> str:
+    """The tag value the plan records: community or the onboarded repository."""
+
+    if plan.remove or plan.canonical_source == COMMUNITY_SOURCE:
+        return COMMUNITY_SOURCE
+    if plan.canonical_source == FORK_SOURCE:
+        return plan.repo
+    recorded = plan.state.sources.get(plan.service, COMMUNITY_SOURCE)
+    # refuse() stops a recorded fork other than this repository; this repairs casing only.
+    return COMMUNITY_SOURCE if recorded == COMMUNITY_SOURCE else plan.repo
+
+
+def observed_source(plan: Plan) -> Optional[str]:
+    """The recorded tag value; removal reads an absent tag as the community it means."""
+
+    recorded = plan.state.sources.get(plan.service)
+    return COMMUNITY_SOURCE if recorded is None and plan.remove else recorded
+
+
+def desired_source_projection(plan: Plan) -> dict[str, str]:
+    return fork_sources({**plan.state.sources, plan.service: desired_source(plan)})
+
+
+def source_step(plan: Plan) -> Optional[Step]:
+    value = desired_source(plan)
+    if observed_source(plan) == value:
+        return None
+    subscription = plan.target.values.get("AZURE_SUBSCRIPTION_ID")
+    return Step(
+        "source",
+        [
+            "az",
+            "group",
+            "update",
+            "--name",
+            plan.target.resource_group,
+            "--set",
+            f"tags.{source_tag(plan.service)}={value}",
+            "--output",
+            "none",
+            *(["--subscription", subscription] if subscription else []),
+        ],
+        f"Record {value} as the canonical source of {plan.service}",
+    )
 
 
 def protection_row(repo: str, protection: Protection) -> Row:
@@ -789,11 +946,28 @@ def credential_row(plan: Plan, target: Target, roster: tuple[Credential, ...]) -
     return Row("azure", item, "drifted", existing.subject)
 
 
-def projection_row(desired: dict[str, str], observed: dict[str, str]) -> Row:
-    item = f"{TRUSTED_REPOS_ANNOTATION} on osdu-image-lock"
+def projection_row(
+    desired: dict[str, str],
+    observed: dict[str, str],
+    annotation: str = TRUSTED_REPOS_ANNOTATION,
+) -> Row:
+    item = f"{annotation} on osdu-image-lock"
     if desired == observed:
         return Row("cluster", item, "correct", json.dumps(desired, sort_keys=True))
     return Row("cluster", item, "drifted" if observed else "missing", json.dumps(observed))
+
+
+def source_row(plan: Plan) -> Row:
+    item = f"{source_tag(plan.service)} on {plan.target.resource_group}"
+    desired, observed = desired_source(plan), observed_source(plan)
+    if observed is None:
+        return Row("source", item, "missing", f"records {desired}")
+    if observed != desired:
+        return Row("source", item, "drifted", f"is {observed}, records {desired}")
+    detail = observed
+    if plan.promotion:
+        detail += f"; next refresh resolves {plan.promotion}"
+    return Row("source", item, "correct", detail)
 
 
 def plan_rows(plan: Plan, *, stamped: bool = False) -> list[Row]:
@@ -805,13 +979,23 @@ def plan_rows(plan: Plan, *, stamped: bool = False) -> list[Row]:
             value_rows(plan.target, plan.org or plan.repo, plan.state.values, stamped=stamped)
         )
     rows.extend(credential_row(plan, target, roster) for target, roster in _identity_rosters(plan))
+    rows.append(source_row(plan))
     rows.append(projection_row(desired_projection(plan), plan.state.projection))
+    rows.append(
+        projection_row(
+            desired_source_projection(plan),
+            plan.state.source_projection,
+            CANONICAL_SOURCES_ANNOTATION,
+        )
+    )
     return rows
 
 
 def plan_steps(plan: Plan) -> list[Step]:
     steps: list[Step] = []
     if plan.remove:
+        record = source_step(plan)
+        steps.extend([record] if record else [])
         for target, roster in _identity_rosters(plan):
             revoke = revoke_step(target, plan.service, roster)
             steps.extend([revoke] if revoke else [])
@@ -826,8 +1010,18 @@ def plan_steps(plan: Plan) -> list[Step]:
         for target, roster in _identity_rosters(plan):
             trust = credential_step(target, plan.service, plan.repo, plan.subject, roster)
             steps.extend([trust] if trust else [])
-    projection = projection_step(desired_projection(plan), plan.state.projection)
-    steps.extend([projection] if projection else [])
+        record = source_step(plan)
+        steps.extend([record] if record else [])
+    for desired, observed, annotation in (
+        (desired_projection(plan), plan.state.projection, TRUSTED_REPOS_ANNOTATION),
+        (
+            desired_source_projection(plan),
+            plan.state.source_projection,
+            CANONICAL_SOURCES_ANNOTATION,
+        ),
+    ):
+        projection = projection_step(desired, observed, annotation)
+        steps.extend([projection] if projection else [])
     return steps
 
 
@@ -870,6 +1064,32 @@ def refuse(plan: Plan) -> None:
                 f"{target.identity_name} already holds {MAX_CREDENTIALS} federated "
                 "credentials, the Azure maximum; a larger roster is a new decision."
             )
+    recorded = plan.state.sources.get(plan.service, COMMUNITY_SOURCE)
+    if (
+        not plan.canonical_source
+        and recorded != COMMUNITY_SOURCE
+        and recorded.lower() != plan.repo.lower()
+    ):
+        raise OnboardError(
+            f"{plan.service} follows {recorded}, not {plan.repo}; pass --canonical-source "
+            f"{FORK_SOURCE} to follow {plan.repo} or --canonical-source {COMMUNITY_SOURCE}."
+        )
+
+
+def check_promotion(service: str, repo: str) -> str:
+    """The image a promotion to ``repo`` would resolve now; refuse what cannot resolve."""
+
+    try:
+        image, commit = resolve_fork_image(service, repo)
+        if service == SCHEMA_SERVICE_NAME and resolve_fork_loader(image.repository, commit) is None:
+            raise OnboardError(
+                f"schema cannot follow {repo}: it published no loader "
+                f"{image.repository}-load:{image.tag} beside the service image. Onboard "
+                "without --canonical-source to trust the fork while schema stays on community."
+            )
+    except ImageResolutionError as exc:
+        raise OnboardError(f"{service} cannot follow {repo}: {exc}") from None
+    return f"{image.repository}:{image.tag}"
 
 
 def require_known_service(service: str) -> None:
@@ -879,7 +1099,13 @@ def require_known_service(service: str) -> None:
 
 
 def plan_onboard(
-    target: Target, service: str, repo_spec: str = "", *, org: str = "", skip_repo: bool = False
+    target: Target,
+    service: str,
+    repo_spec: str = "",
+    *,
+    org: str = "",
+    skip_repo: bool = False,
+    canonical_source: str = "",
 ) -> Plan:
     require_target(target)
     require_known_service(service)
@@ -890,9 +1116,22 @@ def plan_onboard(
         if not repo_spec:
             raise OnboardError(f"{service} is not trusted yet; pass --repo <owner>/<name>.")
     repo = resolve_repository(repo_spec)
-    plan = Plan(target, service, repo, subject=read_subject(repo), org=org, skip_repo=skip_repo)
+    plan = Plan(
+        target,
+        service,
+        repo,
+        subject=read_subject(repo),
+        org=org,
+        skip_repo=skip_repo,
+        canonical_source=canonical_source,
+    )
     plan.state = observe(target, repo, org, values=not skip_repo, roster=roster)
     refuse(plan)
+    desired = desired_source(plan)
+    recorded = plan.state.sources.get(service, COMMUNITY_SOURCE)
+    # Only a change of source is a promotion; an existing one is proved by each refresh.
+    if desired != COMMUNITY_SOURCE and desired.lower() != recorded.lower():
+        plan.promotion = check_promotion(service, repo)
     plan.steps = plan_steps(plan)
     plan.rows = plan_rows(plan)
     return plan
@@ -914,10 +1153,19 @@ def plan_remove(target: Target, service: str) -> Plan:
 
 _STATE_STYLES = {"correct": "green", "drifted": "yellow", "missing": "red", "unverified": "dim"}
 _PHASE_TITLES = {
-    "repository": "Phase 1: repository (gh)",
-    "azure": "Phase 2: trust (az)",
-    "cluster": "Phase 3: cluster projection (kubectl)",
+    "repository": "repository (gh)",
+    "azure": "trust (az)",
+    "source": "canonical source (az)",
+    "cluster": "cluster projection (kubectl)",
 }
+
+
+def phases(plan: Plan) -> tuple[str, ...]:
+    """The phases this plan runs, in order."""
+
+    if plan.remove:
+        return REMOVE_PHASES
+    return PHASES[1:] if plan.skip_repo else PHASES
 
 
 def render_rows(rows: list[Row], title: str) -> None:
@@ -948,11 +1196,11 @@ def render_plan(plan: Plan) -> None:
     if not plan.steps:
         console.print("[success]Nothing to change; every row is correct or unverified.[/success]")
         return
-    for phase in PHASES:
+    for number, phase in enumerate(phases(plan), start=1):
         steps = [s for s in plan.steps if s.phase == phase]
         if not steps:
             continue
-        console.print(f"\n[bold]{_PHASE_TITLES[phase]}[/bold]")
+        console.print(f"\n[bold]Phase {number}: {_PHASE_TITLES[phase]}[/bold]")
         script = "\n".join(f"# {s.description}\n{_quote(s.argv)}" for s in steps)
         console.print(Syntax(script, "bash", theme="monokai", word_wrap=True))
     if plan.skip_repo and not plan.remove:
@@ -1051,6 +1299,34 @@ def project_roster(
     return written
 
 
+def project_sources(
+    target: Target, description: str = "Project the canonical-source policy"
+) -> dict[str, str]:
+    """Write the resource group's source tags onto the lock, leaving data and pins alone.
+
+    A resolved image changes only on the next refresh, which reads this projection.
+    """
+
+    written: dict[str, str] = {}
+
+    def compute(lock: dict | None) -> dict:
+        nonlocal written
+        if lock is None:
+            raise PinError("osdu-image-lock is missing; nothing to project the source policy into.")
+        written = fork_sources(
+            read_source_tags(target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", ""))
+        )
+        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+        annotations[CANONICAL_SOURCES_ANNOTATION] = json.dumps(written, sort_keys=True)
+        return {"data": dict(lock.get("data") or {}), "metadata": {"annotations": annotations}}
+
+    try:
+        mutate_lock(compute, description)
+    except PinError as exc:
+        raise OnboardError(str(exc)) from exc
+    return written
+
+
 def apply_plan(plan: Plan) -> list[Row]:
     """Run the phases in order and return the re-observed rows.
 
@@ -1063,24 +1339,27 @@ def apply_plan(plan: Plan) -> list[Row]:
     if not plan.steps:
         return plan.rows
 
-    phases = [p for p in PHASES if p != "repository" or not plan.skip_repo]
+    order = phases(plan)
     completed: list[str] = []
 
     def phase(name: str, work: Callable[[], None]) -> None:
         try:
             work()
         except (OnboardError, PinError) as exc:
-            pending = ", ".join(phases[phases.index(name) :])
+            pending = ", ".join(order[order.index(name) :])
             raise OnboardError(
                 f"{exc}\nCompleted: {', '.join(completed) or 'nothing'}. Pending: {pending}. "
                 "Re-run to resume from observed state."
             ) from None
         completed.append(name)
 
-    def repository() -> None:
-        for step in plan.steps:
-            if step.phase == "repository":
-                _run(step)
+    def run_phase(name: str) -> Callable[[], None]:
+        def work() -> None:
+            for step in plan.steps:
+                if step.phase == name:
+                    _run(step)
+
+        return work
 
     def azure() -> None:
         service, repo = plan.service, plan.repo
@@ -1098,14 +1377,20 @@ def apply_plan(plan: Plan) -> list[Row]:
                 )
 
     def cluster() -> None:
-        if any(step.phase == "cluster" for step in plan.steps):
+        if desired_projection(plan) != plan.state.projection:
             named = {} if plan.remove else {plan.service: plan.repo}
             project_roster(plan.target, named=named)
+        if desired_source_projection(plan) != plan.state.source_projection:
+            project_sources(plan.target)
 
-    if "repository" in phases:
-        phase("repository", repository)
-    phase("azure", azure)
-    phase("cluster", cluster)
+    work = {
+        "repository": run_phase("repository"),
+        "azure": azure,
+        "source": run_phase("source"),
+        "cluster": cluster,
+    }
+    for name in order:
+        phase(name, work[name])
 
     stamped = any(step.argv[:3] == ["gh", "secret", "set"] for step in plan.steps)
     plan.state = observe(plan.target, plan.repo, plan.org, values=not plan.skip_repo)
@@ -1201,6 +1486,36 @@ def list_trust(target: Target) -> list[Row]:
                         f"trusts {_name(mirrored)}; {target.identity_name} does not",
                     )
                 )
+    rows.extend(
+        source_rows(
+            trusted,
+            read_source_tags(target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", "")),
+            read_source_projection(),
+        )
+    )
+    return rows
+
+
+def source_rows(
+    trusted: dict[str, str], sources: dict[str, str], projection: dict[str, str]
+) -> list[Row]:
+    """Canonical source per trusted or tagged service, checked against trust and the lock."""
+
+    rows = []
+    for service in sorted(set(trusted) | set(sources) | set(projection)):
+        item = source_tag(service)
+        value = sources.get(service, COMMUNITY_SOURCE)
+        projected = projection.get(service, COMMUNITY_SOURCE)
+        if value != COMMUNITY_SOURCE and value.lower() != trusted.get(service, "").lower():
+            rows.append(
+                Row("source", item, "drifted", f"follows {value}, which is not trusted for it")
+            )
+        elif value != projected:
+            rows.append(Row("source", item, "drifted", f"{value}; projection {projected}"))
+        elif service not in sources:
+            rows.append(Row("source", item, "missing", f"{COMMUNITY_SOURCE} by default"))
+        else:
+            rows.append(Row("source", item, "correct", value))
     return rows
 
 
@@ -1227,4 +1542,14 @@ def sync_projection_from_identity(identity_name: str, resource_group: str) -> di
     desired = resolved.repos
     if observed != desired:
         desired = project_roster(target, "Project the trusted-repository roster after bootstrap")
+    return desired
+
+
+def sync_sources_from_tags(resource_group: str) -> dict[str, str]:
+    """Rebuild the lock's source projection from the resource-group tags, for ``spi up``."""
+
+    target = Target("", REQUIRED_PROFILE, "", resource_group, values={})
+    desired = fork_sources(read_source_tags(resource_group))
+    if read_source_projection() != desired:
+        desired = project_sources(target, "Project the canonical-source policy after bootstrap")
     return desired

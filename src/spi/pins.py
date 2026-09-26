@@ -73,6 +73,10 @@ PINS_ANNOTATION = "spi-stack.osdu.dev/pins"
 # Service to trusted repository, projected from the deploy identity's
 # federated credentials by spi onboard and spi up.
 TRUSTED_REPOS_ANNOTATION = "spi-stack.osdu.dev/trusted-repos"
+# Service to the fork repository its canonical image follows, projected from the
+# resource group's spi-source-<service> tags; a service absent here follows community.
+CANONICAL_SOURCES_ANNOTATION = "spi-stack.osdu.dev/canonical-sources"
+PROJECTION_ANNOTATIONS = (TRUSTED_REPOS_ANNOTATION, CANONICAL_SOURCES_ANNOTATION)
 
 # Pin origins recorded in the annotation.
 GITLAB_MR_ORIGIN = "gitlab-mr"
@@ -339,27 +343,45 @@ def decode_pins(lock: dict) -> dict[str, ServicePin]:
         ) from exc
 
 
-def decode_trusted_repos(lock: dict) -> dict[str, str]:
-    """Return the trusted-repository roster projected on a lock object."""
-
-    raw = (lock.get("metadata", {}).get("annotations") or {}).get(TRUSTED_REPOS_ANNOTATION, "")
+def _decode_repository_map(lock: dict, annotation: str) -> dict[str, str]:
+    raw = (lock.get("metadata", {}).get("annotations") or {}).get(annotation, "")
     if not raw:
         return {}
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise PinError(
-            f"Corrupt {TRUSTED_REPOS_ANNOTATION} annotation on {IMAGE_LOCK_CONFIGMAP}: {exc}. "
+            f"Corrupt {annotation} annotation on {IMAGE_LOCK_CONFIGMAP}: {exc}. "
             "Re-run 'spi onboard --list' after repairing it."
         ) from exc
     if not isinstance(parsed, dict) or not all(
         isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
     ):
         raise PinError(
-            f"Corrupt {TRUSTED_REPOS_ANNOTATION} annotation on {IMAGE_LOCK_CONFIGMAP}: "
+            f"Corrupt {annotation} annotation on {IMAGE_LOCK_CONFIGMAP}: "
             "expected a JSON object of service to repository."
         )
     return dict(parsed)
+
+
+def decode_trusted_repos(lock: dict) -> dict[str, str]:
+    """Return the trusted-repository roster projected on a lock object."""
+
+    return _decode_repository_map(lock, TRUSTED_REPOS_ANNOTATION)
+
+
+def decode_canonical_sources(lock: dict) -> dict[str, str]:
+    """Return the fork repository each fork-sourced service follows, projected on a lock."""
+
+    sources = _decode_repository_map(lock, CANONICAL_SOURCES_ANNOTATION)
+    invalid = sorted(repo for repo in sources.values() if not _REPO_PATH_RE.match(repo))
+    if invalid:
+        raise PinError(
+            f"Corrupt {CANONICAL_SOURCES_ANNOTATION} annotation on {IMAGE_LOCK_CONFIGMAP}: "
+            f"{', '.join(map(repr, invalid))} is not <owner>/<name>. Re-run "
+            "'spi onboard --list' after repairing it."
+        )
+    return sources
 
 
 def encode_pins(pins: dict[str, ServicePin]) -> str:
@@ -1637,8 +1659,9 @@ def apply_image_lock(
         if active_pins:
             annotations[PINS_ANNOTATION] = encode_pins(active_pins)
         existing = ((lock or {}).get("metadata") or {}).get("annotations") or {}
-        if existing.get(TRUSTED_REPOS_ANNOTATION):
-            annotations[TRUSTED_REPOS_ANNOTATION] = existing[TRUSTED_REPOS_ANNOTATION]
+        for name in PROJECTION_ANNOTATIONS:
+            if existing.get(name):
+                annotations[name] = existing[name]
         return {"data": data, "metadata": {"annotations": annotations}}
 
     mutate_lock(compute, description, max_attempts=max_attempts)

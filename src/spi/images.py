@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OSDU community image resolution and image-lock rendering."""
+"""OSDU community and fork image resolution and image-lock rendering."""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.error
@@ -28,7 +29,13 @@ from typing import Iterable, Mapping
 
 GITLAB_HOST = "https://community.opengroup.org"
 GHCR_HOST = "ghcr.io"
+GITHUB_API_HOST = "https://api.github.com"
 DEFAULT_IMAGE_BRANCH = "master"
+# The template moves this tag to each push build of main.
+FORK_MAIN_TAG = "main-snapshot"
+FORK_MAIN_BRANCH = "main"
+# How many main commits are searched for the one whose build main-snapshot names.
+FORK_COMMIT_SEARCH_DEPTH = 30
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"
 SCHEMA_SERVICE_NAME = "schema"
@@ -36,6 +43,7 @@ SCHEMA_LOAD_SERVICE_NAME = "schema-load"
 
 _SHA_TAG_RE = re.compile(r"^[0-9a-f]{40}$")
 _MANIFEST_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_REPO_PATH_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$)[A-Za-z0-9_.-]+$")
 _MANIFEST_ACCEPT = ", ".join(
     (
         "application/vnd.oci.image.index.v1+json",
@@ -323,13 +331,17 @@ def resolve_image_commit(
 def resolve_images(
     branch: str = DEFAULT_IMAGE_BRANCH,
     names: Iterable[str] | None = None,
+    sources: Mapping[str, str] | None = None,
 ) -> dict[str, ResolvedImage]:
     """Resolve all requested images atomically.
 
-    Raises ImageResolutionError if any requested image cannot be resolved.
+    ``sources`` maps a service to the fork repository it follows; every other
+    service resolves from the community registry on ``branch``. Raises
+    ImageResolutionError if any requested image cannot be resolved.
     """
 
     requested = list(names or IMAGE_REGISTRY.keys())
+    forks = dict(sources or {})
     schema_load_requested = SCHEMA_LOAD_SERVICE_NAME in requested
     resolved: dict[str, ResolvedImage] = {}
     errors: list[str] = []
@@ -339,21 +351,24 @@ def resolve_images(
             name == SCHEMA_SERVICE_NAME and schema_load_requested
         ):
             continue
-        entry = IMAGE_REGISTRY[name]
         try:
-            resolved[name] = resolve_image(name, entry, branch)
+            if name in forks:
+                resolved[name] = resolve_fork_image(name, forks[name])[0]
+            else:
+                resolved[name] = resolve_image(name, IMAGE_REGISTRY[name], branch)
         except Exception as exc:
             errors.append(str(exc))
 
     if schema_load_requested:
+        fork = forks.get(SCHEMA_SERVICE_NAME)
         try:
-            schema_image = resolve_image(
-                SCHEMA_SERVICE_NAME,
-                IMAGE_REGISTRY[SCHEMA_SERVICE_NAME],
-                branch,
-            )
-            if SCHEMA_SERVICE_NAME in requested:
-                resolved[SCHEMA_SERVICE_NAME] = schema_image
+            if fork:
+                schema_image, commit = resolve_fork_image(SCHEMA_SERVICE_NAME, fork)
+            else:
+                schema_image = resolve_image(
+                    SCHEMA_SERVICE_NAME, IMAGE_REGISTRY[SCHEMA_SERVICE_NAME], branch
+                )
+                commit = ""
         except Exception as exc:
             if SCHEMA_SERVICE_NAME in requested:
                 errors.append(str(exc))
@@ -363,12 +378,11 @@ def resolve_images(
                     f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag: {exc}"
                 )
         else:
+            if SCHEMA_SERVICE_NAME in requested:
+                resolved[SCHEMA_SERVICE_NAME] = schema_image
             try:
-                resolved[SCHEMA_LOAD_SERVICE_NAME] = resolve_image_tag(
-                    SCHEMA_LOAD_SERVICE_NAME,
-                    IMAGE_REGISTRY[SCHEMA_LOAD_SERVICE_NAME],
-                    branch,
-                    schema_image.tag,
+                resolved[SCHEMA_LOAD_SERVICE_NAME] = _resolve_loader(
+                    branch, schema_image, fork, commit
                 )
             except Exception as exc:
                 errors.append(str(exc))
@@ -378,10 +392,37 @@ def resolve_images(
     return {name: resolved[name] for name in requested}
 
 
-def resolve_image_lock(branch: str = DEFAULT_IMAGE_BRANCH) -> dict[str, ResolvedImage]:
+def _resolve_loader(
+    branch: str, schema_image: ResolvedImage, fork: str | None, commit: str
+) -> ResolvedImage:
+    """The loader built from the same commit as ``schema_image``, from the same source."""
+
+    if not fork:
+        return resolve_image_tag(
+            SCHEMA_LOAD_SERVICE_NAME,
+            IMAGE_REGISTRY[SCHEMA_LOAD_SERVICE_NAME],
+            branch,
+            schema_image.tag,
+        )
+    loader = resolve_fork_loader(schema_image.repository, commit)
+    if loader is None:
+        raise ImageResolutionError(
+            f"{SCHEMA_LOAD_SERVICE_NAME}: {fork} published no loader "
+            f"{schema_image.repository}-load:{schema_image.tag}; schema cannot follow the "
+            "fork until it builds one beside the service image"
+        )
+    repository, digest = loader
+    return ResolvedImage(
+        SCHEMA_LOAD_SERVICE_NAME, repository, schema_image.tag, schema_image.created_at, digest
+    )
+
+
+def resolve_image_lock(
+    branch: str = DEFAULT_IMAGE_BRANCH, sources: Mapping[str, str] | None = None
+) -> dict[str, ResolvedImage]:
     """Resolve the images controlled by the live Flux image lock."""
 
-    return resolve_images(branch=branch, names=image_lock_names())
+    return resolve_images(branch=branch, names=image_lock_names(), sources=sources)
 
 
 def parse_image_digest_ref(ref: str) -> tuple[str, str]:
@@ -559,6 +600,60 @@ def resolve_fork_loader(repository: str, source_sha: str) -> tuple[str, str] | N
     loader_repository = f"{repository}-load"
     digest = resolve_ghcr_tag_digest(loader_repository, f"sha-{source_sha[:12]}")
     return (loader_repository, digest) if digest else None
+
+
+def github_get(path: str):
+    """GET a GitHub REST path and return parsed JSON, authenticated when a token is set."""
+
+    headers = {"User-Agent": "spi-stack-resolver", "Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(f"{GITHUB_API_HOST}/{path}", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raise ImageResolutionError(f"GitHub API {path}: HTTP {exc.code}") from exc
+    except (TimeoutError, urllib.error.URLError, ConnectionError, json.JSONDecodeError) as exc:
+        raise ImageResolutionError(f"GitHub API {path} unreachable: {exc}") from exc
+
+
+def resolve_fork_image(service: str, source_repo: str) -> tuple[ResolvedImage, str]:
+    """Resolve the image a fork's ``main`` last published, and the commit that built it.
+
+    ``main-snapshot`` names the digest; the ``sha-<12>`` tag with the same digest
+    names the commit, which the lock records as the tag so the image can be paired
+    with anything else built from that commit. Returns ``(image, commit)``.
+    """
+
+    if not _REPO_PATH_RE.match(source_repo):
+        raise ImageResolutionError(f"{service}: {source_repo!r} is not <owner>/<name>")
+    candidates = fork_package_repositories(source_repo, service)
+    for repository in candidates:
+        digest = resolve_ghcr_tag_digest(repository, FORK_MAIN_TAG)
+        if digest:
+            break
+    else:
+        raise ImageResolutionError(
+            f"{service}: {source_repo} publishes no {FORK_MAIN_TAG} image at "
+            f"{' or '.join(candidates)}; the package must be public and main must have built"
+        )
+    commits = github_get(
+        f"repos/{source_repo}/commits?sha={FORK_MAIN_BRANCH}&per_page={FORK_COMMIT_SEARCH_DEPTH}"
+    )
+    for commit in commits if isinstance(commits, list) else []:
+        sha = str((commit or {}).get("sha", ""))
+        if not _SHA_TAG_RE.match(sha):
+            continue
+        tag = f"sha-{sha[:12]}"
+        if resolve_ghcr_tag_digest(repository, tag) == digest:
+            created_at = str(((commit.get("commit") or {}).get("committer") or {}).get("date", ""))
+            return ResolvedImage(service, repository, tag, created_at, digest), sha
+    raise ImageResolutionError(
+        f"{service}: {repository}:{FORK_MAIN_TAG} ({digest[:19]}) matches no sha- tag among the "
+        f"last {FORK_COMMIT_SEARCH_DEPTH} commits on {source_repo} {FORK_MAIN_BRANCH}"
+    )
 
 
 def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> None:

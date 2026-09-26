@@ -285,17 +285,18 @@ gh run watch
 4. **Onboarding** (in progress): the deploy identity and two Roles in `spi up`,
    identity and RG-tag retention in `spi down` (ADR-034), and the trust path
    of `spi onboard` (repository protection, the five values, the federated
-   credential, the roster projection with roster-derived pin validation) are
-   built. Still unbuilt: `--canonical-source` and the source-policy phase,
+   credential, the roster projection with roster-derived pin validation) and
+   `--canonical-source` with its source-policy phase are built. Still unbuilt:
    `forks:` and the declaration locator with pre-resolution intent loading;
    onboard `osdu-spi-partition` with a community canonical. The template
    implements one `deploy-test` job with borrow, prove, and restore steps;
    `validation-summary` reports its result through the required summary check.
    See [fork deployment](fork-deployment.md#the-sequence).
-5. **Canonical promotions** (unbuilt): explicit per-service source policy in
-   RG tags and its lock projection; on the shared environment a reviewed
-   `canonicalSource: fork` change after the deploy and test gates pass
-   (ADR-033).
+5. **Canonical promotions** (partly built): explicit per-service source
+   policy in RG tags and its lock projection are implemented. Still unbuilt:
+   on the shared environment, a reviewed `canonicalSource: fork` change after
+   the deploy and test gates pass (ADR-033), and `spi service refresh` to
+   advance fork-sourced canonicals inside the retention window.
 
 ## Related ADRs
 

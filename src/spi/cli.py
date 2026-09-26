@@ -47,10 +47,12 @@ from .pins import (
     VerifyError,
     apply_image_lock,
     apply_schema_load_backfill,
+    decode_canonical_sources,
     describe_pin,
     live_pins,
     pin_service,
     pin_service_image,
+    read_lock,
     reset_service,
     sweep_stale_ephemeral_pins,
     verify_service_image,
@@ -890,15 +892,28 @@ def onboard(
     ),
     list_trusted: bool = typer.Option(False, "--list", help="Show trusted repositories"),
     remove: bool = typer.Option(False, "--remove", help="Revoke the service's repository"),
+    canonical_source: Optional[str] = typer.Option(
+        None,
+        "--canonical-source",
+        help="fork: the next image refresh follows the fork's main; community: it follows "
+        "the community registry. Omitted keeps the recorded source.",
+    ),
 ):
     """Trust a fork repository to deploy against the connected environment."""
     from . import onboard as _onboard
 
-    if list_trusted and (service or repo or remove or write or org or skip_repo):
+    if list_trusted and (
+        service or repo or remove or write or org or skip_repo or canonical_source
+    ):
         raise typer.BadParameter("--list takes no other options", param_hint="--list")
-    if remove and (repo or org or skip_repo):
+    if remove and (repo or org or skip_repo or canonical_source):
         raise typer.BadParameter(
             "--remove takes only the service and --write", param_hint="--remove"
+        )
+    if canonical_source not in (None, _onboard.FORK_SOURCE, _onboard.COMMUNITY_SOURCE):
+        raise typer.BadParameter(
+            f"expected {_onboard.FORK_SOURCE} or {_onboard.COMMUNITY_SOURCE}",
+            param_hint="--canonical-source",
         )
     if org and skip_repo:
         raise typer.BadParameter(
@@ -932,6 +947,7 @@ def onboard(
                 (repo or "").strip(),
                 org=(org or "").strip(),
                 skip_repo=skip_repo,
+                canonical_source=canonical_source or "",
             )
         if not write:
             _onboard.render_plan(plan)
@@ -945,6 +961,11 @@ def onboard(
             "\n[info]The first workflow run in the fork's spi-stack environment proves the "
             "credential; onboard cannot mint the fork's OIDC token itself.[/info]"
         )
+        if plan.promotion:
+            console.print(
+                f"[info]{service} runs its current image until 'spi reconcile "
+                f"--refresh-images' resolves {plan.promotion}.[/info]"
+            )
     except (_onboard.OnboardError, PinError, ClusterConfigError, DeployRecordError) as exc:
         console.print(f"\n[error]{exc}[/error]")
         raise typer.Exit(code=1)
@@ -1027,7 +1048,8 @@ def reconcile(
     refresh_images: bool = typer.Option(
         False,
         "--refresh-images",
-        help="Resolve current OSDU master image tags and update osdu-image-lock before reconciling.",
+        help="Resolve current service images, community or the fork each service follows, and "
+        "update osdu-image-lock before reconciling.",
     ),
     image_branch: str = typer.Option(
         DEFAULT_IMAGE_BRANCH,
@@ -1104,8 +1126,10 @@ def reconcile(
     if refresh_images:
         console.print("\n[bold]Resolving OSDU service images...[/bold]")
         try:
-            resolved = resolve_image_lock(branch=image_branch)
-        except ImageResolutionError as exc:
+            lock = read_lock(required=False)
+            sources = decode_canonical_sources(lock) if lock else {}
+            resolved = resolve_image_lock(branch=image_branch, sources=sources)
+        except (ImageResolutionError, PinError) as exc:
             console.print(f"[error]Unable to resolve OSDU service images: {exc}[/error]")
             raise typer.Exit(code=1)
 

@@ -128,8 +128,10 @@ declaration.
   and the operation is re-runnable. Declared changes require the matching
   reviewed declaration first. The next refresh resolves the community image;
   active pins retain their captured restore targets.
-- Which source is canonical is readable from `spi onboard --list` and the
-  lock's per-service keys, not from operator memory.
+- Which source is canonical is readable from `spi onboard --list`,
+  `spi info`, and the lock's `canonical-sources` projection, not from operator
+  memory; the running image's repository shows whether a refresh has applied
+  it yet.
 - The credentials show trust and the RG tags show source policy when the
   cluster is gone, including the trusted-but-community state. Maintaining two
   durable records requires drift reporting and resumable reconciliation.

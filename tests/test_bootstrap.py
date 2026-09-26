@@ -358,6 +358,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
+            patch("spi.cli.read_lock", return_value=None),
             patch(
                 "spi.cli.resolve_image_lock",
                 side_effect=cli.ImageResolutionError("schema: registry repository not found"),
@@ -392,6 +393,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
+            patch("spi.cli.read_lock", return_value=None),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.apply_image_lock", side_effect=PinError("could not read lock")),
             patch("spi.cli.run_command") as run_command,
@@ -401,6 +403,30 @@ class TestReconcileRefreshesClusterConfig:
         assert result.exit_code == 1
         assert "Refusing to refresh" in result.output
         run_command.assert_not_called()
+
+    def test_refresh_images_resolves_under_the_lock_source_projection(self):
+        lock = {
+            "metadata": {
+                "annotations": {
+                    "spi-stack.osdu.dev/canonical-sources": '{"partition": "Acme/partition"}'
+                }
+            }
+        }
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
+            patch("spi.cli.get_suspend_status", return_value=False),
+            patch("spi.cli.create_istio_revision_configmap"),
+            patch("spi.cli.refresh_spi_init_values"),
+            patch("spi.cli.read_lock", return_value=lock),
+            patch(
+                "spi.cli.resolve_image_lock",
+                side_effect=cli.ImageResolutionError("stop after resolution"),
+            ) as resolve,
+            patch("spi.cli.run_command"),
+        ):
+            CliRunner().invoke(cli.app, ["reconcile", "--refresh-images"])
+
+        assert resolve.call_args.kwargs["sources"] == {"partition": "Acme/partition"}
 
     def test_refresh_images_reconciles_schema_load_before_reference(self):
         runner = CliRunner()
@@ -428,6 +454,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
+            patch("spi.cli.read_lock", return_value=None),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.apply_image_lock", return_value={}),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
@@ -474,6 +501,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
+            patch("spi.cli.read_lock", return_value=None),
             patch("spi.cli.resolve_image_lock", return_value=resolved),
             patch("spi.cli.apply_image_lock", return_value={}),
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,

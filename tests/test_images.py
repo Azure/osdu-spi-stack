@@ -842,3 +842,126 @@ class TestResolveForkLoader:
     def test_no_loader_at_the_commit_is_none(self, monkeypatch):
         monkeypatch.setattr(images, "resolve_ghcr_tag_digest", lambda repository, tag: None)
         assert images.resolve_fork_loader("ghcr.io/azure/schema", "b" * 40) is None
+
+
+SNAPSHOT = "sha256:" + "5" * 64
+HEAD, BUILT = "c" * 40, "b" * 40
+
+
+def _fork_registry(monkeypatch, tags: dict[tuple[str, str], str | None], commits=(HEAD, BUILT)):
+    """GHCR answers only the (repository, tag) pairs given; GitHub lists main's commits."""
+
+    monkeypatch.setattr(
+        images, "resolve_ghcr_tag_digest", lambda repository, tag: tags.get((repository, tag))
+    )
+    monkeypatch.setattr(
+        images,
+        "github_get",
+        lambda path: [
+            {"sha": sha, "commit": {"committer": {"date": f"2026-09-2{i}T00:00:00Z"}}}
+            for i, sha in enumerate(commits)
+        ],
+    )
+
+
+class TestResolveForkImage:
+    def test_main_snapshot_is_labelled_with_the_commit_that_built_it(self, monkeypatch):
+        # main's newest commit has not published yet, so the snapshot is the one before it.
+        _fork_registry(
+            monkeypatch,
+            {
+                ("ghcr.io/acme/osdu-spi-partition", "main-snapshot"): SNAPSHOT,
+                ("ghcr.io/acme/osdu-spi-partition", f"sha-{BUILT[:12]}"): SNAPSHOT,
+            },
+        )
+
+        image, commit = images.resolve_fork_image("partition", "Acme/osdu-spi-partition")
+
+        assert commit == BUILT
+        assert image == images.ResolvedImage(
+            "partition",
+            "ghcr.io/acme/osdu-spi-partition",
+            f"sha-{BUILT[:12]}",
+            "2026-09-21T00:00:00Z",
+            SNAPSHOT,
+        )
+
+    def test_a_fork_publishing_under_the_service_name_resolves_there(self, monkeypatch):
+        _fork_registry(
+            monkeypatch,
+            {
+                ("ghcr.io/acme/fork", "main-snapshot"): None,
+                ("ghcr.io/acme/partition", "main-snapshot"): SNAPSHOT,
+                ("ghcr.io/acme/partition", f"sha-{HEAD[:12]}"): SNAPSHOT,
+            },
+        )
+
+        image, _ = images.resolve_fork_image("partition", "Acme/fork")
+
+        assert image.repository == "ghcr.io/acme/partition"
+
+    def test_no_main_snapshot_names_both_packages(self, monkeypatch):
+        _fork_registry(monkeypatch, {})
+
+        with pytest.raises(ImageResolutionError) as exc:
+            images.resolve_fork_image("partition", "Acme/fork")
+
+        assert "ghcr.io/acme/fork or ghcr.io/acme/partition" in str(exc.value)
+
+    def test_a_snapshot_no_recent_commit_built_is_refused(self, monkeypatch):
+        _fork_registry(monkeypatch, {("ghcr.io/acme/fork", "main-snapshot"): SNAPSHOT})
+
+        with pytest.raises(ImageResolutionError, match="matches no sha- tag"):
+            images.resolve_fork_image("partition", "Acme/fork")
+
+
+class TestResolveImagesUnderASourcePolicy:
+    def test_a_fork_source_resolves_from_the_fork_and_the_rest_from_community(self, monkeypatch):
+        community = []
+        monkeypatch.setattr(
+            images,
+            "resolve_image",
+            lambda name, entry, branch: (
+                community.append(name)
+                or images.ResolvedImage(name, f"registry/{name}", "t", "", "sha256:c")
+            ),
+        )
+        fork = images.ResolvedImage("legal", "ghcr.io/acme/legal", "sha-b", "", SNAPSHOT)
+        monkeypatch.setattr(images, "resolve_fork_image", lambda name, repo: (fork, BUILT))
+
+        resolved = images.resolve_images(
+            names=("partition", "legal"), sources={"legal": "Acme/legal"}
+        )
+
+        assert resolved["legal"] is fork
+        assert community == ["partition"]
+
+    def test_a_fork_sourced_schema_pairs_the_fork_loader_at_its_commit(self, monkeypatch):
+        schema = images.ResolvedImage("schema", "ghcr.io/acme/schema", "sha-b", "d", SNAPSHOT)
+        monkeypatch.setattr(images, "resolve_fork_image", lambda name, repo: (schema, BUILT))
+        loaders = []
+        monkeypatch.setattr(
+            images,
+            "resolve_fork_loader",
+            lambda repository, commit: (
+                loaders.append((repository, commit))
+                or ("ghcr.io/acme/schema-load", "sha256:" + "e" * 64)
+            ),
+        )
+
+        resolved = images.resolve_images(
+            names=("schema", "schema-load"), sources={"schema": "Acme/schema"}
+        )
+
+        assert loaders == [("ghcr.io/acme/schema", BUILT)]
+        assert resolved["schema-load"] == images.ResolvedImage(
+            "schema-load", "ghcr.io/acme/schema-load", "sha-b", "d", "sha256:" + "e" * 64
+        )
+
+    def test_a_fork_sourced_schema_without_its_loader_fails_resolution(self, monkeypatch):
+        schema = images.ResolvedImage("schema", "ghcr.io/acme/schema", "sha-b", "d", SNAPSHOT)
+        monkeypatch.setattr(images, "resolve_fork_image", lambda name, repo: (schema, BUILT))
+        monkeypatch.setattr(images, "resolve_fork_loader", lambda repository, commit: None)
+
+        with pytest.raises(ImageResolutionError, match="ghcr.io/acme/schema-load:sha-b"):
+            images.resolve_images(names=("schema", "schema-load"), sources={"schema": "Acme/s"})

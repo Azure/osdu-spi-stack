@@ -172,30 +172,34 @@ def _create_spi_init_values(config: Config, infra_outputs: dict) -> None:
     )
 
 
-def _resolve_image_lock(image_branch: str) -> dict[str, ResolvedImage]:
+def _resolve_image_lock(
+    image_branch: str, sources: dict[str, str] | None = None
+) -> dict[str, ResolvedImage]:
     """Resolve the current OSDU service images for the Flux image lock."""
 
     console.print("\n[bold]Resolving OSDU service images...[/bold]")
     try:
-        resolved = resolve_image_lock(branch=image_branch)
+        resolved = resolve_image_lock(branch=image_branch, sources=sources)
     except ImageResolutionError as exc:
         console.print(f"[error]Unable to resolve OSDU service images: {exc}[/error]")
         raise
 
     for name, image in resolved.items():
+        origin = f" [dim]from {sources[name]}[/dim]" if sources and name in sources else ""
         console.print(
-            f"  [success]{name}[/success] -> {image.repository.split('/')[-1]}:{image.tag[:12]}"
+            f"  [success]{name}[/success] -> "
+            f"{image.repository.split('/')[-1]}:{image.tag[:12]}{origin}"
         )
 
     return resolved
 
 
 def _project_trusted_repos(config: Config) -> None:
-    """Carry the deploy identity's roster into the lock a rebuilt cluster lacks."""
+    """Carry the roster and source policy into the lock a rebuilt cluster lacks."""
 
     if config.profile is not Profile.CORE:
         return
-    from .onboard import sync_projection_from_identity
+    from .onboard import sync_projection_from_identity, sync_sources_from_tags
 
     trusted = sync_projection_from_identity(config.deploy_identity_name, config.resource_group)
     if trusted:
@@ -204,6 +208,21 @@ def _project_trusted_repos(config: Config) -> None:
             + ", ".join(f"{svc} from {repo}" for svc, repo in sorted(trusted.items()))
             + "[/dim]"
         )
+    forks = sync_sources_from_tags(config.resource_group)
+    if forks:
+        console.print(
+            "  [dim]Canonical sources: "
+            + ", ".join(f"{svc} follows {repo}" for svc, repo in sorted(forks.items()))
+            + "[/dim]"
+        )
+
+
+def _source_policy(config: Config) -> dict[str, str]:
+    """The fork each service follows, read from the resource group before images resolve."""
+
+    from .onboard import read_source_policy
+
+    return read_source_policy(config.resource_group)
 
 
 def _ensure_image_lock(
@@ -211,6 +230,7 @@ def _ensure_image_lock(
     refresh_images: bool | None,
     image_branch: str,
     resolved_images: dict[str, ResolvedImage],
+    sources: dict[str, str] | None = None,
 ) -> dict[str, ServicePin]:
     """Create or refresh the core image lock according to the CLI intent."""
 
@@ -227,7 +247,7 @@ def _ensure_image_lock(
                 "The core image lock is missing and --no-refresh-images was specified. "
                 "Rerun with --refresh-images or omit the image option to create it."
             )
-        resolved_images = _resolve_image_lock(image_branch)
+        resolved_images = _resolve_image_lock(image_branch, sources=sources)
 
     console.print("\n[bold]Updating OSDU image lock...[/bold]")
     pins = apply_image_lock(resolved_images, image_branch)
@@ -532,10 +552,13 @@ def deploy_azure(
     bootstrap and GitOps activation are skipped.
     """
     resolved_images: dict[str, ResolvedImage] = {}
+    sources: dict[str, str] = {}
     # Only core consumes the image lock. Resolving before provisioning means a
     # registry failure stops the run before anything is half-configured.
-    if refresh_images and not dry_run and config.profile is Profile.CORE:
-        resolved_images = _resolve_image_lock(image_branch)
+    if not dry_run and config.profile is Profile.CORE:
+        sources = _source_policy(config)
+        if refresh_images:
+            resolved_images = _resolve_image_lock(image_branch, sources=sources)
 
     # main.bicep's ExternalDNS identity and role modules need the zone's
     # name and resource group as parameters.
@@ -562,7 +585,7 @@ def deploy_azure(
     ensure_secrets()
     create_storage_classes()
     install_gateway_api_crds()
-    _ensure_image_lock(config, refresh_images, image_branch, resolved_images)
+    _ensure_image_lock(config, refresh_images, image_branch, resolved_images, sources)
     _project_trusted_repos(config)
     _create_osdu_config(config, infra_outputs)
     _create_istio_auth(config, infra_outputs)
