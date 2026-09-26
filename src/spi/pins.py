@@ -65,6 +65,7 @@ from .images import (
     resolve_ghcr_manifest,
     resolve_ghcr_tag_digest,
     resolve_image_commit,
+    resolve_images,
     schema_load_lock_patch,
 )
 from .shell import run_command, run_process
@@ -193,6 +194,14 @@ class ResetResult:
 
     restored: tuple[str, ...]
     refresh_required: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RefreshResult:
+    """Services whose canonical entry moved, and pinned services left standing."""
+
+    refreshed: dict[str, ResolvedImage]
+    pinned: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -1237,6 +1246,66 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
     if restored and not if_run:
         reconcile_consumers(restored)
     return ResetResult(tuple(restored), tuple(refresh_required))
+
+
+def refresh_services(services: list[str]) -> RefreshResult:
+    """Re-resolve the named services' canonical images under the lock's source policy.
+
+    Only the named entries change: every other service, the lock's resolved-at
+    stamp, and the projections stay as they are. A pinned service keeps its pin
+    and its captured restore target; schema and its loader refresh, or stay, as
+    one pair so the Job never runs a loader from another commit.
+    """
+
+    names: list[str] = []
+    for service in services:
+        if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
+            known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
+            raise PinError(f"Unknown service {service!r}. Known services: {known}")
+        names.append(service)
+        if service == SCHEMA_SERVICE_NAME:
+            names.append(SCHEMA_LOAD_SERVICE_NAME)
+    names = list(dict.fromkeys(names))
+
+    lock = read_lock()
+    assert lock is not None
+    data = lock.get("data") or {}
+    branch = data.get("IMAGE_BRANCH") or DEFAULT_IMAGE_BRANCH
+    try:
+        resolved = resolve_images(branch, names, decode_canonical_sources(lock))
+    except ImageResolutionError as exc:
+        raise PinError(str(exc)) from exc
+
+    pinned: tuple[str, ...] = ()
+
+    def compute(lock: dict | None) -> dict:
+        nonlocal pinned
+        if lock is None:
+            raise PinError(
+                f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
+                "is this a core-profile cluster?"
+            )
+        pins = decode_pins(lock)
+        held = {name for name in names if name in pins}
+        if held & {SCHEMA_SERVICE_NAME, SCHEMA_LOAD_SERVICE_NAME}:
+            held |= {SCHEMA_SERVICE_NAME, SCHEMA_LOAD_SERVICE_NAME} & set(names)
+        pinned = tuple(name for name in names if name in held)
+        data = dict(lock.get("data") or {})
+        for name, image in resolved.items():
+            if name not in held:
+                data.update(
+                    _lock_entry_patch(
+                        name, image.repository, image.tag, image.created_at, image.digest
+                    )
+                )
+        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    mutate_lock(compute, f"Refresh {', '.join(names)}")
+    refreshed = {name: image for name, image in resolved.items() if name not in pinned}
+    if refreshed:
+        reconcile_consumers(list(refreshed))
+    return RefreshResult(refreshed, pinned)
 
 
 def _kubectl_read_json(args: list[str], describe: str) -> dict | None:

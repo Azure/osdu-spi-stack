@@ -16,9 +16,10 @@ ownership-checked `reset --if-run`, the separate stale sweep
 (`reset --ephemeral --stale-only`), and `spi onboard` (all four phases
 below, `--list` and `--remove` for trust, source policy, and both
 projections, roster-derived pin validation, repository-derived GHCR package
-validation) are implemented. Declaration enforcement, `spi service refresh`,
-and the refresh workflow's backstop step are ahead of the code (phases 4 and
-5 of the roadmap in [environment-lifecycle.md](environment-lifecycle.md)).
+validation), and `spi service refresh` are implemented. Declaration
+enforcement and the refresh workflow's backstop step are ahead of the code
+(phases 4 and 5 of the roadmap in
+[environment-lifecycle.md](environment-lifecycle.md)).
 Remove the marks as they land.
 
 ## The sequence
@@ -116,8 +117,8 @@ workflow step is unbuilt; the sweep verb exists):
   display-only and is never fetched. Roster membership replaces the
   `Azure/osdu-spi-*` naming convention for personal and customer forks, but
   does not prove that only onboarded repositories can be lookup targets.
-- `spi service refresh` (unbuilt) per GitHub-origin service then advances
-  the environment to the current retained canonical (ADR-033).
+- `spi service refresh` per GitHub-origin service then advances the
+  environment to the current retained canonical (ADR-033).
 
 The post-pin verify detects a replacement observed during that step. There is
 no second verification before each suite, so replacement after verification
@@ -254,22 +255,26 @@ refused promotion writes nothing, including trust; re-run without
 `--canonical-source` to trust the repository while the service stays on
 community. A loader published later does not itself trigger promotion.
 
-The policy changes the next resolution, not the running image. `spi reconcile
---refresh-images` resolves fork-sourced services from the lock's
-`canonical-sources` projection and every other service from the community
-registry on `--image-branch`; `spi up` reads the RG tags directly, before
-provisioning, and rebuilds both projections at bootstrap. The weekday
-`env-refresh` workflow runs no image refresh, so a fork-sourced canonical
-advances only on an explicit refresh; one left unrefreshed past the 30-day
-`sha-*` retention while the fork keeps building can have its recorded
-digest deleted (ADR-033). `spi info` shows the policy beside the running
-image and marks a policy the running image predates.
+The policy changes the next resolution, not the running image. `spi service
+refresh <service>...` re-resolves only the named services, reading the
+lock's `canonical-sources` projection and the lock's recorded image branch;
+every other entry, the lock's resolved-at stamp, and active pins stay as
+they are, and schema moves only together with its loader. `spi reconcile
+--refresh-images` re-resolves every service the same way, which needs the
+community registry reachable for the services that follow it. `spi up` reads
+the RG tags directly, before provisioning, and rebuilds both projections at
+bootstrap. The weekday `env-refresh` workflow runs no image refresh, so a
+fork-sourced canonical advances only when someone runs a refresh; one left
+unrefreshed past the 30-day `sha-*` retention while the fork keeps building
+can have its recorded digest deleted (ADR-033). `spi info` shows the policy
+beside the running image and marks a policy the running image predates.
 
 ```bash
 spi onboard partition --canonical-source fork           # plan: trust, tag, projection
 spi onboard partition --canonical-source fork --write
-spi reconcile --refresh-images                          # partition now runs its fork's main
+spi service refresh partition                           # partition now runs its fork's main
 spi onboard partition --canonical-source community --write
+spi service refresh partition                           # and back to community master
 ```
 
 The retained `spi-environment-declaration` RG tag identifies a declared

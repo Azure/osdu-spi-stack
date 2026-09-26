@@ -211,8 +211,8 @@ removal leaves the identities and group standing (ADR-034).
   connection during provision, and the upgrade workflow uses a direct,
   short-lived AKS connection only to recognize an incomplete first provision
   that has no deploy record yet.
-- `spi service pin/verify/reset` (implemented; `spi service refresh` is
-  unbuilt): the fork deploy seam. The sequence and its recovery paths
+- `spi service pin/verify/reset/refresh` (implemented): the fork deploy
+  seam. The sequence and its recovery paths
   are [fork-deployment.md](fork-deployment.md); the fork-side jobs live in
   the `Azure/osdu-spi` template's workflows, not here.
 
@@ -271,8 +271,8 @@ gh run watch
 1. **Foundations** (mostly built): `spi status --json`, `spi connect`,
    chart digest rendering, digest-preserving lock overlays (ADR-030), and
    the pin surface (`pin --image --ephemeral`, `verify`, ownership-checked
-   `reset`, the stale sweep; ADR-031) are implemented. Still unbuilt:
-   `spi service refresh`. Exit test: hand-pin a partition GHCR digest against a
+   `reset`, the stale sweep; ADR-031) and `spi service refresh` are
+   implemented. Exit test: hand-pin a partition GHCR digest against a
    standing environment and reset it.
 2. **Versioning** (built for the backing environment): `repoTag` in
    `infra/flux.bicep`, `spi up --tag`, the deploy record, the declaration
@@ -295,8 +295,9 @@ gh run watch
 5. **Canonical promotions** (partly built): explicit per-service source
    policy in RG tags and its lock projection are implemented. Still unbuilt:
    on the shared environment, a reviewed `canonicalSource: fork` change after
-   the deploy and test gates pass (ADR-033), and `spi service refresh` to
-   advance fork-sourced canonicals inside the retention window.
+   the deploy and test gates pass (ADR-033), and a scheduled
+   `spi service refresh` that advances fork-sourced canonicals inside the
+   retention window.
 
 ## Related ADRs
 
