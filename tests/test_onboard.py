@@ -23,6 +23,7 @@ import pytest
 from typer.testing import CliRunner
 
 from spi import onboard
+from spi.images import ImageResolutionError
 from spi.onboard import (
     COMMUNITY_SOURCE,
     GITHUB_AUDIENCE,
@@ -43,6 +44,8 @@ from spi.onboard import (
 from spi.pins import CANONICAL_SOURCES_ANNOTATION, TRUSTED_REPOS_ANNOTATION
 
 REPO = "Acme/osdu-spi-partition"
+OWNER_ID, REPO_ID = "6844498", "1167996450"
+CLAIM_SUBJECT = f"repository_owner_id:{OWNER_ID}:repository_id:{REPO_ID}:environment:spi-stack"
 TARGET = Target(
     env="dev1",
     profile="core",
@@ -1138,24 +1141,64 @@ class TestSourceReads:
         assert READ_SOURCE_TAGS("rg", "sub-id") == {"partition": REPO}
         assert shell.calls[0][-2:] == ["--subscription", "sub-id"]
 
-    def test_the_deploy_policy_keeps_only_forks_the_identity_trusts(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "roster",
+        [(cred("partition", REPO),), (cred("partition", REPO.lower()), cred("legal", REPO))],
+    )
+    def test_the_deploy_policy_keeps_a_fork_the_identity_trusts(self, monkeypatch, roster):
         monkeypatch.setattr(
             onboard, "read_source_tags", lambda *a, **k: {"partition": REPO, "legal": "community"}
         )
-        monkeypatch.setattr(onboard, "read_roster", lambda target: ())
-        monkeypatch.setattr(onboard, "roster_repos", lambda roster: {"partition": REPO.lower()})
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
 
         assert onboard.read_source_policy("rg", "deployer") == {"partition": REPO}
 
-    @pytest.mark.parametrize("trusted", [{}, {"partition": "Other/osdu-spi-partition"}])
+    @pytest.mark.parametrize("roster", [(), (cred("partition", "Other/osdu-spi-partition"),)])
     def test_the_deploy_policy_refuses_a_fork_the_identity_does_not_trust(
-        self, monkeypatch, trusted
+        self, monkeypatch, roster
     ):
         monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: {"partition": REPO})
-        monkeypatch.setattr(onboard, "read_roster", lambda target: ())
-        monkeypatch.setattr(onboard, "roster_repos", lambda roster: trusted)
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
 
         with pytest.raises(OnboardError, match=f"partition follows {REPO} but"):
+            onboard.read_source_policy("rg", "deployer")
+
+    def test_an_id_credential_is_confirmed_by_name_when_gh_is_unavailable(self, monkeypatch):
+        monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: {"partition": REPO})
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+        repository = {"id": int(REPO_ID), "owner": {"id": int(OWNER_ID)}}
+        monkeypatch.setattr(
+            onboard, "github_get", lambda path: repository if path == f"repos/{REPO}" else {}
+        )
+
+        assert onboard.read_source_policy("rg", "deployer") == {"partition": REPO}
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            {"id": 1, "owner": {"id": int(OWNER_ID)}},
+            {"id": int(REPO_ID), "owner": {"id": 1}},
+            ImageResolutionError("GitHub API unreachable"),
+        ],
+    )
+    def test_an_id_credential_for_another_repository_is_refused(self, monkeypatch, answer):
+        monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: {"partition": REPO})
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+
+        def github_get(path):
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(onboard, "github_get", github_get)
+
+        with pytest.raises(
+            OnboardError, match="could not confirm the id credentials for partition"
+        ):
             onboard.read_source_policy("rg", "deployer")
 
     def test_a_community_policy_never_reads_the_roster(self, monkeypatch):
@@ -1315,9 +1358,7 @@ class TestSubjectForms:
 # Custom templates: an organization can sign repository ids instead of the name
 # ---------------------------------------------------------------------------
 
-OWNER_ID, REPO_ID = "6844498", "1167996450"
 ID_KEYS = ["repository_owner_id", "repository_id", "context"]
-CLAIM_SUBJECT = f"repository_owner_id:{OWNER_ID}:repository_id:{REPO_ID}:environment:spi-stack"
 
 
 @pytest.fixture(autouse=True)

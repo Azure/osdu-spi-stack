@@ -42,6 +42,7 @@ from .images import (
     SCHEMA_LOAD_SERVICE_NAME,
     SCHEMA_SERVICE_NAME,
     ImageResolutionError,
+    github_get,
     resolve_fork_image,
     resolve_fork_loader,
 )
@@ -672,6 +673,23 @@ def read_source_tags(
     return parse_source_tags(tags if isinstance(tags, dict) else {})
 
 
+def _id_credential_names(cred: Credential, repo: str) -> bool:
+    """Whether an id credential ``gh`` could not name trusts ``repo``, read by name over REST."""
+
+    try:
+        payload = github_get(f"repos/{repo}")
+    except ImageResolutionError:
+        return False
+    owner = payload.get("owner") if isinstance(payload, dict) else None
+    if not isinstance(owner, dict):
+        return False
+    expected = cred.ids.get("repository_owner_id")
+    return cred.ids.get("repository_id") == str(payload.get("id")) and expected in (
+        None,
+        str(owner.get("id")),
+    )
+
+
 def read_source_policy(resource_group: str, identity_name: str) -> dict[str, str]:
     """The fork each service follows, for resolution; nothing before the group exists.
 
@@ -683,11 +701,26 @@ def read_source_policy(resource_group: str, identity_name: str) -> dict[str, str
     if not forks:
         return forks
     target = Target("", REQUIRED_PROFILE, identity_name, resource_group, values={})
-    mismatched = untrusted_sources(forks, roster_repos(read_roster(target)))
+    resolved = resolve_roster(read_roster(target))
+    trusted = dict(resolved.repos)
+    unconfirmed = []
+    for cred in resolved.unnamed:
+        repo = forks.get(cred.service)
+        if repo and _id_credential_names(cred, repo):
+            trusted[cred.service] = repo
+        elif repo:
+            unconfirmed.append(cred.service)
+    mismatched = untrusted_sources(forks, trusted)
     if mismatched:
+        hint = (
+            f" GitHub could not confirm the id credentials for {', '.join(unconfirmed)}; "
+            "sign in with gh or set GH_TOKEN."
+            if unconfirmed
+            else ""
+        )
         raise OnboardError(
             f"Untrusted canonical source on {resource_group}: {'; '.join(mismatched)}. "
-            "Re-onboard the fork, or set --canonical-source community, before deploying."
+            "Re-onboard the fork, or set --canonical-source community, before deploying." + hint
         )
     return forks
 
