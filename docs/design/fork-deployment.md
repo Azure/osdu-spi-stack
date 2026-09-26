@@ -245,7 +245,9 @@ onboarded is refused unless the option names the new choice.
 A change to `fork` is checked before anything is written: the fork's GHCR
 package (`fork_package_repositories` in `src/spi/images.py`) must carry a
 `main-snapshot` tag, and one of the newest 30 commits on the fork's `main`
-must carry a `sha-<12>` tag naming the same digest. The canonical image is
+must carry a `sha-<12>` tag naming the same digest. When both package names
+carry `main-snapshot`, as after a `SERVICE_NAME` change, the one built from
+the newer commit wins. The canonical image is
 that digest, recorded under that `sha-<12>` tag, so the lock names the
 commit that built it and anything else built from the commit pairs with it.
 A fork whose `main` has never completed a push build has no `main-snapshot`
@@ -263,7 +265,10 @@ they are, and schema moves only together with its loader. `spi reconcile
 --refresh-images` re-resolves every service the same way, which needs the
 community registry reachable for the services that follow it. `spi up` reads
 the RG tags directly, before provisioning, and rebuilds both projections at
-bootstrap. The weekday `env-refresh` workflow runs no image refresh, so a
+bootstrap. Every resolution refuses a fork source that is not the repository
+trusted for that service: `spi up` checks the tags against the deploy
+identity's credentials, and the refresh commands check the lock's
+`canonical-sources` against its `trusted-repos`. The weekday `env-refresh` workflow runs no image refresh, so a
 fork-sourced canonical advances only when someone runs a refresh; one left
 unrefreshed past the 30-day `sha-*` retention while the fork keeps building
 can have its recorded digest deleted (ADR-033). `spi info` shows the policy

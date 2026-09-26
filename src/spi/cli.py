@@ -47,7 +47,6 @@ from .pins import (
     VerifyError,
     apply_image_lock,
     apply_schema_load_backfill,
-    decode_canonical_sources,
     describe_pin,
     live_pins,
     pin_service,
@@ -56,6 +55,7 @@ from .pins import (
     refresh_services,
     reset_service,
     sweep_stale_ephemeral_pins,
+    trusted_canonical_sources,
     verify_service_image,
 )
 from .shell import run_command
@@ -1128,7 +1128,7 @@ def reconcile(
         console.print("\n[bold]Resolving OSDU service images...[/bold]")
         try:
             lock = read_lock(required=False)
-            sources = decode_canonical_sources(lock) if lock else {}
+            sources = trusted_canonical_sources(lock) if lock else {}
             resolved = resolve_image_lock(branch=image_branch, sources=sources)
         except (ImageResolutionError, PinError) as exc:
             console.print(f"[error]Unable to resolve OSDU service images: {exc}[/error]")

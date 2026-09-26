@@ -3111,9 +3111,9 @@ class TestRefreshServices:
             },
             **kwargs,
         )
-        lock["metadata"]["annotations"][pins.CANONICAL_SOURCES_ANNOTATION] = json.dumps(
-            {"partition": "Acme/partition"}
-        )
+        annotations = lock["metadata"]["annotations"]
+        annotations[pins.CANONICAL_SOURCES_ANNOTATION] = json.dumps({"partition": "Acme/partition"})
+        annotations[pins.TRUSTED_REPOS_ANNOTATION] = json.dumps({"partition": "acme/partition"})
         return lock
 
     def _resolver(self, monkeypatch, calls: list):
@@ -3157,6 +3157,16 @@ class TestRefreshServices:
         assert data["SCHEMA_IMAGE_DIGEST"] == data["SCHEMA_LOAD_IMAGE_DIGEST"] == "sha256:old"
         assert data["LEGAL_IMAGE_DIGEST"] == "sha256:new"
         assert calls["reconciled"] == ["legal"]
+
+    @pytest.mark.parametrize("trusted", [{}, {"partition": "Other/partition"}])
+    def test_a_source_the_roster_does_not_trust_is_refused(self, monkeypatch, trusted):
+        monkeypatch.setattr(pins, "resolve_images", pytest.fail)
+        lock = self._lock()
+        lock["metadata"]["annotations"][pins.TRUSTED_REPOS_ANNOTATION] = json.dumps(trusted)
+        _wire_lock(monkeypatch, lock)
+
+        with pytest.raises(PinError, match="partition follows Acme/partition but"):
+            pins.refresh_services(["partition"])
 
     @pytest.mark.parametrize("service", ["schema-load", "nonesuch"])
     def test_the_loader_alone_and_unknown_services_are_refused(self, monkeypatch, service):

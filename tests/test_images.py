@@ -900,6 +900,23 @@ class TestResolveForkImage:
 
         assert image.repository == "ghcr.io/acme/partition"
 
+    def test_the_package_built_from_the_newest_commit_wins(self, monkeypatch):
+        # A SERVICE_NAME change leaves the repository-named package on an older snapshot.
+        stale = "sha256:" + "e" * 64
+        _fork_registry(
+            monkeypatch,
+            {
+                ("ghcr.io/acme/fork", "main-snapshot"): stale,
+                ("ghcr.io/acme/fork", f"sha-{BUILT[:12]}"): stale,
+                ("ghcr.io/acme/partition", "main-snapshot"): SNAPSHOT,
+                ("ghcr.io/acme/partition", f"sha-{HEAD[:12]}"): SNAPSHOT,
+            },
+        )
+
+        image, commit = images.resolve_fork_image("partition", "Acme/fork")
+
+        assert (image.repository, commit) == ("ghcr.io/acme/partition", HEAD)
+
     def test_no_main_snapshot_names_both_packages(self, monkeypatch):
         _fork_registry(monkeypatch, {})
 

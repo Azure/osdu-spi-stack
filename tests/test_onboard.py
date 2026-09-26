@@ -1138,6 +1138,32 @@ class TestSourceReads:
         assert READ_SOURCE_TAGS("rg", "sub-id") == {"partition": REPO}
         assert shell.calls[0][-2:] == ["--subscription", "sub-id"]
 
+    def test_the_deploy_policy_keeps_only_forks_the_identity_trusts(self, monkeypatch):
+        monkeypatch.setattr(
+            onboard, "read_source_tags", lambda *a, **k: {"partition": REPO, "legal": "community"}
+        )
+        monkeypatch.setattr(onboard, "read_roster", lambda target: ())
+        monkeypatch.setattr(onboard, "roster_repos", lambda roster: {"partition": REPO.lower()})
+
+        assert onboard.read_source_policy("rg", "deployer") == {"partition": REPO}
+
+    @pytest.mark.parametrize("trusted", [{}, {"partition": "Other/osdu-spi-partition"}])
+    def test_the_deploy_policy_refuses_a_fork_the_identity_does_not_trust(
+        self, monkeypatch, trusted
+    ):
+        monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: {"partition": REPO})
+        monkeypatch.setattr(onboard, "read_roster", lambda target: ())
+        monkeypatch.setattr(onboard, "roster_repos", lambda roster: trusted)
+
+        with pytest.raises(OnboardError, match=f"partition follows {REPO} but"):
+            onboard.read_source_policy("rg", "deployer")
+
+    def test_a_community_policy_never_reads_the_roster(self, monkeypatch):
+        monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: {"legal": "community"})
+        monkeypatch.setattr(onboard, "read_roster", pytest.fail)
+
+        assert onboard.read_source_policy("rg", "deployer") == {}
+
     def test_list_checks_each_source_against_trust_and_the_projection(self):
         rows = onboard.source_rows(
             trusted={"partition": REPO, "legal": "Acme/osdu-spi-legal", "file": "Acme/file"},

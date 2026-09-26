@@ -393,6 +393,31 @@ def decode_canonical_sources(lock: dict) -> dict[str, str]:
     return sources
 
 
+def untrusted_sources(sources: dict[str, str], trusted: dict[str, str]) -> list[str]:
+    """Each fork source that is not the repository trusted for its service, described."""
+
+    return [
+        f"{service} follows {repo} but "
+        + (f"{trusted[service]} is trusted" if trusted.get(service) else "no fork is trusted")
+        for service, repo in sorted(sources.items())
+        if trusted.get(service, "").lower() != repo.lower()
+    ]
+
+
+def trusted_canonical_sources(lock: dict) -> dict[str, str]:
+    """The lock's source policy, refused when a fork source is not the trusted repository."""
+
+    sources = decode_canonical_sources(lock)
+    mismatched = untrusted_sources(sources, decode_trusted_repos(lock)) if sources else []
+    if mismatched:
+        raise PinError(
+            f"Untrusted canonical source on {IMAGE_LOCK_CONFIGMAP}: {'; '.join(mismatched)}. "
+            "Run 'spi onboard --list' to see the drift, then re-onboard the fork or set "
+            "--canonical-source community."
+        )
+    return sources
+
+
 def encode_pins(pins: dict[str, ServicePin]) -> str:
     return json.dumps({name: asdict(pin) for name, pin in sorted(pins.items())})
 
@@ -1272,7 +1297,7 @@ def refresh_services(services: list[str]) -> RefreshResult:
     data = lock.get("data") or {}
     branch = data.get("IMAGE_BRANCH") or DEFAULT_IMAGE_BRANCH
     try:
-        resolved = resolve_images(branch, names, decode_canonical_sources(lock))
+        resolved = resolve_images(branch, names, trusted_canonical_sources(lock))
     except ImageResolutionError as exc:
         raise PinError(str(exc)) from exc
 

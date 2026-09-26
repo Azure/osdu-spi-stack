@@ -53,6 +53,7 @@ from .pins import (
     decode_trusted_repos,
     mutate_lock,
     read_lock,
+    untrusted_sources,
 )
 from .shell import run_command
 from .templates import TESTER_NAMESPACE
@@ -671,10 +672,24 @@ def read_source_tags(
     return parse_source_tags(tags if isinstance(tags, dict) else {})
 
 
-def read_source_policy(resource_group: str) -> dict[str, str]:
-    """The fork each service follows, for resolution; nothing before the group exists."""
+def read_source_policy(resource_group: str, identity_name: str) -> dict[str, str]:
+    """The fork each service follows, for resolution; nothing before the group exists.
 
-    return fork_sources(read_source_tags(resource_group, missing_ok=True))
+    A fork source must be the repository the deploy identity trusts for that
+    service, so an edited or stale tag cannot deploy an untrusted image.
+    """
+
+    forks = fork_sources(read_source_tags(resource_group, missing_ok=True))
+    if not forks:
+        return forks
+    target = Target("", REQUIRED_PROFILE, identity_name, resource_group, values={})
+    mismatched = untrusted_sources(forks, roster_repos(read_roster(target)))
+    if mismatched:
+        raise OnboardError(
+            f"Untrusted canonical source on {resource_group}: {'; '.join(mismatched)}. "
+            "Re-onboard the fork, or set --canonical-source community, before deploying."
+        )
+    return forks
 
 
 def observe(

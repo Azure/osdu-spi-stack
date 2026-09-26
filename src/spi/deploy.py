@@ -222,7 +222,7 @@ def _source_policy(config: Config) -> dict[str, str]:
 
     from .onboard import read_source_policy
 
-    return read_source_policy(config.resource_group)
+    return read_source_policy(config.resource_group, config.deploy_identity_name)
 
 
 def _ensure_image_lock(

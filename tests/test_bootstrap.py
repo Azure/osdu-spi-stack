@@ -14,6 +14,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
@@ -404,11 +405,16 @@ class TestReconcileRefreshesClusterConfig:
         assert "Refusing to refresh" in result.output
         run_command.assert_not_called()
 
-    def test_refresh_images_resolves_under_the_lock_source_projection(self):
+    @pytest.mark.parametrize(
+        "trusted, sources",
+        [('{"partition": "Acme/partition"}', {"partition": "Acme/partition"}), ("{}", None)],
+    )
+    def test_refresh_images_resolves_under_the_trusted_source_projection(self, trusted, sources):
         lock = {
             "metadata": {
                 "annotations": {
-                    "spi-stack.osdu.dev/canonical-sources": '{"partition": "Acme/partition"}'
+                    "spi-stack.osdu.dev/canonical-sources": '{"partition": "Acme/partition"}',
+                    "spi-stack.osdu.dev/trusted-repos": trusted,
                 }
             }
         }
@@ -426,7 +432,10 @@ class TestReconcileRefreshesClusterConfig:
         ):
             CliRunner().invoke(cli.app, ["reconcile", "--refresh-images"])
 
-        assert resolve.call_args.kwargs["sources"] == {"partition": "Acme/partition"}
+        if sources is None:
+            resolve.assert_not_called()
+        else:
+            assert resolve.call_args.kwargs["sources"] == sources
 
     def test_refresh_images_reconciles_schema_load_before_reference(self):
         runner = CliRunner()

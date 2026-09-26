@@ -33,7 +33,8 @@ selects the fork's GHCR `main` image, one service at a time.
   publishes `ghcr.io/<lowercase-owner>/<service>` instead, and the ephemeral
   pin check accepts either. The canonical resolver
   uses the same mapping, including non-Azure owners. Schema's paired loader is
-  `ghcr.io/<lowercase-owner>/schema-load` at the selected schema commit.
+  the schema package's name plus `-load` at the selected schema commit, as
+  the template publishes it.
   An onboarded fork must publish under this convention; a missing or private
   package fails resolution rather than falling back to an Azure package.
 - `spi onboard --canonical-source fork` promotes the service's trusted fork;

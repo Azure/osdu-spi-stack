@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 import urllib.error
@@ -603,10 +602,12 @@ def resolve_fork_loader(repository: str, source_sha: str) -> tuple[str, str] | N
 
 
 def github_get(path: str):
-    """GET a GitHub REST path and return parsed JSON, authenticated when a token is set."""
+    """GET a GitHub REST path and return parsed JSON, authenticated as the env or gh user."""
+
+    from .update import resolve_github_token
 
     headers = {"User-Agent": "spi-stack-resolver", "Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    token = resolve_github_token(None)
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(f"{GITHUB_API_HOST}/{path}", headers=headers)
@@ -630,11 +631,13 @@ def resolve_fork_image(service: str, source_repo: str) -> tuple[ResolvedImage, s
     if not _REPO_PATH_RE.match(source_repo):
         raise ImageResolutionError(f"{service}: {source_repo!r} is not <owner>/<name>")
     candidates = fork_package_repositories(source_repo, service)
-    for repository in candidates:
-        digest = resolve_ghcr_tag_digest(repository, FORK_MAIN_TAG)
-        if digest:
-            break
-    else:
+    # Both names can carry main-snapshot after a SERVICE_NAME change; the newest commit decides.
+    snapshots = {
+        repository: digest
+        for repository in candidates
+        if (digest := resolve_ghcr_tag_digest(repository, FORK_MAIN_TAG))
+    }
+    if not snapshots:
         raise ImageResolutionError(
             f"{service}: {source_repo} publishes no {FORK_MAIN_TAG} image at "
             f"{' or '.join(candidates)}; the package must be public and main must have built"
@@ -647,11 +650,14 @@ def resolve_fork_image(service: str, source_repo: str) -> tuple[ResolvedImage, s
         if not _SHA_TAG_RE.match(sha):
             continue
         tag = f"sha-{sha[:12]}"
-        if resolve_ghcr_tag_digest(repository, tag) == digest:
-            created_at = str(((commit.get("commit") or {}).get("committer") or {}).get("date", ""))
-            return ResolvedImage(service, repository, tag, created_at, digest), sha
+        for repository, digest in snapshots.items():
+            if resolve_ghcr_tag_digest(repository, tag) == digest:
+                committer = (commit.get("commit") or {}).get("committer") or {}
+                created_at = str(committer.get("date", ""))
+                return ResolvedImage(service, repository, tag, created_at, digest), sha
+    described = " or ".join(f"{r}:{FORK_MAIN_TAG} ({d[:19]})" for r, d in snapshots.items())
     raise ImageResolutionError(
-        f"{service}: {repository}:{FORK_MAIN_TAG} ({digest[:19]}) matches no sha- tag among the "
+        f"{service}: {described} matches no sha- tag among the "
         f"last {FORK_COMMIT_SEARCH_DEPTH} commits on {source_repo} {FORK_MAIN_BRANCH}"
     )
 
