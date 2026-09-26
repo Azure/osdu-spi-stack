@@ -87,7 +87,7 @@ repository federated credential. `spi onboard` plans trust activation, and
 `--write` applies repository protection, the five connection values,
 federation, and the lock's trusted-repository projection; `spi up` rebuilds
 that projection from retained identity credentials. Canonical-source promotion
-and declaration enforcement remain unbuilt. See
+is built; declaration enforcement remains unbuilt. See
 [ADR-032](../decisions/032-environment-deploy-identity.md) and
 [fork deployment](fork-deployment.md) for the access contract.
 

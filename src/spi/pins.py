@@ -65,6 +65,7 @@ from .images import (
     resolve_ghcr_manifest,
     resolve_ghcr_tag_digest,
     resolve_image_commit,
+    resolve_images,
     schema_load_lock_patch,
 )
 from .shell import run_command, run_process
@@ -73,6 +74,10 @@ PINS_ANNOTATION = "spi-stack.osdu.dev/pins"
 # Service to trusted repository, projected from the deploy identity's
 # federated credentials by spi onboard and spi up.
 TRUSTED_REPOS_ANNOTATION = "spi-stack.osdu.dev/trusted-repos"
+# Service to the fork repository its canonical image follows, projected from the
+# resource group's spi-source-<service> tags; a service absent here follows community.
+CANONICAL_SOURCES_ANNOTATION = "spi-stack.osdu.dev/canonical-sources"
+PROJECTION_ANNOTATIONS = (TRUSTED_REPOS_ANNOTATION, CANONICAL_SOURCES_ANNOTATION)
 
 # Pin origins recorded in the annotation.
 GITLAB_MR_ORIGIN = "gitlab-mr"
@@ -189,6 +194,14 @@ class ResetResult:
 
     restored: tuple[str, ...]
     refresh_required: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RefreshResult:
+    """Services whose canonical entry moved, and pinned services left standing."""
+
+    refreshed: dict[str, ResolvedImage]
+    pinned: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -339,27 +352,70 @@ def decode_pins(lock: dict) -> dict[str, ServicePin]:
         ) from exc
 
 
-def decode_trusted_repos(lock: dict) -> dict[str, str]:
-    """Return the trusted-repository roster projected on a lock object."""
-
-    raw = (lock.get("metadata", {}).get("annotations") or {}).get(TRUSTED_REPOS_ANNOTATION, "")
+def _decode_repository_map(lock: dict, annotation: str) -> dict[str, str]:
+    raw = (lock.get("metadata", {}).get("annotations") or {}).get(annotation, "")
     if not raw:
         return {}
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise PinError(
-            f"Corrupt {TRUSTED_REPOS_ANNOTATION} annotation on {IMAGE_LOCK_CONFIGMAP}: {exc}. "
+            f"Corrupt {annotation} annotation on {IMAGE_LOCK_CONFIGMAP}: {exc}. "
             "Re-run 'spi onboard --list' after repairing it."
         ) from exc
     if not isinstance(parsed, dict) or not all(
         isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
     ):
         raise PinError(
-            f"Corrupt {TRUSTED_REPOS_ANNOTATION} annotation on {IMAGE_LOCK_CONFIGMAP}: "
+            f"Corrupt {annotation} annotation on {IMAGE_LOCK_CONFIGMAP}: "
             "expected a JSON object of service to repository."
         )
     return dict(parsed)
+
+
+def decode_trusted_repos(lock: dict) -> dict[str, str]:
+    """Return the trusted-repository roster projected on a lock object."""
+
+    return _decode_repository_map(lock, TRUSTED_REPOS_ANNOTATION)
+
+
+def decode_canonical_sources(lock: dict) -> dict[str, str]:
+    """Return the fork repository each fork-sourced service follows, projected on a lock."""
+
+    sources = _decode_repository_map(lock, CANONICAL_SOURCES_ANNOTATION)
+    invalid = sorted(repo for repo in sources.values() if not _REPO_PATH_RE.match(repo))
+    if invalid:
+        raise PinError(
+            f"Corrupt {CANONICAL_SOURCES_ANNOTATION} annotation on {IMAGE_LOCK_CONFIGMAP}: "
+            f"{', '.join(map(repr, invalid))} is not <owner>/<name>. Re-run "
+            "'spi onboard --list' after repairing it."
+        )
+    return sources
+
+
+def untrusted_sources(sources: dict[str, str], trusted: dict[str, str]) -> list[str]:
+    """Each fork source that is not the repository trusted for its service, described."""
+
+    return [
+        f"{service} follows {repo} but "
+        + (f"{trusted[service]} is trusted" if trusted.get(service) else "no fork is trusted")
+        for service, repo in sorted(sources.items())
+        if trusted.get(service, "").lower() != repo.lower()
+    ]
+
+
+def trusted_canonical_sources(lock: dict) -> dict[str, str]:
+    """The lock's source policy, refused when a fork source is not the trusted repository."""
+
+    sources = decode_canonical_sources(lock)
+    mismatched = untrusted_sources(sources, decode_trusted_repos(lock)) if sources else []
+    if mismatched:
+        raise PinError(
+            f"Untrusted canonical source on {IMAGE_LOCK_CONFIGMAP}: {'; '.join(mismatched)}. "
+            "Run 'spi onboard --list' to see the drift, then re-onboard the fork or set "
+            "--canonical-source community."
+        )
+    return sources
 
 
 def encode_pins(pins: dict[str, ServicePin]) -> str:
@@ -1217,6 +1273,66 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
     return ResetResult(tuple(restored), tuple(refresh_required))
 
 
+def refresh_services(services: list[str]) -> RefreshResult:
+    """Re-resolve the named services' canonical images under the lock's source policy.
+
+    Only the named entries change: every other service, the lock's resolved-at
+    stamp, and the projections stay as they are. A pinned service keeps its pin
+    and its captured restore target; schema and its loader refresh, or stay, as
+    one pair so the Job never runs a loader from another commit.
+    """
+
+    names: list[str] = []
+    for service in services:
+        if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
+            known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
+            raise PinError(f"Unknown service {service!r}. Known services: {known}")
+        names.append(service)
+        if service == SCHEMA_SERVICE_NAME:
+            names.append(SCHEMA_LOAD_SERVICE_NAME)
+    names = list(dict.fromkeys(names))
+
+    lock = read_lock()
+    assert lock is not None
+    data = lock.get("data") or {}
+    branch = data.get("IMAGE_BRANCH") or DEFAULT_IMAGE_BRANCH
+    try:
+        resolved = resolve_images(branch, names, trusted_canonical_sources(lock))
+    except ImageResolutionError as exc:
+        raise PinError(str(exc)) from exc
+
+    pinned: tuple[str, ...] = ()
+
+    def compute(lock: dict | None) -> dict:
+        nonlocal pinned
+        if lock is None:
+            raise PinError(
+                f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
+                "is this a core-profile cluster?"
+            )
+        pins = decode_pins(lock)
+        held = {name for name in names if name in pins}
+        if held & {SCHEMA_SERVICE_NAME, SCHEMA_LOAD_SERVICE_NAME}:
+            held |= {SCHEMA_SERVICE_NAME, SCHEMA_LOAD_SERVICE_NAME} & set(names)
+        pinned = tuple(name for name in names if name in held)
+        data = dict(lock.get("data") or {})
+        for name, image in resolved.items():
+            if name not in held:
+                data.update(
+                    _lock_entry_patch(
+                        name, image.repository, image.tag, image.created_at, image.digest
+                    )
+                )
+        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    mutate_lock(compute, f"Refresh {', '.join(names)}")
+    refreshed = {name: image for name, image in resolved.items() if name not in pinned}
+    if refreshed:
+        reconcile_consumers(list(refreshed))
+    return RefreshResult(refreshed, pinned)
+
+
 def _kubectl_read_json(args: list[str], describe: str) -> dict | None:
     """Silent kubectl read that distinguishes absent (None) from unreachable
     (raise), so a verify failure can never be mistaken for a missing object."""
@@ -1637,8 +1753,9 @@ def apply_image_lock(
         if active_pins:
             annotations[PINS_ANNOTATION] = encode_pins(active_pins)
         existing = ((lock or {}).get("metadata") or {}).get("annotations") or {}
-        if existing.get(TRUSTED_REPOS_ANNOTATION):
-            annotations[TRUSTED_REPOS_ANNOTATION] = existing[TRUSTED_REPOS_ANNOTATION]
+        for name in PROJECTION_ANNOTATIONS:
+            if existing.get(name):
+                annotations[name] = existing[name]
         return {"data": data, "metadata": {"annotations": annotations}}
 
     mutate_lock(compute, description, max_attempts=max_attempts)

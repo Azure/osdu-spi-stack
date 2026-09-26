@@ -13,16 +13,14 @@ sequence, what each step asserts, and which recovery path applies.
 
 **Status.** `spi service pin --image --ephemeral`, `verify`, the
 ownership-checked `reset --if-run`, the separate stale sweep
-(`reset --ephemeral --stale-only`), and the trust path of `spi onboard`
-(phases 1 to 3 below, `--list` and `--remove` for trust and projection,
-roster-derived pin validation, repository-derived GHCR package validation)
-are implemented.
-Phase 4 source policy (`--canonical-source`, the `spi-source-<service>`
-tags), declaration enforcement, `spi service refresh`, and the refresh
-workflow's backstop step are ahead of the code
+(`reset --ephemeral --stale-only`), and `spi onboard` (all four phases
+below, `--list` and `--remove` for trust, source policy, and both
+projections, roster-derived pin validation, repository-derived GHCR package
+validation), and `spi service refresh` are implemented. Declaration
+enforcement and the refresh workflow's backstop step are ahead of the code
 (phases 4 and 5 of the roadmap in
-[environment-lifecycle.md](environment-lifecycle.md)). Remove the marks as
-they land.
+[environment-lifecycle.md](environment-lifecycle.md)).
+Remove the marks as they land.
 
 ## The sequence
 
@@ -119,8 +117,8 @@ workflow step is unbuilt; the sweep verb exists):
   display-only and is never fetched. Roster membership replaces the
   `Azure/osdu-spi-*` naming convention for personal and customer forks, but
   does not prove that only onboarded repositories can be lookup targets.
-- `spi service refresh` (unbuilt) per GitHub-origin service then advances
-  the environment to the current retained canonical (ADR-033).
+- `spi service refresh` per GitHub-origin service then advances the
+  environment to the current retained canonical (ADR-033).
 
 The post-pin verify detects a replacement observed during that step. There is
 no second verification before each suite, so replacement after verification
@@ -168,8 +166,9 @@ released to its canonical entry so no mismatched pair runs. `spi service
 reset schema --if-run <id>` releases the loader the run paired and leaves a
 loader owned by anything else standing. The `schema-load` Job passes
 `SCHEMA_URL` and the workload identity to the fork-built image; the wrapper
-ConfigMap is mounted as the community image's `scripts/azure` directory,
-serves only that image, and goes with the canonical flip (#192).
+ConfigMap is mounted as the community image's `scripts/azure` directory and
+serves only that image; it stays while an environment can select community
+as schema's canonical source.
 
 `require_ghcr_repository` in `src/spi/images.py` checks GHCR host, path,
 and digest shape without naming an owner. An ephemeral pin additionally
@@ -189,8 +188,13 @@ phases; source promotion is separate from enabling trust:
 |---|---|---|
 | 1. Repository protection | Create the `spi-stack` environment, or open one restricted to a branch list, then stamp the five values | repository admin for environment rules; organization admin for organization values with `--org` |
 | 2. Azure trust | Enable `fork-<service>` on `spi-stack-<env>-deployer`, `spi-stack-<env>-member`, and `spi-stack-<env>-noaccess` for the subject GitHub signs for the repository's `spi-stack` environment (`repo:<org>/<fork>:environment:spi-stack` under the default template; ADR-032 lists the forms), after reading back that the environment exists and admits every branch | write on the three identities and read access to repository rules |
-| 3. Cluster trust | Project the observed credential roster and existing source policy into `osdu-image-lock` without changing resolved images or pins | the operator's kube context |
-| 4. Source policy | When requested, validate promotion preconditions, write `spi-source-<service>` on the RG, and update the lock's source projection (ADR-033) | RG tag write and the operator's kube context |
+| 3. Source policy | Write `spi-source-<service>` on the RG: the repository after a passing promotion check, `community`, or the recorded value repaired to the repository's casing (ADR-033) | RG tag write |
+| 4. Cluster projection | Project the credential roster into `spi-stack.osdu.dev/trusted-repos` and the fork-sourced services into `spi-stack.osdu.dev/canonical-sources` on `osdu-image-lock`, without changing resolved images or pins | the operator's kube context |
+
+The projection runs last because it copies both durable records. `--remove`
+runs source policy first, recording `community` before any credential is
+revoked, so a rebuild between the two writes cannot resolve a fork the
+environment no longer trusts. `--skip-repo` omits phase 1.
 
 Planning first reads the environment profile from `spi info --json` and
 refuses anything but `core`, since `minimal` and `bare` deploy no OSDU
@@ -231,13 +235,52 @@ competing invocation causes bounded backoff and an observed-roster re-read.
 Neither onboarding nor the lifecycle ensure path fans out credential writes
 (ADR-032).
 
-On an undeclared environment, onboarding preserves the source tag, or uses
-community when it is absent. `--canonical-source fork` explicitly selects
-the service's trusted fork; `--canonical-source community` selects community
-without removing trust. Schema's promotion requires the paired loader at the
-selected schema commit. A missing loader refuses promotion without changing
-the durable community policy; trust-only onboarding still works. A loader
-published later does not itself trigger promotion.
+On an undeclared environment, onboarding preserves the source tag, or
+records `community` when it is absent, so a trusted repository's
+community state is explicit on the RG. `--canonical-source fork` selects the
+service's trusted fork; `--canonical-source community` selects community
+without removing trust. A recorded fork other than the repository being
+onboarded is refused unless the option names the new choice.
+
+A change to `fork` is checked before anything is written: the fork's GHCR
+package (`fork_package_repositories` in `src/spi/images.py`) must carry a
+`main-snapshot` tag, and one of the newest 30 commits on the fork's `main`
+must carry a `sha-<12>` tag naming the same digest. When both package names
+carry `main-snapshot`, as after a `SERVICE_NAME` change, the one built from
+the newer commit wins. The canonical image is
+that digest, recorded under that `sha-<12>` tag, so the lock names the
+commit that built it and anything else built from the commit pairs with it.
+A fork whose `main` has never completed a push build has no `main-snapshot`
+and is refused. Schema's promotion additionally requires
+`<package>-load:sha-<12>` at the same commit (`resolve_fork_loader`). A
+refused promotion writes nothing, including trust; re-run without
+`--canonical-source` to trust the repository while the service stays on
+community. A loader published later does not itself trigger promotion.
+
+The policy changes the next resolution, not the running image. `spi service
+refresh <service>...` re-resolves only the named services, reading the
+lock's `canonical-sources` projection and the lock's recorded image branch;
+every other entry, the lock's resolved-at stamp, and active pins stay as
+they are, and schema moves only together with its loader. `spi reconcile
+--refresh-images` re-resolves every service the same way, which needs the
+community registry reachable for the services that follow it. `spi up` reads
+the RG tags directly, before provisioning, and rebuilds both projections at
+bootstrap. Every resolution refuses a fork source that is not the repository
+trusted for that service: `spi up` checks the tags against the deploy
+identity's credentials, and the refresh commands check the lock's
+`canonical-sources` against its `trusted-repos`. The weekday `env-refresh` workflow runs no image refresh, so a
+fork-sourced canonical advances only when someone runs a refresh; one left
+unrefreshed past the 30-day `sha-*` retention while the fork keeps building
+can have its recorded digest deleted (ADR-033). `spi info` shows the policy
+beside the running image and marks a policy the running image predates.
+
+```bash
+spi onboard partition --canonical-source fork           # plan: trust, tag, projection
+spi onboard partition --canonical-source fork --write
+spi service refresh partition                           # partition now runs its fork's main
+spi onboard partition --canonical-source community --write
+spi service refresh partition                           # and back to community master
+```
 
 The retained `spi-environment-declaration` RG tag identifies a declared
 environment (ADR-032). Onboarding loads that reviewed file from `main` and

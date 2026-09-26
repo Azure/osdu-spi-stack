@@ -166,9 +166,9 @@ verdict; `spi connect` obtains access to an existing cluster.
 run in the image lock. Verification checks rollout and digest; an
 ownership-checked reset restores the captured canonical image. The environment
 deploy identity and namespace Roles are provisioned. `spi onboard` plans and
-applies repository protection, federation, and the trusted-repository projection;
-source promotion, declaration enforcement, reset, and teardown workflows remain
-unbuilt. See
+applies repository protection, federation, per-service canonical-source policy,
+and both lock projections; declaration enforcement and the reset and
+teardown workflows remain unbuilt. See
 [environment lifecycle](design/environment-lifecycle.md) and
 [fork deployment](design/fork-deployment.md) for the implemented contract and
 marked future work.

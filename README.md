@@ -164,8 +164,8 @@ See [Ingress modes](docs/architecture.md#ingress-profiles) and
 | `spi status` | Show deployment health and reconciliation progress |
 | `spi info` | Show cluster endpoints and optional credentials |
 | `spi reconcile` | Suspend, resume, or refresh Flux reconciliation |
-| `spi service` | Pin services to merge-request or fork-built images |
-| `spi onboard` | Trust a fork repository to deploy against the environment; plans by default, `--write` applies |
+| `spi service` | Pin services to merge-request or fork-built images, and `refresh` one service's canonical image without touching the rest |
+| `spi onboard` | Trust a fork repository to deploy against the environment, and with `--canonical-source fork` make its `main` the service's canonical image; plans by default, `--write` applies |
 | `spi token` | Mint an app-only bearer as the deploy identity for acceptance suites; `--member` for the suites' `NO_ACCESS_USER` caller, `--no-access` for 401 tests |
 | `spi update` | Check for and install a newer CLI release |
 | `spi maintenance` | Set or clear the deploy-blocking maintenance flag |

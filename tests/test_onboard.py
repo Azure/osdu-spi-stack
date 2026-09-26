@@ -23,7 +23,9 @@ import pytest
 from typer.testing import CliRunner
 
 from spi import onboard
+from spi.images import ImageResolutionError
 from spi.onboard import (
+    COMMUNITY_SOURCE,
     GITHUB_AUDIENCE,
     GITHUB_ISSUER,
     MAX_CREDENTIALS,
@@ -39,9 +41,11 @@ from spi.onboard import (
     plan_steps,
     refuse,
 )
-from spi.pins import TRUSTED_REPOS_ANNOTATION
+from spi.pins import CANONICAL_SOURCES_ANNOTATION, TRUSTED_REPOS_ANNOTATION
 
 REPO = "Acme/osdu-spi-partition"
+OWNER_ID, REPO_ID = "6844498", "1167996450"
+CLAIM_SUBJECT = f"repository_owner_id:{OWNER_ID}:repository_id:{REPO_ID}:environment:spi-stack"
 TARGET = Target(
     env="dev1",
     profile="core",
@@ -59,6 +63,15 @@ TARGET = Target(
 )
 PROTECTED = Protection(exists=True)
 ABSENT = Protection(exists=False)
+READ_SOURCE_TAGS = onboard.read_source_tags
+
+
+@pytest.fixture(autouse=True)
+def no_source_tags(monkeypatch):
+    """Tests about trust see no source tags; source tests set their own."""
+
+    monkeypatch.setattr(onboard, "read_source_tags", lambda *args, **kwargs: {})
+    monkeypatch.setattr(onboard, "read_source_projection", lambda: {})
 
 
 def cred(service: str, repo: str, **overrides) -> Credential:
@@ -79,8 +92,20 @@ def correct_values() -> dict:
 
 
 def make_plan(
-    state: State, *, service="partition", repo=REPO, org="", skip_repo=False, remove=False
+    state: State,
+    *,
+    service="partition",
+    repo=REPO,
+    org="",
+    skip_repo=False,
+    remove=False,
+    canonical_source="",
+    recorded: str | None = COMMUNITY_SOURCE,
 ) -> Plan:
+    """``recorded`` seeds the service's source tag, so trust tests plan no source write."""
+
+    if recorded is not None and service not in state.sources:
+        state = replace(state, sources={**state.sources, service: recorded})
     plan = Plan(
         TARGET,
         service,
@@ -89,6 +114,7 @@ def make_plan(
         org=org,
         skip_repo=skip_repo,
         remove=remove,
+        canonical_source=canonical_source,
         state=state,
     )
     plan.steps = plan_steps(plan)
@@ -110,16 +136,20 @@ def states(plan: Plan) -> dict[str, str]:
 
 
 class TestPlanning:
-    def test_a_fresh_repository_plans_all_three_phases_in_order(self):
+    def test_a_fresh_repository_plans_every_phase_in_order(self):
         plan = make_plan(
-            State(roster=(), projection={}, protection=ABSENT, values=dict.fromkeys(TARGET.values))
+            State(roster=(), projection={}, protection=ABSENT, values=dict.fromkeys(TARGET.values)),
+            recorded=None,
         )
 
-        assert [s.phase for s in plan.steps] == ["repository"] * 6 + ["azure"] * 3 + ["cluster"]
+        assert [s.phase for s in plan.steps] == (
+            ["repository"] * 6 + ["azure"] * 3 + ["source", "cluster"]
+        )
         assert verbs(plan)[0] == "gh api --method PUT"
         assert verbs(plan)[1] == "gh secret set AZURE_CLIENT_ID"
-        assert verbs(plan)[-4:-1] == ["az identity federated-credential create"] * 3
-        assert [s.argv[s.argv.index("--identity-name") + 1] for s in plan.steps[-4:-1]] == [
+        assert verbs(plan)[-5:-2] == ["az identity federated-credential create"] * 3
+        assert plan.steps[-2].argv[5:7] == ["--set", "tags.spi-source-partition=community"]
+        assert [s.argv[s.argv.index("--identity-name") + 1] for s in plan.steps[-5:-2]] == [
             TARGET.identity_name,
             TARGET.member_identity_name,
             TARGET.no_access_identity_name,
@@ -128,7 +158,9 @@ class TestPlanning:
             plan.steps[-1].argv[-1]
             == f"{TRUSTED_REPOS_ANNOTATION}={json.dumps({'partition': REPO})}"
         )
-        assert set(states(plan).values()) == {"missing"}
+        assert set(states(plan).values()) == {"missing", "correct"}
+        assert states(plan)[f"{CANONICAL_SOURCES_ANNOTATION} on osdu-image-lock"] == "correct"
+        assert states(plan)["spi-source-partition on spi-stack-dev1"] == "missing"
 
     def test_a_correct_repository_only_restamps_the_unreadable_secret(self):
         state = State(
@@ -205,7 +237,9 @@ class TestPlanning:
             "fork-partition on spi-stack-dev1-deployer": "missing",
             "fork-partition on spi-stack-dev1-member": "missing",
             "fork-partition on spi-stack-dev1-noaccess": "missing",
+            "spi-source-partition on spi-stack-dev1": "correct",
             f"{TRUSTED_REPOS_ANNOTATION} on osdu-image-lock": "missing",
+            f"{CANONICAL_SOURCES_ANNOTATION} on osdu-image-lock": "correct",
         }
 
     def test_skip_repo_with_rules_in_place_plans_only_trust_and_projection(self):
@@ -245,7 +279,8 @@ class TestPlanning:
 
     def test_a_target_without_mirror_identities_plans_the_deployer_alone(self):
         target = replace(TARGET, no_access_identity_name="", member_identity_name="")
-        plan = Plan(target, "partition", REPO, skip_repo=True, state=State((), {}, PROTECTED))
+        state = State((), {}, PROTECTED, sources={"partition": COMMUNITY_SOURCE})
+        plan = Plan(target, "partition", REPO, skip_repo=True, state=state)
         plan.steps = plan_steps(plan)
         plan.rows = plan_rows(plan)
 
@@ -608,6 +643,8 @@ class Live:
     projected: int = 0
     # What gh api repositories/<id> answers; empty means GitHub is unreadable.
     github: dict = field(default_factory=dict)
+    sources: dict = field(default_factory=lambda: {"partition": COMMUNITY_SOURCE})
+    source_projection: dict = field(default_factory=dict)
 
     def observed(self, *, values: bool = True) -> State:
         """What observe() would return; --skip-repo never reads the values."""
@@ -619,6 +656,8 @@ class Live:
             dict(self.values) if values else {},
             no_access_roster=self.no_access_roster,
             member_roster=self.member_roster,
+            sources=dict(self.sources),
+            source_projection=dict(self.source_projection),
         )
 
     def _attr(self, identity_name: str) -> str:
@@ -653,6 +692,9 @@ class Live:
                 subject = argv[argv.index("--subject") + 1]
                 others += (cred(service, "", subject=subject),)
             setattr(self, attr, others)
+        if argv[:3] == ["az", "group", "update"]:
+            key, value = argv[argv.index("--set") + 1].removeprefix("tags.").split("=", 1)
+            self.sources[key.removeprefix("spi-source-")] = value
         if argv[:2] == ["gh", "api"] and argv[2].startswith("repositories/"):
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.github), "")
         return subprocess.CompletedProcess(argv, 0, "", "")
@@ -661,6 +703,10 @@ class Live:
         self.projected += 1
         self.projection = onboard.roster_repos(self.roster, {**self.projection, **(named or {})})
         return self.projection
+
+    def project_sources(self, target, description=""):
+        self.source_projection = onboard.fork_sources(self.sources)
+        return self.source_projection
 
 
 @pytest.fixture
@@ -672,6 +718,9 @@ def live(monkeypatch):
     monkeypatch.setattr(onboard, "read_values", lambda repo, org: dict(world.values))
     monkeypatch.setattr(onboard, "read_projection", lambda: dict(world.projection))
     monkeypatch.setattr(onboard, "project_roster", world.project)
+    monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: dict(world.sources))
+    monkeypatch.setattr(onboard, "read_source_projection", lambda: dict(world.source_projection))
+    monkeypatch.setattr(onboard, "project_sources", world.project_sources)
     monkeypatch.setattr(onboard.time, "sleep", lambda s: None)
     return world
 
@@ -698,7 +747,7 @@ class TestApply:
         with pytest.raises(OnboardError, match="admin required") as exc:
             apply_plan(plan)
 
-        assert "Completed: nothing. Pending: repository, azure, cluster" in str(exc.value)
+        assert "Completed: nothing. Pending: repository, azure, source, cluster" in str(exc.value)
         assert live.roster == ()
         assert live.projected == 0
 
@@ -710,7 +759,7 @@ class TestApply:
         with pytest.raises(OnboardError, match="does not protect spi-stack") as exc:
             apply_plan(plan)
 
-        assert "Completed: nothing. Pending: azure, cluster" in str(exc.value)
+        assert "Completed: nothing. Pending: azure, source, cluster" in str(exc.value)
         assert live.roster == ()
 
     def test_a_blocked_plan_refuses_to_apply(self, live):
@@ -736,7 +785,7 @@ class TestApply:
         with pytest.raises(OnboardError, match="AuthorizationFailed") as exc:
             apply_plan(make_plan(live.observed(values=False), skip_repo=True))
 
-        assert "Completed: nothing. Pending: azure, cluster" in str(exc.value)
+        assert "Completed: nothing. Pending: azure, source, cluster" in str(exc.value)
         assert len([c for c in live.calls if c[0] == "az"]) == 1
 
     def test_remove_revokes_then_reprojects(self, live):
@@ -794,6 +843,23 @@ class TestProjection:
 
         monkeypatch.setattr(onboard, "read_projection", lambda: {})
         onboard.sync_projection_from_identity("id", "rg")
+        assert len(calls) == 1
+
+    def test_bootstrap_projects_sources_only_when_the_lock_disagrees(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            onboard,
+            "read_source_tags",
+            lambda rg: {"partition": REPO, "legal": COMMUNITY_SOURCE},
+        )
+        monkeypatch.setattr(onboard, "read_source_projection", lambda: {"partition": REPO})
+        monkeypatch.setattr(onboard, "project_sources", lambda *a: calls.append(a) or {})
+
+        assert onboard.sync_sources_from_tags("rg") == {"partition": REPO}
+        assert calls == []
+
+        monkeypatch.setattr(onboard, "read_source_projection", lambda: {})
+        onboard.sync_sources_from_tags("rg")
         assert len(calls) == 1
 
     def test_list_pairs_trust_with_projection_and_flags_the_rest(self, monkeypatch):
@@ -882,6 +948,282 @@ class TestProjection:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Canonical source: the spi-source-<service> tag and its lock projection
+# ---------------------------------------------------------------------------
+
+TRUSTED = (cred("partition", REPO),)
+SOURCE_TAG = "spi-source-partition on spi-stack-dev1"
+SOURCES_ROW = f"{CANONICAL_SOURCES_ANNOTATION} on osdu-image-lock"
+
+
+def trusted_state(**overrides) -> State:
+    state = State(
+        TRUSTED, {"partition": REPO}, PROTECTED, member_roster=TRUSTED, no_access_roster=TRUSTED
+    )
+    return replace(state, **overrides)
+
+
+def projected_sources(plan: Plan) -> dict:
+    step = next(s for s in plan.steps if CANONICAL_SOURCES_ANNOTATION in s.argv[-1])
+    return json.loads(step.argv[-1].split("=", 1)[1])
+
+
+class TestSourcePolicy:
+    def test_promotion_records_the_fork_then_projects_it(self):
+        plan = make_plan(trusted_state(), skip_repo=True, canonical_source="fork")
+
+        assert [s.phase for s in plan.steps] == ["source", "cluster"]
+        assert plan.steps[0].argv[:7] == [
+            "az",
+            "group",
+            "update",
+            "--name",
+            "spi-stack-dev1",
+            "--set",
+            f"tags.spi-source-partition={REPO}",
+        ]
+        assert plan.steps[0].argv[-2:] == ["--subscription", "sub-id"]
+        assert projected_sources(plan) == {"partition": REPO}
+        assert states(plan)[SOURCE_TAG] == "drifted"
+
+    def test_an_omitted_option_keeps_a_recorded_fork(self):
+        state = trusted_state(sources={"partition": REPO}, source_projection={"partition": REPO})
+
+        plan = make_plan(state, skip_repo=True)
+
+        assert plan.steps == []
+        assert states(plan)[SOURCE_TAG] == "correct"
+
+    def test_an_omitted_option_refuses_a_fork_recorded_for_another_repository(self):
+        plan = make_plan(trusted_state(sources={"partition": "Old/fork"}), skip_repo=True)
+
+        with pytest.raises(OnboardError, match="follows Old/fork"):
+            refuse(plan)
+
+    def test_community_keeps_trust_and_drops_only_this_service_from_the_projection(self):
+        forks = {"partition": REPO, "legal": "Acme/osdu-spi-legal"}
+        state = trusted_state(sources=forks, source_projection=forks)
+
+        plan = make_plan(state, skip_repo=True, canonical_source="community")
+
+        assert verbs(plan) == [
+            "az group update --name",
+            "kubectl annotate configmap osdu-image-lock",
+        ]
+        assert plan.steps[0].argv[6] == "tags.spi-source-partition=community"
+        assert projected_sources(plan) == {"legal": "Acme/osdu-spi-legal"}
+
+    def test_removal_records_community_before_revoking(self):
+        state = trusted_state(sources={"partition": REPO}, source_projection={"partition": REPO})
+
+        plan = make_plan(state, repo="", remove=True)
+
+        assert [s.phase for s in plan.steps] == ["source"] + ["azure"] * 3 + ["cluster"] * 2
+        assert plan.steps[0].argv[6] == "tags.spi-source-partition=community"
+        assert projected_sources(plan) == {}
+
+    def test_apply_writes_the_tag_then_the_projection(self, live):
+        live.roster = live.member_roster = live.no_access_roster = TRUSTED
+        live.projection = {"partition": REPO}
+        live.protection = PROTECTED
+
+        rows = apply_plan(
+            make_plan(live.observed(values=False), skip_repo=True, canonical_source="fork")
+        )
+
+        assert [call[:3] for call in live.calls] == [["az", "group", "update"]]
+        assert live.sources == {"partition": REPO}
+        assert live.source_projection == {"partition": REPO}
+        assert {row.state for row in rows} == {"correct"}
+
+    def test_a_removal_that_cannot_record_community_revokes_nothing(self, live):
+        live.roster = live.member_roster = live.no_access_roster = TRUSTED
+        live.sources = {"partition": REPO}
+        live.fail["az group update"] = ["AuthorizationFailed"]
+
+        with pytest.raises(OnboardError, match="Pending: source, azure, cluster"):
+            apply_plan(make_plan(live.observed(), repo="", remove=True))
+
+        assert live.roster == TRUSTED
+
+
+class TestPromotionCheck:
+    def _fork_image(self, monkeypatch, service: str, loader=None):
+        from spi.images import ResolvedImage
+
+        image = ResolvedImage(
+            service, f"ghcr.io/acme/osdu-spi-{service}", "sha-bbbbbbbbbbbb", "", "sha256:d"
+        )
+        monkeypatch.setattr(onboard, "resolve_fork_image", lambda svc, repo: (image, "b" * 40))
+        monkeypatch.setattr(onboard, "resolve_fork_loader", lambda repository, commit: loader)
+
+    def test_a_promotion_names_the_image_the_next_refresh_resolves(self, monkeypatch):
+        self._fork_image(monkeypatch, "partition")
+
+        assert onboard.check_promotion("partition", REPO) == (
+            "ghcr.io/acme/osdu-spi-partition:sha-bbbbbbbbbbbb"
+        )
+
+    def test_schema_without_its_loader_is_refused_naming_the_package(self, monkeypatch):
+        self._fork_image(monkeypatch, "schema", loader=None)
+
+        with pytest.raises(OnboardError, match="osdu-spi-schema-load:sha-bbbbbbbbbbbb"):
+            onboard.check_promotion("schema", "Acme/osdu-spi-schema")
+
+    def test_an_unresolvable_fork_is_refused(self, monkeypatch):
+        from spi.images import ImageResolutionError
+
+        def unresolvable(service, repo):
+            raise ImageResolutionError("publishes no main-snapshot image")
+
+        monkeypatch.setattr(onboard, "resolve_fork_image", unresolvable)
+
+        with pytest.raises(OnboardError, match="partition cannot follow .*main-snapshot"):
+            onboard.check_promotion("partition", REPO)
+
+    @pytest.mark.parametrize(
+        "recorded, option, checked",
+        [
+            (COMMUNITY_SOURCE, "fork", True),
+            (REPO, "fork", False),
+            (REPO, "", False),
+            (COMMUNITY_SOURCE, "", False),
+        ],
+    )
+    def test_only_a_change_to_the_fork_is_checked(self, monkeypatch, recorded, option, checked):
+        calls = []
+        monkeypatch.setattr(onboard, "read_roster", lambda target: TRUSTED)
+        monkeypatch.setattr(onboard, "resolve_repository", lambda spec: spec)
+        monkeypatch.setattr(onboard, "read_subject", lambda repo: credential_subject(repo))
+        monkeypatch.setattr(
+            onboard, "observe", lambda *a, **k: trusted_state(sources={"partition": recorded})
+        )
+        monkeypatch.setattr(
+            onboard, "check_promotion", lambda service, repo: calls.append(repo) or "img"
+        )
+
+        onboard.plan_onboard(TARGET, "partition", REPO, skip_repo=True, canonical_source=option)
+
+        assert calls == ([REPO] if checked else [])
+
+
+class TestSourceReads:
+    def test_tags_parse_to_service_and_source(self):
+        tags = {
+            "spi-source-partition": REPO,
+            "spi-source-legal": COMMUNITY_SOURCE,
+            "spi-name-suffix": "90380",
+        }
+
+        assert onboard.parse_source_tags(tags) == {
+            "partition": REPO,
+            "legal": COMMUNITY_SOURCE,
+        }
+
+    def test_an_invalid_tag_is_an_error_not_community(self):
+        with pytest.raises(OnboardError, match="neither community nor <owner>/<name>"):
+            onboard.parse_source_tags({"spi-source-partition": "upstream"})
+
+    def test_a_missing_group_reads_as_no_tags_only_when_tolerated(self, monkeypatch):
+        monkeypatch.setattr(
+            onboard, "run_command", lambda argv, **_: failed("(ResourceGroupNotFound) not found")
+        )
+
+        assert READ_SOURCE_TAGS("rg", missing_ok=True) == {}
+        with pytest.raises(OnboardError, match="Could not read source tags"):
+            READ_SOURCE_TAGS("rg")
+
+    def test_tags_are_read_in_the_given_subscription(self, monkeypatch):
+        shell = Shell(az__group__show={"spi-source-partition": REPO})
+        monkeypatch.setattr(onboard, "run_command", shell)
+
+        assert READ_SOURCE_TAGS("rg", "sub-id") == {"partition": REPO}
+        assert shell.calls[0][-2:] == ["--subscription", "sub-id"]
+
+    @pytest.mark.parametrize(
+        "roster",
+        [(cred("partition", REPO),), (cred("partition", REPO.lower()), cred("legal", REPO))],
+    )
+    def test_the_deploy_policy_keeps_a_fork_the_identity_trusts(self, monkeypatch, roster):
+        monkeypatch.setattr(
+            onboard, "read_source_tags", lambda *a, **k: {"partition": REPO, "legal": "community"}
+        )
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+
+        assert onboard.read_source_policy("rg", "deployer") == {"partition": REPO}
+
+    @pytest.mark.parametrize("roster", [(), (cred("partition", "Other/osdu-spi-partition"),)])
+    def test_the_deploy_policy_refuses_a_fork_the_identity_does_not_trust(
+        self, monkeypatch, roster
+    ):
+        monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: {"partition": REPO})
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+
+        with pytest.raises(OnboardError, match=f"partition follows {REPO} but"):
+            onboard.read_source_policy("rg", "deployer")
+
+    def test_an_id_credential_is_confirmed_by_name_when_gh_is_unavailable(self, monkeypatch):
+        monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: {"partition": REPO})
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+        repository = {"id": int(REPO_ID), "owner": {"id": int(OWNER_ID)}}
+        monkeypatch.setattr(
+            onboard, "github_get", lambda path: repository if path == f"repos/{REPO}" else {}
+        )
+
+        assert onboard.read_source_policy("rg", "deployer") == {"partition": REPO}
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            {"id": 1, "owner": {"id": int(OWNER_ID)}},
+            {"id": int(REPO_ID), "owner": {"id": 1}},
+            ImageResolutionError("GitHub API unreachable"),
+        ],
+    )
+    def test_an_id_credential_for_another_repository_is_refused(self, monkeypatch, answer):
+        monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: {"partition": REPO})
+        roster = (cred("partition", REPO, subject=CLAIM_SUBJECT),)
+        monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
+        monkeypatch.setattr(onboard, "run_command", no_gh)
+
+        def github_get(path):
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(onboard, "github_get", github_get)
+
+        with pytest.raises(
+            OnboardError, match="could not confirm the id credentials for partition"
+        ):
+            onboard.read_source_policy("rg", "deployer")
+
+    def test_a_community_policy_never_reads_the_roster(self, monkeypatch):
+        monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: {"legal": "community"})
+        monkeypatch.setattr(onboard, "read_roster", pytest.fail)
+
+        assert onboard.read_source_policy("rg", "deployer") == {}
+
+    def test_list_checks_each_source_against_trust_and_the_projection(self):
+        rows = onboard.source_rows(
+            trusted={"partition": REPO, "legal": "Acme/osdu-spi-legal", "file": "Acme/file"},
+            sources={"partition": REPO, "storage": "Acme/storage", "file": "Acme/file"},
+            projection={"partition": REPO, "storage": "Acme/storage"},
+        )
+
+        assert [(r.item, r.state) for r in rows] == [
+            ("spi-source-file", "drifted"),
+            ("spi-source-legal", "missing"),
+            ("spi-source-partition", "correct"),
+            ("spi-source-storage", "drifted"),
+        ]
+        assert rows[0].detail == "Acme/file; projection community"
+        assert rows[3].detail == "follows Acme/storage, which is not trusted for it"
+
+
 class TestCli:
     def test_a_blocked_plan_warns_instead_of_reporting_success(self, capsys):
         onboard.render_plan(make_plan(State((), {}, ABSENT), skip_repo=True))
@@ -896,6 +1238,8 @@ class TestCli:
             (["--list", "partition"], "takes no other options"),
             (["partition", "--remove", "--repo", REPO], "takes only the service"),
             (["partition", "--org", "Acme", "--skip-repo"], "stamps GitHub values"),
+            (["partition", "--remove", "--canonical-source", "fork"], "takes only the service"),
+            (["partition", "--canonical-source", "upstream"], "expected fork or community"),
             ([], "name the service"),
         ],
     )
@@ -1014,9 +1358,7 @@ class TestSubjectForms:
 # Custom templates: an organization can sign repository ids instead of the name
 # ---------------------------------------------------------------------------
 
-OWNER_ID, REPO_ID = "6844498", "1167996450"
 ID_KEYS = ["repository_owner_id", "repository_id", "context"]
-CLAIM_SUBJECT = f"repository_owner_id:{OWNER_ID}:repository_id:{REPO_ID}:environment:spi-stack"
 
 
 @pytest.fixture(autouse=True)
@@ -1043,6 +1385,7 @@ def no_gh(argv, **_):
 
 
 def claim_plan(state: State, service: str = "partition") -> Plan:
+    state = replace(state, sources={service: COMMUNITY_SOURCE, **state.sources})
     plan = Plan(TARGET, service, REPO, subject=CLAIM_SUBJECT, skip_repo=True, state=state)
     plan.steps = plan_steps(plan)
     plan.rows = plan_rows(plan)

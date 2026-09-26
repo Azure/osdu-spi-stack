@@ -198,9 +198,9 @@ with `-n osdu-flux`; the target namespace reports a missing release.
 
 The first core deployment resolves an image lock; a retry preserves it unless
 `--refresh-images` is explicit. `--no-refresh-images` fails when no lock exists.
-Canonical resolution uses the community GitLab registry. Per-service fork
-canonical-source promotion remains unbuilt; see
-[environment lifecycle](environment-lifecycle.md).
+Canonical resolution uses the community GitLab registry, except for a service
+promoted to its fork with `spi onboard --canonical-source fork`, which resolves
+the fork's GHCR `main` image; see [fork deployment](fork-deployment.md).
 
 The image lock covers 14 images, including the schema loader. Repository, tag, and digest values
 are substituted into HelmRelease manifests during a service Kustomization
@@ -287,8 +287,8 @@ canonical image; if that record is missing, the CLI reports that a subsequent
 For fork CI, `--ephemeral` records the owning run and source provenance.
 `spi service verify` checks the rollout and running image digest;
 `spi service reset --if-run` restores only a pin still owned by that run.
-The stale-pin sweep and `spi onboard` trust path exist; the scheduled backstop
-and canonical-source promotion remain unbuilt. Ephemeral pins require a
+The stale-pin sweep, `spi onboard` trust, and canonical-source promotion
+exist; the scheduled backstop remains unbuilt. Ephemeral pins require a
 repository matching the lock's trusted roster and its derived GHCR package.
 Follow [fork deployment](fork-deployment.md) for required metadata, refusal
 codes, and trust activation.

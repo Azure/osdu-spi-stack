@@ -8,6 +8,7 @@ import json
 import re
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from spi import cli, info
@@ -606,6 +607,7 @@ def test_info_json_lists_each_service_image_from_the_lock(monkeypatch):
         "created_at": "2026-09-16T14:00:00Z",
         "pinned": False,
         "origin": "canonical",
+        "source": "community",
     }
 
 
@@ -724,3 +726,52 @@ def test_info_lists_lock_services_this_cli_does_not_know(monkeypatch):
     assert list(services) == ["partition", "storage", "seismic-store"]
     assert services["seismic-store"]["repository"] == "registry:5000/seismic"
     assert services["seismic-store"]["tag"] == "feedface"
+
+
+@pytest.mark.parametrize(
+    "name, repository, source, shown",
+    [
+        (
+            "partition",
+            "community.opengroup.org:5555/osdu/partition-master",
+            "community",
+            "community",
+        ),
+        ("partition", "ghcr.io/acme/partition", "Acme/partition", "Acme/partition"),
+        (
+            "partition",
+            "community.opengroup.org:5555/osdu/partition-master",
+            "Acme/partition",
+            "Acme/partition (next refresh)",
+        ),
+        ("partition", "ghcr.io/acme/partition", "community", "community (next refresh)"),
+        ("partition", "ghcr.io/other/partition", "Acme/partition", "Acme/partition (next refresh)"),
+        (
+            "partition",
+            "evil.test/ghcr.io/acme/partition",
+            "Acme/partition",
+            "Acme/partition (next refresh)",
+        ),
+        ("schema-load", "ghcr.io/acme/schema-load", "Acme/schema", "Acme/schema"),
+    ],
+)
+def test_the_versions_table_marks_a_source_the_running_image_predates(
+    name, repository, source, shown
+):
+    from rich.text import Text
+
+    cell = info._canonical_source(name, {"repository": repository, "source": source})
+
+    assert Text.from_markup(cell).plain == shown
+
+
+def test_the_schema_loader_reports_the_schema_source_policy(monkeypatch):
+    lock = _lock()
+    lock["data"]["SCHEMA_LOAD_IMAGE"] = "ghcr.io/acme/schema-load:sha-8e056d4a6142"
+    annotations = lock["metadata"]["annotations"]
+    annotations["spi-stack.osdu.dev/canonical-sources"] = json.dumps({"schema": "Acme/schema"})
+    _wire(monkeypatch, image_lock=lock)
+
+    services = info.collect_info()["osdu_versions"]["services"]
+
+    assert services["schema-load"]["source"] == "Acme/schema"

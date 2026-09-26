@@ -51,8 +51,11 @@ from .pins import (
     live_pins,
     pin_service,
     pin_service_image,
+    read_lock,
+    refresh_services,
     reset_service,
     sweep_stale_ephemeral_pins,
+    trusted_canonical_sources,
     verify_service_image,
 )
 from .shell import run_command
@@ -890,15 +893,28 @@ def onboard(
     ),
     list_trusted: bool = typer.Option(False, "--list", help="Show trusted repositories"),
     remove: bool = typer.Option(False, "--remove", help="Revoke the service's repository"),
+    canonical_source: Optional[str] = typer.Option(
+        None,
+        "--canonical-source",
+        help="fork: the next image refresh follows the fork's main; community: it follows "
+        "the community registry. Omitted keeps the recorded source.",
+    ),
 ):
     """Trust a fork repository to deploy against the connected environment."""
     from . import onboard as _onboard
 
-    if list_trusted and (service or repo or remove or write or org or skip_repo):
+    if list_trusted and (
+        service or repo or remove or write or org or skip_repo or canonical_source
+    ):
         raise typer.BadParameter("--list takes no other options", param_hint="--list")
-    if remove and (repo or org or skip_repo):
+    if remove and (repo or org or skip_repo or canonical_source):
         raise typer.BadParameter(
             "--remove takes only the service and --write", param_hint="--remove"
+        )
+    if canonical_source not in (None, _onboard.FORK_SOURCE, _onboard.COMMUNITY_SOURCE):
+        raise typer.BadParameter(
+            f"expected {_onboard.FORK_SOURCE} or {_onboard.COMMUNITY_SOURCE}",
+            param_hint="--canonical-source",
         )
     if org and skip_repo:
         raise typer.BadParameter(
@@ -932,6 +948,7 @@ def onboard(
                 (repo or "").strip(),
                 org=(org or "").strip(),
                 skip_repo=skip_repo,
+                canonical_source=canonical_source or "",
             )
         if not write:
             _onboard.render_plan(plan)
@@ -945,6 +962,11 @@ def onboard(
             "\n[info]The first workflow run in the fork's spi-stack environment proves the "
             "credential; onboard cannot mint the fork's OIDC token itself.[/info]"
         )
+        if plan.promotion:
+            console.print(
+                f"[info]{service} runs its current image until 'spi service refresh "
+                f"{service}' resolves {plan.promotion}.[/info]"
+            )
     except (_onboard.OnboardError, PinError, ClusterConfigError, DeployRecordError) as exc:
         console.print(f"\n[error]{exc}[/error]")
         raise typer.Exit(code=1)
@@ -1027,7 +1049,8 @@ def reconcile(
     refresh_images: bool = typer.Option(
         False,
         "--refresh-images",
-        help="Resolve current OSDU master image tags and update osdu-image-lock before reconciling.",
+        help="Resolve current service images, community or the fork each service follows, and "
+        "update osdu-image-lock before reconciling.",
     ),
     image_branch: str = typer.Option(
         DEFAULT_IMAGE_BRANCH,
@@ -1104,8 +1127,10 @@ def reconcile(
     if refresh_images:
         console.print("\n[bold]Resolving OSDU service images...[/bold]")
         try:
-            resolved = resolve_image_lock(branch=image_branch)
-        except ImageResolutionError as exc:
+            lock = read_lock(required=False)
+            sources = trusted_canonical_sources(lock) if lock else {}
+            resolved = resolve_image_lock(branch=image_branch, sources=sources)
+        except (ImageResolutionError, PinError) as exc:
             console.print(f"[error]Unable to resolve OSDU service images: {exc}[/error]")
             raise typer.Exit(code=1)
 
@@ -1454,8 +1479,8 @@ def service_reset(
             )
         if outcome.refresh_required:
             console.print(
-                "[warning]Run 'spi reconcile --refresh-images' now to resolve and apply "
-                "canonical images.[/warning]"
+                f"[warning]Run '{_refresh_command(outcome.refresh_required)}' now to "
+                "resolve and apply canonical images.[/warning]"
             )
         if not (outcome.swept or outcome.kept or outcome.refresh_required):
             console.print(f"No ephemeral pins to sweep on {label}.")
@@ -1484,7 +1509,7 @@ def service_reset(
         if result.refresh_required:
             parts.append(
                 f"removed {', '.join(result.refresh_required)} without a recorded "
-                "canonical; run 'spi reconcile --refresh-images'"
+                f"canonical; run '{_refresh_command(result.refresh_required)}'"
             )
         _emit_outcome(
             "reset",
@@ -1505,9 +1530,72 @@ def service_reset(
         )
     if result.refresh_required:
         console.print(
-            "[warning]Run 'spi reconcile --refresh-images' now to resolve and apply "
-            "canonical images.[/warning]"
+            f"[warning]Run '{_refresh_command(result.refresh_required)}' now to resolve "
+            "and apply canonical images.[/warning]"
         )
+
+
+def _refresh_command(services) -> str:
+    """The refresh that restores these entries; the loader refreshes as schema's pair."""
+
+    names = dict.fromkeys(
+        SCHEMA_SERVICE_NAME if name == SCHEMA_LOAD_SERVICE_NAME else name for name in services
+    )
+    return f"spi service refresh {' '.join(names)}"
+
+
+@service_app.command("refresh")
+def service_refresh(
+    services: list[str] = typer.Argument(
+        help="Services to re-resolve; every other lock entry stays as it is."
+    ),
+    output_json: bool = typer.Option(
+        False, "--json", help="Emit the outcome as a final machine-readable JSON line."
+    ),
+):
+    """Advance services to their current canonical image under the source policy."""
+
+    ctx = _guarded_context(output_json)
+    if not output_json:
+        console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+
+    from .deploy_record import environment_label
+
+    environment = _environment_facts()
+    try:
+        result = refresh_services(services)
+    except PinError as exc:
+        if output_json:
+            _emit_outcome("error", None, str(exc))
+        else:
+            console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+
+    refs = {name: f"{image.repository}@{image.digest}" for name, image in result.refreshed.items()}
+    if output_json:
+        _emit_outcome(
+            "refreshed",
+            None,
+            f"refreshed {len(refs)}, pinned {len(result.pinned)}",
+            refreshed=refs,
+            pinned=list(result.pinned),
+            environment=environment,
+        )
+        return
+    label = environment_label(environment)
+    for name, image in result.refreshed.items():
+        console.print(
+            f"  [success]{name}[/success] canonical on {label} is now "
+            f"{image.repository}:{image.tag or image.digest[:19]}"
+        )
+    for name in result.pinned:
+        console.print(
+            f"  [warning]{name} stays pinned; its canonical is unchanged until "
+            f"'spi service reset {name}' and a refresh[/warning]"
+        )
+    for name, ref in refs.items():
+        if name != SCHEMA_LOAD_SERVICE_NAME:
+            console.print(f"  [dim]spi service verify {name} --image {ref}[/dim]")
 
 
 @service_app.command("list")

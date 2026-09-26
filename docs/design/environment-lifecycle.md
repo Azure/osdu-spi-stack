@@ -211,8 +211,8 @@ removal leaves the identities and group standing (ADR-034).
   connection during provision, and the upgrade workflow uses a direct,
   short-lived AKS connection only to recognize an incomplete first provision
   that has no deploy record yet.
-- `spi service pin/verify/reset` (implemented; `spi service refresh` is
-  unbuilt): the fork deploy seam. The sequence and its recovery paths
+- `spi service pin/verify/reset/refresh` (implemented): the fork deploy
+  seam. The sequence and its recovery paths
   are [fork-deployment.md](fork-deployment.md); the fork-side jobs live in
   the `Azure/osdu-spi` template's workflows, not here.
 
@@ -271,8 +271,8 @@ gh run watch
 1. **Foundations** (mostly built): `spi status --json`, `spi connect`,
    chart digest rendering, digest-preserving lock overlays (ADR-030), and
    the pin surface (`pin --image --ephemeral`, `verify`, ownership-checked
-   `reset`, the stale sweep; ADR-031) are implemented. Still unbuilt:
-   `spi service refresh`. Exit test: hand-pin a partition GHCR digest against a
+   `reset`, the stale sweep; ADR-031) and `spi service refresh` are
+   implemented. Exit test: hand-pin a partition GHCR digest against a
    standing environment and reset it.
 2. **Versioning** (built for the backing environment): `repoTag` in
    `infra/flux.bicep`, `spi up --tag`, the deploy record, the declaration
@@ -285,17 +285,19 @@ gh run watch
 4. **Onboarding** (in progress): the deploy identity and two Roles in `spi up`,
    identity and RG-tag retention in `spi down` (ADR-034), and the trust path
    of `spi onboard` (repository protection, the five values, the federated
-   credential, the roster projection with roster-derived pin validation) are
-   built. Still unbuilt: `--canonical-source` and the source-policy phase,
+   credential, the roster projection with roster-derived pin validation) and
+   `--canonical-source` with its source-policy phase are built. Still unbuilt:
    `forks:` and the declaration locator with pre-resolution intent loading;
    onboard `osdu-spi-partition` with a community canonical. The template
    implements one `deploy-test` job with borrow, prove, and restore steps;
    `validation-summary` reports its result through the required summary check.
    See [fork deployment](fork-deployment.md#the-sequence).
-5. **Canonical promotions** (unbuilt): explicit per-service source policy in
-   RG tags and its lock projection; on the shared environment a reviewed
-   `canonicalSource: fork` change after the deploy and test gates pass
-   (ADR-033).
+5. **Canonical promotions** (partly built): explicit per-service source
+   policy in RG tags and its lock projection are implemented. Still unbuilt:
+   on the shared environment, a reviewed `canonicalSource: fork` change after
+   the deploy and test gates pass (ADR-033), and a scheduled
+   `spi service refresh` that advances fork-sourced canonicals inside the
+   retention window.
 
 ## Related ADRs
 

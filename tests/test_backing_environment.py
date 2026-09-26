@@ -356,21 +356,66 @@ def test_omitted_image_refresh_preserves_existing_lock(monkeypatch):
     assert backfills == ["master"]
 
 
-def test_omitted_image_refresh_creates_missing_lock(monkeypatch):
+def test_omitted_image_refresh_creates_missing_lock_under_the_source_policy(monkeypatch):
     config = Config.from_env("shared", profile=Profile.CORE)
     resolved = _resolved_images()
-    calls = []
+    calls, policies = [], []
     monkeypatch.setattr(deploy, "read_lock", lambda required=False: None)
-    monkeypatch.setattr(deploy, "_resolve_image_lock", lambda branch: resolved)
+    monkeypatch.setattr(
+        deploy,
+        "_resolve_image_lock",
+        lambda branch, sources=None: policies.append(sources) or resolved,
+    )
     monkeypatch.setattr(
         deploy,
         "apply_image_lock",
         lambda images, branch: calls.append((images, branch)) or {},
     )
 
-    deploy._ensure_image_lock(config, None, "master", {})
+    deploy._ensure_image_lock(config, None, "master", {}, {"partition": "Acme/partition"})
 
     assert calls == [(resolved, "master")]
+    assert policies == [{"partition": "Acme/partition"}]
+
+
+def test_up_resolves_under_the_source_policy_before_provisioning(monkeypatch):
+    config = Config.from_env("shared", profile=Profile.CORE)
+    events = []
+
+    class Provisioned(Exception):
+        pass
+
+    def provision(*args, **kwargs):
+        events.append("provision")
+        raise Provisioned
+
+    monkeypatch.setattr(deploy, "_source_policy", lambda cfg: {"partition": "Acme/partition"})
+    monkeypatch.setattr(
+        deploy,
+        "_resolve_image_lock",
+        lambda branch, sources=None: events.append(("resolve", sources)) or {},
+    )
+    monkeypatch.setattr(deploy, "provision_azure_infra", provision)
+
+    with pytest.raises(Provisioned):
+        deploy.deploy_azure(config, refresh_images=True)
+
+    assert events == [("resolve", {"partition": "Acme/partition"}), "provision"]
+
+
+def test_bootstrap_projects_the_source_policy_beside_the_roster(monkeypatch):
+    from spi import onboard
+
+    config = Config.from_env("shared", profile=Profile.CORE)
+    synced = []
+    monkeypatch.setattr(
+        onboard, "sync_projection_from_identity", lambda identity, rg: synced.append("roster") or {}
+    )
+    monkeypatch.setattr(onboard, "sync_sources_from_tags", lambda rg: synced.append(rg) or {})
+
+    deploy._project_trusted_repos(config)
+
+    assert synced == ["roster", config.resource_group]
 
 
 def test_explicit_no_refresh_fails_when_core_lock_is_missing(monkeypatch):

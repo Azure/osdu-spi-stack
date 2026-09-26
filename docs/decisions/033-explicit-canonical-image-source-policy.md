@@ -33,7 +33,8 @@ selects the fork's GHCR `main` image, one service at a time.
   publishes `ghcr.io/<lowercase-owner>/<service>` instead, and the ephemeral
   pin check accepts either. The canonical resolver
   uses the same mapping, including non-Azure owners. Schema's paired loader is
-  `ghcr.io/<lowercase-owner>/schema-load` at the selected schema commit.
+  the schema package's name plus `-load` at the selected schema commit, as
+  the template publishes it.
   An onboarded fork must publish under this convention; a missing or private
   package fails resolution rather than falling back to an Azure package.
 - `spi onboard --canonical-source fork` promotes the service's trusted fork;
@@ -67,10 +68,10 @@ selects the fork's GHCR `main` image, one service at a time.
   change records that promotion. A personal or customer operator selects
   the source explicitly. Trust-only onboarding does not require promotion.
 - `schema` has a flip precondition its siblings lack: schema-load resolves a
-  loader image at the schema service's exact commit (ADR-017), and the fork
-  publishes no loader. Schema keeps its community canonical until its fork
-  publishes a paired `schema-load` image at the same commit and promotion
-  is requested. Trust can be enabled without a loader. A refused promotion
+  loader image at the schema service's exact commit (ADR-017). Promotion is
+  refused unless the fork published that paired loader at the same commit,
+  and schema keeps its community canonical until then. Trust can be enabled
+  without a loader. A refused promotion
   leaves the durable source as community, so a rebuild cannot infer a flip
   from the retained credential. Publishing a loader alone does not promote
   the service.
@@ -128,8 +129,10 @@ declaration.
   and the operation is re-runnable. Declared changes require the matching
   reviewed declaration first. The next refresh resolves the community image;
   active pins retain their captured restore targets.
-- Which source is canonical is readable from `spi onboard --list` and the
-  lock's per-service keys, not from operator memory.
+- Which source is canonical is readable from `spi onboard --list`,
+  `spi info`, and the lock's `canonical-sources` projection, not from operator
+  memory; the running image's repository shows whether a refresh has applied
+  it yet.
 - The credentials show trust and the RG tags show source policy when the
   cluster is gone, including the trusted-but-community state. Maintaining two
   durable records requires drift reporting and resumable reconciliation.

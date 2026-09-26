@@ -299,6 +299,14 @@ class TestPinCodec:
             with pytest.raises(PinError, match="Corrupt"):
                 pins.decode_trusted_repos(lock)
 
+    def test_a_source_projection_naming_no_repository_raises(self):
+        lock = _lock(trusted=None)
+        lock["metadata"]["annotations"][pins.CANONICAL_SOURCES_ANNOTATION] = json.dumps(
+            {"partition": "community"}
+        )
+        with pytest.raises(PinError, match="is not <owner>/<name>"):
+            pins.decode_canonical_sources(lock)
+
 
 class TestDescribePin:
     def test_mr_pin_shows_branch_and_tag(self):
@@ -951,7 +959,7 @@ class TestServiceResetCli:
         assert result.exit_code == 0
         assert "schema restored to canonical image" in output
         assert "schema-load pin removed" in output
-        assert "spi reconcile --refresh-images" in output
+        assert "'spi service refresh schema'" in output
 
 
 class TestRefreshSurvival:
@@ -1114,12 +1122,16 @@ class TestApplyImageLock:
         assert data["SEARCH_DO_NOT_DISRUPT"] == "false"
         assert data["PARTITION_DO_NOT_DISRUPT"] == "false"
 
-    def test_refresh_carries_the_trusted_roster_forward(self, monkeypatch):
-        calls = _wire_lock(monkeypatch, _lock())
+    def test_refresh_carries_both_projections_forward(self, monkeypatch):
+        lock = _lock()
+        sources = {"partition": "Acme/osdu-spi-partition"}
+        lock["metadata"]["annotations"][pins.CANONICAL_SOURCES_ANNOTATION] = json.dumps(sources)
+        calls = _wire_lock(monkeypatch, lock)
 
         pins.apply_image_lock(self._resolved(), "master")
 
         assert pins.decode_trusted_repos(calls["box"][0]) == _TRUSTED
+        assert pins.decode_canonical_sources(calls["box"][0]) == sources
 
     def test_recomputes_pins_from_fresh_lock_on_retry(self, monkeypatch):
         """A pin applied by a concurrent `spi service pin` between the read
@@ -2823,7 +2835,7 @@ class TestServiceResetCliConditional:
         assert result.exit_code == 0
         assert "storage" in result.output
         assert "search kept" in result.output
-        assert "spi reconcile --refresh-images" in result.output
+        assert "'spi service refresh legal'" in result.output
 
     def test_json_refusal_carries_the_typed_code(self, monkeypatch):
         monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
@@ -3083,3 +3095,99 @@ class TestConfirmationsNameTheEnvironment:
         assert result.exit_code == 0
         unwrapped = " ".join(_plain(result.output).split())
         assert "storage pin removed on test v0.0.0" in unwrapped
+
+
+class TestRefreshServices:
+    FORK = ResolvedImage(
+        "partition", "ghcr.io/acme/partition", "sha-bbbbbbbbbbbb", "now", "sha256:" + "f" * 64
+    )
+
+    def _lock(self, **kwargs):
+        lock = _lock(
+            data={
+                **_canonical_data("partition", "legal", "schema", "schema-load"),
+                "IMAGE_BRANCH": "release-0-30",
+                "IMAGE_RESOLVED_AT": "earlier",
+            },
+            **kwargs,
+        )
+        annotations = lock["metadata"]["annotations"]
+        annotations[pins.CANONICAL_SOURCES_ANNOTATION] = json.dumps({"partition": "Acme/partition"})
+        annotations[pins.TRUSTED_REPOS_ANNOTATION] = json.dumps({"partition": "acme/partition"})
+        return lock
+
+    def _resolver(self, monkeypatch, calls: list):
+        def resolve(branch, names, sources):
+            calls.append((branch, list(names), sources))
+            return {
+                name: self.FORK
+                if name == "partition"
+                else ResolvedImage(name, f"repo/{name}-new", "d" * 40, "now", "sha256:new")
+                for name in names
+            }
+
+        monkeypatch.setattr(pins, "resolve_images", resolve)
+
+    def test_only_the_named_service_moves_under_the_lock_policy(self, monkeypatch):
+        resolved = []
+        self._resolver(monkeypatch, resolved)
+        calls = _wire_lock(monkeypatch, self._lock())
+
+        result = pins.refresh_services(["partition"])
+
+        data, _ = calls["patch"]
+        assert resolved == [("release-0-30", ["partition"], {"partition": "Acme/partition"})]
+        assert data["PARTITION_IMAGE_REF"] == "ghcr.io/acme/partition@sha256:" + "f" * 64
+        assert data["LEGAL_IMAGE_DIGEST"] == "sha256:old"
+        assert data["IMAGE_RESOLVED_AT"] == "earlier"
+        assert result.refreshed == {"partition": self.FORK}
+        assert calls["reconciled"] == ["partition"]
+
+    def test_a_pinned_service_keeps_its_pin_and_schema_moves_only_as_a_pair(self, monkeypatch):
+        self._resolver(monkeypatch, [])
+        held = {"partition": _image_pin(repository="ghcr.io/acme/p"), "schema-load": _pin()}
+        lock = self._lock(pins_annotation=encode_pins(held))
+        calls = _wire_lock(monkeypatch, lock)
+
+        result = pins.refresh_services(["partition", "schema", "legal"])
+
+        data, kept = calls["patch"]
+        assert set(kept) == {"partition", "schema-load"}
+        assert result.pinned == ("partition", "schema", "schema-load")
+        assert data["SCHEMA_IMAGE_DIGEST"] == data["SCHEMA_LOAD_IMAGE_DIGEST"] == "sha256:old"
+        assert data["LEGAL_IMAGE_DIGEST"] == "sha256:new"
+        assert calls["reconciled"] == ["legal"]
+
+    @pytest.mark.parametrize("trusted", [{}, {"partition": "Other/partition"}])
+    def test_a_source_the_roster_does_not_trust_is_refused(self, monkeypatch, trusted):
+        monkeypatch.setattr(pins, "resolve_images", pytest.fail)
+        lock = self._lock()
+        lock["metadata"]["annotations"][pins.TRUSTED_REPOS_ANNOTATION] = json.dumps(trusted)
+        _wire_lock(monkeypatch, lock)
+
+        with pytest.raises(PinError, match="partition follows Acme/partition but"):
+            pins.refresh_services(["partition"])
+
+    @pytest.mark.parametrize("service", ["schema-load", "nonesuch"])
+    def test_the_loader_alone_and_unknown_services_are_refused(self, monkeypatch, service):
+        monkeypatch.setattr(pins, "read_lock", pytest.fail)
+
+        with pytest.raises(PinError, match="Unknown service"):
+            pins.refresh_services([service])
+
+    def test_json_names_each_refreshed_reference(self, monkeypatch):
+        monkeypatch.setattr(cli, "_guarded_context", lambda output_json: "ctx")
+        monkeypatch.setattr(cli, "_environment_facts", lambda: {})
+        monkeypatch.setattr(
+            cli,
+            "refresh_services",
+            lambda names: pins.RefreshResult({"partition": self.FORK}, ("schema",)),
+        )
+
+        result = CliRunner().invoke(cli.app, ["service", "refresh", "partition", "--json"])
+
+        outcome = json.loads(result.output.strip().splitlines()[-1])
+        assert result.exit_code == 0
+        assert outcome["outcome"] == "refreshed"
+        assert outcome["refreshed"] == {"partition": "ghcr.io/acme/partition@sha256:" + "f" * 64}
+        assert outcome["pinned"] == ["schema"]

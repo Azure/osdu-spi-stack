@@ -6,8 +6,8 @@
 # `command`; nothing else in it is read at run time. The schema fork's paired
 # image (osdu-spi ADR-042) carries its own entrypoint, which reads SCHEMA_URL
 # and the workload identity variables; the directory mount only creates an
-# empty path it never looks at. The mount and script.yaml go once schema's
-# canonical source is a fork (#192).
+# empty path it never looks at. The mount and script.yaml stay while an
+# environment can select community as schema's canonical source.
 apiVersion: batch/v1
 kind: Job
 metadata:
