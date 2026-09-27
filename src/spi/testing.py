@@ -153,8 +153,8 @@ class SuiteResult:
         return EXIT_PASSED if self.passed else EXIT_FAILED
 
 
-def paired_target(lock: dict, service: str) -> tuple[PairedTarget | None, str]:
-    """The fork canonical ``service`` runs and its recorded pair, or why it has none."""
+def _fork_canonical(lock: dict, service: str) -> tuple[tuple[str, str, str] | None, str]:
+    """``(source_repo, repository, commit)`` of the fork canonical ``service`` runs, or why not."""
 
     pin = decode_pins(lock).get(service)
     if pin is not None:
@@ -175,13 +175,31 @@ def paired_target(lock: dict, service: str) -> tuple[PairedTarget | None, str]:
             f"{service}'s lock entry ({repository}:{tag}) is not {source}'s canonical yet; "
             f"run 'spi service refresh {service}'"
         )
-    pair = data.get(acceptance_digest_key(service), "")
+    return (source, repository, match.group(1)), ""
+
+
+def paired_target(lock: dict, service: str) -> tuple[PairedTarget | None, str]:
+    """The fork canonical ``service`` runs and its recorded pair, or why it has none."""
+
+    canonical, why = _fork_canonical(lock, service)
+    if canonical is None:
+        return None, why
+    source, repository, commit = canonical
+    tag = f"sha-{commit}"
+    pair = (lock.get("data") or {}).get(acceptance_digest_key(service), "")
     if not pair:
         return None, (
             f"{repository}:{tag} has no recorded acceptance image; the fork published none "
             f"for that commit, or the entry predates the pair ('spi service refresh {service}')"
         )
-    return PairedTarget(source, repository, match.group(1), pair), ""
+    return PairedTarget(source, repository, commit, pair), ""
+
+
+def deployed_fork_commit(lock: dict, service: str) -> str:
+    """The 12-character commit a fork canonical names, whether or not it has a pair."""
+
+    canonical, _ = _fork_canonical(lock, service)
+    return canonical[2] if canonical else ""
 
 
 def target_state(lock: dict, service: str) -> dict:
@@ -318,14 +336,14 @@ def _git(checkout: Path, *args: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def checkout_label(checkout: Path, target: PairedTarget | None) -> tuple[str, str]:
-    """``(label, head)``: how a checkout relates to the commit the environment runs."""
+def checkout_label(checkout: Path, deployed: str) -> tuple[str, str]:
+    """``(label, head)``: how a checkout relates to ``deployed``, the fork commit running."""
 
     head = _git(checkout, "rev-parse", "HEAD") or ""
-    if target is None:
+    if not deployed:
         return "unpaired", head
     dirty = _git(checkout, "status", "--porcelain")
-    matched = dirty == "" and head.startswith(target.commit)
+    matched = dirty == "" and head.startswith(deployed)
     return ("matched" if matched else "unmatched"), head
 
 
@@ -498,7 +516,14 @@ def run_paired(
             text=True,
         )
         if copied.returncode != 0:
-            reports.mkdir(parents=True, exist_ok=True)
+            # A partial copy could hide the reports that recorded failures.
+            shutil.rmtree(reports, ignore_errors=True)
+            detail = (copied.stderr or "").strip() or f"exit {copied.returncode}"
+            raise SuiteNotRun(
+                "reports_unavailable",
+                f"the suite ran (exit {ran.returncode}) but its reports could not be copied "
+                f"out of {container}: {detail}; no verdict can be given",
+            )
     except BaseException:
         _remove_container(container, strict=False)
         raise
@@ -653,7 +678,7 @@ def run_suite(
         else:
             root = checkout.resolve()
             _require_machinery(root)
-            label, commit = checkout_label(root, target)
+            label, commit = checkout_label(root, deployed_fork_commit(lock, service))
             mode, image = "checkout", ""
 
         facts = work / "facts.json"

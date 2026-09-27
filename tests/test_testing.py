@@ -234,6 +234,25 @@ class TestPairedRun:
         assert (result.mode, result.commit, result.image) == ("paired", SHA, image)
         assert result.tests["tests"] == 11
 
+    def test_a_partial_report_copy_gives_no_verdict(self, cluster, monkeypatch):
+        fake = testing.run_process
+
+        def run_process(cmd, **kwargs):
+            if cmd[:2] == ["docker", "cp"]:
+                # A passing report arrived; the one carrying the failure did not.
+                fake(cmd, **kwargs)
+                return subprocess.CompletedProcess(cmd, 1, "", "unexpected EOF")
+            return fake(cmd, **kwargs)
+
+        monkeypatch.setattr(testing, "run_process", run_process)
+
+        with pytest.raises(SuiteNotRun, match="unexpected EOF") as exc:
+            testing.run_suite("partition")
+
+        assert (exc.value.code, exc.value.exit_code) == ("reports_unavailable", 1)
+        assert _commands(cluster, ["docker", "rm"])
+        assert not (cluster["commit_tree"] / "verdict-args.json").exists()
+
     @pytest.mark.parametrize(
         ("stderr", "refused"),
         [("Error response from daemon: No such container: x", False), ("daemon hung up", True)],
@@ -469,6 +488,14 @@ class TestCheckoutRun:
         result = testing.run_suite("partition", checkout=checkout)
 
         assert result.label == "unmatched"
+
+    def test_a_fork_canonical_without_a_pair_still_matches_its_checkout(self, cluster, tmp_path):
+        checkout = _checkout(tmp_path)
+        cluster["locks"] = [_lock(tag=f"sha-{_head(checkout)[:12]}", pair="")]
+
+        result = testing.run_suite("partition", checkout=checkout)
+
+        assert result.label == "matched"
 
     def test_a_community_service_runs_unpaired(self, cluster, tmp_path):
         cluster["locks"] = [_lock(source="")]
