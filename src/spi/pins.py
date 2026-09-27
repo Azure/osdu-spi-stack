@@ -651,7 +651,7 @@ def require_deployable() -> None:
         state = "failed" if bootstrap.code == "bootstrap_failed" else "is not complete"
         raise PinError(
             f"Environment bootstrap {state} ({bootstrap.message}); the deploy identity is not "
-            "seeded into entitlements, so a pinned image could not be tested."
+            "seeded into entitlements, so no suite could run against it."
         )
 
     try:
@@ -661,7 +661,7 @@ def require_deployable() -> None:
     if record is None:
         raise PinError(
             f"ConfigMap {DEPLOY_RECORD_CONFIGMAP} not found; the environment has no "
-            "deploy record. Re-run 'spi up' to write one before pinning."
+            "deploy record. Re-run 'spi up' to write one before pinning or testing."
         )
     if record.maintenance:
         raise PinError(

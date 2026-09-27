@@ -499,10 +499,32 @@ def run_paired(
         )
         if copied.returncode != 0:
             reports.mkdir(parents=True, exist_ok=True)
-    finally:
-        # Also stops a container whose client the timeout killed.
-        run_process(["docker", "rm", "-f", container], capture_output=True, text=True)
+    except BaseException:
+        _remove_container(container, strict=False)
+        raise
+    _remove_container(container)
     return ran.returncode
+
+
+def _remove_container(container: str, *, strict: bool = True) -> None:
+    """Remove the suite container, which a timeout leaves running with the suite's bearers.
+
+    A failed removal refuses the run; ``strict=False`` only warns, for a run
+    already failing with another error.
+    """
+
+    removed = run_process(["docker", "rm", "-f", container], capture_output=True, text=True)
+    detail = (removed.stderr or "").strip()
+    if removed.returncode == 0 or "no such container" in detail.lower():
+        return
+    message = (
+        f"container {container} could not be removed ({detail or f'exit {removed.returncode}'})"
+        f" and may still be running with the suite's bearers; run 'docker rm -f {container}'"
+    )
+    if not strict:
+        console.print(f"  [warning]{message}[/warning]")
+        return
+    raise SuiteNotRun("cleanup_failed", message)
 
 
 def _clear_reports(suite_dir: Path) -> None:

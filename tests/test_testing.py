@@ -234,6 +234,29 @@ class TestPairedRun:
         assert (result.mode, result.commit, result.image) == ("paired", SHA, image)
         assert result.tests["tests"] == 11
 
+    @pytest.mark.parametrize(
+        ("stderr", "refused"),
+        [("Error response from daemon: No such container: x", False), ("daemon hung up", True)],
+    )
+    def test_a_container_that_could_not_be_removed_is_reported(
+        self, cluster, monkeypatch, stderr, refused
+    ):
+        fake = testing.run_process
+
+        def run_process(cmd, **kwargs):
+            if cmd[:2] == ["docker", "rm"]:
+                return subprocess.CompletedProcess(cmd, 1, "", stderr)
+            return fake(cmd, **kwargs)
+
+        monkeypatch.setattr(testing, "run_process", run_process)
+
+        if not refused:
+            assert testing.run_suite("partition").passed
+            return
+        with pytest.raises(SuiteNotRun, match="docker rm -f spi-test-") as exc:
+            testing.run_suite("partition")
+        assert (exc.value.code, exc.value.exit_code) == ("cleanup_failed", 1)
+
     def test_each_run_owns_a_container_name_no_earlier_run_can_hold(self, cluster):
         testing.run_suite("partition")
         testing.run_suite("partition")
