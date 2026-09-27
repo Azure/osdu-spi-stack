@@ -682,13 +682,6 @@ def resolve_fork_image(service: str, source_repo: str) -> tuple[ResolvedImage, s
                 committer = (commit.get("commit") or {}).get("committer") or {}
                 created_at = str(committer.get("date", ""))
                 acceptance = resolve_ghcr_tag_digest(f"{repository}-acceptance", tag) or ""
-                # The push job publishes the service image before the acceptance image, so a
-                # rebuild that moved the acceptance tag between the reads moved this one too.
-                if acceptance and resolve_ghcr_tag_digest(repository, tag) != digest:
-                    raise ImageResolutionError(
-                        f"{service}: {repository}:{tag} moved while its acceptance image was "
-                        "being resolved; a rebuild of the same commit is in progress. Retry."
-                    )
                 return (
                     ResolvedImage(service, repository, tag, created_at, digest, acceptance),
                     sha,

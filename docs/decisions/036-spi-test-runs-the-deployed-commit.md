@@ -31,9 +31,9 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   the template publishes the acceptance image without provenance or a
   revision label, so the recorded digest, read in the same pass that ties
   the service digest to its commit, is the pair's identity from then on, as
-  the service digest is the service's (ADR-031). The service tag is read
-  again after the acceptance tag, and a move between the two refuses the
-  resolution, since a rebuild pushes the service image first. Pins never
+  the service digest is the service's (ADR-031). A rebuild of the same
+  commit caught between the two reads can record the pair from another build
+  of that commit; the pair promises the commit, not the build. Pins never
   write the key.
 - **Paired mode is the default.** The suite image is the lock's repository
   with `-acceptance` appended, pulled by the recorded digest for

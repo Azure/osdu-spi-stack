@@ -228,10 +228,18 @@ class TestPairedRun:
         assert run[run.index("-e") + 1] == "SUITE_DIR=suite"
         assert run[run.index(image) + 1 :] == ["verify"]
         assert kwargs["timeout"] == 300
-        assert _commands(cluster, ["docker", "rm"])
+        [(rm, _)] = _commands(cluster, ["docker", "rm"])
+        assert rm[-1] == run[run.index("--name") + 1]
         assert result.passed and result.exit_code == 0
         assert (result.mode, result.commit, result.image) == ("paired", SHA, image)
         assert result.tests["tests"] == 11
+
+    def test_each_run_owns_a_container_name_no_earlier_run_can_hold(self, cluster):
+        testing.run_suite("partition")
+        testing.run_suite("partition")
+
+        names = [cmd[cmd.index("--name") + 1] for cmd, _ in _commands(cluster, ["docker", "run"])]
+        assert len(set(names)) == 2
 
     def test_the_resolver_sees_only_path_the_bearers_and_overrides(self, cluster, monkeypatch):
         monkeypatch.setenv("STRAY_EXPORT", "stale")

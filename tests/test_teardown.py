@@ -15,6 +15,7 @@
 """`spi down` keeps managed identities; `--purge` deletes the group."""
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -891,6 +892,35 @@ class TestRunCommandTimeout:
                 timeout=1,
             )
         assert time.monotonic() - started < 15
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
+    def test_a_timeout_also_ends_what_the_child_forked(self, tmp_path):
+        """Maven's forked Surefire JVMs must not outlive the timeout."""
+        from spi.shell import run_process
+
+        pidfile = tmp_path / "grandchild.pid"
+        # Off the captured pipes, so only the kill can end it before its sleep does.
+        spawn = (
+            "import subprocess, sys, time; "
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+            f"open({str(pidfile)!r}, 'w').write(str(p.pid)); time.sleep(60)"
+        )
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_process([sys.executable, "-c", spawn], capture_output=True, text=True, timeout=2)
+        assert time.monotonic() - started < 15
+
+        grandchild = int(pidfile.read_text())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(grandchild, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        os.kill(grandchild, 9)
+        pytest.fail("the grandchild outlived the timeout")
 
     def test_windows_uses_taskkill_for_the_tree(self):
         from spi.shell import _kill_process_tree

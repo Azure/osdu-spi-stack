@@ -917,25 +917,6 @@ class TestResolveForkImage:
 
         assert image.acceptance_digest == paired
 
-    def test_a_rebuild_moving_the_commit_tag_mid_resolution_is_refused(self, monkeypatch):
-        rebuilt = "sha256:" + "9" * 64
-        answers = {
-            ("ghcr.io/acme/fork", "main-snapshot"): [SNAPSHOT],
-            ("ghcr.io/acme/fork", f"sha-{BUILT[:12]}"): [SNAPSHOT, rebuilt],
-            ("ghcr.io/acme/fork-acceptance", f"sha-{BUILT[:12]}"): ["sha256:" + "a" * 64],
-        }
-        _fork_registry(monkeypatch, {})
-        monkeypatch.setattr(
-            images,
-            "resolve_ghcr_tag_digest",
-            lambda repository, tag: (
-                answers[(repository, tag)].pop(0) if (repository, tag) in answers else None
-            ),
-        )
-
-        with pytest.raises(ImageResolutionError, match="rebuild of the same commit"):
-            images.resolve_fork_image("partition", "Acme/fork")
-
     def test_a_fork_publishing_under_the_service_name_resolves_there(self, monkeypatch):
         _fork_registry(
             monkeypatch,

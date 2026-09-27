@@ -27,6 +27,7 @@ import re
 import shutil
 import sys
 import tempfile
+import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -469,7 +470,7 @@ def run_paired(
     )
     if pulled.returncode != 0:
         raise SuiteNotRun("pull_failed", f"docker could not pull {image}")
-    container = f"spi-test-{os.getpid()}"
+    container = f"spi-test-{uuid.uuid4().hex[:12]}"
     try:
         ran = run_command(
             [
