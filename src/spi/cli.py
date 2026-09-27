@@ -874,6 +874,104 @@ def token(
         typer.echo(minted.access_token)
 
 
+def _parse_overrides(values: List[str]) -> Dict[str, str]:
+    overrides: Dict[str, str] = {}
+    for value in values:
+        name, sep, setting = value.partition("=")
+        if not sep or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise typer.BadParameter(f"{value!r} is not NAME=VALUE", param_hint="--set")
+        overrides[name] = setting
+    return overrides
+
+
+@app.command(
+    "test",
+    context_settings={"allow_extra_args": True},
+)
+def spi_test(
+    ctx: typer.Context,
+    service: str = typer.Argument(help="Service whose suite runs against this environment."),
+    suite: str = typer.Option("acceptance", "--suite", help="Suite the descriptor declares."),
+    source: Optional[str] = typer.Option(
+        None,
+        "--source",
+        help="Run natively from this checkout's descriptor, resolver, and suite.",
+    ),
+    overrides: List[str] = typer.Option(
+        [], "--set", help="NAME=VALUE the resolver takes over a fact; repeatable."
+    ),
+    output_json: bool = typer.Option(
+        False, "--json", help="Emit the outcome as a final machine-readable JSON line."
+    ),
+):
+    """Run a service's suite as the commit this environment runs shipped it.
+
+    By default the suite runs in the acceptance image recorded with the
+    service's fork canonical, bound by that commit's own descriptor and
+    resolver. Tokens after -- replace the suite's mavenArguments. Exit 0
+    passed, 3 failed, 2 not run or discarded because the environment or
+    service was not in a state to test, 1 not run for any other reason.
+    """
+    from pathlib import Path
+
+    from .testing import SuiteNotRun, run_suite
+
+    ctx_name = _guarded_context(output_json)
+    if not output_json:
+        console.print(f"  [dim]Cluster context: {ctx_name}[/dim]")
+    settings = _parse_overrides(overrides)
+    checkout = None
+    if source is not None:
+        checkout = Path(source).expanduser()
+        if not checkout.is_dir():
+            raise typer.BadParameter(f"{source} is not a directory", param_hint="--source")
+
+    environment = _environment_facts()
+    try:
+        result = run_suite(
+            service,
+            suite=suite,
+            checkout=checkout,
+            overrides=settings,
+            maven_arguments=list(ctx.args),
+        )
+    except SuiteNotRun as exc:
+        if output_json:
+            outcome = "refused" if exc.exit_code == 2 else "error"
+            _emit_outcome(outcome, exc.code, str(exc), service=service, suite=suite)
+        else:
+            style = "warning" if exc.exit_code == 2 else "error"
+            console.print(f"[{style}]{service} {suite} not run ({exc.code}): {exc}[/{style}]")
+        raise typer.Exit(code=exc.exit_code)
+
+    ran = result.image or result.commit
+    if output_json:
+        _emit_outcome(
+            "passed" if result.passed else "failed",
+            None,
+            result.verdict,
+            service=service,
+            suite=suite,
+            mode=result.mode,
+            label=result.label or None,
+            image=result.image or None,
+            commit=result.commit or None,
+            tests=result.tests,
+            environment=environment,
+        )
+    else:
+        from .deploy_record import environment_label
+
+        where = environment_label(environment)
+        provenance = f"{result.mode}, {result.label}" if result.label else result.mode
+        style = "success" if result.passed else "error"
+        console.print(
+            f"  [{style}]{service} {suite}[/{style}] on {where}: {result.verdict} "
+            f"[dim]({provenance}, {ran})[/dim]"
+        )
+    raise typer.Exit(code=result.exit_code)
+
+
 @app.command()
 def onboard(
     service: Optional[str] = typer.Argument(

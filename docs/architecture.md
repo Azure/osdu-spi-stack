@@ -167,8 +167,10 @@ run in the image lock. Verification checks rollout and digest; an
 ownership-checked reset restores the captured canonical image. The environment
 deploy identity and namespace Roles are provisioned. `spi onboard` plans and
 applies repository protection, federation, per-service canonical-source policy,
-and both lock projections; declaration enforcement, the reset and teardown
-workflows, and `spi test` (ADR-036) remain unbuilt. See
+and both lock projections. `spi test` runs a service's suite from the
+acceptance image paired with its deployed commit, or from a checkout
+(ADR-036). Declaration enforcement and the reset and teardown workflows remain
+unbuilt. See
 [environment lifecycle](design/environment-lifecycle.md) and
 [fork deployment](design/fork-deployment.md) for the implemented contract and
 marked future work.

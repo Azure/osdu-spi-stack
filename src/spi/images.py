@@ -609,23 +609,40 @@ def resolve_fork_loader(repository: str, source_sha: str) -> tuple[str, str] | N
     return (loader_repository, digest) if digest else None
 
 
-def github_get(path: str):
-    """GET a GitHub REST path and return parsed JSON, authenticated as the env or gh user."""
-
+def _github_read(path: str, accept: str) -> bytes:
     from .update import resolve_github_token
 
-    headers = {"User-Agent": "spi-stack-resolver", "Accept": "application/vnd.github+json"}
+    headers = {"User-Agent": "spi-stack-resolver", "Accept": accept}
     token = resolve_github_token(None)
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(f"{GITHUB_API_HOST}/{path}", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
-            return json.loads(resp.read())
+            return resp.read()
     except urllib.error.HTTPError as exc:
         raise ImageResolutionError(f"GitHub API {path}: HTTP {exc.code}") from exc
-    except (TimeoutError, urllib.error.URLError, ConnectionError, json.JSONDecodeError) as exc:
+    except (TimeoutError, urllib.error.URLError, ConnectionError) as exc:
         raise ImageResolutionError(f"GitHub API {path} unreachable: {exc}") from exc
+
+
+def github_get(path: str):
+    """GET a GitHub REST path and return parsed JSON, authenticated as the env or gh user."""
+
+    body = _github_read(path, "application/vnd.github+json")
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise ImageResolutionError(f"GitHub API {path} unreachable: {exc}") from exc
+
+
+def github_file(repository: str, path: str, ref: str) -> bytes:
+    """One file's raw bytes from ``repository`` at ``ref``."""
+
+    quoted = urllib.parse.quote(path)
+    return _github_read(
+        f"repos/{repository}/contents/{quoted}?ref={ref}", "application/vnd.github.raw"
+    )
 
 
 def resolve_fork_image(service: str, source_repo: str) -> tuple[ResolvedImage, str]:

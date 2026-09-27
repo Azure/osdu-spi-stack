@@ -16,7 +16,7 @@ ownership-checked `reset --if-run`, the separate stale sweep
 (`reset --ephemeral --stale-only`), and `spi onboard` (all four phases
 below, `--list` and `--remove` for trust, source policy, and both
 projections, roster-derived pin validation, repository-derived GHCR package
-validation), and `spi service refresh` are implemented. Declaration
+validation), `spi service refresh`, and `spi test` are implemented. Declaration
 enforcement and the refresh workflow's backstop step are ahead of the code
 (phases 4 and 5 of the roadmap in
 [environment-lifecycle.md](environment-lifecycle.md)).
@@ -369,6 +369,26 @@ and its resolver binding contract for the callers supported by the deployed
 template revision. Provisioning a stack identity alone does not wire it into a
 service's CI lane.
 
+Run a service's suite against a standing environment as the deployed commit
+shipped it (ADR-036):
+
+```bash
+spi test partition                                # the paired acceptance image, amd64
+spi test partition --suite integration -- -Dtest=GetInfoApiTest test
+spi test partition --source ../partition          # native mvn from a checkout
+```
+
+Paired mode needs a fork canonical with a recorded `<SERVICE>_ACCEPTANCE_DIGEST`
+and pulls that digest; the descriptor, resolver, and verdict script come from
+the fork at the full commit. Checkout mode uses the checkout's own and labels
+the run `matched`, `unmatched`, or `unpaired` against the deployed commit; it
+removes the suite's earlier Surefire and Failsafe reports before Maven runs.
+`--set NAME=VALUE` is the only way a variable reaches the resolver besides the
+three minted bearers. Exit 0 passed, 3 failed, 2 not run or discarded because
+the environment or service was not ready to test (not deployable, a binding
+not published, borrowed, or changed during the run), 1 not run for any other
+reason; `--json` prints the outcome as the last stdout line.
+
 Hand-pin a fork image against a standing environment and return it:
 
 ```bash
@@ -397,10 +417,11 @@ kubectl get cm osdu-image-lock -n osdu-flux \
 - [ADR-032: Environment deploy identity and namespace RBAC](../decisions/032-environment-deploy-identity.md)
 - [ADR-033: Canonical image source follows onboarding](../decisions/033-explicit-canonical-image-source-policy.md)
 - [ADR-034: Managed identities survive `spi down`](../decisions/034-deploy-identity-survives-down.md)
+- [ADR-036: `spi test` runs the deployed commit's own suites](../decisions/036-spi-test-runs-the-deployed-commit.md)
 
 ## Source files
 
 - `src/spi/pins.py`, `src/spi/images.py`, `src/spi/cli.py`, `src/spi/guard.py`
-- `src/spi/onboard.py`
+- `src/spi/onboard.py`, `src/spi/testing.py`
 - `software/charts/osdu-spi-service/templates/deployment.yaml`
 - The fork-side jobs: `Azure/osdu-spi` `.github/template-workflows/`

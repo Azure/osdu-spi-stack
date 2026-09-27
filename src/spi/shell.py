@@ -205,11 +205,14 @@ def run_command(
     description: Optional[str] = None,
     check: bool = True,
     timeout: Optional[float] = None,
+    cwd: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> subprocess.CompletedProcess:
     """Run a command and display it in a formatted panel.
 
     ``timeout`` kills the child when it expires; the result then carries
     returncode 124 and the reason on stderr, like any other failed launch.
+    ``env`` replaces the inherited environment rather than extending it.
     """
     formatted_parts = []
     if cmd_list:
@@ -242,7 +245,9 @@ def run_command(
         console.print(Panel(command_syntax, title=title, border_style=style))
 
     try:
-        result = run_process(cmd_list, capture_output=capture_output, text=text, timeout=timeout)
+        result = run_process(
+            cmd_list, capture_output=capture_output, text=text, timeout=timeout, cwd=cwd, env=env
+        )
     except subprocess.TimeoutExpired:
         reason = f"{cmd_list[0]}: timed out after {timeout:.0f}s"
         result = subprocess.CompletedProcess(cmd_list, 124, stdout="", stderr=reason)

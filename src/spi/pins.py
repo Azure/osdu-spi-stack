@@ -617,8 +617,8 @@ def reconcile_consumers(services: list[str]) -> None:
         )
 
 
-def _refuse_unless_deployable() -> None:
-    """Enforce the deployable rule on pin writes, fail-closed.
+def require_deployable() -> None:
+    """Enforce the deployable rule on pin writes and suite runs, fail-closed.
 
     Refuses unless every Kustomization is Ready, no entitlements-members Job
     has failed, the deploy record is present, and ``maintenance`` is unset:
@@ -837,7 +837,7 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
     if service == SCHEMA_LOAD_SERVICE_NAME:
         raise PinError("Pin 'schema' instead; the loader follows the schema pin.")
-    _refuse_unless_deployable()
+    require_deployable()
 
     targets = [service]
     if service == SCHEMA_SERVICE_NAME:
@@ -1037,7 +1037,7 @@ def pin_service_image(
                 f"{' or '.join(expected)}, got {repository!r}."
             )
 
-    _refuse_unless_deployable()
+    require_deployable()
     try:
         resolve_ghcr_manifest(repository, digest)
     except ImageResolutionError as exc:
