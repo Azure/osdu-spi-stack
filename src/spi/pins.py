@@ -49,6 +49,7 @@ from .images import (
     ImageNotFoundError,
     ImageResolutionError,
     ResolvedImage,
+    acceptance_digest_key,
     build_lock_annotations,
     build_lock_data,
     do_not_disrupt_key,
@@ -1323,6 +1324,10 @@ def refresh_services(services: list[str]) -> RefreshResult:
                         name, image.repository, image.tag, image.created_at, image.digest
                     )
                 )
+                if image.acceptance_digest:
+                    data[acceptance_digest_key(name)] = image.acceptance_digest
+                else:
+                    data.pop(acceptance_digest_key(name), None)
         annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
         return {"data": data, "metadata": {"annotations": annotations}}
 
@@ -1749,6 +1754,12 @@ def apply_image_lock(
                 )
         timestamp = datetime.now(timezone.utc).isoformat()
         data = build_lock_data(overlaid, branch, timestamp, _ephemeral_names(active_pins))
+        # Pins never write the pair, so the live key still pairs the captured canonical.
+        prior = (lock or {}).get("data") or {}
+        for name in active_pins:
+            key = acceptance_digest_key(name)
+            if prior.get(key):
+                data[key] = prior[key]
         annotations = build_lock_annotations(branch, timestamp)
         if active_pins:
             annotations[PINS_ANNOTATION] = encode_pins(active_pins)

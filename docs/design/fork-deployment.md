@@ -250,6 +250,10 @@ carry `main-snapshot`, as after a `SERVICE_NAME` change, the one built from
 the newer commit wins. The canonical image is
 that digest, recorded under that `sha-<12>` tag, so the lock names the
 commit that built it and anything else built from the commit pairs with it.
+The same pass reads `<package>-acceptance:sha-<12>` and records its digest
+as `<SERVICE>_ACCEPTANCE_DIGEST`, the suite image `spi test` runs against
+this canonical (ADR-036). The key is absent when the fork published none, and
+pins leave it untouched, so a reset returns to the canonical and its pair.
 A fork whose `main` has never completed a push build has no `main-snapshot`
 and is refused. Schema's promotion additionally requires
 `<package>-load:sha-<12>` at the same commit (`resolve_fork_loader`). A

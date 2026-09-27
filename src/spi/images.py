@@ -80,6 +80,8 @@ class ResolvedImage:
     tag: str
     created_at: str
     digest: str
+    # The suite image built from the same fork commit; empty when none was published.
+    acceptance_digest: str = ""
 
     @property
     def image(self) -> str:
@@ -128,6 +130,12 @@ def image_lock_key(service_name: str) -> str:
     """Return the ConfigMap key prefix for one service."""
 
     return service_name.upper().replace("-", "_")
+
+
+def acceptance_digest_key(service_name: str) -> str:
+    """Return the lock key recording the acceptance image paired with a fork canonical."""
+
+    return f"{image_lock_key(service_name)}_ACCEPTANCE_DIGEST"
 
 
 def do_not_disrupt_key(service_name: str) -> str:
@@ -625,7 +633,9 @@ def resolve_fork_image(service: str, source_repo: str) -> tuple[ResolvedImage, s
 
     ``main-snapshot`` names the digest; the ``sha-<12>`` tag with the same digest
     names the commit, which the lock records as the tag so the image can be paired
-    with anything else built from that commit. Returns ``(image, commit)``.
+    with anything else built from that commit. The acceptance image at that tag is
+    read in the same pass, since the tag can move later and the image carries no
+    provenance. Returns ``(image, commit)``.
     """
 
     if not _REPO_PATH_RE.match(source_repo):
@@ -654,7 +664,11 @@ def resolve_fork_image(service: str, source_repo: str) -> tuple[ResolvedImage, s
             if resolve_ghcr_tag_digest(repository, tag) == digest:
                 committer = (commit.get("commit") or {}).get("committer") or {}
                 created_at = str(committer.get("date", ""))
-                return ResolvedImage(service, repository, tag, created_at, digest), sha
+                acceptance = resolve_ghcr_tag_digest(f"{repository}-acceptance", tag) or ""
+                return (
+                    ResolvedImage(service, repository, tag, created_at, digest, acceptance),
+                    sha,
+                )
     described = " or ".join(f"{r}:{FORK_MAIN_TAG} ({d[:19]})" for r, d in snapshots.items())
     raise ImageResolutionError(
         f"{service}: {described} matches no sha- tag among the "
@@ -825,6 +839,8 @@ def build_lock_data(
         data[f"{key}_IMAGE_DIGEST"] = image.digest
         data[f"{key}_IMAGE_REF"] = image_ref(image.repository, image.tag, image.digest)
         data[do_not_disrupt_key(name)] = str(name in protected).lower()
+        if image.acceptance_digest:
+            data[acceptance_digest_key(name)] = image.acceptance_digest
     return data
 
 

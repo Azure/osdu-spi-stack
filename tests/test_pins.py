@@ -1122,6 +1122,18 @@ class TestApplyImageLock:
         assert data["SEARCH_DO_NOT_DISRUPT"] == "false"
         assert data["PARTITION_DO_NOT_DISRUPT"] == "false"
 
+    def test_a_rebuild_keeps_the_pair_a_pinned_service_returns_to(self, monkeypatch):
+        active = {"storage": _image_pin()}
+        lock = _lock(
+            data={"STORAGE_ACCEPTANCE_DIGEST": "sha256:acc"}, pins_annotation=encode_pins(active)
+        )
+        calls = _wire_lock(monkeypatch, lock)
+
+        pins.apply_image_lock(self._resolved(), "master")
+
+        data, _ = calls["patch"]
+        assert data["STORAGE_ACCEPTANCE_DIGEST"] == "sha256:acc"
+
     def test_refresh_carries_both_projections_forward(self, monkeypatch):
         lock = _lock()
         sources = {"partition": "Acme/osdu-spi-partition"}
@@ -1378,6 +1390,18 @@ class TestPinServiceImage:
             pin_service_image("storage", "ghcr.io/azure/storage:sha-abc1234")
         assert calls["manifest_checks"] == []
         assert calls["patch"] is None
+
+    def test_a_pin_and_its_reset_leave_the_canonical_pair_alone(self, monkeypatch):
+        data = {**_canonical_data("storage"), "STORAGE_ACCEPTANCE_DIGEST": "sha256:acc"}
+        calls = self._wire(monkeypatch, _lock(data=data))
+
+        pin_service_image("storage", f"ghcr.io/acme/storage@{_GHCR_DIGEST}")
+        pinned, _ = calls["patch"]
+        pins.reset_service("storage")
+        restored, _ = calls["patch"]
+
+        assert pinned["STORAGE_ACCEPTANCE_DIGEST"] == restored["STORAGE_ACCEPTANCE_DIGEST"]
+        assert restored["STORAGE_ACCEPTANCE_DIGEST"] == "sha256:acc"
 
     def test_operator_pin_accepts_any_ghcr_owner(self, monkeypatch):
         """An operator pin names its image explicitly and needs no onboarding."""
@@ -3157,6 +3181,22 @@ class TestRefreshServices:
         assert data["SCHEMA_IMAGE_DIGEST"] == data["SCHEMA_LOAD_IMAGE_DIGEST"] == "sha256:old"
         assert data["LEGAL_IMAGE_DIGEST"] == "sha256:new"
         assert calls["reconciled"] == ["legal"]
+
+    def test_the_pair_follows_the_refreshed_canonical(self, monkeypatch):
+        refreshed = {
+            "partition": replace(self.FORK, acceptance_digest="sha256:acc"),
+            "legal": ResolvedImage("legal", "repo/legal", "d" * 40, "now", "sha256:new"),
+        }
+        monkeypatch.setattr(pins, "resolve_images", lambda branch, names, sources: refreshed)
+        lock = self._lock()
+        lock["data"]["LEGAL_ACCEPTANCE_DIGEST"] = "sha256:stale"
+        calls = _wire_lock(monkeypatch, lock)
+
+        pins.refresh_services(["partition", "legal"])
+
+        data, _ = calls["patch"]
+        assert data["PARTITION_ACCEPTANCE_DIGEST"] == "sha256:acc"
+        assert "LEGAL_ACCEPTANCE_DIGEST" not in data
 
     @pytest.mark.parametrize("trusted", [{}, {"partition": "Other/partition"}])
     def test_a_source_the_roster_does_not_trust_is_refused(self, monkeypatch, trusted):
