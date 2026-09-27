@@ -125,12 +125,22 @@ def _pin(**overrides) -> ServicePin:
 def cluster(monkeypatch, tmp_path):
     """Everything past the process boundary: lock, cluster, GitHub, GHCR, docker, and mvn."""
 
-    state: dict = {"locks": [_lock()], "commands": [], "github": [], "run_exit": 0}
+    state: dict = {
+        "locks": [_lock()],
+        "revisions": ["7"],
+        "commands": [],
+        "github": [],
+        "run_exit": 0,
+    }
     commit_tree = _machinery(tmp_path / "at-commit")
 
     def read_lock(required=True):
         locks = state["locks"]
         return locks.pop(0) if len(locks) > 1 else locks[0]
+
+    def revision(service):
+        revisions = state["revisions"]
+        return revisions.pop(0) if len(revisions) > 1 else revisions[0]
 
     def github_file(repository, path, ref):
         state["github"].append((repository, path, ref))
@@ -162,6 +172,7 @@ def cluster(monkeypatch, tmp_path):
     monkeypatch.setattr(testing, "require_deployable", lambda: None)
     monkeypatch.setattr(testing, "read_lock", read_lock)
     monkeypatch.setattr(testing, "verify_service_image", lambda service, ref: None)
+    monkeypatch.setattr(testing, "_deployment_revision", revision)
     monkeypatch.setattr(testing, "collect_facts", lambda: {"base_url": "https://gw"})
     monkeypatch.setattr(
         testing, "mint_bearers", lambda: {"RESOLVER_TOKEN": "t", "RESOLVER_MEMBER_TOKEN": "m"}
@@ -308,6 +319,15 @@ class TestGuards:
         assert (exc.value.code, exc.value.exit_code) == ("target_changed", 2)
         assert _commands(cluster, ["docker", "run"])
 
+    def test_a_borrow_and_restore_during_the_suite_discards_its_result(self, cluster):
+        # The restore puts the lock entry back; only the rollout revision moved.
+        cluster["revisions"] = ["7", "9"]
+
+        with pytest.raises(SuiteNotRun, match="revision 9 during the run") as exc:
+            testing.run_suite("partition")
+
+        assert (exc.value.code, exc.value.exit_code) == ("target_changed", 2)
+
     def test_a_pod_off_the_lock_digest_after_the_suite_discards_its_result(
         self, cluster, monkeypatch
     ):
@@ -369,6 +389,26 @@ class TestCheckoutRun:
         assert "STRAY_EXPORT" not in kwargs["env"]
         assert cluster["github"] == []
         assert (result.mode, result.label, result.commit) == ("checkout", "matched", head)
+
+    def test_windows_keeps_what_a_process_needs_to_start(self, cluster, monkeypatch, tmp_path):
+        monkeypatch.setattr(testing, "_ON_WINDOWS", True)
+        monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+        monkeypatch.setenv("USERPROFILE", r"C:\Users\dev")
+        seen: dict = {}
+        real = testing.resolve_suite
+
+        def spy(root, suite, facts, work, bearers, overrides):
+            contract, env_file = real(root, suite, facts, work, bearers, overrides)
+            seen.update(json.loads((work / "report.json").read_text()))
+            return contract, env_file
+
+        monkeypatch.setattr(testing, "resolve_suite", spy)
+
+        testing.run_suite("partition", checkout=_checkout(tmp_path))
+
+        [(_, kwargs)] = _commands(cluster, ["mvn", "-B"])
+        assert {"SYSTEMROOT", "USERPROFILE"} <= set(kwargs["env"])
+        assert "SYSTEMROOT" in seen["seen_env"] and "USERPROFILE" not in seen["seen_env"]
 
     def test_reports_an_earlier_build_left_are_not_counted(self, cluster, tmp_path):
         checkout = _checkout(tmp_path)

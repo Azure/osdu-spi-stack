@@ -64,7 +64,9 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   three `RESOLVER_*` bearers, and each `--set NAME=VALUE` override, nothing
   else, so a variable exported for another environment never wins over a
   fact. Native `mvn` receives the resolved map over a fixed base (`PATH`,
-  `HOME`, `JAVA_HOME`, `MAVEN_OPTS`, `LANG`, `TMPDIR`); the env file is
+  `HOME`, `JAVA_HOME`, `MAVEN_OPTS`, `LANG`, `TMPDIR`). On Windows both also
+  receive the system variables a process needs to start, and `mvn` the user
+  profile variables; the env file is
   parsed as `NAME=VALUE` data and never sourced. The container receives the
   env file and `SUITE_DIR`, set to the report's `test_dir`, which is how the
   image's entrypoint selects a baked suite; nothing else.
@@ -76,9 +78,11 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   reports the environment not deployable (ADR-030), and refuses with
   `service_borrowed`, naming the run id, while an ephemeral pin holds the
   service. `spi test` holds no lease, so a lane can pin the service mid-run:
-  the CLI reads the service's lock entry and its running pods' digest before
-  the suite and again after it, and discards the result as `target_changed`
-  when the entry changed or a pod was not running the lock's digest. The
+  the CLI reads the service's lock entry, its running pods' digest, and its
+  Deployment's rollout revision before the suite and again after it, and
+  discards the result as `target_changed` when the entry or the revision
+  changed or a pod was not running the lock's digest. A borrow and its
+  restore leave the entry as it was, but each advances the revision. The
   suite runs under the descriptor's `timeoutMinutes`. The verdict is the
   commit's `suite-verdict.py` over the Surefire and Failsafe reports: a zero
   exit, at least one test not skipped, and no failures or errors. A

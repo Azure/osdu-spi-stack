@@ -383,8 +383,11 @@ and pulls that digest; the descriptor, resolver, and verdict script come from
 the fork at the full commit. Checkout mode uses the checkout's own and labels
 the run `matched`, `unmatched`, or `unpaired` against the deployed commit; it
 removes the suite's earlier Surefire and Failsafe reports before Maven runs.
-`--set NAME=VALUE` is the only way a variable reaches the resolver besides the
-three minted bearers. Exit 0 passed, 3 failed, 2 not run or discarded because
+The resolver sees `PATH`, the three minted bearers, and `--set NAME=VALUE`
+overrides, and on Windows the system variables a process needs to start;
+nothing else from the caller's environment reaches it. A run is discarded
+when the service's lock entry, its pods' digest, or its Deployment's rollout
+revision changed while the suite ran. Exit 0 passed, 3 failed, 2 not run or discarded because
 the environment or service was not ready to test (not deployable, a binding
 not published, borrowed, or changed during the run), 1 not run for any other
 reason; `--json` prints the outcome as the last stdout line.

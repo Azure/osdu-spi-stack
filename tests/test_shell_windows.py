@@ -116,3 +116,27 @@ def test_timeout_ends_the_process_tree_behind_a_batch_shim(tmp_path, monkeypatch
         run_process([str(shim)], capture_output=True, text=True, timeout=2)
 
     assert time.monotonic() - started < 20
+
+
+def test_spi_test_environments_still_start_a_python_process_and_a_batch_shim(tmp_path):
+    """spi test replaces the environment of the resolver and of mvn.cmd."""
+    from spi import testing
+
+    probe = "import os, random; print(os.environ['HOST'])"
+    shim = tmp_path / "probe.cmd"
+    shim.write_text(f'@"{sys.executable}" -c "{probe}"\r\n')
+    resolver_env = {**testing._host_env(("PATH",), testing.WINDOWS_PROCESS_ENV), "HOST": "a"}
+    maven_env = {
+        **testing._host_env(
+            testing.MAVEN_BASE_ENV, testing.WINDOWS_PROCESS_ENV + testing.WINDOWS_PROFILE_ENV
+        ),
+        "HOST": "b",
+    }
+
+    resolver = run_process(
+        [sys.executable, "-c", probe], env=resolver_env, capture_output=True, text=True
+    )
+    maven = run_process([str(shim)], env=maven_env, capture_output=True, text=True)
+
+    assert (resolver.returncode, resolver.stdout.strip()) == (0, "a"), resolver.stderr
+    assert (maven.returncode, maven.stdout.strip()) == (0, "b"), maven.stderr

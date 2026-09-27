@@ -46,8 +46,10 @@ from .images import (
     resolve_ghcr_manifest,
 )
 from .pins import (
+    WORKLOAD_NAMESPACE,
     PinError,
     VerifyError,
+    _kubectl_read_json,
     _lock_entry_keys,
     decode_canonical_sources,
     decode_pins,
@@ -74,6 +76,12 @@ BEARERS = (
     ("no_access", "RESOLVER_NO_ACCESS_TOKEN"),
 )
 MAVEN_BASE_ENV = ("PATH", "HOME", "JAVA_HOME", "MAVEN_OPTS", "LANG", "TMPDIR")
+# What any Windows process needs to start, and where mvn.cmd finds the user profile.
+WINDOWS_PROCESS_ENV = ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP")
+WINDOWS_PROFILE_ENV = ("USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH")
+_ON_WINDOWS = os.name == "nt"
+# Kubernetes advances it on every pod template change, a rollback included.
+REVISION_ANNOTATION = "deployment.kubernetes.io/revision"
 
 EXIT_PASSED = 0
 EXIT_NOT_RUN = 1
@@ -208,11 +216,25 @@ def _require_running(lock: dict, service: str) -> None:
         raise SuiteNotRun("cluster_unreadable", str(exc)) from exc
 
 
-def check_target(service: str, expected: dict, *, after: str = "") -> None:
+def _deployment_revision(service: str) -> str:
+    deployment = f"{WORKLOAD_NAMESPACE}-{service}"
+    try:
+        body = _kubectl_read_json(
+            ["get", "deployment", deployment, "-n", WORKLOAD_NAMESPACE], f"Deployment {deployment}"
+        )
+    except PinError as exc:
+        raise SuiteNotRun("cluster_unreadable", str(exc)) from exc
+    annotations = ((body or {}).get("metadata") or {}).get("annotations") or {}
+    return str(annotations.get(REVISION_ANNOTATION, ""))
+
+
+def check_target(service: str, expected: dict, *, after: str = "", revision: str = "") -> str:
     """Refuse unless ``service`` still has the lock entry ``expected`` and runs it.
 
-    ``after`` is the verdict of a suite that already ran; a changed target
-    discards it.
+    ``after`` is the verdict of a suite that already ran, and ``revision`` the
+    Deployment revision it ran against: a borrow and its restore leave the
+    entry as it was but not the revision. A changed target discards the
+    verdict. Returns the current revision.
     """
 
     lock = _read_lock()
@@ -232,6 +254,13 @@ def check_target(service: str, expected: dict, *, after: str = "") -> None:
         raise _refused(
             "not_deployable", f"{service} is not running its lock entry yet: {exc}"
         ) from exc
+    current = _deployment_revision(service)
+    if after and current != revision:
+        raise _refused(
+            "target_changed",
+            f"{service} rolled out revision {current} during the run, after {revision}{discarded}.",
+        )
+    return current
 
 
 def resolve_commit(target: PairedTarget) -> str:
@@ -338,12 +367,12 @@ def resolve_suite(
     """Run the resolver in ``run`` mode; return the report's contract and the env file.
 
     The resolver lets an explicit variable win over every fact, so it sees
-    only PATH, the bearers, and the caller's overrides.
+    only PATH, the bearers, and the caller's overrides (plus the Windows startup set).
     """
 
     env_file = work / "suite.env"
     report_path = work / "report.json"
-    env = {"PATH": os.environ.get("PATH", ""), **bearers, **overrides}
+    env = {**_host_env(("PATH",), WINDOWS_PROCESS_ENV), **bearers, **overrides}
     result = run_process(
         [
             sys.executable,
@@ -396,6 +425,13 @@ def read_env_file(path: Path) -> dict[str, str]:
         if sep:
             values[name] = value
     return values
+
+
+def _host_env(names: Sequence[str], windows: Sequence[str]) -> dict[str, str]:
+    """The named host variables that are set, plus what Windows needs to start a process."""
+
+    wanted = (*names, *windows) if _ON_WINDOWS else tuple(names)
+    return {name: os.environ[name] for name in wanted if name in os.environ}
 
 
 def _require_tool(name: str) -> None:
@@ -479,7 +515,7 @@ def run_checkout(
     command = ["mvn", "-B", "--no-transfer-progress"]
     if settings.is_file():
         command += ["--settings", str(settings)]
-    env = {name: os.environ[name] for name in MAVEN_BASE_ENV if name in os.environ}
+    env = _host_env(MAVEN_BASE_ENV, WINDOWS_PROCESS_ENV + WINDOWS_PROFILE_ENV)
     env.update(read_env_file(env_file))
     ran = run_command(
         [*command, *args],
@@ -524,7 +560,7 @@ def judge(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
             "--reports",
             str(reports),
         ],
-        env={"PATH": os.environ.get("PATH", "")},
+        env=_host_env(("PATH",), WINDOWS_PROCESS_ENV),
         capture_output=True,
         text=True,
     )
@@ -595,7 +631,7 @@ def run_suite(
         args = list(maven_arguments) or list(contract.get("maven_arguments") or [])
         timeout = int(contract.get("timeout_minutes") or 0) * 60 or None
 
-        check_target(service, expected)
+        revision = check_target(service, expected)
         try:
             if checkout is None:
                 reports = work / "reports"
@@ -607,5 +643,5 @@ def run_suite(
         passed, verdict = judge(root, code, reports)
         tests = count_tests(reports)
 
-    check_target(service, expected, after=verdict)
+    check_target(service, expected, after=verdict, revision=revision)
     return SuiteResult(service, suite, mode, label, image, commit, passed, verdict, tests)
