@@ -30,6 +30,7 @@ for flag in ("--mode", "--suite", "--descriptor", "--facts", "--env-file", "--re
 args = parser.parse_args()
 report = {
     "report_schema": behavior.get("schema", 1),
+    "service": behavior.get("service", "partition"),
     "contract": {"test_dir": "suite", "maven_arguments": ["verify"], "timeout_minutes": 5},
     "seen_env": sorted(os.environ),
     "suite": args.suite,
@@ -237,8 +238,8 @@ class TestPairedRun:
         seen: dict = {}
         real = testing.resolve_suite
 
-        def spy(root, suite, facts, work, bearers, overrides):
-            contract, env_file = real(root, suite, facts, work, bearers, overrides)
+        def spy(service, root, suite, facts, work, bearers, overrides):
+            contract, env_file = real(service, root, suite, facts, work, bearers, overrides)
             seen.update(json.loads((work / "report.json").read_text()))
             return contract, env_file
 
@@ -359,6 +360,15 @@ class TestGuards:
         assert (exc.value.code, exc.value.exit_code) == (code, exit_code)
         assert not _commands(cluster, ["docker", "run"])
 
+    def test_a_checkout_of_another_service_is_refused_before_maven(self, cluster, tmp_path):
+        checkout = _checkout(tmp_path, service="storage")
+
+        with pytest.raises(SuiteNotRun, match="declares service 'storage'") as exc:
+            testing.run_suite("partition", checkout=checkout)
+
+        assert (exc.value.code, exc.value.exit_code) == ("descriptor_mismatch", 1)
+        assert not _commands(cluster, ["mvn", "-B"])
+
     def test_a_report_schema_this_cli_does_not_know_is_refused(self, cluster):
         _machinery(cluster["commit_tree"], schema=2)
 
@@ -397,8 +407,8 @@ class TestCheckoutRun:
         seen: dict = {}
         real = testing.resolve_suite
 
-        def spy(root, suite, facts, work, bearers, overrides):
-            contract, env_file = real(root, suite, facts, work, bearers, overrides)
+        def spy(service, root, suite, facts, work, bearers, overrides):
+            contract, env_file = real(service, root, suite, facts, work, bearers, overrides)
             seen.update(json.loads((work / "report.json").read_text()))
             return contract, env_file
 

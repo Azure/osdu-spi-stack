@@ -357,6 +357,7 @@ def mint_bearers() -> dict[str, str]:
 
 
 def resolve_suite(
+    service: str,
     root: Path,
     suite: str,
     facts: Path,
@@ -365,6 +366,9 @@ def resolve_suite(
     overrides: Mapping[str, str],
 ) -> tuple[dict, Path]:
     """Run the resolver in ``run`` mode; return the report's contract and the env file.
+
+    The descriptor must name ``service``, or a checkout of another fork would
+    run its suite under this service's guards.
 
     The resolver lets an explicit variable win over every fact, so it sees
     only PATH, the bearers, and the caller's overrides (plus the Windows startup set).
@@ -412,6 +416,13 @@ def resolve_suite(
         raise SuiteNotRun(
             "report_schema",
             f"resolver report_schema {report.get('report_schema')!r} is not {REPORT_SCHEMA}",
+        )
+    declared = report.get("service")
+    if declared != service:
+        raise SuiteNotRun(
+            "descriptor_mismatch",
+            f"the descriptor declares service {declared!r}, not {service!r}; "
+            "point --source at the fork that builds it",
         )
     return report.get("contract") or {}, env_file
 
@@ -625,7 +636,7 @@ def run_suite(
         facts = work / "facts.json"
         facts.write_text(json.dumps(collect_facts()), encoding="utf-8")
         contract, env_file = resolve_suite(
-            root, suite, facts, work, mint_bearers(), dict(overrides or {})
+            service, root, suite, facts, work, mint_bearers(), dict(overrides or {})
         )
         test_dir = str(contract.get("test_dir", ""))
         args = list(maven_arguments) or list(contract.get("maven_arguments") or [])

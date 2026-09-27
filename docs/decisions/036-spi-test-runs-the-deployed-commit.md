@@ -31,7 +31,10 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   the template publishes the acceptance image without provenance or a
   revision label, so the recorded digest, read in the same pass that ties
   the service digest to its commit, is the pair's identity from then on, as
-  the service digest is the service's (ADR-031). Pins never write the key.
+  the service digest is the service's (ADR-031). The service tag is read
+  again after the acceptance tag, and a move between the two refuses the
+  resolution, since a rebuild pushes the service image first. Pins never
+  write the key.
 - **Paired mode is the default.** The suite image is the lock's repository
   with `-acceptance` appended, pulled by the recorded digest for
   `linux/amd64` and run with `docker run`. Pairing needs a fork canonical,
@@ -58,7 +61,8 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   invocation as the image's entrypoint. The run is labelled `matched` when
   the checkout's HEAD equals the deployed commit and the tree is clean,
   `unmatched` otherwise, and `unpaired` when the environment runs a
-  community image. Checkout mode is the only mode for a community-sourced
+  community image. In either mode a descriptor whose `service.name` is not
+  the named service refuses the run. Checkout mode is the only mode for a community-sourced
   service and the native-speed loop on arm64.
 - **Allowlisted environment.** The resolver process receives `PATH`, the
   three `RESOLVER_*` bearers, and each `--set NAME=VALUE` override, nothing

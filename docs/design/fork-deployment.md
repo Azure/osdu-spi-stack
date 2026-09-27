@@ -383,6 +383,7 @@ and pulls that digest; the descriptor, resolver, and verdict script come from
 the fork at the full commit. Checkout mode uses the checkout's own and labels
 the run `matched`, `unmatched`, or `unpaired` against the deployed commit; it
 removes the suite's earlier Surefire and Failsafe reports before Maven runs.
+A descriptor that names another service is refused in either mode.
 The resolver sees `PATH`, the three minted bearers, and `--set NAME=VALUE`
 overrides, and on Windows the system variables a process needs to start;
 nothing else from the caller's environment reaches it. A run is discarded
