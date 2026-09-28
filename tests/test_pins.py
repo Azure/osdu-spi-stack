@@ -3231,3 +3231,98 @@ class TestRefreshServices:
         assert outcome["outcome"] == "refreshed"
         assert outcome["refreshed"] == {"partition": "ghcr.io/acme/partition@sha256:" + "f" * 64}
         assert outcome["pinned"] == ["schema"]
+
+    def test_forks_moves_only_the_services_the_policy_names(self, monkeypatch):
+        fork = replace(self.FORK, acceptance_digest="sha256:acc")
+        resolved = []
+
+        def resolve(branch, names, sources):
+            resolved.append((branch, list(names), sources))
+            return {"partition": fork}
+
+        monkeypatch.setattr(pins, "resolve_images", resolve)
+        calls = _wire_lock(monkeypatch, self._lock())
+
+        result = pins.refresh_fork_services()
+
+        data, _ = calls["patch"]
+        assert resolved == [("release-0-30", ["partition"], {"partition": "Acme/partition"})]
+        assert data["PARTITION_IMAGE_REF"] == "ghcr.io/acme/partition@sha256:" + "f" * 64
+        assert data["PARTITION_ACCEPTANCE_DIGEST"] == "sha256:acc"
+        assert data["LEGAL_IMAGE_DIGEST"] == "sha256:old"
+        assert data["IMAGE_RESOLVED_AT"] == "earlier"
+        assert result.refreshed == {"partition": fork}
+        assert calls["reconciled"] == ["partition"]
+
+    def test_forks_keeps_an_active_pin(self, monkeypatch):
+        self._resolver(monkeypatch, [])
+        held = {"partition": _image_pin(repository="ghcr.io/acme/p")}
+        calls = _wire_lock(monkeypatch, self._lock(pins_annotation=encode_pins(held)))
+
+        result = pins.refresh_fork_services()
+
+        data, kept = calls["patch"]
+        assert result == pins.RefreshResult({}, ("partition",))
+        assert set(kept) == {"partition"}
+        assert data["PARTITION_IMAGE_DIGEST"] == "sha256:old"
+        assert calls["reconciled"] is None
+
+    @pytest.mark.parametrize("data", [None, _canonical_data("partition")])
+    def test_forks_without_a_fork_source_writes_nothing(self, monkeypatch, data):
+        monkeypatch.setattr(pins, "resolve_images", pytest.fail)
+        calls = _wire_lock(monkeypatch, _lock(data=data) if data else None)
+
+        result = pins.refresh_fork_services()
+
+        assert result == pins.RefreshResult({}, ())
+        assert calls["patch"] is None
+
+    @pytest.mark.parametrize(
+        ("sources", "trusted", "message"),
+        [
+            ("{not json", {"partition": "acme/partition"}, "Corrupt"),
+            (json.dumps({"partition": "Acme/partition"}), {}, "no fork is trusted"),
+            (
+                json.dumps({"nonesuch": "Acme/nonesuch"}),
+                {"nonesuch": "acme/nonesuch"},
+                "Unknown service",
+            ),
+        ],
+    )
+    def test_forks_refuses_a_policy_it_cannot_use(self, monkeypatch, sources, trusted, message):
+        monkeypatch.setattr(pins, "resolve_images", pytest.fail)
+        lock = self._lock()
+        annotations = lock["metadata"]["annotations"]
+        annotations[pins.CANONICAL_SOURCES_ANNOTATION] = sources
+        annotations[pins.TRUSTED_REPOS_ANNOTATION] = json.dumps(trusted)
+        calls = _wire_lock(monkeypatch, lock)
+
+        with pytest.raises(PinError, match=message):
+            pins.refresh_fork_services()
+        assert calls["patch"] is None
+
+    def test_forks_with_nothing_to_refresh_says_so(self, monkeypatch):
+        monkeypatch.setattr(cli, "_guarded_context", lambda output_json: "ctx")
+        monkeypatch.setattr(cli, "refresh_services", pytest.fail)
+        monkeypatch.setattr(cli, "refresh_fork_services", lambda: pins.RefreshResult({}, ()))
+
+        human = CliRunner().invoke(cli.app, ["service", "refresh", "--forks"])
+        machine = CliRunner().invoke(cli.app, ["service", "refresh", "--forks", "--json"])
+
+        outcome = json.loads(machine.output.strip().splitlines()[-1])
+        assert human.exit_code == machine.exit_code == 0
+        assert "No fork-sourced services to refresh on test v0.0.0." in _plain(human.output)
+        assert outcome["outcome"] == "refreshed"
+        assert outcome["detail"] == "no fork-sourced services; nothing to refresh"
+        assert (outcome["refreshed"], outcome["pinned"]) == ({}, [])
+
+    @pytest.mark.parametrize("args", [["partition", "--forks"], []])
+    def test_a_refresh_naming_both_or_neither_is_refused(self, monkeypatch, args):
+        monkeypatch.setattr(cli, "_guarded_context", pytest.fail)
+
+        result = CliRunner().invoke(cli.app, ["service", "refresh", *args, "--json"])
+
+        outcome = json.loads(result.output.strip().splitlines()[-1])
+        assert result.exit_code == 1
+        assert outcome["outcome"] == "error"
+        assert "--forks" in outcome["detail"]

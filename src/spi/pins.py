@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Callable, Iterable
 
 from .console import console, display_yaml
 from .deploy_record import DEPLOY_RECORD_CONFIGMAP, DeployRecordError, read_deploy_record
@@ -1283,6 +1283,29 @@ def refresh_services(services: list[str]) -> RefreshResult:
     one pair so the Job never runs a loader from another commit.
     """
 
+    names = _refresh_names(services)
+    lock = read_lock()
+    assert lock is not None
+    return _apply_refresh(names, lock, trusted_canonical_sources(lock))
+
+
+def refresh_fork_services() -> RefreshResult:
+    """Refresh every service the lock's source policy points at a fork.
+
+    No lock, or a policy naming no fork, is nothing to refresh. A policy that
+    cannot be read or trusted raises, so it never passes for one without forks.
+    """
+
+    lock = read_lock(required=False)
+    if lock is None:
+        return RefreshResult({}, ())
+    sources = trusted_canonical_sources(lock)
+    if not sources:
+        return RefreshResult({}, ())
+    return _apply_refresh(_refresh_names(sorted(sources)), lock, sources)
+
+
+def _refresh_names(services: Iterable[str]) -> list[str]:
     names: list[str] = []
     for service in services:
         if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
@@ -1291,14 +1314,14 @@ def refresh_services(services: list[str]) -> RefreshResult:
         names.append(service)
         if service == SCHEMA_SERVICE_NAME:
             names.append(SCHEMA_LOAD_SERVICE_NAME)
-    names = list(dict.fromkeys(names))
+    return list(dict.fromkeys(names))
 
-    lock = read_lock()
-    assert lock is not None
+
+def _apply_refresh(names: list[str], lock: dict, sources: dict[str, str]) -> RefreshResult:
     data = lock.get("data") or {}
     branch = data.get("IMAGE_BRANCH") or DEFAULT_IMAGE_BRANCH
     try:
-        resolved = resolve_images(branch, names, trusted_canonical_sources(lock))
+        resolved = resolve_images(branch, names, sources)
     except ImageResolutionError as exc:
         raise PinError(str(exc)) from exc
 
