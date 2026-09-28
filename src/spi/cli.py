@@ -19,7 +19,9 @@ import json
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from functools import partial
+from pathlib import Path
+from typing import Any, Collection, Dict, List, Optional, Tuple
 
 import shellingham
 import typer
@@ -895,6 +897,123 @@ def _parse_overrides(values: List[str]) -> Dict[str, str]:
     return overrides
 
 
+ALL_SUITES = "all"
+
+
+def _inspect_suite(
+    reports: Path,
+    secrets: Collection[str],
+    *,
+    suite: str,
+    bundle: Optional[Path],
+    kept: set,
+) -> Optional[Dict[str, Any]]:
+    """The facts of a run for its report; a report that cannot be built costs no verdict.
+
+    With a ``bundle``, the suite's sources are set aside for the review before
+    the run's directory is discarded.
+    """
+    from .suite_report import collect
+    from .suite_review import add_suite
+
+    kept.update(secrets)
+    try:
+        facts = collect(reports, secrets)
+        if bundle is not None:
+            add_suite(bundle, suite, reports, facts)
+    except Exception as exc:  # noqa: BLE001
+        _report_warning(f"No report for {suite}", exc)
+        return None
+    return facts
+
+
+def _report_warning(what: str, exc: object) -> None:
+    from rich.markup import escape
+
+    error_console.print(f"  [warning]{escape(what)}: {escape(str(exc))}[/warning]")
+
+
+def _review_suites(
+    service: str, suites: Dict[str, Dict[str, Any]], bundle: Path, secrets: Collection[str]
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """``(contract, review)`` for the report; either is None when it cannot be had."""
+    from .info import collect_endpoint
+    from .suite_contract import fetch_contract
+    from .suite_review import review_suites
+
+    contract = review = None
+    try:
+        contract = fetch_contract(collect_endpoint(service))
+    except Exception as exc:  # noqa: BLE001
+        _report_warning("No published contract", exc)
+    try:
+        review = review_suites(bundle, suites, contract, secrets)
+    except Exception as exc:  # noqa: BLE001
+        _report_warning("No review", exc)
+    if review and review["unrecognized"]:
+        _report_warning(
+            "The review cited tests this run did not report; they are left out",
+            review["unrecognized"],
+        )
+    return contract, review
+
+
+def _write_suite_report(
+    service: str,
+    results: List[Any],
+    environment: Dict[str, Any],
+    bundle: Optional[Path],
+    secrets: Collection[str],
+) -> Optional[Path]:
+    """Write the service's page and the scoreboard of the pages saved; return the page.
+
+    Nothing that goes wrong here reaches the caller: the suites have their verdicts.
+    """
+    from datetime import datetime, timezone
+
+    from .deploy_record import environment_label
+    from .suite_page import PAGE_SCHEMA, SCOREBOARD_NAME, read_pages, render, render_scoreboard
+    from .suite_report import report_folder, saved_pages, write
+
+    reported = [result for result in results if result.report]
+    if not reported:
+        return None
+    try:
+        suites = [
+            {
+                **result.report,
+                "name": result.suite,
+                "passed": result.passed,
+                "verdict": result.verdict,
+                "provenance": f"{result.mode}, {result.label}" if result.label else result.mode,
+                "image": result.image,
+            }
+            for result in reported
+        ]
+        run = {
+            "service": service,
+            "commit": reported[0].commit,
+            "environment": environment_label(environment),
+            "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "cli": __version__,
+        }
+        facts: Dict[str, Any] = {"schema": PAGE_SCHEMA, "run": run, "suites": suites}
+        if bundle is not None:
+            facts["contract"], facts["review"] = _review_suites(
+                service, {result.suite: result.report for result in reported}, bundle, secrets
+            )
+        folder = report_folder()
+        page = write(render(facts), folder, service, "+".join(s["name"] for s in suites))
+    except Exception as exc:  # noqa: BLE001
+        _report_warning("The report could not be written", exc)
+        return None
+    try:
+        write(render_scoreboard(read_pages(saved_pages(folder)), run), folder, SCOREBOARD_NAME)
+    except Exception as exc:  # noqa: BLE001
+        _report_warning("The scoreboard could not be written", exc)
+    return page
+
+
 @app.command(
     "test",
     context_settings={"allow_extra_args": True},
@@ -902,7 +1021,11 @@ def _parse_overrides(values: List[str]) -> Dict[str, str]:
 def spi_test(
     ctx: typer.Context,
     service: str = typer.Argument(help="Service whose suite runs against this environment."),
-    suite: str = typer.Option("acceptance", "--suite", help="Suite the descriptor declares."),
+    suites: List[str] = typer.Option(
+        ["acceptance"],
+        "--suite",
+        help="Suite the descriptor declares; repeat it for several, or 'all' for every one.",
+    ),
     source: Optional[str] = typer.Option(
         None,
         "--source",
@@ -910,6 +1033,15 @@ def spi_test(
     ),
     overrides: List[str] = typer.Option(
         [], "--set", help="NAME=VALUE the resolver takes over a fact; repeatable."
+    ),
+    report: bool = typer.Option(
+        False, "--report", help="Write a one-page report of the run and open it."
+    ),
+    review: bool = typer.Option(
+        False,
+        "--review",
+        help="Add an agent's reading of the suites to the report: which contract rows each "
+        "test protects and how strongly. Implies --report.",
     ),
     output_json: bool = typer.Option(
         False, "--json", help="Emit the outcome as a final machine-readable JSON line."
@@ -923,9 +1055,15 @@ def spi_test(
     passed, 3 failed, 2 not run or discarded because the environment or
     service was not in a state to test, 1 not run for any other reason.
     """
-    from pathlib import Path
+    import tempfile
 
     from .testing import SuiteNotRun, run_suite
+
+    wanted = list(dict.fromkeys(suites))
+    every = ALL_SUITES in wanted
+    queue = ["acceptance"] if every else wanted
+    if ctx.args and (every or len(queue) > 1):
+        raise _usage_error("Arguments after -- replace one suite's; name one --suite.", output_json)
 
     ctx_name = _guarded_context(output_json)
     if not output_json:
@@ -938,49 +1076,98 @@ def spi_test(
             raise typer.BadParameter(f"{source} is not a directory", param_hint="--source")
 
     environment = _environment_facts()
-    try:
-        result = run_suite(
-            service,
-            suite=suite,
-            checkout=checkout,
-            overrides=settings,
-            maven_arguments=list(ctx.args),
-        )
-    except SuiteNotRun as exc:
+    results: List[Any] = []
+    refused: Optional[Tuple[str, SuiteNotRun]] = None
+    kept: set = set()
+    with contextlib.ExitStack() as stack:
+        bundle = None
+        if review:
+            bundle = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="spi-review-")))
+        while queue and refused is None:
+            suite = queue.pop(0)
+            inspect = None
+            if report or review:
+                inspect = partial(_inspect_suite, suite=suite, bundle=bundle, kept=kept)
+            try:
+                result = run_suite(
+                    service,
+                    suite=suite,
+                    checkout=checkout,
+                    overrides=settings,
+                    maven_arguments=list(ctx.args),
+                    inspect=inspect,
+                )
+            except SuiteNotRun as exc:
+                refused = (suite, exc)
+                continue
+            results.append(result)
+            if every:
+                ran = {done.suite for done in results}
+                queue += [name for name in result.declared if name not in ran | set(queue)]
+            if not output_json:
+                _print_suite_result(result, environment)
+        # The suites that ran keep their page when a later one is not run.
+        page = _write_suite_report(service, results, environment, bundle, kept)
+
+    several = len(results) + bool(refused) > 1
+    extra: Dict[str, Any] = {"report": str(page)} if page else {}
+    if several:
+        extra["suites"] = [
+            {
+                "suite": result.suite,
+                "outcome": "passed" if result.passed else "failed",
+                "detail": result.verdict,
+                "tests": result.tests,
+            }
+            for result in results
+        ]
+    if page and not output_json:
+        from .suite_report import show
+
+        show(page)
+        console.print(f"  Report: {page}")
+    if refused is not None:
+        suite, exc = refused
         if output_json:
             outcome = "refused" if exc.exit_code == 2 else "error"
-            _emit_outcome(outcome, exc.code, str(exc), service=service, suite=suite)
+            _emit_outcome(outcome, exc.code, str(exc), service=service, suite=suite, **extra)
         else:
             style = "warning" if exc.exit_code == 2 else "error"
             console.print(f"[{style}]{service} {suite} not run ({exc.code}): {exc}[/{style}]")
         raise typer.Exit(code=exc.exit_code)
 
-    ran = result.image or result.commit
+    failed = [result for result in results if not result.passed]
     if output_json:
+        first = results[0]
         _emit_outcome(
-            "passed" if result.passed else "failed",
+            "failed" if failed else "passed",
             None,
-            result.verdict,
+            "; ".join(f"{result.suite}: {result.verdict}" for result in results)
+            if several
+            else first.verdict,
             service=service,
-            suite=suite,
-            mode=result.mode,
-            label=result.label or None,
-            image=result.image or None,
-            commit=result.commit or None,
-            tests=result.tests,
+            suite=None if several else first.suite,
+            mode=first.mode,
+            label=first.label or None,
+            image=first.image or None,
+            commit=first.commit or None,
+            tests=None if several else first.tests,
             environment=environment,
+            **extra,
         )
-    else:
-        from .deploy_record import environment_label
+    raise typer.Exit(code=failed[0].exit_code if failed else 0)
 
-        where = environment_label(environment)
-        provenance = f"{result.mode}, {result.label}" if result.label else result.mode
-        style = "success" if result.passed else "error"
-        console.print(
-            f"  [{style}]{service} {suite}[/{style}] on {where}: {result.verdict} "
-            f"[dim]({provenance}, {ran})[/dim]"
-        )
-    raise typer.Exit(code=result.exit_code)
+
+def _print_suite_result(result: Any, environment: Dict[str, Any]) -> None:
+    from .deploy_record import environment_label
+
+    where = environment_label(environment)
+    provenance = f"{result.mode}, {result.label}" if result.label else result.mode
+    style = "success" if result.passed else "error"
+    console.print(
+        f"  [{style}]{result.service} {result.suite}[/{style}] on {where}: {result.verdict} "
+        f"[dim]({provenance}, {result.image or result.commit})[/dim]"
+    )
 
 
 @app.command()
