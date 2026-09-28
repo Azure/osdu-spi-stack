@@ -208,6 +208,8 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     }
 
     def fake_read_lock(required=True):
+        if box[0] is None and required:
+            raise PinError("ConfigMap osdu-image-lock not found")
         return box[0]
 
     def fake_run_command(cmd, description=None, check=True, **kwargs):
@@ -3182,6 +3184,16 @@ class TestRefreshServices:
         assert data["LEGAL_IMAGE_DIGEST"] == "sha256:new"
         assert calls["reconciled"] == ["legal"]
 
+    def test_an_entry_the_refresh_leaves_unchanged_is_not_reconciled(self, monkeypatch):
+        self._resolver(monkeypatch, [])
+        calls = _wire_lock(monkeypatch, self._lock())
+        pins.refresh_services(["partition"])
+
+        result = pins.refresh_services(["partition", "legal"])
+
+        assert set(result.refreshed) == {"partition", "legal"}
+        assert calls["reconciled"] == ["legal"]
+
     def test_the_pair_follows_the_refreshed_canonical(self, monkeypatch):
         refreshed = {
             "partition": replace(self.FORK, acceptance_digest="sha256:acc"),
@@ -3294,6 +3306,17 @@ class TestRefreshServices:
         assert outcome["detail"] == "no fork-sourced services; nothing to refresh"
         assert (outcome["refreshed"], outcome["pinned"]) == ({}, [])
 
+    def test_forks_reports_a_pinned_fork_service_as_pinned(self, monkeypatch):
+        monkeypatch.setattr(cli, "_guarded_context", lambda output_json: "ctx")
+        held = pins.RefreshResult({}, ("partition",))
+        monkeypatch.setattr(cli, "refresh_fork_services", lambda: held)
+
+        result = CliRunner().invoke(cli.app, ["service", "refresh", "--forks", "--json"])
+
+        outcome = json.loads(result.output.strip().splitlines()[-1])
+        assert outcome["detail"] == "refreshed 0, pinned 1"
+        assert outcome["pinned"] == ["partition"]
+
     @pytest.mark.parametrize("args", [["partition", "--forks"], []])
     def test_a_refresh_naming_both_or_neither_is_refused(self, monkeypatch, args):
         monkeypatch.setattr(cli, "_guarded_context", pytest.fail)
@@ -3315,6 +3338,7 @@ class TestRefreshDue:
         ("repository", "created_at", "sources", "pinned", "due"),
         [
             pytest.param(PACKAGE, "2026-09-09T00:00:00Z", FORK, (), ("partition",), id="22-days"),
+            pytest.param(PACKAGE, "2026-09-10T00:00:00Z", FORK, (), (), id="21-days"),
             pytest.param(PACKAGE, "2026-09-11T00:00:00Z", FORK, (), (), id="20-days"),
             pytest.param(PACKAGE, "2026-09-09T00:00:00", FORK, (), ("partition",), id="naive"),
             pytest.param(PACKAGE, "2025-01-01T00:00:00Z", {}, (), (), id="community-policy"),
@@ -3328,6 +3352,7 @@ class TestRefreshDue:
             ),
             pytest.param(PACKAGE, "", FORK, (), (), id="no-date"),
             pytest.param(PACKAGE, "then", FORK, (), (), id="unreadable-date"),
+            pytest.param(PACKAGE, None, FORK, (), (), id="non-string-date"),
             pytest.param(PACKAGE, "2026-09-09T00:00:00Z", FORK, ("partition",), (), id="pinned"),
             pytest.param(
                 "ghcr.io/acme/nonesuch",

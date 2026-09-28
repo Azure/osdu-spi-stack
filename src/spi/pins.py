@@ -1333,6 +1333,7 @@ def _apply_refresh(names: list[str], lock: dict, sources: dict[str, str]) -> Ref
         raise PinError(str(exc)) from exc
 
     pinned: tuple[str, ...] = ()
+    moved: list[str] = []
 
     def compute(lock: dict | None) -> dict:
         nonlocal pinned
@@ -1346,14 +1347,16 @@ def _apply_refresh(names: list[str], lock: dict, sources: dict[str, str]) -> Ref
         if held & {SCHEMA_SERVICE_NAME, SCHEMA_LOAD_SERVICE_NAME}:
             held |= {SCHEMA_SERVICE_NAME, SCHEMA_LOAD_SERVICE_NAME} & set(names)
         pinned = tuple(name for name in names if name in held)
+        moved.clear()
         data = dict(lock.get("data") or {})
         for name, image in resolved.items():
             if name not in held:
-                data.update(
-                    _lock_entry_patch(
-                        name, image.repository, image.tag, image.created_at, image.digest
-                    )
+                entry = _lock_entry_patch(
+                    name, image.repository, image.tag, image.created_at, image.digest
                 )
+                if any(data.get(key) != value for key, value in entry.items()):
+                    moved.append(name)
+                data.update(entry)
                 if image.acceptance_digest:
                     data[acceptance_digest_key(name)] = image.acceptance_digest
                 else:
@@ -1362,9 +1365,10 @@ def _apply_refresh(names: list[str], lock: dict, sources: dict[str, str]) -> Ref
         return {"data": data, "metadata": {"annotations": annotations}}
 
     mutate_lock(compute, f"Refresh {', '.join(names)}")
+    # An entry the write left as it was gives Flux nothing to roll out.
+    if moved:
+        reconcile_consumers(moved)
     refreshed = {name: image for name, image in resolved.items() if name not in pinned}
-    if refreshed:
-        reconcile_consumers(list(refreshed))
     return RefreshResult(refreshed, pinned)
 
 
@@ -1397,12 +1401,11 @@ def refresh_due_services(
             continue
         for name in pair:
             key = image_lock_key(name)
-            if not runs_fork_package(name, data.get(f"{key}_IMAGE_REPOSITORY", ""), repo):
+            if not runs_fork_package(name, str(data.get(f"{key}_IMAGE_REPOSITORY", "")), repo):
                 continue
+            created_at = str(data.get(f"{key}_IMAGE_CREATED_AT", ""))
             try:
-                built = datetime.fromisoformat(
-                    data.get(f"{key}_IMAGE_CREATED_AT", "").replace("Z", "+00:00")
-                )
+                built = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
             except ValueError:
                 continue
             if built.tzinfo is None:

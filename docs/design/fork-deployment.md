@@ -117,8 +117,8 @@ sweep's workflow step is unbuilt; the sweep verb and the refresh step exist):
   display-only and is never fetched. Roster membership replaces the
   `Azure/osdu-spi-*` naming convention for personal and customer forks, but
   does not prove that only onboarded repositories can be lookup targets.
-- `spi service refresh --forks` then advances every fork-sourced service to
-  the current retained canonical (ADR-033).
+- `spi service refresh --forks` then advances the unpinned fork-sourced
+  services to the current retained canonical (ADR-033).
 
 The post-pin verify detects a replacement observed during that step. There is
 no second verification before each suite, so replacement after verification
@@ -277,11 +277,14 @@ beside the running image and marks a policy the running image predates.
 
 `spi service refresh --forks` refreshes every service the projection names,
 with the semantics of naming them, and takes no service arguments. A lock
-with no fork source is nothing to refresh and exits 0. The weekday
-`env-refresh` workflow runs it after `spi reconcile` when the declared
-`stackVersion` is v0.22.0 or later, in a step capped at 20 minutes; a
-failure fails the run and leaves maintenance set. An environment with no
-workflow advances only when someone runs a refresh.
+with no fork source is nothing to refresh and exits 0. A refresh waits for
+Flux to reconcile the consumers of each entry it changed, and skips that
+wait for an entry it resolved to the image the lock already records. The
+weekday `env-refresh` workflow runs `--forks` after `spi reconcile` when the
+declared `stackVersion` is v0.22.0 or later, in a step capped at 20 minutes;
+a failure, or a rollout still running at the cap, fails the run and leaves
+maintenance set. An environment with no workflow advances only when someone
+runs a refresh.
 
 A fork canonical left unrefreshed past the 30-day `sha-*` retention while the
 fork keeps building can have its recorded digest deleted (ADR-033). `spi

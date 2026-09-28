@@ -77,8 +77,9 @@ moves the schema image spends up to 60 minutes in `spi up` plus the same
 re-reconcile of already-scheduled workloads, but its wait keeps the same
 230-minute allowance for a schema-load Job the standing environment re-runs,
 for example after a node recycle, hence its 4.5-hour budget. The fork
-canonical refresh ahead of that wait is capped at 20 minutes, which the same
-budget holds.
+canonical refresh ahead of that wait is capped at 20 minutes; it waits on
+Flux only for a service whose image moved, and a rollout still running at
+the cap fails the run.
 
 All four verbs share concurrency group `env-shared` with
 `cancel-in-progress: false`, so lifecycle operations serialize against each

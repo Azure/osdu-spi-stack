@@ -327,6 +327,21 @@ class TestForkCanonicalRefresh:
         budget = int(job["timeout-minutes"]) - int(wait_seconds.group(1)) // 60
         assert budget - int(step["timeout-minutes"]) >= 20
 
+    def _run_step(self, tmp_path, stack_version: str, spi_exit: int = 0):
+        """Run the step's script against a stub `spi` that echoes its arguments."""
+        job = _workflow(ENV_REFRESH)["jobs"]["refresh"]
+        stub = tmp_path / "spi"
+        stub.write_text(f'#!/usr/bin/env bash\necho "spi $*"\nexit {spi_exit}\n', encoding="utf-8")
+        stub.chmod(0o755)
+        env = {
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "STACK_VERSION": stack_version,
+            "FORK_REFRESH_CLI_MIN_VERSION": job["env"]["FORK_REFRESH_CLI_MIN_VERSION"],
+        }
+        return run_process(
+            ["bash", "-c", _steps(job)[self.STEP]["run"]], env=env, capture_output=True, text=True
+        )
+
     @pytest.mark.parametrize(
         ("stack_version", "refreshed"),
         [("v0.21.0", False), ("v0.22.0", True), ("v0.100.0", True)],
@@ -334,23 +349,14 @@ class TestForkCanonicalRefresh:
     def test_fork_refresh_runs_only_on_a_cli_that_has_the_flag(
         self, tmp_path, stack_version, refreshed
     ):
-        job = _workflow(ENV_REFRESH)["jobs"]["refresh"]
-        stub = tmp_path / "spi"
-        stub.write_text('#!/usr/bin/env bash\necho "spi $*"\n', encoding="utf-8")
-        stub.chmod(0o755)
-        env = {
-            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
-            "STACK_VERSION": stack_version,
-            "FORK_REFRESH_CLI_MIN_VERSION": job["env"]["FORK_REFRESH_CLI_MIN_VERSION"],
-        }
-
-        result = run_process(
-            ["bash", "-c", _steps(job)[self.STEP]["run"]], env=env, capture_output=True, text=True
-        )
+        result = self._run_step(tmp_path, stack_version)
 
         assert result.returncode == 0
         assert ("spi service refresh --forks" in result.stdout.splitlines()) is refreshed
         assert ("::notice::" in result.stdout) is not refreshed
+
+    def test_a_failed_fork_refresh_fails_the_step(self, tmp_path):
+        assert self._run_step(tmp_path, "v0.22.0", spi_exit=3).returncode == 3
 
 
 class TestAssertionsAndDeployability:
