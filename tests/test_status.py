@@ -6,6 +6,7 @@
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from rich.console import Console
@@ -1006,6 +1007,59 @@ def test_status_warns_when_the_cli_predates_the_stack(monkeypatch):
     unwrapped = " ".join(_plain(result.output).replace("│", " ").split())
 
     assert "spi 0.19.3 is older than the stack (0.20.0); run 'spi update'." in unwrapped
+
+
+def _days_ago(days: int) -> str:
+    built = datetime.now(timezone.utc) - timedelta(days=days)
+    return built.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _fork_lock(built: str, sources: str = '{"partition": "Acme/partition"}', pins=None) -> dict:
+    annotations = {"spi-stack.osdu.dev/canonical-sources": sources}
+    if pins:
+        annotations["spi-stack.osdu.dev/pins"] = json.dumps(pins)
+    return {
+        "metadata": {"annotations": annotations},
+        "data": {
+            "IMAGE_BRANCH": "master",
+            "IMAGE_RESOLVED_AT": "now",
+            "IMAGE_COUNT": "14",
+            "PARTITION_IMAGE_REPOSITORY": "ghcr.io/acme/partition",
+            "PARTITION_IMAGE_CREATED_AT": built,
+        },
+    }
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_status_warns_on_an_aged_unpinned_fork_canonical_and_stays_deployable(monkeypatch, pinned):
+    pin = {
+        "mr": "42",
+        "branch": "fix/x",
+        "repository": "registry/partition",
+        "tag": "b" * 40,
+        "canonical_repository": "ghcr.io/acme/partition",
+        "canonical_tag": "sha-8e056d4a6142",
+        "canonical_created_at": "then",
+        "canonical_digest": "sha256:old",
+        "applied_at": "now",
+    }
+    _wire(monkeypatch, lock=_fork_lock(_days_ago(22), pins={"partition": pin} if pinned else None))
+    monkeypatch.setattr(status, "kubectl_json", lambda _args: None)
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    snapshot = status.collect_status()
+    result = CliRunner().invoke(cli.app, ["status"])
+    unwrapped = " ".join(_plain(result.output).replace("│", " ").split())
+
+    assert snapshot.images.refresh_due == (() if pinned else ("partition",))
+    assert ("Run 'spi service refresh partition'." in unwrapped) is not pinned
+    assert (snapshot.deployable, snapshot.reason, result.exit_code) == (True, None, 0)
+
+
+def test_status_reads_a_corrupt_source_policy_as_nothing_due(monkeypatch):
+    _wire(monkeypatch, lock=_fork_lock(_days_ago(22), sources="{not json"))
+
+    assert status.collect_status().images.refresh_due == ()
 
 
 def test_summary_counts_failed_kustomizations_apart_from_progressing():

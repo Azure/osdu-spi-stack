@@ -11,7 +11,7 @@ an incident is how a 20-minute refresh becomes a 4-hour rebuild.
 
 **Status.** `env-upgrade` and `env-refresh` are implemented and described
 below as built, as is the test-identity ensure step. `env-reset` and
-`env-teardown`, the backstop's workflow step, the drain, and
+`env-teardown`, the stale-pin sweep's workflow step, the drain, and
 onboarding-intent reconciliation remain unbuilt; those sections still
 describe the target mechanism ahead of the code. Remove the remaining marks
 as those phases land.
@@ -64,7 +64,7 @@ pin file starts the upgrade. Nothing else moves the stack-definition version
 
 | Verb | Workflow | Trigger | Budget |
 |---|---|---|---|
-| refresh | `env-refresh` | weekday cron 05:00 UTC, dispatch | 4.5 h |
+| refresh | `env-refresh` | weekday cron 04:00 UTC, dispatch | 4.5 h |
 | upgrade | `env-upgrade` | push to `main` touching the pin file, dispatch | 6 h |
 | reset | `env-reset` | Saturday cron 06:00 UTC, confirm-dispatch | 7 h |
 | teardown | `env-teardown` | protected dispatch | 1 h |
@@ -76,7 +76,10 @@ moves the schema image spends up to 60 minutes in `spi up` plus the same
 230-minute converge, hence its 6-hour budget. A refresh is normally a
 re-reconcile of already-scheduled workloads, but its wait keeps the same
 230-minute allowance for a schema-load Job the standing environment re-runs,
-for example after a node recycle, hence its 4.5-hour budget.
+for example after a node recycle, hence its 4.5-hour budget. The fork
+canonical refresh ahead of that wait is capped at 20 minutes; it waits on
+Flux only for a service whose image moved, and a rollout still running at
+the cap fails the run.
 
 All four verbs share concurrency group `env-shared` with
 `cancel-in-progress: false`, so lifecycle operations serialize against each
@@ -97,17 +100,21 @@ tag, and the shared RG carries neither.
 **Refresh** (`env-refresh.yml`, implemented) proves the environment is
 serving: set the `maintenance` flag in a named quiesce step, run plain `spi
 reconcile` (preserving the version-pinned source and the current image
-lock; canonical images do not advance on this schedule during the
-pre-onboarding phase), gate on `scripts/wait_for_flux_ready.sh` plus the
-gateway probes shared with `smoke.yml` via `scripts/probe_gateway.sh`,
-assert the deployed ref and source suspension are unchanged, and clear the
-flag only after every check passes. A failed step leaves the flag set
-(ADR-029), so a red 05:00 UTC run blocks the day's fork deploys with a
-reason instead of letting them race a sick environment. The pin backstop
-(sweep ephemeral pins whose owning run has ended, then `spi service refresh`
-per GitHub-origin service; [fork-deployment.md](fork-deployment.md)) and the
-drain insert between the quiesce step and the reconcile once fork onboarding
-lands, without changing the workflow's shape.
+lock), run `spi service refresh --forks` to advance fork-sourced canonicals
+(ADR-033), gate on `scripts/wait_for_flux_ready.sh` plus the gateway probes
+shared with `smoke.yml` via `scripts/probe_gateway.sh`, assert the deployed
+ref and source suspension are unchanged, and clear the flag only after every
+check passes. Community-sourced canonicals do not advance on this schedule.
+The fork refresh runs when the declared `stackVersion` is v0.22.0 or later;
+an older declaration logs a notice and skips the step. The schedule starts
+an hour before the fork template's retention job (Mondays 05:00 UTC), so a
+canonical moves to a fork's weekend build before retention deletes the image
+that build replaced. A failed step leaves the flag set (ADR-029), so a red
+04:00 UTC run blocks the day's fork deploys with a reason instead of letting
+them race a sick environment. The stale-pin sweep
+([fork-deployment.md](fork-deployment.md)) and the drain insert between the
+quiesce step and the reconcile, without changing the workflow's shape; both
+steps are unbuilt.
 
 **Upgrade** (`env-upgrade.yml`, implemented) is `spi up --env shared --tag
 <new> --refresh-images` re-run on the standing environment. For an existing
@@ -126,8 +133,8 @@ source again, then write the deploy record with maintenance still enabled
 (ADR-029). The verification job separately waits for workload convergence
 and clears maintenance only after its probes pass. The `--refresh-images`
 pass moves canonical images during an upgrade, but the bump pins only the
-stack-definition axis. Weekday refreshes preserve those canonicals until the
-future fork-onboarding phase adds selective canonical refresh (ADR-033).
+stack-definition axis. Weekday refreshes preserve community canonicals and
+advance fork-sourced ones (ADR-033).
 
 **Onboarding intent** (unbuilt) is loaded from the reviewed declaration before
 refresh or upgrade resolves an image. `forks:` owns trust and
@@ -280,8 +287,8 @@ gh run watch
    implemented; `shared` stands up at the release tag via `env-upgrade`.
 3. **Ops workflows** (mostly built): `env-refresh`, `env-upgrade`, and the
    bump-PR job are implemented, as is the test-identity ensure step. Still
-   unbuilt: `env-reset`, `env-teardown`, and the pin backstop/drain
-   insertion points noted above.
+   unbuilt: `env-reset`, `env-teardown`, and the stale-pin sweep and drain
+   steps noted above.
 4. **Onboarding** (in progress): the deploy identity and two Roles in `spi up`,
    identity and RG-tag retention in `spi down` (ADR-034), and the trust path
    of `spi onboard` (repository protection, the five values, the federated
@@ -293,11 +300,11 @@ gh run watch
    `validation-summary` reports its result through the required summary check.
    See [fork deployment](fork-deployment.md#the-sequence).
 5. **Canonical promotions** (partly built): explicit per-service source
-   policy in RG tags and its lock projection are implemented. Still unbuilt:
-   on the shared environment, a reviewed `canonicalSource: fork` change after
-   the deploy and test gates pass (ADR-033), and a scheduled
-   `spi service refresh` that advances fork-sourced canonicals inside the
-   retention window.
+   policy in RG tags and its lock projection are implemented, as is the
+   weekday `spi service refresh --forks` that advances fork-sourced
+   canonicals inside the retention window. Still unbuilt: on the shared
+   environment, a reviewed `canonicalSource: fork` change after the deploy
+   and test gates pass (ADR-033).
 
 ## Related ADRs
 

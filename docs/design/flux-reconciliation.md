@@ -287,8 +287,9 @@ canonical image; if that record is missing, the CLI reports that a subsequent
 For fork CI, `--ephemeral` records the owning run and source provenance.
 `spi service verify` checks the rollout and running image digest;
 `spi service reset --if-run` restores only a pin still owned by that run.
-The stale-pin sweep, `spi onboard` trust, and canonical-source promotion
-exist; the scheduled backstop remains unbuilt. Ephemeral pins require a
+The stale-pin sweep, `spi onboard` trust, canonical-source promotion, and
+the weekday refresh of fork-sourced canonicals exist; the scheduled sweep
+remains unbuilt. Ephemeral pins require a
 repository matching the lock's trusted roster and its derived GHCR package.
 Follow [fork deployment](fork-deployment.md) for required metadata, refusal
 codes, and trust activation.
