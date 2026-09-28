@@ -12,11 +12,15 @@ captured on failure.
 """
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
+
+from spi.shell import run_process
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENV_UPGRADE = REPO_ROOT / ".github" / "workflows" / "env-upgrade.yml"
@@ -276,7 +280,7 @@ class TestMaintenanceOrdering:
         assert quiesce_idx < reconcile_idx < wait_idx < assert_idx < clear_idx < deployable_idx
 
         reconcile_step = next(s for s in refresh_steps if s.get("name") == "spi reconcile")
-        # Plain reconcile: no image refresh on this schedule.
+        # Plain reconcile: fork-sourced canonicals move in their own step.
         assert reconcile_step["run"].strip() == 'spi reconcile --image-branch "$IMAGE_BRANCH"'
 
         clear_step = next(s for s in refresh_steps if s.get("name") == "Clear maintenance")
@@ -302,6 +306,51 @@ class TestMaintenanceOrdering:
         assert "spi-deploy-record" in require_step["run"]
         assert "--ignore-not-found" in require_step["run"]
         assert "exit 1" in require_step["run"]
+
+
+class TestForkCanonicalRefresh:
+    STEP = "Refresh fork-sourced canonicals"
+    WAIT = "Wait for Flux Kustomizations to be Ready"
+
+    def test_env_refresh_refreshes_fork_canonicals_before_the_wait(self):
+        job = _workflow(ENV_REFRESH)["jobs"]["refresh"]
+        steps = _steps(job)
+        names = list(steps)
+        step = steps[self.STEP]
+        wait_seconds = re.search(r"--timeout (\d+)", steps[self.WAIT]["run"])
+
+        assert names.index("spi reconcile") < names.index(self.STEP) < names.index(self.WAIT)
+        assert step["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+        # A failed refresh fails the run, which leaves maintenance set.
+        assert "if" not in step and "continue-on-error" not in step
+        assert wait_seconds is not None
+        budget = int(job["timeout-minutes"]) - int(wait_seconds.group(1)) // 60
+        assert budget - int(step["timeout-minutes"]) >= 20
+
+    @pytest.mark.parametrize(
+        ("stack_version", "refreshed"),
+        [("v0.21.0", False), ("v0.22.0", True), ("v0.100.0", True)],
+    )
+    def test_fork_refresh_runs_only_on_a_cli_that_has_the_flag(
+        self, tmp_path, stack_version, refreshed
+    ):
+        job = _workflow(ENV_REFRESH)["jobs"]["refresh"]
+        stub = tmp_path / "spi"
+        stub.write_text('#!/usr/bin/env bash\necho "spi $*"\n', encoding="utf-8")
+        stub.chmod(0o755)
+        env = {
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "STACK_VERSION": stack_version,
+            "FORK_REFRESH_CLI_MIN_VERSION": job["env"]["FORK_REFRESH_CLI_MIN_VERSION"],
+        }
+
+        result = run_process(
+            ["bash", "-c", _steps(job)[self.STEP]["run"]], env=env, capture_output=True, text=True
+        )
+
+        assert result.returncode == 0
+        assert ("spi service refresh --forks" in result.stdout.splitlines()) is refreshed
+        assert ("::notice::" in result.stdout) is not refreshed
 
 
 class TestAssertionsAndDeployability:
