@@ -9,7 +9,9 @@ name: Environment Refresh
 
 on:
   schedule:
-    - cron: "0 5 * * 1-5"
+    # An hour ahead of the fork template's GHCR retention (Mondays 05:00 UTC),
+    # so a fork canonical moves before retention deletes the image it left.
+    - cron: "0 4 * * 1-5"
   workflow_dispatch: {}
 
 permissions:

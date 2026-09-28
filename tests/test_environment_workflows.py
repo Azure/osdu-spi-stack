@@ -58,12 +58,12 @@ class TestTriggers:
         assert push["branches"] == ["main"]
         assert push["paths"] == ["ops/environments/shared.yaml"]
 
-    def test_env_refresh_triggers_weekdays_at_0500_utc_and_manual_dispatch(self):
+    def test_env_refresh_triggers_weekdays_at_0400_utc_and_manual_dispatch(self):
         workflow = _workflow(ENV_REFRESH)
 
         assert "workflow_dispatch" in workflow["on"]
         schedules = workflow["on"]["schedule"]
-        assert any(entry["cron"] == "0 5 * * 1-5" for entry in schedules)
+        assert [entry["cron"] for entry in schedules] == ["0 4 * * 1-5"]
 
 
 class TestConcurrencyAndEnvironment:

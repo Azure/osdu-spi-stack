@@ -64,7 +64,7 @@ pin file starts the upgrade. Nothing else moves the stack-definition version
 
 | Verb | Workflow | Trigger | Budget |
 |---|---|---|---|
-| refresh | `env-refresh` | weekday cron 05:00 UTC, dispatch | 4.5 h |
+| refresh | `env-refresh` | weekday cron 04:00 UTC, dispatch | 4.5 h |
 | upgrade | `env-upgrade` | push to `main` touching the pin file, dispatch | 6 h |
 | reset | `env-reset` | Saturday cron 06:00 UTC, confirm-dispatch | 7 h |
 | teardown | `env-teardown` | protected dispatch | 1 h |
@@ -106,12 +106,15 @@ shared with `smoke.yml` via `scripts/probe_gateway.sh`, assert the deployed
 ref and source suspension are unchanged, and clear the flag only after every
 check passes. Community-sourced canonicals do not advance on this schedule.
 The fork refresh runs when the declared `stackVersion` is v0.22.0 or later;
-an older declaration logs a notice and skips the step. A failed step leaves
-the flag set (ADR-029), so a red 05:00 UTC run blocks the day's fork deploys
-with a reason instead of letting them race a sick environment. The stale-pin
-sweep ([fork-deployment.md](fork-deployment.md)) and the drain insert between
-the quiesce step and the reconcile, without changing the workflow's shape;
-both steps are unbuilt.
+an older declaration logs a notice and skips the step. The schedule starts
+an hour before the fork template's retention job (Mondays 05:00 UTC), so a
+canonical moves to a fork's weekend build before retention deletes the image
+that build replaced. A failed step leaves the flag set (ADR-029), so a red
+04:00 UTC run blocks the day's fork deploys with a reason instead of letting
+them race a sick environment. The stale-pin sweep
+([fork-deployment.md](fork-deployment.md)) and the drain insert between the
+quiesce step and the reconcile, without changing the workflow's shape; both
+steps are unbuilt.
 
 **Upgrade** (`env-upgrade.yml`, implemented) is `spi up --env shared --tag
 <new> --refresh-images` re-run on the standing environment. For an existing

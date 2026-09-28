@@ -283,8 +283,10 @@ wait for an entry it resolved to the image the lock already records. The
 weekday `env-refresh` workflow runs `--forks` after `spi reconcile` when the
 declared `stackVersion` is v0.22.0 or later, in a step capped at 20 minutes;
 a failure, or a rollout still running at the cap, fails the run and leaves
-maintenance set. An environment with no workflow advances only when someone
-runs a refresh.
+maintenance set. The workflow starts at 04:00 UTC, an hour before the fork
+template's Monday retention job, so the refresh records a newer build before
+retention deletes the image it replaced. An environment with no workflow
+advances only when someone runs a refresh.
 
 A fork canonical left unrefreshed past the 30-day `sha-*` retention while the
 fork keeps building can have its recorded digest deleted (ADR-033). `spi
