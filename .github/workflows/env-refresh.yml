@@ -1,14 +1,17 @@
 name: Environment Refresh
 
 # Proves the standing environment in ops/environments/shared.yaml still
-# serves: quiesce, reconcile the pinned source, wait for Flux, probe the
-# gateway, reopen for deploys. Every operational call uses the `spi` wheel
-# of the declared stackVersion, never `uv run spi`; the lifecycle contract
-# is docs/design/environment-lifecycle.md.
+# serves: quiesce, reconcile the pinned source, refresh fork-sourced
+# canonicals, wait for Flux, probe the gateway, reopen for deploys. Every
+# operational call uses the `spi` wheel of the declared stackVersion, never
+# `uv run spi`; the lifecycle contract is
+# docs/design/environment-lifecycle.md.
 
 on:
   schedule:
-    - cron: "0 5 * * 1-5"
+    # An hour ahead of the fork template's GHCR retention (Mondays 05:00 UTC),
+    # so a fork canonical moves before retention deletes the image it left.
+    - cron: "0 4 * * 1-5"
   workflow_dispatch: {}
 
 permissions:
@@ -117,6 +120,8 @@ jobs:
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
       # First release whose CLI publishes the `environment` status block this job reads.
       LIFECYCLE_CLI_MIN_VERSION: v0.10.0
+      # First release whose CLI has `spi service refresh --forks`.
+      FORK_REFRESH_CLI_MIN_VERSION: v0.22.0
     steps:
       - name: Refuse a declaration older than the lifecycle CLI
         run: |
@@ -198,6 +203,19 @@ jobs:
       - name: spi reconcile
         # No --refresh-images: the pinned source and current image lock stand.
         run: spi reconcile --image-branch "$IMAGE_BRANCH"
+
+      - name: Refresh fork-sourced canonicals
+        # Inside the job budget, and short of the hour the cached Azure token lasts.
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$(printf '%s\n' "$FORK_REFRESH_CLI_MIN_VERSION" "$STACK_VERSION" | sort -V | head -n1)" != "$FORK_REFRESH_CLI_MIN_VERSION" ]; then
+            echo "::notice::stackVersion $STACK_VERSION predates spi service refresh --forks (minimum $FORK_REFRESH_CLI_MIN_VERSION); fork-sourced canonicals are not refreshed"
+            exit 0
+          fi
+          spi service refresh --forks
 
       - name: Wait for Flux Kustomizations to be Ready
         run: bash scripts/wait_for_flux_ready.sh --timeout 13800

@@ -208,6 +208,8 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     }
 
     def fake_read_lock(required=True):
+        if box[0] is None and required:
+            raise PinError("ConfigMap osdu-image-lock not found")
         return box[0]
 
     def fake_run_command(cmd, description=None, check=True, **kwargs):
@@ -3182,6 +3184,16 @@ class TestRefreshServices:
         assert data["LEGAL_IMAGE_DIGEST"] == "sha256:new"
         assert calls["reconciled"] == ["legal"]
 
+    def test_an_entry_the_refresh_leaves_unchanged_is_not_reconciled(self, monkeypatch):
+        self._resolver(monkeypatch, [])
+        calls = _wire_lock(monkeypatch, self._lock())
+        pins.refresh_services(["partition"])
+
+        result = pins.refresh_services(["partition", "legal"])
+
+        assert set(result.refreshed) == {"partition", "legal"}
+        assert calls["reconciled"] == ["legal"]
+
     def test_the_pair_follows_the_refreshed_canonical(self, monkeypatch):
         refreshed = {
             "partition": replace(self.FORK, acceptance_digest="sha256:acc"),
@@ -3231,3 +3243,157 @@ class TestRefreshServices:
         assert outcome["outcome"] == "refreshed"
         assert outcome["refreshed"] == {"partition": "ghcr.io/acme/partition@sha256:" + "f" * 64}
         assert outcome["pinned"] == ["schema"]
+
+    def test_forks_moves_only_the_services_the_policy_names(self, monkeypatch):
+        resolved = []
+        self._resolver(monkeypatch, resolved)
+        calls = _wire_lock(monkeypatch, self._lock())
+
+        result = pins.refresh_fork_services()
+
+        data, _ = calls["patch"]
+        assert resolved == [("release-0-30", ["partition"], {"partition": "Acme/partition"})]
+        assert data["LEGAL_IMAGE_DIGEST"] == "sha256:old"
+        assert result.refreshed == {"partition": self.FORK}
+        assert calls["reconciled"] == ["partition"]
+
+    @pytest.mark.parametrize("data", [None, _canonical_data("partition")])
+    def test_forks_without_a_fork_source_writes_nothing(self, monkeypatch, data):
+        monkeypatch.setattr(pins, "resolve_images", pytest.fail)
+        calls = _wire_lock(monkeypatch, _lock(data=data) if data else None)
+
+        result = pins.refresh_fork_services()
+
+        assert result == pins.RefreshResult({}, ())
+        assert calls["patch"] is None
+
+    @pytest.mark.parametrize(
+        ("sources", "trusted", "message"),
+        [
+            ("{not json", {"partition": "acme/partition"}, "Corrupt"),
+            (json.dumps({"partition": "Acme/partition"}), {}, "no fork is trusted"),
+            (
+                json.dumps({"nonesuch": "Acme/nonesuch"}),
+                {"nonesuch": "acme/nonesuch"},
+                "Unknown service",
+            ),
+        ],
+    )
+    def test_forks_refuses_a_policy_it_cannot_use(self, monkeypatch, sources, trusted, message):
+        monkeypatch.setattr(pins, "resolve_images", pytest.fail)
+        lock = self._lock()
+        annotations = lock["metadata"]["annotations"]
+        annotations[pins.CANONICAL_SOURCES_ANNOTATION] = sources
+        annotations[pins.TRUSTED_REPOS_ANNOTATION] = json.dumps(trusted)
+        calls = _wire_lock(monkeypatch, lock)
+
+        with pytest.raises(PinError, match=message):
+            pins.refresh_fork_services()
+        assert calls["patch"] is None
+
+    def test_forks_with_nothing_to_refresh_says_so(self, monkeypatch):
+        monkeypatch.setattr(cli, "_guarded_context", lambda output_json: "ctx")
+        monkeypatch.setattr(cli, "refresh_services", pytest.fail)
+        monkeypatch.setattr(cli, "refresh_fork_services", lambda: pins.RefreshResult({}, ()))
+
+        human = CliRunner().invoke(cli.app, ["service", "refresh", "--forks"])
+        machine = CliRunner().invoke(cli.app, ["service", "refresh", "--forks", "--json"])
+
+        outcome = json.loads(machine.output.strip().splitlines()[-1])
+        assert human.exit_code == machine.exit_code == 0
+        assert "No fork-sourced services to refresh on test v0.0.0." in _plain(human.output)
+        assert outcome["outcome"] == "refreshed"
+        assert outcome["detail"] == "no fork-sourced services; nothing to refresh"
+        assert (outcome["refreshed"], outcome["pinned"]) == ({}, [])
+
+    def test_forks_reports_a_pinned_fork_service_as_pinned(self, monkeypatch):
+        monkeypatch.setattr(cli, "_guarded_context", lambda output_json: "ctx")
+        held = pins.RefreshResult({}, ("partition",))
+        monkeypatch.setattr(cli, "refresh_fork_services", lambda: held)
+
+        result = CliRunner().invoke(cli.app, ["service", "refresh", "--forks", "--json"])
+
+        outcome = json.loads(result.output.strip().splitlines()[-1])
+        assert outcome["detail"] == "refreshed 0, pinned 1"
+        assert outcome["pinned"] == ["partition"]
+
+    @pytest.mark.parametrize("args", [["partition", "--forks"], []])
+    def test_a_refresh_naming_both_or_neither_is_refused(self, monkeypatch, args):
+        monkeypatch.setattr(cli, "_guarded_context", pytest.fail)
+
+        result = CliRunner().invoke(cli.app, ["service", "refresh", *args, "--json"])
+
+        outcome = json.loads(result.output.strip().splitlines()[-1])
+        assert result.exit_code == 1
+        assert outcome["outcome"] == "error"
+        assert "--forks" in outcome["detail"]
+
+
+class TestRefreshDue:
+    NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    FORK = {"partition": "Acme/partition"}
+    PACKAGE = "ghcr.io/acme/partition"
+
+    @pytest.mark.parametrize(
+        ("repository", "created_at", "sources", "pinned", "due"),
+        [
+            pytest.param(PACKAGE, "2026-09-09T00:00:00Z", FORK, (), ("partition",), id="22-days"),
+            pytest.param(PACKAGE, "2026-09-10T00:00:00Z", FORK, (), (), id="21-days"),
+            pytest.param(PACKAGE, "2026-09-11T00:00:00Z", FORK, (), (), id="20-days"),
+            pytest.param(PACKAGE, "2026-09-09T00:00:00", FORK, (), ("partition",), id="naive"),
+            pytest.param(PACKAGE, "2025-01-01T00:00:00Z", {}, (), (), id="community-policy"),
+            pytest.param(
+                "repo/partition-master",
+                "2025-01-01T00:00:00Z",
+                FORK,
+                (),
+                (),
+                id="not-yet-refreshed",
+            ),
+            pytest.param(PACKAGE, "", FORK, (), (), id="no-date"),
+            pytest.param(PACKAGE, "then", FORK, (), (), id="unreadable-date"),
+            pytest.param(PACKAGE, None, FORK, (), (), id="non-string-date"),
+            pytest.param(PACKAGE, "2026-09-09T00:00:00Z", FORK, ("partition",), (), id="pinned"),
+            pytest.param(
+                "ghcr.io/acme/nonesuch",
+                "2025-01-01T00:00:00Z",
+                {"nonesuch": "Acme/nonesuch"},
+                (),
+                (),
+                id="unknown-service",
+            ),
+        ],
+    )
+    def test_only_an_aged_unpinned_fork_image_is_due(
+        self, repository, created_at, sources, pinned, due
+    ):
+        service = next(iter(sources), "partition")
+        key = service.upper()
+        data = {f"{key}_IMAGE_REPOSITORY": repository, f"{key}_IMAGE_CREATED_AT": created_at}
+
+        assert pins.refresh_due_services(data, sources, pinned, self.NOW) == due
+
+    @pytest.mark.parametrize(
+        ("pinned", "due", "message"),
+        [
+            (
+                (),
+                ("schema", "schema-load"),
+                "schema runs a fork image built over 21 days ago; GHCR retention can delete it "
+                "at 30 days. Run 'spi service refresh schema'.",
+            ),
+            (("schema-load",), (), ""),
+        ],
+    )
+    def test_schema_and_its_loader_are_due_as_one_pair(self, pinned, due, message):
+        data = {
+            "SCHEMA_IMAGE_REPOSITORY": "ghcr.io/acme/schema",
+            "SCHEMA_IMAGE_CREATED_AT": "2026-09-01T00:00:00Z",
+            "SCHEMA_LOAD_IMAGE_REPOSITORY": "ghcr.io/acme/schema-load",
+            "SCHEMA_LOAD_IMAGE_CREATED_AT": "2026-09-01T00:00:00Z",
+        }
+
+        found = pins.refresh_due_services(data, {"schema": "Acme/schema"}, pinned, self.NOW)
+
+        assert found == due
+        assert pins.refresh_due_message(found) == message

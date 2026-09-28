@@ -6,6 +6,7 @@
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -608,6 +609,7 @@ def test_info_json_lists_each_service_image_from_the_lock(monkeypatch):
         "pinned": False,
         "origin": "canonical",
         "source": "community",
+        "refresh_due": False,
     }
 
 
@@ -763,6 +765,47 @@ def test_the_versions_table_marks_a_source_the_running_image_predates(
     cell = info._canonical_source(name, {"repository": repository, "source": source})
 
     assert Text.from_markup(cell).plain == shown
+
+
+def _fork_lock(age_days: int, pins: dict | None = None) -> dict:
+    """``_lock`` with partition following a fork, on an image built ``age_days`` ago."""
+    lock = _lock(pins)
+    built = datetime.now(timezone.utc) - timedelta(days=age_days)
+    lock["data"]["PARTITION_IMAGE_REPOSITORY"] = "ghcr.io/acme/partition"
+    lock["data"]["PARTITION_IMAGE_CREATED_AT"] = built.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # storage stays community on a build older than any threshold.
+    lock["data"]["STORAGE_IMAGE_CREATED_AT"] = "2025-01-01T00:00:00Z"
+    lock["metadata"]["annotations"]["spi-stack.osdu.dev/canonical-sources"] = json.dumps(
+        {"partition": "Acme/partition"}
+    )
+    return lock
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_info_marks_an_unpinned_fork_canonical_past_the_refresh_age(monkeypatch, pinned):
+    pin = {
+        "mr": "",
+        "branch": "",
+        "repository": "ghcr.io/acme/partition",
+        "tag": "",
+        "canonical_repository": "ghcr.io/acme/partition",
+        "canonical_tag": "sha-8e056d4a6142",
+        "canonical_created_at": "",
+        "canonical_digest": "sha256:" + "c" * 64,
+        "applied_at": "2026-09-24T10:00:00Z",
+        "digest": "sha256:" + "d" * 64,
+        "ephemeral": True,
+        "run_id": "42",
+    }
+    _wire(monkeypatch, image_lock=_fork_lock(22, {"partition": pin} if pinned else None))
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
+
+    services = info.collect_info()["osdu_versions"]["services"]
+    output = " ".join(_plain(CliRunner().invoke(cli.app, ["info"]).output).split())
+
+    assert services["partition"]["refresh_due"] is not pinned
+    assert services["storage"]["refresh_due"] is False
+    assert ("Run 'spi service refresh partition'." in output) is not pinned
 
 
 def test_the_schema_loader_reports_the_schema_source_policy(monkeypatch):

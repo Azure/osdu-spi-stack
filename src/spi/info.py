@@ -25,6 +25,7 @@ and renders the right base URL / middleware UI table per ingress mode:
 import base64
 import json
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from functools import partial
 
 from rich.panel import Panel
@@ -44,12 +45,20 @@ from .deploy_record import (
 from .images import (
     GHCR_HOST,
     SCHEMA_LOAD_SERVICE_NAME,
-    fork_package_repositories,
     image_lock_key,
     image_lock_names,
+    runs_fork_package,
 )
 from .ingress import get_ingress_ip
-from .pins import PinError, decode_canonical_sources, decode_pins, pin_origin, read_lock
+from .pins import (
+    PinError,
+    decode_canonical_sources,
+    decode_pins,
+    pin_origin,
+    read_lock,
+    refresh_due_message,
+    refresh_due_services,
+)
 from .shell import gather_reads, kubectl_json
 from .stack_version import collect_running_version, skew_message
 from .status import STATUS_API_VERSION
@@ -176,6 +185,7 @@ def _osdu_versions(lock: dict | None) -> dict:
     # `<SERVICE>_IMAGE` is the substitution key every lock carries; older locks lack the rest.
     keys = {key.removesuffix("_IMAGE") for key in data if key.endswith("_IMAGE")}
     ordered = [key for key in known if key in keys] + sorted(keys - known.keys())
+    due = refresh_due_services(data, sources, pins, datetime.now(timezone.utc))
     services = {}
     for key in ordered:
         name = known.get(key) or key.lower().replace("_", "-")
@@ -192,6 +202,7 @@ def _osdu_versions(lock: dict | None) -> dict:
             "origin": pin_origin(pin) if pin else "canonical",
             # The policy the next refresh resolves; the repository shows what runs now.
             "source": sources.get(_policy_service(name), "community"),
+            "refresh_due": name in due,
         }
     return {
         "branch": data.get("IMAGE_BRANCH", ""),
@@ -595,10 +606,11 @@ def _service_versions_table(versions: dict) -> Table | None:
                 f"[warning]{image['origin']}[/warning]",
             )
         else:
+            built = image["created_at"][:10]
             table.add_row(
                 name,
                 image["tag"][:12] or f"@{image['digest'][:19]}",
-                image["created_at"][:10],
+                f"[warning]{built}[/warning]" if image.get("refresh_due") else built,
                 _canonical_source(name, image),
             )
     return table
@@ -618,9 +630,7 @@ def _canonical_source(name: str, image: dict) -> str:
     if source == "community":
         current = repository.partition("/")[0] != GHCR_HOST
     else:
-        suffix = "-load" if name == SCHEMA_LOAD_SERVICE_NAME else ""
-        packages = fork_package_repositories(source, _policy_service(name))
-        current = repository in {f"{package}{suffix}" for package in packages}
+        current = runs_fork_package(name, repository, source)
     if current:
         return source if source != "community" else "[dim]community[/dim]"
     return f"{source} [dim](next refresh)[/dim]"
@@ -697,6 +707,15 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
     versions = _service_versions_table(info["osdu_versions"])
     if versions is not None:
         console.print(versions)
+        due = refresh_due_message(
+            [
+                name
+                for name, image in info["osdu_versions"]["services"].items()
+                if image.get("refresh_due")
+            ]
+        )
+        if due:
+            console.print(f"  [warning]{due}[/warning]")
         console.print()
 
     endpoint_rows = _build_endpoints_table(mode, base, middleware)

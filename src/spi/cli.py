@@ -52,6 +52,8 @@ from .pins import (
     pin_service,
     pin_service_image,
     read_lock,
+    refresh_command,
+    refresh_fork_services,
     refresh_services,
     reset_service,
     sweep_stale_ephemeral_pins,
@@ -140,6 +142,15 @@ def _emit_outcome(outcome: str, code: Optional[str], detail: str, **extra) -> No
     }
     payload.update(extra)
     print(json.dumps(payload))
+
+
+def _usage_error(message: str, output_json: bool) -> typer.Exit:
+    """Report a refused invocation, as the envelope when `--json` asks for one."""
+    if output_json:
+        _emit_outcome("error", None, message)
+    else:
+        console.print(f"[error]{message}[/error]")
+    return typer.Exit(code=1)
 
 
 def _environment_facts() -> Dict[str, Any]:
@@ -1516,23 +1527,18 @@ def service_reset(
 ):
     """Release a service pin and restore its recorded canonical image."""
 
-    def usage_error(message: str) -> typer.Exit:
-        if output_json:
-            _emit_outcome("error", None, message)
-        else:
-            console.print(f"[error]{message}[/error]")
-        return typer.Exit(code=1)
-
     if if_run is not None and not if_run.strip():
-        raise usage_error("--if-run requires a workflow run id; got an empty value.")
+        raise _usage_error("--if-run requires a workflow run id; got an empty value.", output_json)
 
     sweep = ephemeral or stale_only
     if sweep and not (ephemeral and stale_only):
-        raise usage_error("--ephemeral and --stale-only must be used together.")
+        raise _usage_error("--ephemeral and --stale-only must be used together.", output_json)
     if sweep and (service is not None or if_run):
-        raise usage_error("The stale sweep takes no service argument or --if-run.")
+        raise _usage_error("The stale sweep takes no service argument or --if-run.", output_json)
     if not sweep and service is None:
-        raise usage_error("Provide a service name, or --ephemeral --stale-only to sweep.")
+        raise _usage_error(
+            "Provide a service name, or --ephemeral --stale-only to sweep.", output_json
+        )
 
     ctx = _guarded_context(output_json)
     if not output_json:
@@ -1577,7 +1583,7 @@ def service_reset(
             )
         if outcome.refresh_required:
             console.print(
-                f"[warning]Run '{_refresh_command(outcome.refresh_required)}' now to "
+                f"[warning]Run '{refresh_command(outcome.refresh_required)}' now to "
                 "resolve and apply canonical images.[/warning]"
             )
         if not (outcome.swept or outcome.kept or outcome.refresh_required):
@@ -1607,7 +1613,7 @@ def service_reset(
         if result.refresh_required:
             parts.append(
                 f"removed {', '.join(result.refresh_required)} without a recorded "
-                f"canonical; run '{_refresh_command(result.refresh_required)}'"
+                f"canonical; run '{refresh_command(result.refresh_required)}'"
             )
         _emit_outcome(
             "reset",
@@ -1628,30 +1634,29 @@ def service_reset(
         )
     if result.refresh_required:
         console.print(
-            f"[warning]Run '{_refresh_command(result.refresh_required)}' now to resolve "
+            f"[warning]Run '{refresh_command(result.refresh_required)}' now to resolve "
             "and apply canonical images.[/warning]"
         )
 
 
-def _refresh_command(services) -> str:
-    """The refresh that restores these entries; the loader refreshes as schema's pair."""
-
-    names = dict.fromkeys(
-        SCHEMA_SERVICE_NAME if name == SCHEMA_LOAD_SERVICE_NAME else name for name in services
-    )
-    return f"spi service refresh {' '.join(names)}"
-
-
 @service_app.command("refresh")
 def service_refresh(
-    services: list[str] = typer.Argument(
-        help="Services to re-resolve; every other lock entry stays as it is."
+    services: Optional[List[str]] = typer.Argument(
+        None, help="Services to re-resolve; every other lock entry stays as it is."
+    ),
+    forks: bool = typer.Option(
+        False, "--forks", help="Re-resolve every service whose canonical source is a fork."
     ),
     output_json: bool = typer.Option(
         False, "--json", help="Emit the outcome as a final machine-readable JSON line."
     ),
 ):
     """Advance services to their current canonical image under the source policy."""
+
+    if forks and services:
+        raise _usage_error("--forks takes no service arguments.", output_json)
+    if not forks and not services:
+        raise _usage_error("Provide a service name, or --forks.", output_json)
 
     ctx = _guarded_context(output_json)
     if not output_json:
@@ -1661,7 +1666,7 @@ def service_refresh(
 
     environment = _environment_facts()
     try:
-        result = refresh_services(services)
+        result = refresh_fork_services() if forks else refresh_services(services or [])
     except PinError as exc:
         if output_json:
             _emit_outcome("error", None, str(exc))
@@ -1670,17 +1675,23 @@ def service_refresh(
         raise typer.Exit(code=1)
 
     refs = {name: f"{image.repository}@{image.digest}" for name, image in result.refreshed.items()}
+    nothing = forks and not (refs or result.pinned)
     if output_json:
         _emit_outcome(
             "refreshed",
             None,
-            f"refreshed {len(refs)}, pinned {len(result.pinned)}",
+            "no fork-sourced services; nothing to refresh"
+            if nothing
+            else f"refreshed {len(refs)}, pinned {len(result.pinned)}",
             refreshed=refs,
             pinned=list(result.pinned),
             environment=environment,
         )
         return
     label = environment_label(environment)
+    if nothing:
+        console.print(f"No fork-sourced services to refresh on {label}.")
+        return
     for name, image in result.refreshed.items():
         console.print(
             f"  [success]{name}[/success] canonical on {label} is now "

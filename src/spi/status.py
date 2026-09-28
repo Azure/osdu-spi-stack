@@ -35,7 +35,15 @@ from .deploy_record import (
     environment_facts,
     read_deploy_record,
 )
-from .pins import PinError, ServicePin, decode_pins, pin_origin
+from .pins import (
+    PinError,
+    ServicePin,
+    decode_canonical_sources,
+    decode_pins,
+    pin_origin,
+    refresh_due_message,
+    refresh_due_services,
+)
 from .shell import gather_reads, kubectl_json, run_process
 from .stack_version import (
     STACK_VERSION_CONFIGMAP,
@@ -117,6 +125,8 @@ class ImageState:
     resolved_at: str
     count: int
     pins: tuple[tuple[str, ServicePin], ...] = ()
+    # A warning for the operator; the JSON contract does not carry it.
+    refresh_due: tuple[str, ...] = ()
 
     @property
     def pinned_services(self) -> tuple[str, ...]:
@@ -498,6 +508,11 @@ def collect_status() -> StatusSnapshot:
         pins = decode_pins(image_lock) if image_lock is not None else {}
     except PinError as exc:
         raise StatusError(str(exc)) from exc
+    # The age warning never fails a status read: an unreadable policy reads as none.
+    try:
+        sources = decode_canonical_sources(image_lock) if image_lock is not None else {}
+    except PinError:
+        sources = {}
 
     maintenance = record.maintenance if record else False
     bootstrap = bootstrap_blocker(members_jobs, expected_jobs, _read_job_termination_message)
@@ -533,6 +548,7 @@ def collect_status() -> StatusSnapshot:
             resolved_at=str(lock_data.get("IMAGE_RESOLVED_AT", "")),
             count=int(raw_count),
             pins=tuple(sorted(pins.items())),
+            refresh_due=refresh_due_services(lock_data, sources, pins, datetime.now(timezone.utc)),
         ),
         base_url=base_url,
         kustomization_items=items,
@@ -1062,6 +1078,9 @@ def get_summary(snapshot: StatusSnapshot) -> Panel:
         body.append("Pinned: ", style="warning")
         body.append(", ".join(pinned))
         body.append("\n")
+    due = refresh_due_message(snapshot.images.refresh_due)
+    if due:
+        body.append(f"{due}\n", style="warning")
 
     # The verdict the JSON envelope reports, in the same words, so an operator
     # reading the dashboard and a fork job reading --json cannot disagree.

@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Callable, Collection, Iterable, Mapping
 
 from .console import console, display_yaml
 from .deploy_record import DEPLOY_RECORD_CONFIGMAP, DeployRecordError, read_deploy_record
@@ -67,6 +67,7 @@ from .images import (
     resolve_ghcr_tag_digest,
     resolve_image_commit,
     resolve_images,
+    runs_fork_package,
     schema_load_lock_patch,
 )
 from .shell import run_command, run_process
@@ -97,6 +98,12 @@ _FLUX_WATCH_LABEL = "reconcile.fluxcd.io/watch"
 # Age past which the sweep may reclaim an ephemeral pin without a terminal
 # run; must exceed any deploy-plus-test budget.
 STALE_EPHEMERAL_PIN_AGE_HOURS = 6
+
+# The fork template deletes a sha-* image version this long after its build,
+# once the fork has built again.
+FORK_RETENTION_DAYS = 30
+# Age at which a fork canonical is marked, leaving a refresh nine days to run.
+FORK_CANONICAL_REFRESH_AGE_DAYS = 21
 
 _RUN_ID_RE = re.compile(r"^[0-9]+$")
 # Repository path syntax only; membership comes from the lock's roster projection.
@@ -1283,6 +1290,29 @@ def refresh_services(services: list[str]) -> RefreshResult:
     one pair so the Job never runs a loader from another commit.
     """
 
+    names = _refresh_names(services)
+    lock = read_lock()
+    assert lock is not None
+    return _apply_refresh(names, lock, trusted_canonical_sources(lock))
+
+
+def refresh_fork_services() -> RefreshResult:
+    """Refresh every service the lock's source policy points at a fork.
+
+    No lock, or a policy naming no fork, is nothing to refresh. A policy that
+    cannot be read or trusted raises, so it never passes for one without forks.
+    """
+
+    lock = read_lock(required=False)
+    if lock is None:
+        return RefreshResult({}, ())
+    sources = trusted_canonical_sources(lock)
+    if not sources:
+        return RefreshResult({}, ())
+    return _apply_refresh(_refresh_names(sorted(sources)), lock, sources)
+
+
+def _refresh_names(services: Iterable[str]) -> list[str]:
     names: list[str] = []
     for service in services:
         if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
@@ -1291,18 +1321,19 @@ def refresh_services(services: list[str]) -> RefreshResult:
         names.append(service)
         if service == SCHEMA_SERVICE_NAME:
             names.append(SCHEMA_LOAD_SERVICE_NAME)
-    names = list(dict.fromkeys(names))
+    return list(dict.fromkeys(names))
 
-    lock = read_lock()
-    assert lock is not None
+
+def _apply_refresh(names: list[str], lock: dict, sources: dict[str, str]) -> RefreshResult:
     data = lock.get("data") or {}
     branch = data.get("IMAGE_BRANCH") or DEFAULT_IMAGE_BRANCH
     try:
-        resolved = resolve_images(branch, names, trusted_canonical_sources(lock))
+        resolved = resolve_images(branch, names, sources)
     except ImageResolutionError as exc:
         raise PinError(str(exc)) from exc
 
     pinned: tuple[str, ...] = ()
+    moved: list[str] = []
 
     def compute(lock: dict | None) -> dict:
         nonlocal pinned
@@ -1316,14 +1347,16 @@ def refresh_services(services: list[str]) -> RefreshResult:
         if held & {SCHEMA_SERVICE_NAME, SCHEMA_LOAD_SERVICE_NAME}:
             held |= {SCHEMA_SERVICE_NAME, SCHEMA_LOAD_SERVICE_NAME} & set(names)
         pinned = tuple(name for name in names if name in held)
+        moved.clear()
         data = dict(lock.get("data") or {})
         for name, image in resolved.items():
             if name not in held:
-                data.update(
-                    _lock_entry_patch(
-                        name, image.repository, image.tag, image.created_at, image.digest
-                    )
+                entry = _lock_entry_patch(
+                    name, image.repository, image.tag, image.created_at, image.digest
                 )
+                if any(data.get(key) != value for key, value in entry.items()):
+                    moved.append(name)
+                data.update(entry)
                 if image.acceptance_digest:
                     data[acceptance_digest_key(name)] = image.acceptance_digest
                 else:
@@ -1332,10 +1365,71 @@ def refresh_services(services: list[str]) -> RefreshResult:
         return {"data": data, "metadata": {"annotations": annotations}}
 
     mutate_lock(compute, f"Refresh {', '.join(names)}")
+    # An entry the write left as it was gives Flux nothing to roll out.
+    if moved:
+        reconcile_consumers(moved)
     refreshed = {name: image for name, image in resolved.items() if name not in pinned}
-    if refreshed:
-        reconcile_consumers(list(refreshed))
     return RefreshResult(refreshed, pinned)
+
+
+def refresh_command(services: Iterable[str]) -> str:
+    """The refresh that moves these entries; the loader refreshes as schema's pair."""
+
+    names = dict.fromkeys(
+        SCHEMA_SERVICE_NAME if name == SCHEMA_LOAD_SERVICE_NAME else name for name in services
+    )
+    return f"spi service refresh {' '.join(names)}"
+
+
+def refresh_due_services(
+    data: Mapping[str, str],
+    sources: Mapping[str, str],
+    pinned: Collection[str],
+    now: datetime,
+) -> tuple[str, ...]:
+    """Lock entries running a fork image old enough for retention to delete.
+
+    Only an unpinned entry running its fork's own package counts, and one
+    whose build date cannot be read stays unmarked.
+    """
+
+    cutoff = now - timedelta(days=FORK_CANONICAL_REFRESH_AGE_DAYS)
+    due = []
+    for service, repo in sources.items():
+        pair = [service, SCHEMA_LOAD_SERVICE_NAME] if service == SCHEMA_SERVICE_NAME else [service]
+        if service not in IMAGE_REGISTRY or any(name in pinned for name in pair):
+            continue
+        for name in pair:
+            key = image_lock_key(name)
+            if not runs_fork_package(name, str(data.get(f"{key}_IMAGE_REPOSITORY", "")), repo):
+                continue
+            created_at = str(data.get(f"{key}_IMAGE_CREATED_AT", ""))
+            try:
+                built = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if built.tzinfo is None:
+                built = built.replace(tzinfo=timezone.utc)
+            if built < cutoff:
+                due.append(name)
+    return tuple(due)
+
+
+def refresh_due_message(services: Collection[str]) -> str:
+    """The warning naming the refresh for ``refresh_due_services``; empty when none are due."""
+
+    if not services:
+        return ""
+    names = dict.fromkeys(
+        SCHEMA_SERVICE_NAME if name == SCHEMA_LOAD_SERVICE_NAME else name for name in services
+    )
+    one = len(names) == 1
+    return (
+        f"{', '.join(names)} {'runs a fork image' if one else 'run fork images'} built over "
+        f"{FORK_CANONICAL_REFRESH_AGE_DAYS} days ago; GHCR retention can delete "
+        f"{'it' if one else 'them'} at {FORK_RETENTION_DAYS} days. "
+        f"Run '{refresh_command(names)}'."
+    )
 
 
 def _kubectl_read_json(args: list[str], describe: str) -> dict | None:
