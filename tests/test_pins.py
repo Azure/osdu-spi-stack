@@ -3326,3 +3326,71 @@ class TestRefreshServices:
         assert result.exit_code == 1
         assert outcome["outcome"] == "error"
         assert "--forks" in outcome["detail"]
+
+
+class TestRefreshDue:
+    NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    FORK = {"partition": "Acme/partition"}
+    PACKAGE = "ghcr.io/acme/partition"
+
+    @pytest.mark.parametrize(
+        ("repository", "created_at", "sources", "pinned", "due"),
+        [
+            pytest.param(PACKAGE, "2026-09-09T00:00:00Z", FORK, (), ("partition",), id="22-days"),
+            pytest.param(PACKAGE, "2026-09-11T00:00:00Z", FORK, (), (), id="20-days"),
+            pytest.param(PACKAGE, "2026-09-09T00:00:00", FORK, (), ("partition",), id="naive"),
+            pytest.param(PACKAGE, "2025-01-01T00:00:00Z", {}, (), (), id="community-policy"),
+            pytest.param(
+                "repo/partition-master",
+                "2025-01-01T00:00:00Z",
+                FORK,
+                (),
+                (),
+                id="not-yet-refreshed",
+            ),
+            pytest.param(PACKAGE, "", FORK, (), (), id="no-date"),
+            pytest.param(PACKAGE, "then", FORK, (), (), id="unreadable-date"),
+            pytest.param(PACKAGE, "2026-09-09T00:00:00Z", FORK, ("partition",), (), id="pinned"),
+            pytest.param(
+                "ghcr.io/acme/nonesuch",
+                "2025-01-01T00:00:00Z",
+                {"nonesuch": "Acme/nonesuch"},
+                (),
+                (),
+                id="unknown-service",
+            ),
+        ],
+    )
+    def test_only_an_aged_unpinned_fork_image_is_due(
+        self, repository, created_at, sources, pinned, due
+    ):
+        service = next(iter(sources), "partition")
+        key = service.upper()
+        data = {f"{key}_IMAGE_REPOSITORY": repository, f"{key}_IMAGE_CREATED_AT": created_at}
+
+        assert pins.refresh_due_services(data, sources, pinned, self.NOW) == due
+
+    @pytest.mark.parametrize(
+        ("pinned", "due", "message"),
+        [
+            (
+                (),
+                ("schema", "schema-load"),
+                "schema runs a fork image built over 21 days ago; GHCR retention can delete it "
+                "at 30 days. Run 'spi service refresh schema'.",
+            ),
+            (("schema-load",), (), ""),
+        ],
+    )
+    def test_schema_and_its_loader_are_due_as_one_pair(self, pinned, due, message):
+        data = {
+            "SCHEMA_IMAGE_REPOSITORY": "ghcr.io/acme/schema",
+            "SCHEMA_IMAGE_CREATED_AT": "2026-09-01T00:00:00Z",
+            "SCHEMA_LOAD_IMAGE_REPOSITORY": "ghcr.io/acme/schema-load",
+            "SCHEMA_LOAD_IMAGE_CREATED_AT": "2026-09-01T00:00:00Z",
+        }
+
+        found = pins.refresh_due_services(data, {"schema": "Acme/schema"}, pinned, self.NOW)
+
+        assert found == due
+        assert pins.refresh_due_message(found) == message

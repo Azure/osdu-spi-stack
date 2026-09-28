@@ -546,6 +546,14 @@ def fork_package_repositories(source_repo: str, service: str) -> tuple[str, ...]
     return tuple(dict.fromkeys((f"{GHCR_HOST}/{owner}/{name}", f"{GHCR_HOST}/{owner}/{service}")))
 
 
+def runs_fork_package(service: str, repository: str, source_repo: str) -> bool:
+    """Whether ``repository`` is a package ``source_repo`` publishes for ``service``."""
+
+    loader = service == SCHEMA_LOAD_SERVICE_NAME
+    packages = fork_package_repositories(source_repo, SCHEMA_SERVICE_NAME if loader else service)
+    return repository in {f"{package}-load" if loader else package for package in packages}
+
+
 def resolve_ghcr_tag_digest(repository: str, tag: str, attempts: int = 3) -> str | None:
     """Return the manifest digest a GHCR tag points at, or None when it is not published.
 

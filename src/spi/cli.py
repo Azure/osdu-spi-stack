@@ -52,6 +52,7 @@ from .pins import (
     pin_service,
     pin_service_image,
     read_lock,
+    refresh_command,
     refresh_fork_services,
     refresh_services,
     reset_service,
@@ -1582,7 +1583,7 @@ def service_reset(
             )
         if outcome.refresh_required:
             console.print(
-                f"[warning]Run '{_refresh_command(outcome.refresh_required)}' now to "
+                f"[warning]Run '{refresh_command(outcome.refresh_required)}' now to "
                 "resolve and apply canonical images.[/warning]"
             )
         if not (outcome.swept or outcome.kept or outcome.refresh_required):
@@ -1612,7 +1613,7 @@ def service_reset(
         if result.refresh_required:
             parts.append(
                 f"removed {', '.join(result.refresh_required)} without a recorded "
-                f"canonical; run '{_refresh_command(result.refresh_required)}'"
+                f"canonical; run '{refresh_command(result.refresh_required)}'"
             )
         _emit_outcome(
             "reset",
@@ -1633,18 +1634,9 @@ def service_reset(
         )
     if result.refresh_required:
         console.print(
-            f"[warning]Run '{_refresh_command(result.refresh_required)}' now to resolve "
+            f"[warning]Run '{refresh_command(result.refresh_required)}' now to resolve "
             "and apply canonical images.[/warning]"
         )
-
-
-def _refresh_command(services) -> str:
-    """The refresh that restores these entries; the loader refreshes as schema's pair."""
-
-    names = dict.fromkeys(
-        SCHEMA_SERVICE_NAME if name == SCHEMA_LOAD_SERVICE_NAME else name for name in services
-    )
-    return f"spi service refresh {' '.join(names)}"
 
 
 @service_app.command("refresh")

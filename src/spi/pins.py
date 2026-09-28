@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable
+from typing import Callable, Collection, Iterable, Mapping
 
 from .console import console, display_yaml
 from .deploy_record import DEPLOY_RECORD_CONFIGMAP, DeployRecordError, read_deploy_record
@@ -67,6 +67,7 @@ from .images import (
     resolve_ghcr_tag_digest,
     resolve_image_commit,
     resolve_images,
+    runs_fork_package,
     schema_load_lock_patch,
 )
 from .shell import run_command, run_process
@@ -97,6 +98,12 @@ _FLUX_WATCH_LABEL = "reconcile.fluxcd.io/watch"
 # Age past which the sweep may reclaim an ephemeral pin without a terminal
 # run; must exceed any deploy-plus-test budget.
 STALE_EPHEMERAL_PIN_AGE_HOURS = 6
+
+# The fork template deletes a sha-* image version this long after its build,
+# once the fork has built again.
+FORK_RETENTION_DAYS = 30
+# Age at which a fork canonical is marked, leaving a refresh nine days to run.
+FORK_CANONICAL_REFRESH_AGE_DAYS = 21
 
 _RUN_ID_RE = re.compile(r"^[0-9]+$")
 # Repository path syntax only; membership comes from the lock's roster projection.
@@ -1359,6 +1366,67 @@ def _apply_refresh(names: list[str], lock: dict, sources: dict[str, str]) -> Ref
     if refreshed:
         reconcile_consumers(list(refreshed))
     return RefreshResult(refreshed, pinned)
+
+
+def refresh_command(services: Iterable[str]) -> str:
+    """The refresh that moves these entries; the loader refreshes as schema's pair."""
+
+    names = dict.fromkeys(
+        SCHEMA_SERVICE_NAME if name == SCHEMA_LOAD_SERVICE_NAME else name for name in services
+    )
+    return f"spi service refresh {' '.join(names)}"
+
+
+def refresh_due_services(
+    data: Mapping[str, str],
+    sources: Mapping[str, str],
+    pinned: Collection[str],
+    now: datetime,
+) -> tuple[str, ...]:
+    """Lock entries running a fork image old enough for retention to delete.
+
+    Only an unpinned entry running its fork's own package counts, and one
+    whose build date cannot be read stays unmarked.
+    """
+
+    cutoff = now - timedelta(days=FORK_CANONICAL_REFRESH_AGE_DAYS)
+    due = []
+    for service, repo in sources.items():
+        pair = [service, SCHEMA_LOAD_SERVICE_NAME] if service == SCHEMA_SERVICE_NAME else [service]
+        if service not in IMAGE_REGISTRY or any(name in pinned for name in pair):
+            continue
+        for name in pair:
+            key = image_lock_key(name)
+            if not runs_fork_package(name, data.get(f"{key}_IMAGE_REPOSITORY", ""), repo):
+                continue
+            try:
+                built = datetime.fromisoformat(
+                    data.get(f"{key}_IMAGE_CREATED_AT", "").replace("Z", "+00:00")
+                )
+            except ValueError:
+                continue
+            if built.tzinfo is None:
+                built = built.replace(tzinfo=timezone.utc)
+            if built < cutoff:
+                due.append(name)
+    return tuple(due)
+
+
+def refresh_due_message(services: Collection[str]) -> str:
+    """The warning naming the refresh for ``refresh_due_services``; empty when none are due."""
+
+    if not services:
+        return ""
+    names = dict.fromkeys(
+        SCHEMA_SERVICE_NAME if name == SCHEMA_LOAD_SERVICE_NAME else name for name in services
+    )
+    one = len(names) == 1
+    return (
+        f"{', '.join(names)} {'runs a fork image' if one else 'run fork images'} built over "
+        f"{FORK_CANONICAL_REFRESH_AGE_DAYS} days ago; GHCR retention can delete "
+        f"{'it' if one else 'them'} at {FORK_RETENTION_DAYS} days. "
+        f"Run '{refresh_command(names)}'."
+    )
 
 
 def _kubectl_read_json(args: list[str], describe: str) -> dict | None:
