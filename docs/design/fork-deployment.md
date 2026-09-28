@@ -17,8 +17,8 @@ ownership-checked `reset --if-run`, the separate stale sweep
 below, `--list` and `--remove` for trust, source policy, and both
 projections, roster-derived pin validation, repository-derived GHCR package
 validation), `spi service refresh`, and `spi test` are implemented. Declaration
-enforcement and the refresh workflow's backstop step are ahead of the code
-(phases 4 and 5 of the roadmap in
+enforcement and the refresh workflow's stale-pin sweep step are ahead of the
+code (phases 3 and 4 of the roadmap in
 [environment-lifecycle.md](environment-lifecycle.md)).
 Remove the marks as they land.
 
@@ -101,7 +101,7 @@ default empty, which reads as a non-ephemeral operator pin.
 
 A cancelled run, an expired token, or a lost runner strands a pin the restore
 job never returns. The weekday refresh workflow runs the backstop (the
-workflow step is unbuilt; the sweep verb exists):
+sweep's workflow step is unbuilt; the sweep verb and the refresh step exist):
 
 - `spi service reset --ephemeral --stale-only` sweeps an ephemeral
   pin only when its owning workflow run reports a terminal state or, when
@@ -117,8 +117,8 @@ workflow step is unbuilt; the sweep verb exists):
   display-only and is never fetched. Roster membership replaces the
   `Azure/osdu-spi-*` naming convention for personal and customer forks, but
   does not prove that only onboarded repositories can be lookup targets.
-- `spi service refresh` per GitHub-origin service then advances the
-  environment to the current retained canonical (ADR-033).
+- `spi service refresh --forks` then advances every fork-sourced service to
+  the current retained canonical (ADR-033).
 
 The post-pin verify detects a replacement observed during that step. There is
 no second verification before each suite, so replacement after verification
@@ -272,11 +272,26 @@ the RG tags directly, before provisioning, and rebuilds both projections at
 bootstrap. Every resolution refuses a fork source that is not the repository
 trusted for that service: `spi up` checks the tags against the deploy
 identity's credentials, and the refresh commands check the lock's
-`canonical-sources` against its `trusted-repos`. The weekday `env-refresh` workflow runs no image refresh, so a
-fork-sourced canonical advances only when someone runs a refresh; one left
-unrefreshed past the 30-day `sha-*` retention while the fork keeps building
-can have its recorded digest deleted (ADR-033). `spi info` shows the policy
+`canonical-sources` against its `trusted-repos`. `spi info` shows the policy
 beside the running image and marks a policy the running image predates.
+
+`spi service refresh --forks` refreshes every service the projection names,
+with the semantics of naming them, and takes no service arguments. A lock
+with no fork source is nothing to refresh and exits 0. The weekday
+`env-refresh` workflow runs it after `spi reconcile` when the declared
+`stackVersion` is v0.22.0 or later, in a step capped at 20 minutes; a
+failure fails the run and leaves maintenance set. An environment with no
+workflow advances only when someone runs a refresh.
+
+A fork canonical left unrefreshed past the 30-day `sha-*` retention while the
+fork keeps building can have its recorded digest deleted (ADR-033). `spi
+info` and `spi status` warn once an unpinned service runs a fork image built
+more than 21 days ago, and name the refresh. `spi info --json` reports it
+per service as `refresh_due`; `spi status --json` and the deployable verdict
+do not change. The lock records the image's commit date, which precedes its
+GHCR version date, so the warning errs early. A fork that has built nothing
+newer keeps the warning after a refresh: the refresh resolves the same
+image, which retention does not delete while it is the fork's newest.
 
 ```bash
 spi onboard partition --canonical-source fork           # plan: trust, tag, projection
@@ -324,11 +339,11 @@ token to prove those steps itself.
 
 The stack provisions three test identities and the CLI can mint each with
 `spi token`, `spi token --member`, or `spi token --no-access`. The shipped
-  (`RESOLVER_NO_ACCESS_TOKEN`) and, when provisioned, member-token
-  (`RESOLVER_MEMBER_TOKEN`) bindings. Template PR #190 is merged, so suites
-  requiring the member caller can use it with a template revision that includes
-  that support.
-includes that support.
+fork CI lane supplies `token` (`RESOLVER_TOKEN`), optional `noAccessToken`
+(`RESOLVER_NO_ACCESS_TOKEN`), and, when provisioned, `memberToken`
+(`RESOLVER_MEMBER_TOKEN`) bindings. A suite requiring the member caller needs
+a template revision that includes
+[template PR #190](https://github.com/Azure/osdu-spi/pull/190).
 
 The deploy identity is the positive caller: the `entitlements-members` Job
 adds its client id to `users`,
