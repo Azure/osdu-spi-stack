@@ -359,19 +359,29 @@ def collect_facts() -> dict:
 
 
 def mint_bearers() -> dict[str, str]:
-    """The lane's three callers; an identity the environment lacks stays unset."""
+    """The lane's three callers; an identity the environment lacks stays unset.
 
-    from .bootstrap import ClusterConfigError
-    from .token import TokenError, mint_token
+    Only absence is tolerated: a provisioned identity that fails to mint
+    refuses the run rather than surfacing later as a binding not published.
+    """
 
+    from .bootstrap import ClusterConfigError, read_cluster_config
+    from .token import CALLERS, TokenError, mint_token
+
+    try:
+        config = read_cluster_config()
+    except ClusterConfigError as exc:
+        raise SuiteNotRun("token_failed", f"could not read the test callers: {exc}") from exc
     bearers: dict[str, str] = {}
     for caller, variable in BEARERS:
+        key = CALLERS[caller][0]
+        if caller != "deploy" and not config.get(key):
+            console.print(f"  [warning]{variable} stays unset: no {key} provisioned[/warning]")
+            continue
         try:
             bearers[variable] = mint_token(caller=caller).access_token
         except (ClusterConfigError, TokenError) as exc:
-            if caller == "deploy":
-                raise SuiteNotRun("token_failed", f"could not mint the run bearer: {exc}") from exc
-            console.print(f"  [warning]{variable} stays unset: {exc}[/warning]")
+            raise SuiteNotRun("token_failed", f"could not mint {variable}: {exc}") from exc
     return bearers
 
 
@@ -623,8 +633,16 @@ def judge(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
         capture_output=True,
         text=True,
     )
-    lines = (result.stdout or result.stderr or "").strip().splitlines()
-    return result.returncode == 0, (lines[-1] if lines else f"verdict exited {result.returncode}")
+    lines = (result.stdout or "").strip().splitlines()
+    # The verdict contract: exit 0 pass or 1 fail, with the verdict line printed.
+    if result.returncode not in (0, 1) or not lines:
+        stderr = (result.stderr or "").strip().splitlines()
+        raise SuiteNotRun(
+            "verdict_failed",
+            f"{VERDICT_PATH} exited {result.returncode} without a verdict"
+            + (f": {stderr[-1]}" if stderr else ""),
+        )
+    return result.returncode == 0, lines[-1]
 
 
 def _require_machinery(root: Path) -> None:

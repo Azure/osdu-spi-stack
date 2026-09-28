@@ -419,6 +419,21 @@ class TestGuards:
         assert (exc.value.code, exc.value.exit_code) == ("descriptor_mismatch", 1)
         assert not _commands(cluster, ["mvn", "-B"])
 
+    @pytest.mark.parametrize(
+        "verdict_body",
+        [
+            "import sys; sys.exit(2)",  # argparse refused the arguments
+            "",  # an empty script exits 0 and prints nothing
+        ],
+    )
+    def test_a_verdict_script_that_gives_no_verdict_refuses_the_run(self, cluster, verdict_body):
+        (cluster["commit_tree"] / testing.VERDICT_PATH).write_text(verdict_body)
+
+        with pytest.raises(SuiteNotRun, match="without a verdict") as exc:
+            testing.run_suite("partition")
+
+        assert (exc.value.code, exc.value.exit_code) == ("verdict_failed", 1)
+
     def test_a_report_schema_this_cli_does_not_know_is_refused(self, cluster):
         _machinery(cluster["commit_tree"], schema=2)
 
@@ -506,20 +521,43 @@ class TestCheckoutRun:
 
 
 class TestMintBearers:
-    def test_an_identity_the_environment_lacks_stays_unset(self, monkeypatch):
-        from spi import token
+    @pytest.fixture
+    def callers(self, monkeypatch):
+        from spi import bootstrap, token
+
+        config = {
+            "DEPLOY_IDENTITY_CLIENT_ID": "d",
+            "MEMBER_IDENTITY_CLIENT_ID": "m",
+            "NO_ACCESS_IDENTITY_CLIENT_ID": "n",
+        }
+        failing: set = set()
 
         def mint(caller):
-            if caller == "member":
-                raise token.TokenError("spi-cluster-config carries no MEMBER_IDENTITY_CLIENT_ID")
+            if caller in failing:
+                raise token.TokenError("token exchange failed: HTTP 500")
             return token.MintedToken(f"{caller}-bearer", "", "id", "sa", "aud")
 
+        monkeypatch.setattr(bootstrap, "read_cluster_config", lambda: config)
         monkeypatch.setattr(token, "mint_token", mint)
+        return config, failing
+
+    def test_an_identity_the_environment_lacks_stays_unset(self, callers):
+        config, _ = callers
+        del config["MEMBER_IDENTITY_CLIENT_ID"]
 
         assert testing.mint_bearers() == {
             "RESOLVER_TOKEN": "deploy-bearer",
             "RESOLVER_NO_ACCESS_TOKEN": "no_access-bearer",
         }
+
+    def test_a_provisioned_identity_that_fails_to_mint_refuses_the_run(self, callers):
+        _, failing = callers
+        failing.add("member")
+
+        with pytest.raises(SuiteNotRun, match="RESOLVER_MEMBER_TOKEN") as exc:
+            testing.mint_bearers()
+
+        assert (exc.value.code, exc.value.exit_code) == ("token_failed", 1)
 
 
 class TestCommand:
