@@ -29,12 +29,14 @@ defeats any escaping, and cmd.exe caps the line at 8,191 characters.
 Panels show the logical argv, not the serialized cmd.exe line.
 """
 
+import contextlib
 import json
 import ntpath
 import os
 import platform
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -177,6 +179,9 @@ def _run_with_timeout(prepared: PreparedCommand, timeout: float, **kwargs: Any):
     """
     if kwargs.pop("capture_output", False):
         kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
+    if platform.system() != "Windows":
+        # Its own process group, so the kill reaches what it forked (Surefire's JVMs).
+        kwargs["start_new_session"] = True
     with subprocess.Popen(prepared, **kwargs) as proc:
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
@@ -184,6 +189,10 @@ def _run_with_timeout(prepared: PreparedCommand, timeout: float, **kwargs: Any):
             _kill_process_tree(proc)
             stdout, stderr = proc.communicate()
             raise subprocess.TimeoutExpired(prepared, timeout, output=stdout, stderr=stderr)
+        except BaseException:
+            # The group no longer hears the terminal's Ctrl-C; end it with the caller.
+            _kill_process_tree(proc)
+            raise
     return subprocess.CompletedProcess(prepared, proc.returncode, stdout, stderr)
 
 
@@ -194,6 +203,9 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
             capture_output=True,
             check=False,
         )
+    else:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
     proc.kill()
 
 
@@ -205,11 +217,14 @@ def run_command(
     description: Optional[str] = None,
     check: bool = True,
     timeout: Optional[float] = None,
+    cwd: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> subprocess.CompletedProcess:
     """Run a command and display it in a formatted panel.
 
     ``timeout`` kills the child when it expires; the result then carries
     returncode 124 and the reason on stderr, like any other failed launch.
+    ``env`` replaces the inherited environment rather than extending it.
     """
     formatted_parts = []
     if cmd_list:
@@ -242,7 +257,9 @@ def run_command(
         console.print(Panel(command_syntax, title=title, border_style=style))
 
     try:
-        result = run_process(cmd_list, capture_output=capture_output, text=text, timeout=timeout)
+        result = run_process(
+            cmd_list, capture_output=capture_output, text=text, timeout=timeout, cwd=cwd, env=env
+        )
     except subprocess.TimeoutExpired:
         reason = f"{cmd_list[0]}: timed out after {timeout:.0f}s"
         result = subprocess.CompletedProcess(cmd_list, 124, stdout="", stderr=reason)

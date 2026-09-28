@@ -543,6 +543,21 @@ class TestImageRef:
 
 
 class TestLockDataRefRendering:
+    def test_only_an_entry_with_a_paired_acceptance_image_records_one(self):
+        resolved = {
+            name: ResolvedImage(name, f"repo/{name}", "t", "", "sha256:s")
+            for name in image_lock_names()
+        }
+        resolved["partition"] = ResolvedImage(
+            "partition", "ghcr.io/acme/partition", "sha-b", "", "sha256:s", "sha256:acc"
+        )
+
+        data = images.build_lock_data(resolved, "master", "now")
+
+        assert {k: v for k, v in data.items() if k.endswith("_ACCEPTANCE_DIGEST")} == {
+            "PARTITION_ACCEPTANCE_DIGEST": "sha256:acc"
+        }
+
     def test_render_image_lock_includes_composed_ref_per_service(self):
         resolved = {
             name: ResolvedImage(
@@ -885,6 +900,22 @@ class TestResolveForkImage:
             "2026-09-21T00:00:00Z",
             SNAPSHOT,
         )
+
+    def test_the_acceptance_image_the_commit_built_is_recorded_as_its_pair(self, monkeypatch):
+        paired = "sha256:" + "a" * 64
+        _fork_registry(
+            monkeypatch,
+            {
+                ("ghcr.io/acme/fork", "main-snapshot"): SNAPSHOT,
+                ("ghcr.io/acme/fork", f"sha-{BUILT[:12]}"): SNAPSHOT,
+                ("ghcr.io/acme/fork-acceptance", "main-snapshot"): "sha256:" + "0" * 64,
+                ("ghcr.io/acme/fork-acceptance", f"sha-{BUILT[:12]}"): paired,
+            },
+        )
+
+        image, _ = images.resolve_fork_image("partition", "Acme/fork")
+
+        assert image.acceptance_digest == paired
 
     def test_a_fork_publishing_under_the_service_name_resolves_there(self, monkeypatch):
         _fork_registry(

@@ -49,6 +49,7 @@ from .images import (
     ImageNotFoundError,
     ImageResolutionError,
     ResolvedImage,
+    acceptance_digest_key,
     build_lock_annotations,
     build_lock_data,
     do_not_disrupt_key,
@@ -616,8 +617,8 @@ def reconcile_consumers(services: list[str]) -> None:
         )
 
 
-def _refuse_unless_deployable() -> None:
-    """Enforce the deployable rule on pin writes, fail-closed.
+def require_deployable() -> None:
+    """Enforce the deployable rule on pin writes and suite runs, fail-closed.
 
     Refuses unless every Kustomization is Ready, no entitlements-members Job
     has failed, the deploy record is present, and ``maintenance`` is unset:
@@ -650,7 +651,7 @@ def _refuse_unless_deployable() -> None:
         state = "failed" if bootstrap.code == "bootstrap_failed" else "is not complete"
         raise PinError(
             f"Environment bootstrap {state} ({bootstrap.message}); the deploy identity is not "
-            "seeded into entitlements, so a pinned image could not be tested."
+            "seeded into entitlements, so no suite could run against it."
         )
 
     try:
@@ -660,7 +661,7 @@ def _refuse_unless_deployable() -> None:
     if record is None:
         raise PinError(
             f"ConfigMap {DEPLOY_RECORD_CONFIGMAP} not found; the environment has no "
-            "deploy record. Re-run 'spi up' to write one before pinning."
+            "deploy record. Re-run 'spi up' to write one before pinning or testing."
         )
     if record.maintenance:
         raise PinError(
@@ -836,7 +837,7 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
     if service == SCHEMA_LOAD_SERVICE_NAME:
         raise PinError("Pin 'schema' instead; the loader follows the schema pin.")
-    _refuse_unless_deployable()
+    require_deployable()
 
     targets = [service]
     if service == SCHEMA_SERVICE_NAME:
@@ -1036,7 +1037,7 @@ def pin_service_image(
                 f"{' or '.join(expected)}, got {repository!r}."
             )
 
-    _refuse_unless_deployable()
+    require_deployable()
     try:
         resolve_ghcr_manifest(repository, digest)
     except ImageResolutionError as exc:
@@ -1323,6 +1324,10 @@ def refresh_services(services: list[str]) -> RefreshResult:
                         name, image.repository, image.tag, image.created_at, image.digest
                     )
                 )
+                if image.acceptance_digest:
+                    data[acceptance_digest_key(name)] = image.acceptance_digest
+                else:
+                    data.pop(acceptance_digest_key(name), None)
         annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
         return {"data": data, "metadata": {"annotations": annotations}}
 
@@ -1749,6 +1754,12 @@ def apply_image_lock(
                 )
         timestamp = datetime.now(timezone.utc).isoformat()
         data = build_lock_data(overlaid, branch, timestamp, _ephemeral_names(active_pins))
+        # Pins never write the pair, so the live key still pairs the captured canonical.
+        prior = (lock or {}).get("data") or {}
+        for name in active_pins:
+            key = acceptance_digest_key(name)
+            if prior.get(key):
+                data[key] = prior[key]
         annotations = build_lock_annotations(branch, timestamp)
         if active_pins:
             annotations[PINS_ANNOTATION] = encode_pins(active_pins)

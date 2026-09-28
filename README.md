@@ -167,6 +167,7 @@ See [Ingress modes](docs/architecture.md#ingress-profiles) and
 | `spi service` | Pin services to merge-request or fork-built images, and `refresh` one service's canonical image without touching the rest |
 | `spi onboard` | Trust a fork repository to deploy against the environment, and with `--canonical-source fork` make its `main` the service's canonical image; plans by default, `--write` applies |
 | `spi token` | Mint an app-only bearer as the deploy identity for acceptance suites; `--member` for the suites' `NO_ACCESS_USER` caller, `--no-access` for 401 tests |
+| `spi test` | Run a service's suite as its deployed commit shipped it, from the paired acceptance image or natively with `--source <checkout>` |
 | `spi update` | Check for and install a newer CLI release |
 | `spi maintenance` | Set or clear the deploy-blocking maintenance flag |
 | `spi down` | Delete the environment's Azure resources; `--purge` removes the group and its identities |

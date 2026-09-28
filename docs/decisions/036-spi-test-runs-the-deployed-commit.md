@@ -31,7 +31,10 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   the template publishes the acceptance image without provenance or a
   revision label, so the recorded digest, read in the same pass that ties
   the service digest to its commit, is the pair's identity from then on, as
-  the service digest is the service's (ADR-031). Pins never write the key.
+  the service digest is the service's (ADR-031). A rebuild of the same
+  commit caught between the two reads can record the pair from another build
+  of that commit; the pair promises the commit, not the build. Pins never
+  write the key.
 - **Paired mode is the default.** The suite image is the lock's repository
   with `-acceptance` appended, pulled by the recorded digest for
   `linux/amd64` and run with `docker run`. Pairing needs a fork canonical,
@@ -58,13 +61,16 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   invocation as the image's entrypoint. The run is labelled `matched` when
   the checkout's HEAD equals the deployed commit and the tree is clean,
   `unmatched` otherwise, and `unpaired` when the environment runs a
-  community image. Checkout mode is the only mode for a community-sourced
+  community image. In either mode a descriptor whose `service.name` is not
+  the named service refuses the run. Checkout mode is the only mode for a community-sourced
   service and the native-speed loop on arm64.
 - **Allowlisted environment.** The resolver process receives `PATH`, the
   three `RESOLVER_*` bearers, and each `--set NAME=VALUE` override, nothing
   else, so a variable exported for another environment never wins over a
   fact. Native `mvn` receives the resolved map over a fixed base (`PATH`,
-  `HOME`, `JAVA_HOME`, `MAVEN_OPTS`, `LANG`, `TMPDIR`); the env file is
+  `HOME`, `JAVA_HOME`, `MAVEN_OPTS`, `LANG`, `TMPDIR`). On Windows both also
+  receive the system variables a process needs to start, and `mvn` the user
+  profile variables; the env file is
   parsed as `NAME=VALUE` data and never sourced. The container receives the
   env file and `SUITE_DIR`, set to the report's `test_dir`, which is how the
   image's entrypoint selects a baked suite; nothing else.
@@ -76,9 +82,11 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   reports the environment not deployable (ADR-030), and refuses with
   `service_borrowed`, naming the run id, while an ephemeral pin holds the
   service. `spi test` holds no lease, so a lane can pin the service mid-run:
-  the CLI reads the service's lock entry and its running pods' digest before
-  the suite and again after it, and discards the result as `target_changed`
-  when the entry changed or a pod was not running the lock's digest. The
+  the CLI reads the service's lock entry, its running pods' digest, and its
+  Deployment's rollout revision before the suite and again after it, and
+  discards the result as `target_changed` when the entry or the revision
+  changed or a pod was not running the lock's digest. A borrow and its
+  restore leave the entry as it was, but each advances the revision. The
   suite runs under the descriptor's `timeoutMinutes`. The verdict is the
   commit's `suite-verdict.py` over the Surefire and Failsafe reports: a zero
   exit, at least one test not skipped, and no failures or errors. A
