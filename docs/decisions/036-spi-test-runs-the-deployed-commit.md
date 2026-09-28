@@ -18,7 +18,7 @@ over every fact.
 
 ## Decision
 
-`spi test <service>` runs one named suite of the commit the environment runs,
+`spi test <service>` runs a named suite of the commit the environment runs,
 with the descriptor, resolver, and verdict script that commit shipped. The CLI
 supplies facts, bearers, and the target; it never reads the descriptor itself.
 The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
@@ -98,10 +98,12 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   pair pruned, commit mismatch, facts contradiction, Docker or Maven
   missing). `--json` prints the `{outcome, code, detail}` envelope other
   service commands print, with the suite, mode, image or commit, provenance
-  label, and test counts beside it.
+  label, and test counts beside it. A command that ran several suites prints
+  each suite's outcome under `suites`.
 - **Arguments pass through.** `--suite <name>` selects a declared suite,
-  `acceptance` by default. Tokens after `--` replace the suite's
-  `mavenArguments` and reach Maven as argv, never as a shell string.
+  `acceptance` by default, and repeats to run several in turn (ADR-037).
+  Tokens after `--` replace one suite's `mavenArguments` and reach Maven as
+  argv, never as a shell string; with more than one suite they are refused.
 - **A pruned pair is reported, not repaired.** When the recorded acceptance
   digest no longer pulls, the run fails with `pair_pruned`, and the fixes
   are `spi service refresh <service>` onto a newer commit or `--source` at
