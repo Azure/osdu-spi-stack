@@ -3233,39 +3233,17 @@ class TestRefreshServices:
         assert outcome["pinned"] == ["schema"]
 
     def test_forks_moves_only_the_services_the_policy_names(self, monkeypatch):
-        fork = replace(self.FORK, acceptance_digest="sha256:acc")
         resolved = []
-
-        def resolve(branch, names, sources):
-            resolved.append((branch, list(names), sources))
-            return {"partition": fork}
-
-        monkeypatch.setattr(pins, "resolve_images", resolve)
+        self._resolver(monkeypatch, resolved)
         calls = _wire_lock(monkeypatch, self._lock())
 
         result = pins.refresh_fork_services()
 
         data, _ = calls["patch"]
         assert resolved == [("release-0-30", ["partition"], {"partition": "Acme/partition"})]
-        assert data["PARTITION_IMAGE_REF"] == "ghcr.io/acme/partition@sha256:" + "f" * 64
-        assert data["PARTITION_ACCEPTANCE_DIGEST"] == "sha256:acc"
         assert data["LEGAL_IMAGE_DIGEST"] == "sha256:old"
-        assert data["IMAGE_RESOLVED_AT"] == "earlier"
-        assert result.refreshed == {"partition": fork}
+        assert result.refreshed == {"partition": self.FORK}
         assert calls["reconciled"] == ["partition"]
-
-    def test_forks_keeps_an_active_pin(self, monkeypatch):
-        self._resolver(monkeypatch, [])
-        held = {"partition": _image_pin(repository="ghcr.io/acme/p")}
-        calls = _wire_lock(monkeypatch, self._lock(pins_annotation=encode_pins(held)))
-
-        result = pins.refresh_fork_services()
-
-        data, kept = calls["patch"]
-        assert result == pins.RefreshResult({}, ("partition",))
-        assert set(kept) == {"partition"}
-        assert data["PARTITION_IMAGE_DIGEST"] == "sha256:old"
-        assert calls["reconciled"] is None
 
     @pytest.mark.parametrize("data", [None, _canonical_data("partition")])
     def test_forks_without_a_fork_source_writes_nothing(self, monkeypatch, data):

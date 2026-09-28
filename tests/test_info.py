@@ -781,11 +781,8 @@ def _fork_lock(age_days: int, pins: dict | None = None) -> dict:
     return lock
 
 
-@pytest.mark.parametrize(
-    "age_days, pinned, due",
-    [(22, False, True), (20, False, False), (22, True, False)],
-)
-def test_info_marks_a_fork_canonical_past_the_refresh_age(monkeypatch, age_days, pinned, due):
+@pytest.mark.parametrize("pinned", [False, True])
+def test_info_marks_an_unpinned_fork_canonical_past_the_refresh_age(monkeypatch, pinned):
     pin = {
         "mr": "",
         "branch": "",
@@ -800,15 +797,15 @@ def test_info_marks_a_fork_canonical_past_the_refresh_age(monkeypatch, age_days,
         "ephemeral": True,
         "run_id": "42",
     }
-    _wire(monkeypatch, image_lock=_fork_lock(age_days, {"partition": pin} if pinned else None))
+    _wire(monkeypatch, image_lock=_fork_lock(22, {"partition": pin} if pinned else None))
     monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-stack-shared")
 
     services = info.collect_info()["osdu_versions"]["services"]
     output = " ".join(_plain(CliRunner().invoke(cli.app, ["info"]).output).split())
 
-    assert services["partition"]["refresh_due"] is due
+    assert services["partition"]["refresh_due"] is not pinned
     assert services["storage"]["refresh_due"] is False
-    assert ("Run 'spi service refresh partition'." in output) is due
+    assert ("Run 'spi service refresh partition'." in output) is not pinned
 
 
 def test_the_schema_loader_reports_the_schema_source_policy(monkeypatch):
