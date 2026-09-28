@@ -30,11 +30,15 @@ contract in `src/spi/suite_contract.py`, the reviewer in
   sources to a parent the child's package or imports can see. A test the
   sources cannot settle (two declarations alike, a class two modules declare,
   a display name) is left unjudged. A test inherited from a parent the suite
-  does not hold is marked `outside` with that parent's name.
+  does not hold is marked `outside` with that parent's name. A file a
+  link leads to outside the suite's directory is neither read nor handed to a
+  reviewer: a suite copied out of an image can hold a link that names a file
+  of the host.
 - **Credentials stay behind.** The page keeps a failure's message, the first
   40 lines of its trace, and the last 40 lines of its captured output, and
   nothing a passing test wrote. Every text a report supplies, a test's name
-  and class included, is redacted before it is cut to length. Removed: the
+  and class included, and the source comment shown beside an empty test, is
+  redacted before it is cut to length. Removed: the
   bearers the run minted and each env file value whose name reads as a
   credential, where 8 characters or longer; any `Bearer` value; any
   JWT-shaped string; and any value of 6 characters or more assigned to a
@@ -63,7 +67,8 @@ contract in `src/spi/suite_contract.py`, the reviewer in
   the row each test protects and grades what the test proves about it: 0
   nothing, 1 the status code, 2 the body or headers, 3 state read back after
   a write, or no grade for a body outside the sources. It adds the rows the
-  suites exercise that the contract does not list. The CLI keeps a grade
+  suites exercise that the contract does not list, and names the suites the
+  service needs: one, several, or none. The CLI keeps a grade
   only on tests that ran in that suite and were not skipped, sets a cell
   whose tests are all `empty` to 0, and sets a cell whose tests are all
   `outside` or `empty` to unread.
@@ -87,10 +92,11 @@ contract in `src/spi/suite_contract.py`, the reviewer in
   `spi-test-scoreboard.html` from the facts embedded in the saved pages, one
   row per service, taking the newest reviewed page where one exists.
 - **A report that cannot be had costs nothing.** Facts that fail to collect,
-  a contract that does not answer, a reviewer that is missing, exits
-  nonzero, or answers in a shape the page cannot draw, and a file that
-  cannot be written each print a warning and leave the verdict and exit code
-  as they were.
+  a contract that does not answer, a reviewer that is missing or exits
+  nonzero, and a file that cannot be written each print a warning and leave
+  the verdict and exit code as they were. Sources that cannot be set aside
+  for the reviewer, and an answer the page cannot draw, cost the review and
+  leave the run's own page.
 
 Rejected: judge an empty test by its duration. It needs no source, but a test
 that returns after its setup runs as long as one that asserts.

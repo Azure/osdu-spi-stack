@@ -5,6 +5,7 @@
 """The suite review: what the reviewer may read, how it runs, and what is kept of its answer."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -96,6 +97,26 @@ class TestBundle:
             "suites/integration/src/module/src/test/resources/list.feature",
         }
         assert json.loads((bundle / "suites/integration/facts.json").read_text()) == INTEGRATION
+
+    @pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+    def test_a_file_of_the_host_a_link_names_is_never_handed_over(self, tmp_path):
+        suite, host = tmp_path / "suite", tmp_path / "host"
+        (suite / "src").mkdir(parents=True)
+        (host / "inner").mkdir(parents=True)
+        (suite / "src" / "Real.java").write_text("class Real {}")
+        (host / "Secret.java").write_text("host-only")
+        (host / "inner" / "Deep.java").write_text("host-only")
+        try:
+            (suite / "src" / "Leak.java").symlink_to(host / "Secret.java")
+            (suite / "src" / "linked").symlink_to(host / "inner", target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks need a privilege this run lacks")
+
+        add_suite(tmp_path / "bundle", "integration", suite, INTEGRATION)
+
+        bundle = tmp_path / "bundle"
+        held = {p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if not p.is_dir()}
+        assert held == {"suites/integration/facts.json", "suites/integration/src/src/Real.java"}
 
 
 class TestRows:
@@ -267,18 +288,21 @@ class TestAnswer:
         assert review["gaps"] == ["no token case"]
 
     @pytest.mark.parametrize(
-        ("judged", "better"),
+        ("judged", "suites"),
         [
-            ({"better": "integration", "reason": "guards writes"}, "integration"),
-            ({"better": "both", "reason": "each guards its own"}, "both"),
-            ({"better": "the newer one", "reason": "r"}, ""),
-            ("integration", ""),
+            ({"suites": ["integration"], "reason": "guards writes"}, ["integration"]),
+            ({"suites": ["integration", "acceptance"]}, ["acceptance", "integration"]),
+            ({"suites": ["integration", "the newer one", 3]}, ["integration"]),
+            ({"suites": []}, []),
+            ({"suites": "integration"}, None),
+            ({"reason": "no names"}, None),
+            ("integration", None),
         ],
     )
-    def test_the_better_suite_is_one_that_ran(self, judged, better):
+    def test_the_suites_a_service_needs_are_ones_that_ran(self, judged, suites):
         review = _parse(_answer(determination=judged))
 
-        assert review["determination"]["better"] == better
+        assert review["determination"]["suites"] == suites
 
     def test_findings_keep_only_tests_their_suite_ran_and_the_most_severe_lead(self):
         answer = _answer(
@@ -312,7 +336,7 @@ class TestAnswer:
     def test_the_runs_credentials_are_kept_out_of_the_answer(self):
         answer = _answer(
             summary="Sent minted-bearer-value once.",
-            determination={"better": "both", "reason": "token minted-bearer-value"},
+            determination={"suites": ["integration"], "reason": "token minted-bearer-value"},
             gaps=["Authorization: Bearer abcdefgh12345678 is accepted"],
             findings=[_finding(detail="uses minted-bearer-value")],
             rows=[

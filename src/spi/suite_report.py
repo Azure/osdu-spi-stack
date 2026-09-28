@@ -216,14 +216,45 @@ class Declaration:
     outside: str = ""
 
 
+def suite_files(root: Path, pattern: str) -> list[Path]:
+    """The suite's own files of a name, in order.
+
+    A file a link leads to outside the suite is not the suite's own: a suite
+    copied out of an image can hold a link that names a file of the host.
+    """
+
+    try:
+        inside = root.resolve()
+    except OSError:
+        return []
+    found = []
+    for path in sorted(root.rglob(pattern)):
+        try:
+            if path.is_file() and path.resolve().is_relative_to(inside):
+                found.append(path)
+        except OSError:
+            pass
+    return found
+
+
+def suite_sources(root: Path, suffixes: Iterable[str]) -> list[Path]:
+    """The suite's source files of these suffixes, outside any build output."""
+
+    return [
+        path
+        for suffix in suffixes
+        for path in suite_files(root, f"*{suffix}")
+        if "target" not in path.relative_to(root).parts
+    ]
+
+
 class Sources:
     """The Java sources under a suite directory, read on demand."""
 
     def __init__(self, root: Path):
         self._by_name: dict[str, list[Path]] = {}
-        for path in sorted(root.rglob("*.java")):
-            if "target" not in path.relative_to(root).parts:
-                self._by_name.setdefault(path.stem, []).append(path)
+        for path in suite_sources(root, (".java",)):
+            self._by_name.setdefault(path.stem, []).append(path)
         self._parsed: dict[Path, _JavaFile] = {}
 
     def _parse(self, path: Path) -> _JavaFile:
@@ -370,9 +401,11 @@ def _case(case: ET.Element, classname: str, sources: Sources, redact: Callable[[
         return test
     declaration = sources.declaration(classname, name)
     if declaration is not None and declaration.empty:
-        test.update(status="empty", note=declaration.note, declared_in=declaration.declared_in)
+        # A comment is the suite's text, and it goes onto the page like the report's.
+        note, declared_in = redact(declaration.note), redact(declaration.declared_in)
+        test.update(status="empty", note=note, declared_in=declared_in)
     elif declaration is not None and declaration.outside:
-        test["outside"] = declaration.outside
+        test["outside"] = redact(declaration.outside)
     return test
 
 
@@ -382,7 +415,7 @@ def collect(reports: Path, secrets: Iterable[str] = ()) -> dict:
     sources = Sources(reports)
     redact = redactor(secrets)
     classes: dict[str, dict] = {}
-    for path in sorted(reports.rglob("TEST-*.xml")):
+    for path in suite_files(reports, "TEST-*.xml"):
         if path.parent.name not in REPORT_DIRS:
             continue
         try:
@@ -446,9 +479,13 @@ def report_folder() -> Path:
     folder = Path(tempfile.gettempdir()) / REPORT_FOLDER
     try:
         folder.mkdir(mode=0o700, exist_ok=True)
+        if _own(folder):
+            # A folder made before this one was may be open to other users.
+            folder.chmod(0o700)
+            return folder
     except OSError:
         pass
-    return folder if _own(folder) else Path(tempfile.mkdtemp(prefix=f"{REPORT_FOLDER}-"))
+    return Path(tempfile.mkdtemp(prefix=f"{REPORT_FOLDER}-"))
 
 
 def write(page: str, folder: Path, *names: str, now: float | None = None) -> Path:

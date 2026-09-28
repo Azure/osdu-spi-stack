@@ -699,7 +699,7 @@ class TestReportCommand:
             return {
                 "reviewer": "copilot",
                 "summary": "Proves the list answers.",
-                "determination": {"better": "both", "reason": "r"},
+                "determination": {"suites": sorted(suites), "reason": "r"},
                 "rows": [],
                 "findings": [],
                 "gaps": [],
@@ -847,6 +847,39 @@ class TestReportCommand:
 
         assert code == 3 and envelope["outcome"] == "failed"
         assert ("report" in envelope) is written
+
+    def test_sources_that_cannot_be_set_aside_cost_the_review_and_keep_the_report(
+        self, command, monkeypatch
+    ):
+        def full(*args, **kwargs):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr("spi.suite_review.add_suite", full)
+
+        code, envelope = self._invoke("--review")
+
+        facts = _page_facts(envelope)
+        assert code == 0 and command["reviews"] == []
+        assert [suite["name"] for suite in facts["suites"]] == ["acceptance"]
+        assert "review" not in facts
+
+    def test_a_review_that_cannot_be_drawn_leaves_the_runs_own_page(self, command, monkeypatch):
+        from spi import suite_page
+
+        drawn = suite_page.render
+
+        def render(facts):
+            if facts.get("review"):
+                raise KeyError("severity")
+            return drawn(facts)
+
+        monkeypatch.setattr("spi.suite_page.render", render)
+
+        code, envelope = self._invoke("--review")
+
+        facts = _page_facts(envelope)
+        assert code == 0 and len(command["reviews"]) == 1
+        assert facts["review"] is None and facts["suites"][0]["name"] == "acceptance"
 
     def test_the_scoreboard_lands_beside_the_page(self, command, monkeypatch):
         made = []

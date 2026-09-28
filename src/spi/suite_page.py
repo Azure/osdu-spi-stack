@@ -554,12 +554,7 @@ def _judged(facts: Mapping) -> str:
     if not review:
         return ""
     judged = review.get("determination") or {}
-    better = judged.get("better")
-    title = {
-        "": "",
-        "both": "Both suites are needed here",
-        "neither": "Neither suite protects this service",
-    }.get(better or "", f"{better} protects this service better")
+    title = needed(judged, [suite["name"] for suite in facts["suites"]])
     heading = f"<h3>{_e(title)}</h3><p>{_e(judged.get('reason'))}</p>" if title else ""
     unplaced = ""
     if score(facts) is None:
@@ -573,6 +568,23 @@ def _judged(facts: Mapping) -> str:
         f'<p class="summary">{_e(review.get("summary"))}</p>{unplaced}{_written_by(review)}'
         "</section>"
     )
+
+
+def needed(judged: Mapping, ran: list[str]) -> str:
+    """The reviewer's judgment of which suites the service needs, as a heading."""
+
+    suites = judged.get("suites")
+    if suites is None:
+        return ""
+    if not suites:
+        return "No suite protects this service"
+    if len(ran) == 1:
+        return f"{suites[0]} is the one suite that ran"
+    if len(suites) == 1:
+        return f"{suites[0]} protects this service better"
+    if len(suites) == len(ran):
+        return "Each suite guards what the others cannot"
+    return f"{', '.join(suites[:-1])} and {suites[-1]} are needed here"
 
 
 def _list(title: str, items: list[str]) -> str:
@@ -785,7 +797,8 @@ def render_scoreboard(pages: Iterable[tuple[str, Mapping]], run: Mapping) -> str
         totals["rows"] += scored["rows"]
         for key in (EQUAL, UNREAD, NEITHER, *names):
             totals[key] += split.get(key, 0)
-        better = (facts["review"].get("determination") or {}).get("better") or "unjudged"
+        judged = (facts["review"].get("determination") or {}).get("suites")
+        better = "unjudged" if judged is None else " + ".join(judged) or "no suite"
         bar, _ = _split(_ordered(split, names), names)
         scores += (
             f'<tr><td><a href="{_e(link)}">{service}</a></td>'
@@ -825,7 +838,7 @@ def render_scoreboard(pages: Iterable[tuple[str, Mapping]], run: Mapping) -> str
         )
         + "</section>"
         f"<h2>Who protects the contract</h2>{legend}"
-        '<div class="sheet"><table><thead><tr><th>Service</th><th>Better here</th>'
+        '<div class="sheet"><table><thead><tr><th>Service</th><th>Needs</th>'
         f"<th class=n>Rows</th><th class=n>Equal</th>{columns}<th class=n>Neither</th>"
         f"<th>Split</th></tr></thead><tbody>{scores}</tbody></table></div>"
         "<h2>What ran</h2>"

@@ -187,6 +187,45 @@ class TestCollect:
         assert "line 0" not in test["output"] and "line 199" in test["output"]
         assert "at Client.send(" in test["detail"]
 
+    def test_a_comment_in_the_source_is_redacted_like_the_reports_text(self, suite):
+        source = (
+            "package org.example.api;\npublic class TestNote {\n"
+            " @Test public void check() {\n  // client_secret=hunter2hunter2 kv-secret-value\n }\n}"
+        )
+        _java(suite, "module/src/test/java/org/example/api/TestNote.java", source)
+        body = _case("check", classname=f"{PACKAGE}.TestNote")
+        _reports(suite, f"<testsuite>{body}</testsuite>")
+
+        [test] = collect(suite, secrets=["kv-secret-value"])["classes"][0]["tests"]
+
+        assert test["status"] == "empty"
+        assert test["note"] == "client_secret=[redacted] [redacted]"
+
+    @pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+    def test_a_link_in_the_suite_is_not_the_suites_own(self, suite, tmp_path):
+        host = tmp_path / "host"
+        (host / "target" / "surefire-reports").mkdir(parents=True)
+        (host / "TestLeak.java").write_text(
+            "package org.example.api;\nclass TestLeak { void check() { /* host */ } }"
+        )
+        (host / "target/surefire-reports/TEST-host.xml").write_text(
+            "<testsuite>" + _case("from_host") + "</testsuite>"
+        )
+        try:
+            (suite / "module/src/test/java/org/example/api/TestLeak.java").symlink_to(
+                host / "TestLeak.java"
+            )
+            (suite / "linked").symlink_to(host, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks need a privilege this run lacks")
+        body = _case("check", classname=f"{PACKAGE}.TestLeak")
+        _reports(suite, f"<testsuite>{body}</testsuite>")
+
+        facts = collect(suite)
+
+        assert _statuses(facts) == {"check": "passed"}
+        assert Sources(suite).declaration(f"{PACKAGE}.TestLeak", "check") is None
+
 
 class TestSources:
     @pytest.mark.parametrize(
@@ -432,6 +471,9 @@ class TestFile:
 
     @pytest.mark.skipif(not hasattr(os, "getuid"), reason="no owner or mode to compare on Windows")
     def test_the_folder_is_this_users_alone(self, temp, monkeypatch):
+        (temp / "spi-reports").mkdir(mode=0o755)
+        (temp / "spi-reports").chmod(0o755)
+
         shared = report_folder()
         assert shared == temp / "spi-reports" and shared.stat().st_mode & 0o777 == 0o700
 

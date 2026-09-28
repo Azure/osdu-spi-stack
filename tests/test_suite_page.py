@@ -15,6 +15,7 @@ from spi.suite_page import (
     UNREAD,
     embedded,
     latest,
+    needed,
     read_pages,
     render,
     render_scoreboard,
@@ -104,7 +105,10 @@ def _facts(review: bool = True, service: str = "partition", generated: str = "")
             "model": "claude-opus-5.5",
             "effort": "medium",
             "summary": "Proves reads; proves nothing about callers without a token.",
-            "determination": {"better": "both", "reason": "Integration guards the writes."},
+            "determination": {
+                "suites": ["acceptance", "integration"],
+                "reason": "Integration guards the writes.",
+            },
             "rows": copy.deepcopy(ROWS),
             "findings": [
                 {
@@ -215,7 +219,7 @@ class TestPage:
 
         assert embedded(page) == facts
         for shown in (
-            "Both suites are needed here",
+            "Each suite guards what the others cannot",
             "Integration guards the writes.",
             "claude-opus-5.5, medium effort",
             "takes no part in any verdict",
@@ -274,6 +278,38 @@ class TestPage:
         assert embedded(page) is None
 
 
+@pytest.mark.parametrize(
+    ("suites", "ran", "heading"),
+    [
+        (None, ["acceptance", "integration"], ""),
+        ([], ["acceptance", "integration"], "No suite protects this service"),
+        (["acceptance"], ["acceptance"], "acceptance is the one suite that ran"),
+        (
+            ["integration"],
+            ["acceptance", "integration"],
+            "integration protects this service better",
+        ),
+        (
+            ["acceptance", "integration"],
+            ["acceptance", "integration"],
+            "Each suite guards what the others cannot",
+        ),
+        (
+            ["acceptance", "load"],
+            ["acceptance", "integration", "load"],
+            "acceptance and load are needed here",
+        ),
+        (
+            ["acceptance", "integration", "load"],
+            ["acceptance", "integration", "load", "smoke"],
+            "acceptance, integration and load are needed here",
+        ),
+    ],
+)
+def test_the_judgment_names_as_many_suites_as_the_service_needs(suites, ran, heading):
+    assert needed({"suites": suites}, ran) == heading
+
+
 class TestScoreboard:
     def test_each_service_is_scored_from_its_newest_reviewed_page(self):
         reviewed = _facts(generated="2026-09-28 21:00 UTC")
@@ -288,7 +324,7 @@ class TestScoreboard:
     def test_services_stand_side_by_side_and_add_up(self):
         storage = _facts(service="storage")
         storage["suites"] = storage["suites"][:1]
-        storage["review"]["determination"]["better"] = "acceptance"
+        storage["review"]["determination"]["suites"] = ["acceptance"]
         legal = _facts(review=False, service="legal")
         pages = [("p.html", _facts()), ("s.html", storage), ("l.html", legal)]
 
@@ -300,6 +336,8 @@ class TestScoreboard:
             'href="l.html"',
             "not reviewed",
             "not run",
+            '<span class="chip ai">acceptance + integration</span>',
+            '<span class="chip ai">acceptance</span>',
             "All 3",
             # 5 rows each: equal 1+0, acceptance 1+2, integration 1+0, neither 2+3
             "<td class=n>10</td><td class=n>1</td><td class=n>3</td><td class=n>1</td>"

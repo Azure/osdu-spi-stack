@@ -907,11 +907,13 @@ def _inspect_suite(
     suite: str,
     bundle: Optional[Path],
     kept: set,
+    unbundled: List[str],
 ) -> Optional[Dict[str, Any]]:
     """The facts of a run for its report; a report that cannot be built costs no verdict.
 
     With a ``bundle``, the suite's sources are set aside for the review before
-    the run's directory is discarded.
+    the run's directory is discarded. A suite whose sources could not be set
+    aside is named in ``unbundled`` and keeps its facts.
     """
     from .suite_report import collect
     from .suite_review import add_suite
@@ -919,11 +921,15 @@ def _inspect_suite(
     kept.update(secrets)
     try:
         facts = collect(reports, secrets)
-        if bundle is not None:
-            add_suite(bundle, suite, reports, facts)
     except Exception as exc:  # noqa: BLE001
         _report_warning(f"No report for {suite}", exc)
         return None
+    try:
+        if bundle is not None:
+            add_suite(bundle, suite, reports, facts)
+    except Exception as exc:  # noqa: BLE001
+        unbundled.append(suite)
+        _report_warning(f"No review: the sources of {suite} could not be set aside", exc)
     return facts
 
 
@@ -1002,8 +1008,17 @@ def _write_suite_report(
             facts["contract"], facts["review"] = _review_suites(
                 service, {result.suite: result.report for result in reported}, bundle, secrets
             )
+        try:
+            drawn = render(facts)
+        except Exception as exc:  # noqa: BLE001
+            if not facts.get("review"):
+                raise
+            # The run's own facts still make a page when the review cannot be drawn.
+            _report_warning("No review: it could not be drawn", exc)
+            facts["contract"] = facts["review"] = None
+            drawn = render(facts)
         folder = report_folder()
-        page = write(render(facts), folder, service, "+".join(s["name"] for s in suites))
+        page = write(drawn, folder, service, "+".join(s["name"] for s in suites))
     except Exception as exc:  # noqa: BLE001
         _report_warning("The report could not be written", exc)
         return None
@@ -1079,6 +1094,7 @@ def spi_test(
     results: List[Any] = []
     refused: Optional[Tuple[str, SuiteNotRun]] = None
     kept: set = set()
+    unbundled: List[str] = []
     with contextlib.ExitStack() as stack:
         bundle = None
         if review:
@@ -1087,7 +1103,9 @@ def spi_test(
             suite = queue.pop(0)
             inspect = None
             if report or review:
-                inspect = partial(_inspect_suite, suite=suite, bundle=bundle, kept=kept)
+                inspect = partial(
+                    _inspect_suite, suite=suite, bundle=bundle, kept=kept, unbundled=unbundled
+                )
             try:
                 result = run_suite(
                     service,
@@ -1107,7 +1125,8 @@ def spi_test(
             if not output_json:
                 _print_suite_result(result, environment)
         # The suites that ran keep their page when a later one is not run.
-        page = _write_suite_report(service, results, environment, bundle, kept)
+        reviewed = None if unbundled else bundle
+        page = _write_suite_report(service, results, environment, reviewed, kept)
 
     several = len(results) + bool(refused) > 1
     extra: Dict[str, Any] = {"report": str(page)} if page else {}
