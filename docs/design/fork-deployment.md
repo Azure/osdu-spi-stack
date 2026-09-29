@@ -420,13 +420,13 @@ reason; `--json` prints the outcome as the last stdout line.
 temporary directory and prints its path (ADR-037). The page lists each test
 with its status and duration, the failures with their redacted output, and
 the passing tests whose body holds no statement. `--review` reads the
-service's `api-docs` and has `copilot -p`, or `claude -p` under
-`SPI_TEST_REVIEWER`, place each test on a contract row and grade what it
-proves; the page then opens with which suite proves each row and which rows
-no suite proves. `--suite all` runs every suite the descriptor declares onto
-one page. `spi-test-scoreboard.html` in the same folder sets the services
-with a saved page side by side. The review is a reading of the sources that
-varies between runs, and no score reaches a verdict or an exit code.
+service's `api-docs` and has `copilot -p` place each test on a contract row
+and grade what it proves; the page then opens with which suite proves each
+row and which rows no suite proves. `--suite all` runs every suite the
+descriptor declares onto one page. `spi-test-scoreboard.html` in the same
+folder sets the services with a saved page side by side. The review is a
+reading of the sources that varies between runs, and no score reaches a
+verdict or an exit code.
 
 Hand-pin a fork image against a standing environment and return it:
 

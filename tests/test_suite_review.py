@@ -13,13 +13,12 @@ import pytest
 
 from spi import suite_review
 from spi.suite_review import (
-    REVIEWERS,
     ReviewUnavailable,
     add_suite,
-    choose_reviewer,
     known_tests,
     parse_review,
     review_suites,
+    reviewer_command,
 )
 
 
@@ -377,15 +376,11 @@ class TestAnswer:
 class TestReviewer:
     @pytest.fixture
     def installed(self, monkeypatch):
-        present = {"copilot", "claude"}
+        present = {"copilot"}
         monkeypatch.setattr(
             suite_review.shutil, "which", lambda name: name if name in present else None
         )
-        for variable in (
-            suite_review.REVIEWER_ENV,
-            suite_review.MODEL_ENV,
-            suite_review.EFFORT_ENV,
-        ):
+        for variable in (suite_review.MODEL_ENV, suite_review.EFFORT_ENV):
             monkeypatch.delenv(variable, raising=False)
         return present
 
@@ -408,30 +403,16 @@ class TestReviewer:
         monkeypatch.setattr(suite_review, "run_command", run_command)
         return seen
 
-    def test_the_named_reviewer_wins_over_the_first_installed(self, installed, monkeypatch):
-        assert choose_reviewer() == "copilot"
+    def test_a_reviewer_that_is_not_installed_is_no_review(self, installed, answered, tmp_path):
+        installed.clear()
 
-        monkeypatch.setenv(suite_review.REVIEWER_ENV, "Claude")
-        assert choose_reviewer() == "claude"
+        with pytest.raises(ReviewUnavailable, match="copilot is not on PATH"):
+            review_suites(tmp_path, SUITES)
 
-        installed.discard("copilot")
-        monkeypatch.delenv(suite_review.REVIEWER_ENV)
-        assert choose_reviewer() == "claude"
-
-    @pytest.mark.parametrize(
-        ("named", "present"),
-        [("gemini", {"copilot"}), ("claude", {"copilot"}), ("", set())],
-    )
-    def test_a_reviewer_that_cannot_run_is_no_review(self, installed, monkeypatch, named, present):
-        installed.intersection_update(present)
-        if named:
-            monkeypatch.setenv(suite_review.REVIEWER_ENV, named)
-
-        with pytest.raises(ReviewUnavailable):
-            choose_reviewer()
+        assert answered == {}
 
     def test_a_reviewer_is_given_three_tools_that_read_and_nothing_beside_the_bundle(self):
-        copilot = REVIEWERS["copilot"][1]("m", "medium")
+        copilot = reviewer_command("m", "medium")
         denied = {copilot[i + 1] for i, arg in enumerate(copilot) if arg == "--deny-tool"}
         given = copilot.index("--available-tools")
         assert denied == {"shell", "write", "url"}
@@ -439,13 +420,6 @@ class TestReviewer:
         assert copilot[given + 4].startswith("--")
         for flag in ("--disable-builtin-mcps", "--no-custom-instructions", "--disallow-temp-dir"):
             assert flag in copilot, flag
-
-        claude = REVIEWERS["claude"][1]("m", "medium")
-        assert claude[claude.index("--tools") + 1] == "Read,Glob,Grep"
-        assert claude[claude.index("--allowed-tools") + 1] == "Read,Glob,Grep"
-        assert claude[claude.index("--permission-prompts") + 1] == "none"
-        for flag in ("--restricted", "--safe-mode", "--strict-mcp-config"):
-            assert flag in claude, flag
 
     def test_the_reviewer_reads_the_bundle_as_opus_at_medium_effort(
         self, answered, monkeypatch, tmp_path
@@ -464,7 +438,8 @@ class TestReviewer:
         assert answered["kwargs"]["env"]["KEPT_FOR_THE_REVIEWER"] == "its own sign-in"
         assert review["summary"] == "Sent [redacted] once."
         assert command[0] == "copilot"
-        assert command[command.index("--model") + 1] == "claude-opus-5.5"
+        model = command[command.index("--model") + 1]
+        assert model == "claude-opus-5.5"
         assert command[command.index("--reasoning-effort") + 1] == "medium"
         assert answered["kwargs"]["cwd"] == str(tmp_path)
         assert answered["kwargs"]["check"] is False and answered["kwargs"]["timeout"] > 0
@@ -475,23 +450,22 @@ class TestReviewer:
         }
         assert (review["reviewer"], review["model"], review["effort"]) == (
             "copilot",
-            "claude-opus-5.5",
+            model,
             "medium",
         )
         assert review["rows"][0]["suites"]["integration"]["grade"] == 2
 
     def test_the_model_and_effort_can_be_named(self, answered, monkeypatch, tmp_path):
-        monkeypatch.setenv(suite_review.REVIEWER_ENV, "claude")
-        monkeypatch.setenv(suite_review.MODEL_ENV, "claude-sonnet-5")
+        monkeypatch.setenv(suite_review.MODEL_ENV, "gpt-5.4")
         monkeypatch.setenv(suite_review.EFFORT_ENV, "high")
 
         review = review_suites(tmp_path, SUITES)
 
         command = answered["cmd"]
-        assert command[command.index("--model") + 1] == "claude-sonnet-5"
-        assert command[command.index("--effort") + 1] == "high"
+        assert command[command.index("--model") + 1] == "gpt-5.4"
+        assert command[command.index("--reasoning-effort") + 1] == "high"
         assert "contract.json" not in answered["files"]
-        assert (review["model"], review["effort"]) == ("claude-sonnet-5", "high")
+        assert (review["model"], review["effort"]) == ("gpt-5.4", "high")
 
     @pytest.mark.parametrize(
         ("variable", "value"),

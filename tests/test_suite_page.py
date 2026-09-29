@@ -102,7 +102,7 @@ def _facts(review: bool = True, service: str = "partition", generated: str = "")
         facts["contract"] = {"source": "https://gw/api/partition/v1/api-docs", "rows": []}
         facts["review"] = {
             "reviewer": "copilot",
-            "model": "claude-opus-5.5",
+            "model": "gpt-5.4",
             "effort": "medium",
             "summary": "Proves reads; proves nothing about callers without a token.",
             "determination": {
@@ -221,7 +221,7 @@ class TestPage:
         for shown in (
             "Each suite guards what the others cannot",
             "Integration guards the writes.",
-            "claude-opus-5.5, medium effort",
+            "gpt-5.4, medium effort",
             "takes no part in any verdict",
             "2 · 40%",
             "PATCH /partitions/{id}",

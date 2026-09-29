@@ -34,9 +34,10 @@ from .suite_contract import row_id
 from .suite_report import named_tests, redactor, suite_sources
 
 REVIEW_SCHEMA = 2
-REVIEWER_ENV = "SPI_TEST_REVIEWER"
 MODEL_ENV = "SPI_TEST_REVIEW_MODEL"
 EFFORT_ENV = "SPI_TEST_REVIEW_EFFORT"
+REVIEWER = "copilot"
+REVIEW_MODEL = "claude-opus-5.5"
 REVIEW_EFFORT = "medium"
 REVIEW_TIMEOUT_SECONDS = 1200
 SOURCE_SUFFIXES = (".java", ".feature")
@@ -52,9 +53,11 @@ _SETTING = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ROW = re.compile(r"^([A-Z]+ \S+) :: (\S.*)$")
 
 
-def _copilot(model: str, effort: str) -> list[str]:
+def reviewer_command(model: str, effort: str) -> list[str]:
+    """Three tools that read files, and a working directory it cannot read beyond."""
+
     return [
-        "copilot",
+        REVIEWER,
         "-p",
         PROMPT,
         "-s",
@@ -82,34 +85,6 @@ def _copilot(model: str, effort: str) -> list[str]:
     ]
 
 
-def _claude(model: str, effort: str) -> list[str]:
-    return [
-        "claude",
-        "-p",
-        PROMPT,
-        "--model",
-        model,
-        "--effort",
-        effort,
-        "--restricted",
-        "--safe-mode",
-        "--tools",
-        "Read,Glob,Grep",
-        "--allowed-tools",
-        "Read,Glob,Grep",
-        "--permission-prompts",
-        "none",
-        "--strict-mcp-config",
-        "--no-session-persistence",
-    ]
-
-
-# Each reviewer gets three tools that read files and a working directory it cannot
-# read beyond. The model is the name each gives Claude Opus 5.5.
-REVIEWERS: dict[str, tuple[str, Callable[[str, str], list[str]]]] = {
-    "copilot": ("claude-opus-5.5", _copilot),
-    "claude": ("claude-opus-5-5", _claude),
-}
 # Copilot loads plugins and MCP servers from its home; an empty one holds neither.
 REVIEWER_HOME = "COPILOT_HOME"
 
@@ -190,24 +165,6 @@ def _setting(variable: str, default: str) -> str:
     if not _SETTING.match(value):
         raise ReviewUnavailable(f"{variable}={value} is not a name a reviewer takes")
     return value
-
-
-def choose_reviewer() -> str:
-    """The reviewer ``SPI_TEST_REVIEWER`` names, or the first one installed."""
-
-    named = os.environ.get(REVIEWER_ENV, "").strip().lower()
-    if named:
-        if named not in REVIEWERS:
-            raise ReviewUnavailable(
-                f"{REVIEWER_ENV}={named} is not one of {', '.join(sorted(REVIEWERS))}"
-            )
-        if shutil.which(named) is None:
-            raise ReviewUnavailable(f"{named} is not on PATH")
-        return named
-    for name in REVIEWERS:
-        if shutil.which(name) is not None:
-            return name
-    raise ReviewUnavailable(f"none of {', '.join(REVIEWERS)} is on PATH")
 
 
 def add_suite(bundle: Path, name: str, suite_dir: Path, facts: dict) -> None:
@@ -405,17 +362,17 @@ def review_suites(
 ) -> dict:
     """Have the reviewer read the suites in ``bundle``; raise ReviewUnavailable when it cannot."""
 
-    name = choose_reviewer()
-    default, command = REVIEWERS[name]
-    model, effort = _setting(MODEL_ENV, default), _setting(EFFORT_ENV, REVIEW_EFFORT)
+    if shutil.which(REVIEWER) is None:
+        raise ReviewUnavailable(f"{REVIEWER} is not on PATH")
+    model, effort = _setting(MODEL_ENV, REVIEW_MODEL), _setting(EFFORT_ENV, REVIEW_EFFORT)
     bundle.mkdir(parents=True, exist_ok=True)
     (bundle / "REVIEW.md").write_text(INSTRUCTIONS, encoding="utf-8")
     if contract:
         (bundle / "contract.json").write_text(json.dumps(contract, indent=1), encoding="utf-8")
     with tempfile.TemporaryDirectory(prefix="spi-reviewer-") as home:
         ran = run_command(
-            command(model, effort),
-            description=f"Review the suites with {name}; this takes a few minutes",
+            reviewer_command(model, effort),
+            description=f"Review the suites with {REVIEWER}; this takes a few minutes",
             check=False,
             timeout=REVIEW_TIMEOUT_SECONDS,
             cwd=str(bundle),
@@ -424,9 +381,10 @@ def review_suites(
     if ran.returncode != 0:
         reason = (ran.stderr or ran.stdout or "").strip().splitlines()
         raise ReviewUnavailable(
-            f"{name} exited {ran.returncode}" + (f": {reason[-1][:TEXT_LIMIT]}" if reason else "")
+            f"{REVIEWER} exited {ran.returncode}"
+            + (f": {reason[-1][:TEXT_LIMIT]}" if reason else "")
         )
     known = {suite: known_tests(facts) for suite, facts in suites.items()}
     rows = (contract or {}).get("rows", [])
     review = parse_review(ran.stdout or "", known, rows, secrets)
-    return {**review, "reviewer": name, "model": model, "effort": effort}
+    return {**review, "reviewer": REVIEWER, "model": model, "effort": effort}

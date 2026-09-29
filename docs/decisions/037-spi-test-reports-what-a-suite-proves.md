@@ -72,16 +72,14 @@ contract in `src/spi/suite_contract.py`, the reviewer in
   only on tests that ran in that suite and were not skipped, sets a cell
   whose tests are all `empty` to 0, and sets a cell whose tests are all
   `outside` or `empty` to unread.
-- **The reviewer holds three tools that read.** `copilot -p` when installed,
-  else `claude -p`; `SPI_TEST_REVIEWER` names one. The model is Claude Opus
-  5.5 at medium effort, and `SPI_TEST_REVIEW_MODEL` and
-  `SPI_TEST_REVIEW_EFFORT` replace them. Copilot is given `view`, `grep`,
-  and `glob` with `--available-tools`, the shell, write, and url permissions
-  denied, the temporary directory disallowed, and an empty `COPILOT_HOME`,
-  which holds no plugin and no configured MCP server. Claude runs
-  `--restricted --safe-mode` with `Read`, `Glob`, and `Grep`, no MCP server,
-  and permission prompts answered by nobody. The working directory is the
-  bundle, and neither reviewer reads a file outside it.
+- **The reviewer holds three tools that read.** The reviewer is
+  `copilot -p`. The model is Opus 5.5 at medium effort, and
+  `SPI_TEST_REVIEW_MODEL` and `SPI_TEST_REVIEW_EFFORT` replace them. Copilot
+  is given `view`, `grep`, and `glob` with `--available-tools`, the shell,
+  write, and url permissions denied, the temporary directory disallowed, and
+  an empty `COPILOT_HOME`, which holds no plugin and no configured MCP
+  server. The working directory is the bundle, and the reviewer reads no
+  file outside it.
 - **Scores are arithmetic over the map.** A row belongs to the suite that
   grades highest on it, to `equal` on a tie, and to `neither` when no suite
   proves anything about it; among those, a row with a test that could not be
@@ -116,12 +114,12 @@ path to find, but the page names the environment and lands in checkouts.
 
 ## Consequences
 
-- The map is a reading, not a measurement. Three reviews of
-  `danielscholl-osdu/partition` at `8e056d4a6142` each placed 30 rows with
-  the same split and found the fifteen empty authentication tests. They
-  differed in the findings below high, and one graded two create rows as
-  state proven where the others found none. Every score inherits that
-  variance, and the page says which reviewer, model, and effort produced it.
+- The map is a reading, not a measurement. Three reviews of one partition
+  commit each placed 30 rows with the same split and found the fifteen
+  empty authentication tests. They differed in the findings below high, and
+  one graded two create rows as state proven where the others found none.
+  Every score inherits that variance, and the page says which reviewer,
+  model, and effort produced it.
 - `--review` sends the suites' sources and the run's facts to the reviewer's
   service. `--report` alone sends nothing.
 - Redaction is by value and by pattern. A credential logged in a failure's
@@ -141,4 +139,4 @@ path to find, but the page names the environment and lands in checkouts.
   is the only cleanup there.
 - Copilot's sign-in survives the empty `COPILOT_HOME` on macOS. That is
   unproven on Linux and Windows.
-- Neither reviewer is part of `spi check`.
+- `copilot` is not part of `spi check`.
