@@ -289,9 +289,12 @@ class Sources:
         """The parent's class, the parent's name when the suite does not hold it, or None."""
 
         parts = child.parent.split(".")
-        local = [kind for key, kind in java.types.items() if key.split("$")[-len(parts) :] == parts]
-        if local:
-            return (java, local[0]) if len(local) == 1 else None
+        # A name means a type of the scopes that enclose the child, the innermost first.
+        scope = child.name.split("$")[:-1]
+        for depth in range(len(scope), -1, -1):
+            local = java.types.get("$".join([*scope[:depth], *parts]))
+            if local is not None:
+                return java, local
         # By convention a package starts lower case and a class does not.
         classes = [part for part in parts if not part[:1].islower()]
         package = ".".join(parts[: len(parts) - len(classes)])
@@ -530,5 +533,5 @@ def show(path: Path) -> bool:
 
     try:
         return webbrowser.open(path.as_uri())
-    except webbrowser.Error:
+    except (webbrowser.Error, OSError):
         return False

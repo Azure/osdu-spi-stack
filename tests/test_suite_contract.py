@@ -69,13 +69,24 @@ def test_a_document_with_no_row_is_no_contract(body):
         read_contract(body, "https://gw/api-docs")
 
 
+class Answer(io.BytesIO):
+    """The document, from the address that served it once redirects were followed."""
+
+    def __init__(self, url: str = "https://gw.example/api/partition/v1/api-docs"):
+        super().__init__(json.dumps(DOCUMENT).encode())
+        self.url = url
+
+    def geturl(self) -> str:
+        return self.url
+
+
 class TestFetch:
     def test_the_contract_is_read_from_the_services_own_address(self, monkeypatch):
         seen = {}
 
         def urlopen(request, timeout):
             seen.update(url=request.full_url, timeout=timeout)
-            return io.BytesIO(json.dumps(DOCUMENT).encode())
+            return Answer()
 
         monkeypatch.setattr(suite_contract.urllib.request, "urlopen", urlopen)
 
@@ -112,12 +123,20 @@ class TestFetch:
         with pytest.raises(ContractUnavailable):
             fetch_contract("https://gw.example/api/partition/v1/")
 
-    def test_a_document_past_the_size_limit_is_refused(self, monkeypatch):
-        monkeypatch.setattr(suite_contract, "CONTRACT_BYTES", 64)
+    def test_an_answer_redirected_off_https_is_no_contract(self, monkeypatch):
         monkeypatch.setattr(
             suite_contract.urllib.request,
             "urlopen",
-            lambda request, timeout: io.BytesIO(json.dumps(DOCUMENT).encode()),
+            lambda request, timeout: Answer("http://gw.example/api/partition/v1/api-docs"),
+        )
+
+        with pytest.raises(ContractUnavailable, match="not https"):
+            fetch_contract("https://gw.example/api/partition/v1/")
+
+    def test_a_document_past_the_size_limit_is_refused(self, monkeypatch):
+        monkeypatch.setattr(suite_contract, "CONTRACT_BYTES", 64)
+        monkeypatch.setattr(
+            suite_contract.urllib.request, "urlopen", lambda request, timeout: Answer()
         )
 
         with pytest.raises(ContractUnavailable, match="larger"):

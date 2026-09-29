@@ -100,6 +100,9 @@ def fetch_contract(endpoint: str) -> dict:
     request = urllib.request.Request(source, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=CONTRACT_TIMEOUT_SECONDS) as response:  # nosec B310
+            # A redirect is followed after the address was checked.
+            if not response.geturl().startswith("https://"):
+                raise ContractUnavailable(f"{source} answers from an address that is not https")
             body = response.read(CONTRACT_BYTES + 1)
     except (TimeoutError, urllib.error.URLError, ConnectionError) as exc:
         raise ContractUnavailable(f"{source}: {exc}") from exc

@@ -343,6 +343,11 @@ class TestSources:
             ("import org.lib.TestBase;\nclass T extends TestBase { }", "TestBase"),
             ("class T extends org.lib.TestBase { }", "TestBase"),
             ("import org.lib.*;\nclass T extends Absent { }", "Absent"),
+            (
+                "import org.lib.TestBase;\nclass T extends TestBase { }\n"
+                "class Holder { static class TestBase { void check() { } } }",
+                "TestBase",
+            ),
         ],
     )
     def test_a_parent_the_suite_does_not_hold_is_named_not_guessed(
@@ -385,6 +390,16 @@ class TestSources:
         _java(tmp_path, "c/src/p/T.java", f"package p;\n{heading}")
 
         assert _declared(tmp_path, "p.T", "check") == (declared_in, False)
+
+    def test_a_parent_named_inside_a_class_is_the_nearest_of_that_name(self, tmp_path):
+        source = (
+            "package p;\nclass Base { void check() { } }\n"
+            "class Outer {\n static class Base { void check() { run(); } }\n"
+            " static class T extends Base { }\n}"
+        )
+        _java(tmp_path, "src/test/java/p/Outer.java", source)
+
+        assert _declared(tmp_path, "p.Outer$T", "check") == ("Base", False)
 
     def test_a_nested_class_is_read_from_its_own_body(self, tmp_path):
         source = (
@@ -519,3 +534,16 @@ class TestFile:
 
         assert show(page) is opened
         assert seen == ([page.as_uri()] if opened else [])
+
+    @pytest.mark.parametrize("failure", [OSError("no application is associated"), None])
+    def test_a_browser_that_cannot_start_costs_nothing(self, monkeypatch, tmp_path, failure):
+        import webbrowser
+
+        def refuse(url):
+            raise failure or webbrowser.Error("no browser")
+
+        monkeypatch.setattr(webbrowser, "open", refuse)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+        monkeypatch.setenv("CI", "")
+
+        assert show(tmp_path / "report.html") is False
