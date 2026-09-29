@@ -964,11 +964,11 @@ def _review_suites(
     return contract, review
 
 
-def _shared_commit(results: List[Any]) -> str:
-    """The commit every suite ran at; none when a rollout came between two of them."""
+def _shared(results: List[Any], field: str) -> str:
+    """What every suite ran at; nothing when a rollout came between two of them."""
 
-    commits = {result.commit for result in results}
-    return commits.pop() if len(commits) == 1 else ""
+    values = {getattr(result, field) for result in results}
+    return values.pop() if len(values) == 1 else ""
 
 
 def _write_suite_report(
@@ -1006,7 +1006,7 @@ def _write_suite_report(
         ]
         run = {
             "service": service,
-            "commit": _shared_commit(reported),
+            "commit": _shared(reported, "commit"),
             "environment": environment_label(environment),
             "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             "cli": __version__,
@@ -1106,7 +1106,11 @@ def spi_test(
     with contextlib.ExitStack() as stack:
         bundle = None
         if review:
-            bundle = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="spi-review-")))
+            try:
+                held = tempfile.TemporaryDirectory(prefix="spi-review-")
+                bundle = Path(stack.enter_context(held))
+            except OSError as exc:
+                _report_warning("No review: its sources have nowhere to be set aside", exc)
         while queue and refused is None:
             suite = queue.pop(0)
             inspect = None
@@ -1145,6 +1149,7 @@ def spi_test(
                 "outcome": "passed" if result.passed else "failed",
                 "detail": result.verdict,
                 "tests": result.tests,
+                "image": result.image or None,
                 "commit": result.commit or None,
             }
             for result in results
@@ -1182,8 +1187,8 @@ def spi_test(
             suite=None if several else first.suite,
             mode=first.mode,
             label=first.label or None,
-            image=first.image or None,
-            commit=_shared_commit(results) or None,
+            image=_shared(results, "image") or None,
+            commit=_shared(results, "commit") or None,
             tests=None if several else first.tests,
             environment=environment,
             **extra,

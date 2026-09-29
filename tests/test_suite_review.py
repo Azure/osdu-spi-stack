@@ -97,6 +97,17 @@ class TestBundle:
         }
         assert json.loads((bundle / "suites/integration/facts.json").read_text()) == INTEGRATION
 
+    @pytest.mark.parametrize("name", ["../escape", "..", "deep/er", "/rooted", ""])
+    def test_a_suite_name_that_is_a_path_writes_nothing(self, tmp_path, name):
+        suite = tmp_path / "suite"
+        suite.mkdir()
+        (suite / "Real.java").write_text("class Real {}")
+
+        with pytest.raises(ValueError):
+            add_suite(tmp_path / "held" / "bundle", name, suite, INTEGRATION)
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["suite"]
+
     @pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
     def test_a_file_of_the_host_a_link_names_is_never_handed_over(self, tmp_path):
         suite, host = tmp_path / "suite", tmp_path / "host"

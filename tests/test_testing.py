@@ -687,8 +687,9 @@ class TestReportCommand:
             passed = suite not in state["failing"]
             verdict = "pass: 1 tests, 0 skipped" if passed else "FAIL: 1 of 1"
             commit = state.get("commits", {}).get(suite, SHA)
+            image = "img" if commit == SHA else f"img@{commit[:4]}"
             return testing.SuiteResult(
-                service, suite, "paired", "", "img", commit, passed, verdict, {"tests": 1},
+                service, suite, "paired", "", image, commit, passed, verdict, {"tests": 1},
                 report, state["declared"],
             )  # fmt: skip
 
@@ -790,16 +791,17 @@ class TestReportCommand:
         command["declared"] = ("acceptance", "integration")
 
         _, same = self._invoke("--suite", "all", "--report")
-        assert same["commit"] == SHA and _page_facts(same)["run"]["commit"] == SHA
+        assert (same["commit"], same["image"]) == (SHA, "img")
+        assert _page_facts(same)["run"]["commit"] == SHA
 
         command["commits"] = {"integration": "2" * 40}
         code, envelope = self._invoke("--suite", "all", "--report")
         told = CliRunner().invoke(cli.app, ["test", "partition", "--suite", "all"])
 
-        assert code == 0 and envelope["commit"] is None
-        assert [(s["suite"], s["commit"]) for s in envelope["suites"]] == [
-            ("acceptance", SHA),
-            ("integration", "2" * 40),
+        assert code == 0 and envelope["commit"] is None and envelope["image"] is None
+        assert [(s["suite"], s["image"], s["commit"]) for s in envelope["suites"]] == [
+            ("acceptance", "img", SHA),
+            ("integration", "img@2222", "2" * 40),
         ]
         facts = _page_facts(envelope)
         assert facts["run"]["commit"] == ""
@@ -883,6 +885,22 @@ class TestReportCommand:
         assert code == 0 and command["reviews"] == []
         assert [suite["name"] for suite in facts["suites"]] == ["acceptance"]
         assert "review" not in facts
+
+    def test_a_review_with_nowhere_to_set_sources_aside_still_runs_the_suite(
+        self, command, monkeypatch
+    ):
+        import tempfile
+
+        def full(*args, **kwargs):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(tempfile, "TemporaryDirectory", full)
+
+        code, envelope = self._invoke("--review")
+
+        assert code == 0 and envelope["outcome"] == "passed"
+        assert [suite for suite, _ in command["runs"]] == ["acceptance"]
+        assert command["reviews"] == [] and "review" not in _page_facts(envelope)
 
     def test_a_review_that_cannot_be_drawn_leaves_the_runs_own_page(self, command, monkeypatch):
         from spi import suite_page

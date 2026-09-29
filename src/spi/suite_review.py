@@ -170,6 +170,9 @@ def _setting(variable: str, default: str) -> str:
 def add_suite(bundle: Path, name: str, suite_dir: Path, facts: dict) -> None:
     """Put one suite's facts and sources where the reviewer may read them."""
 
+    # The name is the fork's descriptor's; as a path it could leave the bundle.
+    if name in ("", ".", "..") or Path(name).name != name:
+        raise ValueError(f"suite name {name!r} is not one path component")
     into = bundle / "suites" / name
     into.mkdir(parents=True, exist_ok=True)
     (into / "facts.json").write_text(json.dumps(facts, indent=1), encoding="utf-8")
