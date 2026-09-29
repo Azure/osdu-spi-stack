@@ -603,3 +603,382 @@ class TestCommand:
         assert envelope["outcome"] == "failed"
         assert seen["maven_arguments"] == ["-Dtest=X", "test"]
         assert seen["overrides"] == {"A": "b=c"}
+
+
+class TestReport:
+    def test_the_inspector_reads_the_run_before_it_is_discarded(self, cluster):
+        seen = {}
+
+        def inspect(reports, secrets):
+            seen["reports"] = sorted(p.name for p in reports.rglob("TEST-*.xml"))
+            seen["secrets"] = set(secrets)
+            seen["where"] = reports
+            return {"totals": {"tests": 11}}
+
+        result = testing.run_suite("partition", inspect=inspect)
+
+        assert seen["reports"] == ["TEST-a.xml"]
+        # The bearers and what the env file holds under a credential's name; never HOST.
+        assert seen["secrets"] == {"t", "m", "a=b"}
+        assert not seen["where"].exists()
+        assert result.report == {"totals": {"tests": 11}}
+        assert testing.run_suite("partition").report is None
+
+    def test_an_env_file_that_cannot_be_read_costs_the_report_and_not_the_run(
+        self, cluster, monkeypatch
+    ):
+        def unreadable(path):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        monkeypatch.setattr(testing, "read_env_file", unreadable)
+        seen = []
+
+        result = testing.run_suite("partition", inspect=lambda *run: seen.append(run))
+
+        assert seen == [] and result.report is None
+        assert (result.passed, result.verdict) == (True, testing.run_suite("partition").verdict)
+
+    def test_a_run_names_every_suite_the_descriptor_declares(self, cluster, monkeypatch):
+        real = testing.resolve_suite
+
+        def resolve_suite(*args, **kwargs):
+            contract, env_file = real(*args, **kwargs)
+            return {**contract, "suites": {"acceptance": "a", "integration": "testing"}}, env_file
+
+        monkeypatch.setattr(testing, "resolve_suite", resolve_suite)
+
+        assert testing.run_suite("partition").declared == ("acceptance", "integration")
+
+
+FACTS = {
+    "totals": {
+        "tests": 1,
+        "passed": 1,
+        "empty": 0,
+        "failed": 0,
+        "error": 0,
+        "skipped": 0,
+        "seconds": 1.0,
+    },
+    "classes": [
+        {
+            "name": "p.TestList",
+            "seconds": 1.0,
+            "tests": [{"name": "lists", "seconds": 1.0, "status": "passed"}],
+        }
+    ],
+}
+
+
+def _page_facts(envelope: dict) -> dict:
+    from spi.suite_page import embedded
+
+    facts = embedded(Path(envelope["report"]).read_text())
+    assert facts is not None
+    return facts
+
+
+class TestReportCommand:
+    @pytest.fixture
+    def command(self, monkeypatch, tmp_path):
+        """The command with its suites, contract, and reviewer past the process boundary."""
+        import tempfile
+
+        from spi import info, suite_contract, suite_review
+
+        state: dict = {"runs": [], "failing": set(), "reviews": [], "declared": ("acceptance",)}
+
+        def run_suite(service, *, suite, inspect, **kwargs):
+            if suite in state.get("refusing", ()):
+                raise SuiteNotRun("service_borrowed", "borrowed by run 4321", 2)
+            state["runs"].append((suite, kwargs["maven_arguments"]))
+            report = None
+            if inspect is not None:
+                suite_dir = tmp_path / "run" / suite
+                (suite_dir / "src").mkdir(parents=True, exist_ok=True)
+                (suite_dir / "src" / "TestList.java").write_text("class TestList {}")
+                report = inspect(suite_dir, ("minted-bearer-value",))
+            passed = suite not in state["failing"]
+            verdict = "pass: 1 tests, 0 skipped" if passed else "FAIL: 1 of 1"
+            commit = state.get("commits", {}).get(suite, SHA)
+            image = "img" if commit == SHA else f"img@{commit[:4]}"
+            return testing.SuiteResult(
+                service, suite, "paired", "", image, commit, passed, verdict, {"tests": 1},
+                report, state["declared"],
+            )  # fmt: skip
+
+        def review_suites(bundle, suites, contract, secrets):
+            files = {p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if p.is_file()}
+            state["reviews"].append((sorted(suites), files, contract, set(secrets)))
+            if state.get("no_review"):
+                raise suite_review.ReviewUnavailable("copilot is not on PATH")
+            return {
+                "reviewer": "copilot",
+                "summary": "Proves the list answers.",
+                "determination": {"suites": sorted(suites), "reason": "r"},
+                "rows": [],
+                "findings": [],
+                "gaps": [],
+                "unrecognized": 0,
+            }
+
+        def fetch_contract(endpoint):
+            if state.get("no_contract"):
+                raise suite_contract.ContractUnavailable("401")
+            return {"source": endpoint + "api-docs", "rows": []}
+
+        monkeypatch.setattr(cli, "_guarded_context", lambda output_json: "ctx")
+        monkeypatch.setattr(cli, "_environment_facts", lambda: {"name": "dks"})
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "temp"))
+        (tmp_path / "temp").mkdir()
+        monkeypatch.setattr(testing, "run_suite", run_suite)
+        monkeypatch.setattr(suite_review, "review_suites", review_suites)
+        monkeypatch.setattr(suite_contract, "fetch_contract", fetch_contract)
+        monkeypatch.setattr(info, "collect_endpoint", lambda service: f"https://gw/{service}/")
+        monkeypatch.setattr("spi.suite_report.collect", lambda reports, secrets: dict(FACTS))
+        state["temp"] = tmp_path / "temp"
+        return state
+
+    def _invoke(self, *args):
+        result = CliRunner().invoke(cli.app, ["test", "partition", "--json", *args])
+        return result.exit_code, json.loads(result.output.strip().splitlines()[-1])
+
+    @pytest.mark.parametrize(("failing", "exit_code"), [(set(), 0), ({"acceptance"}, 3)])
+    def test_a_report_is_written_for_either_verdict_and_changes_neither(
+        self, command, failing, exit_code
+    ):
+        command["failing"] = failing
+
+        code, envelope = self._invoke("--report")
+
+        page = Path(envelope["report"])
+        assert code == exit_code
+        assert envelope["outcome"] == ("failed" if failing else "passed")
+        assert page.parent.parent == command["temp"]
+        assert page.name == "spi-test-partition-acceptance.html"
+        [suite] = _page_facts(envelope)["suites"]
+        assert (suite["name"], suite["passed"]) == ("acceptance", not failing)
+        assert (page.parent / "spi-test-scoreboard.html").exists()
+        assert command["reviews"] == []
+
+    def test_without_the_flag_nothing_is_inspected_or_written(self, command):
+        code, envelope = self._invoke()
+
+        assert code == 0 and "report" not in envelope
+        assert list(command["temp"].iterdir()) == []
+
+    def test_all_runs_every_declared_suite_once_and_reviews_them_together(self, command):
+        command["declared"] = ("acceptance", "integration")
+        command["failing"] = {"integration"}
+
+        code, envelope = self._invoke("--suite", "all", "--review")
+
+        assert [suite for suite, _ in command["runs"]] == ["acceptance", "integration"]
+        assert code == 3 and envelope["outcome"] == "failed"
+        assert [(s["suite"], s["outcome"]) for s in envelope["suites"]] == [
+            ("acceptance", "passed"),
+            ("integration", "failed"),
+        ]
+        [(suites, files, contract, secrets)] = command["reviews"]
+        assert suites == ["acceptance", "integration"]
+        assert files == {
+            "suites/acceptance/facts.json",
+            "suites/acceptance/src/src/TestList.java",
+            "suites/integration/facts.json",
+            "suites/integration/src/src/TestList.java",
+        }
+        assert contract["source"] == "https://gw/partition/api-docs"
+        assert secrets == {"minted-bearer-value"}
+        page = Path(envelope["report"])
+        assert page.name == "spi-test-partition-acceptance+integration.html"
+        assert _page_facts(envelope)["review"]["reviewer"] == "copilot"
+
+    def test_every_declared_suite_runs_once(self, command):
+        command["declared"] = ("acceptance", "integration", "load")
+
+        code, envelope = self._invoke("--suite", "all")
+
+        assert [suite for suite, _ in command["runs"]] == ["acceptance", "integration", "load"]
+        assert code == 0 and len(envelope["suites"]) == 3
+
+    def test_a_rollout_between_suites_leaves_the_run_without_one_commit(self, command):
+        command["declared"] = ("acceptance", "integration")
+
+        _, same = self._invoke("--suite", "all", "--report")
+        assert (same["commit"], same["image"]) == (SHA, "img")
+        assert _page_facts(same)["run"]["commit"] == SHA
+
+        command["commits"] = {"integration": "2" * 40}
+        code, envelope = self._invoke("--suite", "all", "--report")
+        told = CliRunner().invoke(cli.app, ["test", "partition", "--suite", "all"])
+
+        assert code == 0 and envelope["commit"] is None and envelope["image"] is None
+        assert [(s["suite"], s["image"], s["commit"]) for s in envelope["suites"]] == [
+            ("acceptance", "img", SHA),
+            ("integration", "img@2222", "2" * 40),
+        ]
+        facts = _page_facts(envelope)
+        assert facts["run"]["commit"] == ""
+        assert [suite["commit"] for suite in facts["suites"]] == [SHA, "2" * 40]
+        assert "ran at different commits" in " ".join(told.output.split())
+
+    def test_a_suite_not_run_ends_the_command_and_keeps_what_ran(self, command):
+        command["declared"] = ("acceptance", "integration", "load")
+        command["failing"] = {"acceptance"}
+        command["refusing"] = {"integration"}
+
+        code, envelope = self._invoke("--suite", "all", "--report")
+
+        assert [suite for suite, _ in command["runs"]] == ["acceptance"]
+        assert code == 2
+        assert (envelope["outcome"], envelope["code"], envelope["suite"]) == (
+            "refused",
+            "service_borrowed",
+            "integration",
+        )
+        assert [(s["suite"], s["outcome"]) for s in envelope["suites"]] == [
+            ("acceptance", "failed")
+        ]
+        [suite] = _page_facts(envelope)["suites"]
+        assert (suite["name"], suite["passed"]) == ("acceptance", False)
+
+    def test_named_suites_run_in_the_order_given(self, command):
+        code, envelope = self._invoke("--suite", "integration", "--suite", "acceptance")
+
+        assert [suite for suite, _ in command["runs"]] == ["integration", "acceptance"]
+        assert code == 0 and len(envelope["suites"]) == 2
+
+    @pytest.mark.parametrize("missing", ["no_contract", "no_review"])
+    def test_a_contract_or_review_that_cannot_be_had_costs_no_report(self, command, missing):
+        command[missing] = True
+
+        code, envelope = self._invoke("--review")
+
+        facts = _page_facts(envelope)
+        assert code == 0
+        assert (facts["contract"] is None) is (missing == "no_contract")
+        assert (facts["review"] is None) is (missing == "no_review")
+
+    @pytest.mark.parametrize(
+        ("broken", "written"),
+        [
+            ("spi.suite_page.render", False),
+            ("spi.suite_report.write", False),
+            ("spi.suite_page.render_scoreboard", True),
+            ("spi.suite_review.review_suites", True),
+            ("spi.info.collect_endpoint", True),
+        ],
+    )
+    def test_nothing_that_breaks_in_the_report_reaches_the_verdict(
+        self, command, monkeypatch, broken, written
+    ):
+        command["failing"] = {"acceptance"}
+
+        def breaks(*args, **kwargs):
+            # Rich reads [/login] as markup, and would raise on it.
+            raise RuntimeError("run [/login] first")
+
+        monkeypatch.setattr(broken, breaks)
+
+        code, envelope = self._invoke("--review")
+
+        assert code == 3 and envelope["outcome"] == "failed"
+        assert ("report" in envelope) is written
+
+    def test_sources_that_cannot_be_set_aside_cost_the_review_and_keep_the_report(
+        self, command, monkeypatch
+    ):
+        def full(*args, **kwargs):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr("spi.suite_review.add_suite", full)
+
+        code, envelope = self._invoke("--review")
+
+        facts = _page_facts(envelope)
+        assert code == 0 and command["reviews"] == []
+        assert [suite["name"] for suite in facts["suites"]] == ["acceptance"]
+        assert "review" not in facts
+
+    def test_a_review_with_nowhere_to_set_sources_aside_still_runs_the_suite(
+        self, command, monkeypatch
+    ):
+        import tempfile
+
+        def full(*args, **kwargs):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(tempfile, "TemporaryDirectory", full)
+
+        code, envelope = self._invoke("--review")
+
+        assert code == 0 and envelope["outcome"] == "passed"
+        assert [suite for suite, _ in command["runs"]] == ["acceptance"]
+        assert command["reviews"] == [] and "review" not in _page_facts(envelope)
+
+    def test_a_review_that_cannot_be_drawn_leaves_the_runs_own_page(self, command, monkeypatch):
+        from spi import suite_page
+
+        drawn = suite_page.render
+
+        def render(facts):
+            if facts.get("review"):
+                raise KeyError("severity")
+            return drawn(facts)
+
+        monkeypatch.setattr("spi.suite_page.render", render)
+
+        code, envelope = self._invoke("--review")
+
+        facts = _page_facts(envelope)
+        assert code == 0 and len(command["reviews"]) == 1
+        assert facts["review"] is None and facts["suites"][0]["name"] == "acceptance"
+
+    def test_the_scoreboard_lands_beside_the_page(self, command, monkeypatch):
+        made = []
+
+        def fresh():
+            made.append(command["temp"] / f"fallback-{len(made)}")
+            made[-1].mkdir()
+            return made[-1]
+
+        monkeypatch.setattr("spi.suite_report.report_folder", fresh)
+
+        _, envelope = self._invoke("--report")
+
+        page = Path(envelope["report"])
+        assert {path.name for path in page.parent.iterdir()} == {
+            "spi-test-partition-acceptance.html",
+            "spi-test-scoreboard.html",
+        }
+
+    def test_a_page_that_cannot_be_written_is_a_warning(self, command, monkeypatch):
+        def full(*args, **kwargs):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr("spi.suite_report.write", full)
+
+        result = CliRunner().invoke(cli.app, ["test", "partition", "--report"])
+
+        assert result.exit_code == 0
+        assert "The report could not be written: No space left on device" in result.output
+
+    def test_facts_that_cannot_be_collected_cost_no_verdict(self, command, monkeypatch):
+        def broken(reports, secrets):
+            raise ValueError("unreadable")
+
+        monkeypatch.setattr("spi.suite_report.collect", broken)
+
+        code, envelope = self._invoke("--report")
+
+        assert code == 0 and envelope["outcome"] == "passed" and "report" not in envelope
+
+    def test_maven_arguments_go_to_one_named_suite(self, command):
+        code, envelope = self._invoke("--suite", "all", "--", "-Dtest=X")
+
+        assert code == 1 and envelope["outcome"] == "error"
+        assert command["runs"] == []
+
+        code, _ = self._invoke("--suite", "integration", "--", "-Dtest=X")
+
+        assert code == 0 and command["runs"] == [("integration", ["-Dtest=X"])]

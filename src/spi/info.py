@@ -575,6 +575,13 @@ def collect_base_url() -> str:
     return base
 
 
+def collect_endpoint(service: str) -> str:
+    """The public address of one service's API, or an empty string before the stack has one."""
+
+    _mode, _base, endpoints, _middleware = _compute_endpoints(_read_ingress_config())
+    return endpoints.get(service, "")
+
+
 def _service_versions_table(versions: dict) -> Table | None:
     services = versions.get("services") or {}
     if not services:

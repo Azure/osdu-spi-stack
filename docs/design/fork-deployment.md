@@ -396,6 +396,8 @@ shipped it (ADR-036):
 spi test partition                                # the paired acceptance image, amd64
 spi test partition --suite integration -- -Dtest=GetInfoApiTest test
 spi test partition --source ../partition          # native mvn from a checkout
+spi test partition --report                       # one page of what ran, opened in the browser
+spi test partition --suite all --review           # every declared suite, mapped to the contract
 ```
 
 Paired mode needs a fork canonical with a recorded `<SERVICE>_ACCEPTANCE_DIGEST`
@@ -413,6 +415,18 @@ revision changed while the suite ran. Exit 0 passed, 3 failed, 2 not run or disc
 the environment or service was not ready to test (not deployable, a binding
 not published, borrowed, or changed during the run), 1 not run for any other
 reason; `--json` prints the outcome as the last stdout line.
+
+`--report` writes one page per run to `spi-reports/` under the system
+temporary directory and prints its path (ADR-037). The page lists each test
+with its status and duration, the failures with their redacted output, and
+the passing tests whose body holds no statement. `--review` reads the
+service's `api-docs` and has `copilot -p` place each test on a contract row
+and grade what it proves; the page then opens with which suite proves each
+row and which rows no suite proves. `--suite all` runs every suite the
+descriptor declares onto one page. `spi-test-scoreboard.html` in the same
+folder sets the services with a saved page side by side. The review is a
+reading of the sources that varies between runs, and no score reaches a
+verdict or an exit code.
 
 Hand-pin a fork image against a standing environment and return it:
 
@@ -443,6 +457,7 @@ kubectl get cm osdu-image-lock -n osdu-flux \
 - [ADR-033: Canonical image source follows onboarding](../decisions/033-explicit-canonical-image-source-policy.md)
 - [ADR-034: Managed identities survive `spi down`](../decisions/034-deploy-identity-survives-down.md)
 - [ADR-036: `spi test` runs the deployed commit's own suites](../decisions/036-spi-test-runs-the-deployed-commit.md)
+- [ADR-037: `spi test` reports what a suite proves](../decisions/037-spi-test-reports-what-a-suite-proves.md)
 
 ## Source files
 

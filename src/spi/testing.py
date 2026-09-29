@@ -31,7 +31,9 @@ import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Collection, Mapping, Sequence
+
+from rich.markup import escape
 
 from .console import console
 from .images import (
@@ -60,6 +62,7 @@ from .pins import (
     verify_service_image,
 )
 from .shell import run_command, run_process
+from .suite_report import REPORT_DIRS, secret_values
 
 DESCRIPTOR_PATH = ".spi/service.yaml"
 RESOLVER_PATH = ".github/actions/acceptance-resolver/resolve.py"
@@ -70,7 +73,6 @@ REPORT_SCHEMA = 1
 SUITE_PLATFORM = "linux/amd64"
 # The acceptance image bakes each suite under its working directory, as the lane reads it.
 IMAGE_SUITE_ROOT = "/suite"
-REPORT_DIRS = ("surefire-reports", "failsafe-reports")
 BEARERS = (
     ("deploy", "RESOLVER_TOKEN"),
     ("member", "RESOLVER_MEMBER_TOKEN"),
@@ -147,6 +149,9 @@ class SuiteResult:
     passed: bool
     verdict: str
     tests: dict[str, int]
+    report: dict | None = None
+    # Every suite the commit's descriptor declares, as its resolver reports them.
+    declared: tuple[str, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -660,8 +665,13 @@ def run_suite(
     checkout: Path | None = None,
     overrides: Mapping[str, str] | None = None,
     maven_arguments: Sequence[str] = (),
+    inspect: Callable[[Path, Collection[str]], dict | None] | None = None,
 ) -> SuiteResult:
-    """Run ``suite`` of ``service`` against the environment; raise SuiteNotRun otherwise."""
+    """Run ``suite`` of ``service`` against the environment; raise SuiteNotRun otherwise.
+
+    ``inspect`` reads the suite directory and its reports before they are
+    discarded, given the credentials the run carried so it can leave them out.
+    """
 
     if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
         known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
@@ -701,9 +711,20 @@ def run_suite(
 
         facts = work / "facts.json"
         facts.write_text(json.dumps(collect_facts()), encoding="utf-8")
+        bearers = mint_bearers()
         contract, env_file = resolve_suite(
-            service, root, suite, facts, work, mint_bearers(), dict(overrides or {})
+            service, root, suite, facts, work, bearers, dict(overrides or {})
         )
+        secrets: tuple[str, ...] = ()
+        if inspect:
+            try:
+                secrets = secret_values(bearers, read_env_file(env_file))
+            except (OSError, ValueError) as exc:
+                # Nothing of a run is shown when its credentials cannot be named.
+                console.print(
+                    f"  [warning]No report: {escape(f'{env_file.name}: {exc}')}[/warning]"
+                )
+                inspect = None
         test_dir = str(contract.get("test_dir", ""))
         args = list(maven_arguments) or list(contract.get("maven_arguments") or [])
         timeout = int(contract.get("timeout_minutes") or 0) * 60 or None
@@ -719,6 +740,10 @@ def run_suite(
             env_file.unlink(missing_ok=True)
         passed, verdict = judge(root, code, reports)
         tests = count_tests(reports)
+        report = inspect(reports, secrets) if inspect else None
 
     check_target(service, expected, after=verdict, revision=revision)
-    return SuiteResult(service, suite, mode, label, image, commit, passed, verdict, tests)
+    declared = tuple(contract.get("suites") or ())
+    return SuiteResult(
+        service, suite, mode, label, image, commit, passed, verdict, tests, report, declared
+    )
