@@ -48,16 +48,19 @@ _EMBEDDED = re.compile(
     rf'<script type="application/json" id="{FACTS_ELEMENT_ID}">(.*?)</script>', re.S
 )
 
+# Suites take these in run order and start over past the last.
+_SUITE_COLORS = ("a", "b", "note", "c", "d", "e")
 _STYLE = """
 :root{--bg:#f5f6f8;--surface:#fff;--text:#1a1f29;--muted:#5d6675;--line:#e1e5ea;
 --pass:#1a7f4b;--pass-bg:#e4f4eb;--fail:#c4303c;--fail-bg:#fde9eb;--empty:#946200;
 --empty-bg:#fff3d6;--skip:#5d6675;--skip-bg:#eceff3;--note:#3b6fd4;--note-bg:#e6eefb;
---a:#0d6b6b;--b:#b07a1c;--eq:#9aa7a3;--none:#cfd5da;
+--a:#0d6b6b;--b:#b07a1c;--c:#7a4fb0;--d:#b04a72;--e:#5c7a1e;--eq:#9aa7a3;--none:#cfd5da;
 --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 @media (prefers-color-scheme:dark){:root{--bg:#0f1318;--surface:#171c23;--text:#e7eaee;
 --muted:#98a2b3;--line:#2a313b;--pass:#4cc38a;--pass-bg:#11301f;--fail:#ff6b76;
 --fail-bg:#38161a;--empty:#f0b849;--empty-bg:#372a0b;--skip:#98a2b3;--skip-bg:#222831;
---note:#7aa2f7;--note-bg:#17233d;--a:#5cc0bd;--b:#e0a650;--eq:#6d7b77;--none:#3a4449}}
+--note:#7aa2f7;--note-bg:#17233d;--a:#5cc0bd;--b:#e0a650;--c:#b79af0;--d:#ee8fb0;
+--e:#a8c664;--eq:#6d7b77;--none:#3a4449}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);
 font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
@@ -95,8 +98,7 @@ min-width:140px}
 .tiles+.bar{margin-top:14px}
 .bar i{display:block}.bar .passed{background:var(--pass)}.bar .empty{background:var(--empty)}
 .bar .failed{background:var(--fail)}.bar .skipped{background:var(--skip)}
-.bar .eq{background:var(--eq)}.bar .s0{background:var(--a)}.bar .s1{background:var(--b)}
-.bar .s2{background:var(--note)}.bar .none{background:var(--none)}.bar .unread{background:var(--skip)}
+.bar .eq{background:var(--eq)}.bar .none{background:var(--none)}.bar .unread{background:var(--skip)}
 .bar .g1{background:var(--pass);opacity:.45}.bar .g2{background:var(--pass);opacity:.75}
 .bar .g3{background:var(--pass)}.bar .g0{background:var(--empty)}
 .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:13px;color:var(--muted);margin:10px 0}
@@ -174,6 +176,9 @@ footer p+p{margin-top:6px}
 .fold .package{display:none}td,th{padding:7px 10px}}
 @media print{body{background:#fff}.card,.tile,.fold details{break-inside:avoid}}
 """
+_STYLE += "".join(
+    f".bar .s{at}{{background:var(--{color})}}" for at, color in enumerate(_SUITE_COLORS)
+)
 
 
 def _e(value: object) -> str:
@@ -394,7 +399,7 @@ def _classes(suite: Mapping) -> str:
     return f'<h2>All tests</h2><section class="fold">{"".join(blocks)}</section>'
 
 
-def _suite(suite: Mapping) -> str:
+def _suite(suite: Mapping, mixed: bool = False) -> str:
     totals = suite["totals"]
     note = ""
     if totals["empty"]:
@@ -404,6 +409,8 @@ def _suite(suite: Mapping) -> str:
             "They pass without checking anything, and the verdict counts them as passes.</p>"
         )
     image = f" &middot; <code>{_e(suite['image'])}</code>" if suite.get("image") else ""
+    if mixed:
+        image += f" &middot; at <code>{_e(str(suite.get('commit') or 'no commit')[:12])}</code>"
     return (
         f'<h2 class="suite" id="suite-{_e(suite["name"])}">{_e(suite["name"])} '
         f"<span>{_e(suite.get('verdict'))} &middot; {_e(suite.get('provenance'))}{image}</span>"
@@ -431,7 +438,7 @@ def _split(split: Mapping[str, int], names: list[str]) -> tuple[str, str]:
         EQUAL: "eq",
         UNREAD: "unread",
         NEITHER: "none",
-        **{name: f"s{at}" for at, name in enumerate(names)},
+        **{name: f"s{at % len(_SUITE_COLORS)}" for at, name in enumerate(names)},
     }
     single = len(names) == 1
     labels = {
@@ -453,7 +460,8 @@ def _split(split: Mapping[str, int], names: list[str]) -> tuple[str, str]:
 
 
 def _color(kind: str) -> str:
-    colors = {"eq": "eq", "none": "none", "unread": "skip", "s0": "a", "s1": "b", "s2": "note"}
+    colors = {"eq": "eq", "none": "none", "unread": "skip"}
+    colors.update({f"s{at}": color for at, color in enumerate(_SUITE_COLORS)})
     return colors.get(kind, "none")
 
 
@@ -710,11 +718,13 @@ def render(facts: Mapping) -> str:
     run = facts["run"]
     scored = score(facts)
     suites = facts["suites"]
+    # A rollout between two suites leaves them at different commits.
+    mixed = len({suite.get("commit") for suite in suites}) > 1
     where = " &middot; ".join(
         _e(part)
         for part in (
             run.get("environment"),
-            str(run.get("commit") or "")[:12],
+            "suites ran at different commits" if mixed else str(run.get("commit") or "")[:12],
             run.get("generated"),
         )
         if part
@@ -727,7 +737,7 @@ def render(facts: Mapping) -> str:
         f'<div class="verdicts">{_verdicts(suites)}</div></header>'
         f"{_headline(facts, scored)}{_judged(facts)}{_scoreboard(facts, scored)}"
         f"{_findings(facts)}{_matrix(facts, scored)}"
-        f"{''.join(_suite(suite) for suite in suites)}"
+        f"{''.join(_suite(suite, mixed) for suite in suites)}"
         "<footer><p>Each verdict is the fork's own verdict script over that run's reports. "
         "An empty test is a passing test whose body, as the suite's source declares it, holds "
         "no statement; a test whose source is not in the suite is not checked. Hollow counts "
@@ -757,6 +767,10 @@ def render_scoreboard(pages: Iterable[tuple[str, Mapping]], run: Mapping) -> str
     """Every service side by side, from the pages saved for them."""
 
     chosen = latest(pages)
+    # The folder holds the pages of every environment this user ran against.
+    places = {facts["run"].get("environment") for _, facts in chosen}
+    several = len(places) > 1
+    where = "several environments" if several else (*places, run.get("environment"))[0]
     names: list[str] = []
     for _, facts in chosen:
         names += [suite["name"] for suite in facts["suites"] if suite["name"] not in names]
@@ -784,7 +798,8 @@ def render_scoreboard(pages: Iterable[tuple[str, Mapping]], run: Mapping) -> str
         ran += sum(suite["totals"]["tests"] for suite in facts["suites"])
         runs += (
             f'<tr><td><a href="{_e(link)}">{service}</a></td>{cells}<td class=n>{quiet}</td>'
-            f"<td>{_e(facts['run'].get('generated'))}</td></tr>"
+            f"<td>{_e(facts['run'].get('environment')) + ' &middot; ' if several else ''}"
+            f"{_e(facts['run'].get('generated'))}</td></tr>"
         )
         if not scored:
             scores += (
@@ -829,7 +844,7 @@ def render_scoreboard(pages: Iterable[tuple[str, Mapping]], run: Mapping) -> str
     body = (
         '<header class="top"><div><p class="kicker">spi test</p>'
         "<h1>Scoreboard <span>which suite protects each service</span></h1>"
-        f'<p class="where">{_e(run.get("environment"))} &middot; {_e(run.get("generated"))}</p>'
+        f'<p class="where">{_e(where)} &middot; {_e(run.get("generated"))}</p>'
         "</div></header>"
         '<section class="tiles">'
         + "".join(

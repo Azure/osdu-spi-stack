@@ -686,8 +686,9 @@ class TestReportCommand:
                 report = inspect(suite_dir, ("minted-bearer-value",))
             passed = suite not in state["failing"]
             verdict = "pass: 1 tests, 0 skipped" if passed else "FAIL: 1 of 1"
+            commit = state.get("commits", {}).get(suite, SHA)
             return testing.SuiteResult(
-                service, suite, "paired", "", "img", SHA, passed, verdict, {"tests": 1},
+                service, suite, "paired", "", "img", commit, passed, verdict, {"tests": 1},
                 report, state["declared"],
             )  # fmt: skip
 
@@ -784,6 +785,26 @@ class TestReportCommand:
 
         assert [suite for suite, _ in command["runs"]] == ["acceptance", "integration", "load"]
         assert code == 0 and len(envelope["suites"]) == 3
+
+    def test_a_rollout_between_suites_leaves_the_run_without_one_commit(self, command):
+        command["declared"] = ("acceptance", "integration")
+
+        _, same = self._invoke("--suite", "all", "--report")
+        assert same["commit"] == SHA and _page_facts(same)["run"]["commit"] == SHA
+
+        command["commits"] = {"integration": "2" * 40}
+        code, envelope = self._invoke("--suite", "all", "--report")
+        told = CliRunner().invoke(cli.app, ["test", "partition", "--suite", "all"])
+
+        assert code == 0 and envelope["commit"] is None
+        assert [(s["suite"], s["commit"]) for s in envelope["suites"]] == [
+            ("acceptance", SHA),
+            ("integration", "2" * 40),
+        ]
+        facts = _page_facts(envelope)
+        assert facts["run"]["commit"] == ""
+        assert [suite["commit"] for suite in facts["suites"]] == [SHA, "2" * 40]
+        assert "ran at different commits" in " ".join(told.output.split())
 
     def test_a_suite_not_run_ends_the_command_and_keeps_what_ran(self, command):
         command["declared"] = ("acceptance", "integration", "load")

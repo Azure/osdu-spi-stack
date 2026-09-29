@@ -5,6 +5,7 @@
 """The pages: what a review's rows add up to, one service's page, and the scoreboard."""
 
 import copy
+import re
 
 import pytest
 
@@ -234,6 +235,41 @@ class TestPage:
         ):
             assert shown in page, shown
 
+    def test_suites_that_ran_at_different_commits_are_each_named(self):
+        facts = _facts(review=False)
+        for suite in facts["suites"]:
+            suite["commit"] = RUN["commit"]
+
+        assert "different commits" not in render(facts)
+
+        facts["suites"][1]["commit"] = "2" * 40
+        page = render(facts)
+
+        for shown in (
+            "suites ran at different commits",
+            f"at <code>{RUN['commit'][:12]}</code>",
+            "at <code>222222222222</code>",
+        ):
+            assert shown in page, shown
+
+    def test_a_suite_past_the_palette_still_has_a_color(self):
+        names = ["acceptance", "integration", "load", "soak", "smoke", "chaos", "upgrade"]
+        facts = _facts()
+        facts["suites"] = [_suite(name, ("runs", "passed")) for name in names]
+        facts["review"]["findings"] = []
+        facts["review"]["rows"] = [
+            _row(f"GET /{name} :: 200", True, **{name: (2, "runs")}) for name in names
+        ]
+
+        page = render(facts)
+
+        swatch = r'<i class="(s\d+)" style="background:var\(--(\w+)\)"></i>(\w+) stronger'
+        swatches = re.findall(swatch, page)
+        assert [name for _, _, name in swatches] == names
+        for kind, color, name in swatches:
+            assert color != "none", name
+            assert f".bar .{kind}{{background:var(--{color})}}" in page, name
+
     def test_a_page_without_a_review_shows_the_runs_and_judges_nothing(self):
         page = render(_facts(review=False))
 
@@ -346,6 +382,21 @@ class TestScoreboard:
         ):
             assert shown in page, shown
         assert embedded(page) is None
+
+    def test_a_row_from_another_environment_is_named_as_such(self):
+        legal = _facts(review=False, service="legal")
+        legal["run"]["environment"] = "shared 0.21.0"
+
+        alone = render_scoreboard([("l.html", legal)], RUN)
+        both = render_scoreboard([("p.html", _facts()), ("l.html", legal)], RUN)
+
+        assert '<p class="where">shared 0.21.0 &middot; ' in alone
+        for shown in (
+            '<p class="where">several environments &middot; ',
+            "<td>shared 0.21.0 &middot; ",
+            "<td>dks 0.22.0 &middot; ",
+        ):
+            assert shown in both, shown
 
     def test_pages_are_read_back_from_the_files_this_cli_wrote(self, tmp_path):
         facts = _facts()

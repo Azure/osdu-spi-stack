@@ -193,7 +193,7 @@ def _object(answer: str) -> dict:
 
 
 def _text(value: object, clean: Callable[[str], str]) -> str:
-    text = " ".join(clean(str(value)).split())
+    text = " ".join(clean(value).split()) if isinstance(value, str) else ""
     if len(text) <= TEXT_LIMIT:
         return text
     kept = text[:TEXT_LIMIT]
@@ -318,13 +318,14 @@ def parse_review(
     findings = []
     offered = body.get("findings")
     for item in offered if isinstance(offered, list) else []:
-        if not isinstance(item, dict) or not str(item.get("title", "")).strip():
+        title = _text(item.get("title"), clean) if isinstance(item, dict) else ""
+        if not title:
             continue
         severity = str(item.get("severity", "")).lower()
         suite = str(item.get("suite", ""))
         findings.append(
             {
-                "title": _text(item["title"], clean),
+                "title": title,
                 "severity": severity if severity in SEVERITIES else "low",
                 "suite": suite if suite in ran else "",
                 "detail": _text(item.get("detail", ""), clean),

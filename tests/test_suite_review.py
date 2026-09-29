@@ -365,6 +365,7 @@ class TestAnswer:
             "{not json}",
             "[1, 2]",
             json.dumps({"summary": "", "findings": [], "rows": []}),
+            json.dumps({"summary": None, "findings": [{"title": None, "detail": 3}]}),
             '{"rows": ' + "[" * 100_000 + "]" * 100_000 + "}",
         ],
     )

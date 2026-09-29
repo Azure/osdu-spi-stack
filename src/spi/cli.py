@@ -964,6 +964,13 @@ def _review_suites(
     return contract, review
 
 
+def _shared_commit(results: List[Any]) -> str:
+    """The commit every suite ran at; none when a rollout came between two of them."""
+
+    commits = {result.commit for result in results}
+    return commits.pop() if len(commits) == 1 else ""
+
+
 def _write_suite_report(
     service: str,
     results: List[Any],
@@ -993,12 +1000,13 @@ def _write_suite_report(
                 "verdict": result.verdict,
                 "provenance": f"{result.mode}, {result.label}" if result.label else result.mode,
                 "image": result.image,
+                "commit": result.commit,
             }
             for result in reported
         ]
         run = {
             "service": service,
-            "commit": reported[0].commit,
+            "commit": _shared_commit(reported),
             "environment": environment_label(environment),
             "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             "cli": __version__,
@@ -1137,9 +1145,15 @@ def spi_test(
                 "outcome": "passed" if result.passed else "failed",
                 "detail": result.verdict,
                 "tests": result.tests,
+                "commit": result.commit or None,
             }
             for result in results
         ]
+        if len({result.commit for result in results}) > 1 and not output_json:
+            console.print(
+                "  [warning]The suites ran at different commits: "
+                "the service rolled out between them.[/warning]"
+            )
     if page and not output_json:
         from .suite_report import show
 
@@ -1169,7 +1183,7 @@ def spi_test(
             mode=first.mode,
             label=first.label or None,
             image=first.image or None,
-            commit=first.commit or None,
+            commit=_shared_commit(results) or None,
             tests=None if several else first.tests,
             environment=environment,
             **extra,

@@ -99,7 +99,9 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   missing). `--json` prints the `{outcome, code, detail}` envelope other
   service commands print, with the suite, mode, image or commit, provenance
   label, and test counts beside it. A command that ran several suites prints
-  each suite's outcome under `suites`.
+  each suite's outcome and commit under `suites`, and a `commit` only when
+  every suite ran at the same one. When a suite is not run after others ran,
+  the envelope is that suite's, with the ones that ran under `suites`.
 - **Arguments pass through.** `--suite <name>` selects a declared suite,
   `acceptance` by default, and repeats to run several in turn (ADR-037).
   Tokens after `--` replace one suite's `mavenArguments` and reach Maven as

@@ -56,7 +56,9 @@ contract in `src/spi/suite_contract.py`, the reviewer in
   `contract.suites`. Each suite runs under its own guards and verdict
   (ADR-036). The first suite not run ends the command with its exit code,
   and the suites that ran before it keep their page. A failed suite makes
-  the exit code 3 after the rest have run.
+  the exit code 3 after the rest have run. Each suite resolves the deployed
+  commit for itself, so a rollout between two suites leaves them at
+  different commits; the page then says so and names each suite's commit.
 - **The contract is the service's own.** `--review` reads `api-docs` at the
   service's endpoint over https, without a token. A row is one operation and
   one response it documents below 500, named `METHOD /path :: code`.
@@ -88,7 +90,9 @@ contract in `src/spi/suite_contract.py`, the reviewer in
   row is shown and not scored.
 - **The scoreboard is rebuilt from the pages.** Each write also writes
   `spi-test-scoreboard.html` from the facts embedded in the saved pages, one
-  row per service, taking the newest reviewed page where one exists.
+  row per service, taking the newest reviewed page where one exists. The
+  folder is shared by every environment the user runs against, so a
+  scoreboard of pages from more than one names each row's environment.
 - **A report that cannot be had costs nothing.** Facts that fail to collect,
   a contract that does not answer, a reviewer that is missing or exits
   nonzero, and a file that cannot be written each print a warning and leave
