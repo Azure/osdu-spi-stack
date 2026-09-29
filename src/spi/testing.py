@@ -33,6 +33,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Collection, Mapping, Sequence
 
+from rich.markup import escape
+
 from .console import console
 from .images import (
     IMAGE_REGISTRY,
@@ -713,7 +715,16 @@ def run_suite(
         contract, env_file = resolve_suite(
             service, root, suite, facts, work, bearers, dict(overrides or {})
         )
-        secrets = secret_values(bearers, read_env_file(env_file)) if inspect else ()
+        secrets: tuple[str, ...] = ()
+        if inspect:
+            try:
+                secrets = secret_values(bearers, read_env_file(env_file))
+            except (OSError, ValueError) as exc:
+                # Nothing of a run is shown when its credentials cannot be named.
+                console.print(
+                    f"  [warning]No report: {escape(f'{env_file.name}: {exc}')}[/warning]"
+                )
+                inspect = None
         test_dir = str(contract.get("test_dir", ""))
         args = list(maven_arguments) or list(contract.get("maven_arguments") or [])
         timeout = int(contract.get("timeout_minutes") or 0) * 60 or None

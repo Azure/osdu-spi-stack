@@ -624,6 +624,20 @@ class TestReport:
         assert result.report == {"totals": {"tests": 11}}
         assert testing.run_suite("partition").report is None
 
+    def test_an_env_file_that_cannot_be_read_costs_the_report_and_not_the_run(
+        self, cluster, monkeypatch
+    ):
+        def unreadable(path):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        monkeypatch.setattr(testing, "read_env_file", unreadable)
+        seen = []
+
+        result = testing.run_suite("partition", inspect=lambda *run: seen.append(run))
+
+        assert seen == [] and result.report is None
+        assert (result.passed, result.verdict) == (True, testing.run_suite("partition").verdict)
+
     def test_a_run_names_every_suite_the_descriptor_declares(self, cluster, monkeypatch):
         real = testing.resolve_suite
 

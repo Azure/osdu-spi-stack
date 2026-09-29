@@ -240,11 +240,16 @@ def suite_files(root: Path, pattern: str) -> list[Path]:
 def suite_sources(root: Path, suffixes: Iterable[str]) -> list[Path]:
     """The suite's source files of these suffixes, outside any build output."""
 
+    try:
+        inside = root.resolve()
+    except OSError:
+        return []
+    # Where the file lies decides it: a link among the sources can name a report.
     return [
         path
         for suffix in suffixes
         for path in suite_files(root, f"*{suffix}")
-        if "target" not in path.relative_to(root).parts
+        if "target" not in path.resolve().relative_to(inside).parts
     ]
 
 
@@ -462,14 +467,15 @@ def named_tests(facts: dict) -> list[tuple[str, dict]]:
 
 
 def _own(folder: Path) -> bool:
-    """Whether ``folder`` is a real directory of this user's."""
+    """Whether ``folder`` is a real directory only this user could have written to."""
 
     try:
         held = folder.lstat()
     except OSError:
         return False
-    # A shared temporary directory lets anyone create the name first.
-    mine = not hasattr(os, "getuid") or held.st_uid == os.getuid()
+    # A shared temporary directory lets anyone create the name first, and a
+    # folder others could write to can hold links they left in it.
+    mine = not hasattr(os, "getuid") or (held.st_uid == os.getuid() and not held.st_mode & 0o022)
     return mine and folder.is_dir() and not folder.is_symlink()
 
 
@@ -480,7 +486,7 @@ def report_folder() -> Path:
     try:
         folder.mkdir(mode=0o700, exist_ok=True)
         if _own(folder):
-            # A folder made before this one was may be open to other users.
+            # A folder made before this one was may be readable by other users.
             folder.chmod(0o700)
             return folder
     except OSError:

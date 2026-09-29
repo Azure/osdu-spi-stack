@@ -477,6 +477,12 @@ class TestFile:
         shared = report_folder()
         assert shared == temp / "spi-reports" and shared.stat().st_mode & 0o777 == 0o700
 
+        shared.chmod(0o770)
+        apart = report_folder()
+        assert apart != shared and apart.parent == temp
+        assert shared.stat().st_mode & 0o777 == 0o770
+        shared.chmod(0o700)
+
         monkeypatch.setattr(os, "getuid", lambda: shared.stat().st_uid + 1)
         fresh = report_folder()
 

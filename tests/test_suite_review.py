@@ -116,9 +116,13 @@ class TestBundle:
         (suite / "src" / "Real.java").write_text("class Real {}")
         (host / "Secret.java").write_text("host-only")
         (host / "inner" / "Deep.java").write_text("host-only")
+        report = suite / "target" / "surefire-reports" / "TEST-a.xml"
+        report.parent.mkdir(parents=True)
+        report.write_text("Bearer raw-token")
         try:
             (suite / "src" / "Leak.java").symlink_to(host / "Secret.java")
             (suite / "src" / "linked").symlink_to(host / "inner", target_is_directory=True)
+            (suite / "src" / "Report.java").symlink_to(report)
         except OSError:
             pytest.skip("symlinks need a privilege this run lacks")
 

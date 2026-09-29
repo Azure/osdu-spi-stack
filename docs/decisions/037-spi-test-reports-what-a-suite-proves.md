@@ -47,8 +47,8 @@ contract in `src/spi/suite_contract.py`, the reviewer in
   `spi-reports/spi-test-<service>-<suites>.html` under the system temporary
   directory: inline style, no JavaScript, no network reference, and the
   facts embedded as a JSON block. The folder is created with mode 0700, and a
-  folder that is a link or another user's is left alone for a fresh private
-  directory. A page replaces the last of its name, and each write deletes the
+  folder that is a link, another user's, or writable by others is left
+  alone for a fresh private directory. A page replaces the last of its name, and each write deletes the
   CLI's pages older than 7 days. The page opens in the browser only at a
   terminal and never when `CI` is set.
 - **Several suites, one page.** `--suite` repeats, and `--suite all` runs
@@ -94,11 +94,12 @@ contract in `src/spi/suite_contract.py`, the reviewer in
   folder is shared by every environment the user runs against, so a
   scoreboard of pages from more than one names each row's environment.
 - **A report that cannot be had costs nothing.** Facts that fail to collect,
-  a contract that does not answer, a reviewer that is missing or exits
-  nonzero, and a file that cannot be written each print a warning and leave
-  the verdict and exit code as they were. Sources that cannot be set aside
-  for the reviewer, and an answer the page cannot draw, cost the review and
-  leave the run's own page.
+  an env file whose credentials cannot be read, a contract that does not
+  answer, a reviewer that is missing or exits nonzero, and a file that
+  cannot be written each print a warning and leave the verdict and exit
+  code as they were. Sources that cannot be set aside for the reviewer, and
+  an answer the page cannot draw, cost the review and leave the run's own
+  page.
 
 Rejected: judge an empty test by its duration. It needs no source, but a test
 that returns after its setup runs as long as one that asserts.
