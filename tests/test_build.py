@@ -298,6 +298,7 @@ class TestRegistryChecks:
             assert cmd[cmd.index("--assignee") + 1] == kubelet
             assert cmd[cmd.index("--scope") + 1] == _REGISTRY.resource_id
             assert cmd[cmd.index("--role") + 1] == "AcrPull"
+            assert "--include-inherited" in cmd
             return _completed(json.dumps(assignments))
 
         monkeypatch.setattr(build, "run_process", fake)

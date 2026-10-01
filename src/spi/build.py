@@ -190,7 +190,7 @@ def require_cluster_pull(registry: Registry) -> None:
         raise BuildError(f"Cluster {registry.cluster} reports no kubelet identity to pull with.")
     held = _az_json(
         ["role", "assignment", "list", "--assignee", principal, "--scope", registry.resource_id]
-        + ["--role", PULL_ROLE, *scope],
+        + ["--role", PULL_ROLE, "--include-inherited", *scope],
         f"role assignments on {registry.name}",
     )
     if not held:
