@@ -258,6 +258,17 @@ def resolve_jar(checkout: Path, service: str, requested: str = "") -> str:
     return relative
 
 
+def _jar_stamps(checkout: Path, requested: str = "") -> dict[Path, int]:
+    """Modification time of each JAR ``resolve_jar`` could select."""
+
+    paths = (
+        [checkout / requested]
+        if requested
+        else checkout.glob("provider/*-azure/target/*-spring-boot.jar")
+    )
+    return {path.resolve(): path.stat().st_mtime_ns for path in paths if path.is_file()}
+
+
 def checkout_state(checkout: Path) -> tuple[str, bool]:
     """``(head, dirty)`` of the checkout; a tree git cannot describe is refused."""
 
@@ -350,7 +361,9 @@ def build_image(
     commit, dirty = checkout_state(checkout)
     registry = environment_registry()
 
+    prebuilt = skip_maven
     if not skip_maven:
+        before = _jar_stamps(checkout, jar)
         compiled = run_command(
             maven_command(checkout, maven_arguments),
             capture_output=False,
@@ -360,10 +373,16 @@ def build_image(
         )
         if compiled.returncode != 0:
             raise BuildError(f"Maven exited {compiled.returncode}; no image was built.")
+        # Maven can rewrite tracked sources, or exit 0 without packaging.
+        head, changed = checkout_state(checkout)
+        dirty = dirty or changed or head != commit
     jar_path = resolve_jar(checkout, service, jar)
+    if not skip_maven:
+        packaged = (checkout / jar_path).resolve()
+        prebuilt = before.get(packaged) == packaged.stat().st_mtime_ns
 
     built = BuiltImage(service, local_repository(registry, service), "", "", commit, dirty)
-    built = replace(built, prebuilt=skip_maven)
+    built = replace(built, prebuilt=prebuilt)
     tag = f"sha-{commit[:12]}{built.suffix}"
     image = f"{LOCAL_NAMESPACE}/{service}:{tag}"
     scope = ["--subscription", registry.subscription] if registry.subscription else []

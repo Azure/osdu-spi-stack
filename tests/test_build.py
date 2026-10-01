@@ -15,6 +15,7 @@
 """Local builds: what a checkout must hold, what the ACR task runs, and what comes back."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -305,16 +306,31 @@ class TestRegistryChecks:
 
 
 class TestBuildImage:
-    def _wire(self, monkeypatch, *, dirty=False, maven=0, task=0, digest=_DIGEST):
+    def _wire(
+        self,
+        monkeypatch,
+        *,
+        dirty=False,
+        maven=0,
+        task=0,
+        digest=_DIGEST,
+        packages=True,
+        dirties=False,
+    ):
         commands: list[list[str]] = []
         staged: dict = {}
+        tree = {"dirty": dirty}
         monkeypatch.setattr(build.shutil, "which", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setattr(build, "checkout_state", lambda checkout: (_HEAD, dirty))
+        monkeypatch.setattr(build, "checkout_state", lambda checkout: (_HEAD, tree["dirty"]))
         monkeypatch.setattr(build, "environment_registry", lambda: _REGISTRY)
 
         def fake_run_command(cmd, **kwargs):
             commands.append(cmd)
             if cmd[0] == "mvn":
+                tree["dirty"] = tree["dirty"] or dirties
+                for jar in Path(kwargs["cwd"]).glob("provider/*/target/*.jar") if packages else ():
+                    later = jar.stat().st_mtime_ns + 10**9
+                    os.utime(jar, ns=(later, later))
                 return _completed(returncode=maven)
             context = Path(kwargs["cwd"])
             staged["files"] = sorted(
@@ -357,6 +373,16 @@ class TestBuildImage:
         assert [command[0] for command in commands] == ["az"]
         assert built.tag == "sha-" + "b" * 12 + "-prebuilt"
         assert built.source_sha == _HEAD + "-prebuilt"
+
+    def test_a_jar_maven_left_untouched_never_reads_as_the_commit(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, packages=False)
+        built = build_image("partition", _checkout(tmp_path), maven_arguments=["validate"])
+        assert built.source_sha == _HEAD + "-prebuilt"
+
+    def test_a_tree_maven_dirtied_never_reads_as_the_commit(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, dirties=True)
+        built = build_image("partition", _checkout(tmp_path), maven_arguments=["spotless:apply"])
+        assert built.source_sha == _HEAD + "-dirty"
 
     def test_a_failed_maven_build_pushes_nothing(self, monkeypatch, tmp_path):
         commands, _ = self._wire(monkeypatch, maven=1)

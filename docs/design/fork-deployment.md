@@ -89,7 +89,7 @@ The pin rides the `spi-stack.osdu.dev/pins` annotation on the
 |---|---|
 | `origin` | `gitlab-mr`, `github`, or `local` |
 | `repository`, `tag`, `digest` | the pinned image |
-| `source_repo`, `source_sha` | what built it; a local build records the checkout's commit, suffixed `-dirty` when its tree had uncommitted changes or `-prebuilt` when `--skip-maven` packaged an existing JAR, and no repository |
+| `source_repo`, `source_sha` | what built it; a local build records the checkout's commit, suffixed `-dirty` when its tree had uncommitted changes or `-prebuilt` when the JAR was not written by Maven in the same run, and no repository |
 | `source_run_url`, `run_id` | the owning workflow run; `run_id` drives ownership checks and the stale-run lookup, `source_run_url` is display-only and never fetched |
 | `ephemeral` | true when CI placed it; the only pins automation may sweep |
 | `applied_at` | pin time |

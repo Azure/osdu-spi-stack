@@ -34,9 +34,10 @@ origin is `local`.
 - **The checkout is checked, not trusted.** The descriptor's `service.name`
   must equal the requested service, and the checkout must be a git tree. The
   pin records the commit in `source_sha`, suffixed `-dirty` when the tree had
-  uncommitted changes and `-prebuilt` when `--skip-maven` packaged a JAR git
-  cannot date, so only a clean tree Maven built in the same run reads as its
-  commit.
+  uncommitted changes before or after Maven ran and `-prebuilt` when the JAR
+  is one Maven did not write in the same run, as under `--skip-maven`, since
+  git cannot date it. Only a clean tree Maven built in the same run reads as
+  its commit.
 - **No new annotation field.** `origin`, `source_sha`, and the absent
   `ephemeral` marker carry the whole record. A CLI that predates local pins
   decodes one as an operator pin and leaves it standing.
