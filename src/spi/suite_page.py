@@ -766,7 +766,7 @@ def latest(pages: Iterable[tuple[str, Mapping]]) -> list[tuple[str, Mapping]]:
     for link, facts in pages:
         service = str(facts["run"].get("service"))
         held = chosen.get(service)
-        if held is None or score(facts) is not None or score(held[1]) is None:
+        if held is None or facts.get("review") or not held[1].get("review"):
             chosen[service] = (link, facts)
     return [chosen[service] for service in sorted(chosen)]
 

@@ -400,9 +400,10 @@ class TestScoreboard:
         for row in unplaced["review"]["rows"]:
             row["suites"] = {}
 
-        page = render_scoreboard([("p.html", unplaced)], RUN)
+        # An older page with a score does not stand in for the newer review.
+        page = render_scoreboard([("old.html", _facts()), ("p.html", unplaced)], RUN)
 
-        assert "not scored" in page
+        assert "not scored" in page and 'href="old.html"' not in page
         assert "not reviewed" not in page and "--review" not in page
 
     def test_a_row_from_another_environment_is_named_as_such(self):
