@@ -701,6 +701,7 @@ def _build_bicep_params(
     oidc_issuer: str,
     deployer_principal_id: str,
     deployer_principal_type: str,
+    kubelet_object_id: str = "",
 ) -> Dict[str, Any]:
     """Translate Config into the parameter dict consumed by infra/main.bicep."""
     s = config.name_suffix
@@ -732,6 +733,8 @@ def _build_bicep_params(
         # post-deploy secret writes; RG Owner carries no data-plane access.
         "deployerPrincipalId": deployer_principal_id,
         "deployerPrincipalType": deployer_principal_type,
+        # Empty under dry-run; rbac.bicep then omits the kubelet's AcrPull grant.
+        "kubeletIdentityObjectId": kubelet_object_id,
     }
 
 
@@ -908,6 +911,13 @@ def provision_azure_infra(
         dry_run=dry_run,
     )
     oidc_issuer = aks_outputs.get("oidcIssuerUrl", "")
+    kubelet_object_id = aks_outputs.get("kubeletIdentityObjectId", "")
+    if not dry_run and not kubelet_object_id:
+        console.print(
+            "  [warning]The cluster reported no kubelet identity, so it gets no AcrPull on "
+            "the registry; local builds cannot be pinned until a later 'spi up' grants it."
+            "[/warning]"
+        )
 
     if not dry_run:
         _recover_soft_deleted_keyvault(config)
@@ -923,6 +933,7 @@ def provision_azure_infra(
         oidc_issuer,
         deployer_principal_id,
         deployer_principal_type,
+        kubelet_object_id,
     )
     bicep_outputs = run_bicep_deployment(
         template_path=str(INFRA_MAIN_BICEP),

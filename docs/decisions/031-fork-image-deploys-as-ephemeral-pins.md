@@ -33,7 +33,8 @@ annotation schema live in `docs/design/fork-deployment.md`.
   but there is no fleet-wide Azure-owner restriction. These are provenance
   consistency checks, not authentication of a repository against a writable
   lock (ADR-032). Operator pins without the ephemeral marker can still name
-  an explicit public GHCR digest outside the onboarded roster. The pin
+  an explicit public GHCR digest outside the onboarded roster, or a local
+  build in the environment's own registry (ADR-038). The pin
   refuses while the environment is not deployable (ADR-030), and after
   writing it re-reads `maintenance`, rolling its own write back if the flag
   appeared in the window (ADR-029).
