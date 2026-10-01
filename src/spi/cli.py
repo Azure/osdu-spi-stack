@@ -21,7 +21,7 @@ import re
 import sys
 from functools import partial
 from pathlib import Path
-from typing import Any, Collection, Dict, List, Optional, Tuple
+from typing import Any, Collection, Dict, List, NoReturn, Optional, Tuple
 
 import shellingham
 import typer
@@ -1147,6 +1147,18 @@ def spi_test(
         help="Add an agent's reading of the suites to the report: which contract rows each "
         "test protects and how strongly. Implies --report.",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show the command and variables a run would use, credentials left out, "
+        "and run nothing.",
+    ),
+    env_file: Optional[str] = typer.Option(
+        None,
+        "--env-file",
+        help="With --dry-run, write the variables to this file with their credentials, "
+        "for an IDE run configuration.",
+    ),
     output_json: bool = typer.Option(
         False, "--json", help="Emit the outcome as a final machine-readable JSON line."
     ),
@@ -1158,6 +1170,7 @@ def spi_test(
     resolver. Tokens after -- replace the suite's mavenArguments. Exit 0
     passed, 3 failed, 2 not run or discarded because the environment or
     service was not in a state to test, 1 not run for any other reason.
+    --dry-run exits 0 once the suite is bound and gives no verdict.
     """
     import tempfile
 
@@ -1168,6 +1181,12 @@ def spi_test(
     queue = ["acceptance"] if every else wanted
     if ctx.args and (every or len(queue) > 1):
         raise _usage_error("Arguments after -- replace one suite's; name one --suite.", output_json)
+    if env_file and not dry_run:
+        raise _usage_error("--env-file applies only to --dry-run.", output_json)
+    if env_file and (every or len(queue) > 1):
+        raise _usage_error("--env-file holds one suite's variables; name one --suite.", output_json)
+    if dry_run and (report or review):
+        raise _usage_error("--dry-run runs nothing to report on.", output_json)
 
     ctx_name = _guarded_context(output_json)
     if not output_json:
@@ -1178,6 +1197,11 @@ def spi_test(
         checkout = Path(source).expanduser()
         if not checkout.is_dir():
             raise typer.BadParameter(f"{source} is not a directory", param_hint="--source")
+
+    if dry_run:
+        _plan_suites(
+            service, queue, every, checkout, settings, list(ctx.args), env_file, output_json
+        )
 
     environment = _environment_facts()
     results: List[Any] = []
@@ -1275,6 +1299,124 @@ def spi_test(
             **extra,
         )
     raise typer.Exit(code=failed[0].exit_code if failed else 0)
+
+
+def _plan_suites(
+    service: str,
+    queue: List[str],
+    every: bool,
+    checkout: Optional[Path],
+    settings: Dict[str, str],
+    maven_arguments: List[str],
+    env_file: Optional[str],
+    output_json: bool,
+) -> NoReturn:
+    """Bind each suite as a run would, show what it would start, and exit."""
+    from .testing import SuiteNotRun, plan_suite, write_env_file
+
+    def planned() -> List[Dict[str, Any]]:
+        return [
+            {
+                "suite": plan.suite,
+                "mode": plan.mode,
+                "label": plan.label or None,
+                "image": plan.image or None,
+                "commit": plan.commit or None,
+                "directory": plan.directory,
+                "command": list(plan.command),
+                "timeout_minutes": plan.timeout_minutes,
+                "expires": plan.expires or None,
+                "variables": plan.shown,
+            }
+            for plan in plans
+        ]
+
+    plans: List[Any] = []
+    written = Path(env_file).expanduser() if env_file else None
+    suite = ""
+    try:
+        while queue:
+            suite = queue.pop(0)
+            plan = plan_suite(
+                service,
+                suite=suite,
+                checkout=checkout,
+                overrides=settings,
+                maven_arguments=maven_arguments,
+                env_file=str(written or ""),
+            )
+            plans.append(plan)
+            if every:
+                seen = {done.suite for done in plans}
+                queue += [name for name in plan.declared if name not in seen | set(queue)]
+            if written:
+                try:
+                    write_env_file(written, plan.variables)
+                except OSError as exc:
+                    raise SuiteNotRun("env_file_unwritable", f"{written}: {exc}") from exc
+            if not output_json:
+                _print_suite_plan(plan, written)
+    except SuiteNotRun as exc:
+        if output_json:
+            outcome = "refused" if exc.exit_code == 2 else "error"
+            extra = {"suites": planned()} if plans else {}
+            _emit_outcome(outcome, exc.code, str(exc), service=service, suite=suite, **extra)
+        else:
+            style = "warning" if exc.exit_code == 2 else "error"
+            console.print(f"[{style}]{service} {suite} not planned ({exc.code}): {exc}[/{style}]")
+        raise typer.Exit(code=exc.exit_code)
+    if output_json:
+        _emit_outcome(
+            "planned",
+            None,
+            "dry run; no suite started",
+            service=service,
+            env_file=str(written) if written else None,
+            suites=planned(),
+        )
+    raise typer.Exit(code=0)
+
+
+def _print_suite_plan(plan: Any, written: Optional[Path]) -> None:
+    import shlex
+
+    from rich.console import Group
+    from rich.text import Text
+
+    def grid(rows: List[Tuple[str, str]]) -> Table:
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="dim", no_wrap=True)
+        table.add_column(overflow="fold")
+        for name, value in rows:
+            table.add_row(Text(name), Text(value))
+        return table
+
+    provenance = f"{plan.mode}, {plan.label}" if plan.label else plan.mode
+    where = "Image directory" if plan.image else "Directory"
+    facts = [("Mode", provenance), ("Commit", plan.commit)]
+    if plan.image:
+        facts.append(("Image", plan.image))
+    facts += [(where, plan.directory), ("Command", shlex.join(plan.command))]
+    if plan.timeout_minutes:
+        facts.append(("Timeout", f"{plan.timeout_minutes} minutes"))
+    console.print(
+        Panel(
+            Group(grid(facts), Text(""), grid(list(plan.shown.items()))),
+            title=f"{plan.service} {plan.suite}: dry run",
+            border_style="cyan",
+        )
+    )
+    console.print("  Nothing ran, so there is no verdict.")
+    lasts = f" until {plan.expires}" if plan.expires else " until they expire"
+    if written:
+        console.print(
+            Text(f"  Variables written to {written} with their credentials, valid{lasts}.")
+        )
+        console.print("  [warning]Keep that file out of version control.[/warning]")
+    elif plan.shown != plan.variables:
+        console.print(
+            Text(f"  --env-file <path> writes these with their credentials, valid{lasts}.")
+        )
 
 
 def _print_suite_result(result: Any, environment: Dict[str, Any]) -> None:

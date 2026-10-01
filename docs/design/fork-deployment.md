@@ -451,6 +451,7 @@ spi test partition                                # the paired acceptance image,
 spi test partition --suite integration -- -Dtest=GetInfoApiTest test
 spi test partition --source ../partition          # native mvn from a checkout
 spi test partition --report                       # one page of what ran, opened in the browser
+spi test partition --source ../partition --dry-run --env-file ~/partition.env
 spi test partition --suite all --review           # every declared suite, mapped to the contract
 ```
 
@@ -469,6 +470,13 @@ revision changed while the suite ran. Exit 0 passed, 3 failed, 2 not run or disc
 the environment or service was not ready to test (not deployable, a binding
 not published, borrowed, or changed during the run), 1 not run for any other
 reason; `--json` prints the outcome as the last stdout line.
+
+`--dry-run` binds the suite and checks the target as a run does, then prints
+the command, its directory, and the resolved variables with credentials as
+`[redacted]`, and exits 0 without starting the suite. `--env-file <path>`
+writes those variables in full for an IDE run configuration; its bearers
+expire with the mint, and a path inside the checkout leaves the tree dirty,
+which labels the next `--source` run `unmatched`.
 
 `--report` writes one page per run to `spi-reports/` under the system
 temporary directory and prints its path (ADR-037). The page lists each test

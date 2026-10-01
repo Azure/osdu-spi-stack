@@ -21,6 +21,7 @@ and verdict script come from that commit (paired mode) or from a checkout
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -30,8 +31,9 @@ import tempfile
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Collection, Mapping, Sequence
+from typing import Callable, Collection, Iterable, Mapping, Sequence
 
 from rich.markup import escape
 
@@ -62,7 +64,7 @@ from .pins import (
     verify_service_image,
 )
 from .shell import run_command, run_process
-from .suite_report import REPORT_DIRS, secret_values
+from .suite_report import REPORT_DIRS, redactor, secret_name, secret_values
 
 DESCRIPTOR_PATH = ".spi/service.yaml"
 RESOLVER_PATH = ".github/actions/acceptance-resolver/resolve.py"
@@ -156,6 +158,54 @@ class SuiteResult:
     @property
     def exit_code(self) -> int:
         return EXIT_PASSED if self.passed else EXIT_FAILED
+
+
+@dataclass(frozen=True)
+class SuitePlan:
+    """What a run of a suite would start, bound and checked without starting it."""
+
+    service: str
+    suite: str
+    mode: str
+    label: str
+    image: str
+    commit: str
+    # Where the command runs: on the host from a checkout, inside the image when paired.
+    directory: str
+    # As it may be displayed, like ``shown``: an argument's credential is left out.
+    command: tuple[str, ...]
+    timeout_minutes: int
+    variables: dict[str, str]
+    # The variables as they may be displayed: no credential, whole or inside a value.
+    shown: dict[str, str]
+    expires: str
+    declared: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _Binding:
+    """A suite bound to the environment, with the target state it was bound against."""
+
+    mode: str
+    label: str
+    image: str
+    commit: str
+    root: Path
+    contract: dict
+    env_file: Path
+    bearers: dict[str, str]
+    expected: dict
+
+    @property
+    def test_dir(self) -> str:
+        return str(self.contract.get("test_dir", ""))
+
+    @property
+    def timeout_minutes(self) -> int:
+        return int(self.contract.get("timeout_minutes") or 0)
+
+    def arguments(self, maven_arguments: Sequence[str]) -> list[str]:
+        return list(maven_arguments) or list(self.contract.get("maven_arguments") or [])
 
 
 def _fork_canonical(lock: dict, service: str) -> tuple[tuple[str, str, str] | None, str]:
@@ -439,7 +489,9 @@ def resolve_suite(
     if result.returncode != 0:
         error = report.get("error") or {}
         stderr = (result.stderr or "").strip().splitlines()
-        detail = error.get("detail") or (stderr[-1] if stderr else "")
+        # The resolver held these credentials, so what it says of a failure may quote one.
+        redact = redactor(secret_values(bearers, overrides))
+        detail = redact(error.get("detail") or (stderr[-1] if stderr else ""))
         code, exit_code = _RESOLVER_EXITS.get(result.returncode, ("resolver_failed", EXIT_NOT_RUN))
         raise SuiteNotRun(
             code,
@@ -472,6 +524,35 @@ def read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def write_env_file(path: Path, variables: Mapping[str, str]) -> None:
+    """Write ``variables`` as ``NAME=VALUE`` lines, owner-only where files have modes."""
+
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        # An existing file keeps its mode through the open.
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        else:
+            os.chmod(path, 0o600)
+        handle.writelines(f"{name}={value}\n" for name, value in variables.items())
+
+
+def _expiry(tokens: Iterable[str]) -> str:
+    """When the first of ``tokens`` to expire does, for those that are JWTs."""
+
+    moments = []
+    for token in tokens:
+        parts = token.split(".")
+        if len(parts) != 3:
+            continue
+        try:
+            claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+            moments.append(datetime.fromtimestamp(int(claims["exp"]), timezone.utc))
+        except (ValueError, KeyError, TypeError, OverflowError, OSError):
+            continue
+    return min(moments).strftime("%Y-%m-%d %H:%M UTC") if moments else ""
+
+
 def _host_env(names: Sequence[str], windows: Sequence[str]) -> dict[str, str]:
     """The named host variables that are set, plus what Windows needs to start a process."""
 
@@ -482,6 +563,25 @@ def _host_env(names: Sequence[str], windows: Sequence[str]) -> dict[str, str]:
 def _require_tool(name: str) -> None:
     if shutil.which(name) is None:
         raise SuiteNotRun(f"{name}_missing", f"{name} is not on PATH")
+
+
+def _docker_run(
+    image: str, test_dir: str, env_file: str, args: Sequence[str], container: str = ""
+) -> list[str]:
+    name = ["--name", container] if container else []
+    return [
+        "docker",
+        "run",
+        *name,
+        "--platform",
+        SUITE_PLATFORM,
+        "--env-file",
+        env_file,
+        "-e",
+        f"SUITE_DIR={test_dir}",
+        image,
+        *args,
+    ]
 
 
 def run_paired(
@@ -506,20 +606,7 @@ def run_paired(
     container = f"spi-test-{uuid.uuid4().hex[:12]}"
     try:
         ran = run_command(
-            [
-                "docker",
-                "run",
-                "--name",
-                container,
-                "--platform",
-                SUITE_PLATFORM,
-                "--env-file",
-                str(env_file),
-                "-e",
-                f"SUITE_DIR={test_dir}",
-                image,
-                *args,
-            ],
+            _docker_run(image, test_dir, str(env_file), args, container),
             capture_output=False,
             description=f"Run {test_dir}",
             check=False,
@@ -575,24 +662,33 @@ def _clear_reports(suite_dir: Path) -> None:
             shutil.rmtree(path)
 
 
+def _suite_dir(checkout: Path, test_dir: str) -> Path:
+    suite_dir = (checkout / test_dir).resolve()
+    if not suite_dir.is_relative_to(checkout) or not suite_dir.is_dir():
+        raise SuiteNotRun("descriptor_rejected", f"suite directory {test_dir} is not in {checkout}")
+    return suite_dir
+
+
+def _maven(checkout: Path, args: Sequence[str]) -> list[str]:
+    settings = checkout / SETTINGS_PATH
+    command = ["mvn", "-B", "--no-transfer-progress"]
+    if settings.is_file():
+        command += ["--settings", str(settings)]
+    return [*command, *args]
+
+
 def run_checkout(
     checkout: Path, test_dir: str, env_file: Path, args: Sequence[str], timeout: int | None
 ) -> tuple[int, Path]:
     """Run the suite with the host's Maven, as the image's entrypoint would."""
 
     _require_tool("mvn")
-    suite_dir = (checkout / test_dir).resolve()
-    if not suite_dir.is_relative_to(checkout) or not suite_dir.is_dir():
-        raise SuiteNotRun("descriptor_rejected", f"suite directory {test_dir} is not in {checkout}")
+    suite_dir = _suite_dir(checkout, test_dir)
     _clear_reports(suite_dir)
-    settings = checkout / SETTINGS_PATH
-    command = ["mvn", "-B", "--no-transfer-progress"]
-    if settings.is_file():
-        command += ["--settings", str(settings)]
     env = _host_env(MAVEN_BASE_ENV, WINDOWS_PROCESS_ENV + WINDOWS_PROFILE_ENV)
     env.update(read_env_file(env_file))
     ran = run_command(
-        [*command, *args],
+        _maven(checkout, args),
         capture_output=False,
         description=f"Run {test_dir} natively",
         check=False,
@@ -658,20 +754,14 @@ def _require_machinery(root: Path) -> None:
         )
 
 
-def run_suite(
+def _bind(
     service: str,
-    *,
-    suite: str = "acceptance",
-    checkout: Path | None = None,
-    overrides: Mapping[str, str] | None = None,
-    maven_arguments: Sequence[str] = (),
-    inspect: Callable[[Path, Collection[str]], dict | None] | None = None,
-) -> SuiteResult:
-    """Run ``suite`` of ``service`` against the environment; raise SuiteNotRun otherwise.
-
-    ``inspect`` reads the suite directory and its reports before they are
-    discarded, given the credentials the run carried so it can leave them out.
-    """
+    suite: str,
+    checkout: Path | None,
+    overrides: Mapping[str, str] | None,
+    work: Path,
+) -> _Binding:
+    """Guard the environment and bind ``suite`` to it, under ``work``."""
 
     if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
         known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
@@ -694,46 +784,118 @@ def run_suite(
     expected = target_state(lock, service)
     target, unpaired = paired_target(lock, service)
 
+    if checkout is None:
+        if target is None:
+            raise SuiteNotRun("unpaired", f"{unpaired}. Run it from a checkout with --source.")
+        _require_pair_published(target)
+        commit = resolve_commit(target)
+        root = fetch_machinery(target.source_repo, commit, work / "commit")
+        mode, label, image = "paired", "", target.acceptance_image
+    else:
+        root = checkout.resolve()
+        _require_machinery(root)
+        label, commit = checkout_label(root, deployed_fork_commit(lock, service))
+        mode, image = "checkout", ""
+
+    facts = work / "facts.json"
+    facts.write_text(json.dumps(collect_facts()), encoding="utf-8")
+    bearers = mint_bearers()
+    contract, env_file = resolve_suite(
+        service, root, suite, facts, work, bearers, dict(overrides or {})
+    )
+    return _Binding(mode, label, image, commit, root, contract, env_file, bearers, expected)
+
+
+def plan_suite(
+    service: str,
+    *,
+    suite: str = "acceptance",
+    checkout: Path | None = None,
+    overrides: Mapping[str, str] | None = None,
+    maven_arguments: Sequence[str] = (),
+    env_file: str = "",
+) -> SuitePlan:
+    """Bind ``suite`` and check its target as ``run_suite`` does, and name what it would start.
+
+    Docker and Maven are not looked for. ``env_file`` only names the file in a
+    paired run's command; nothing is written here.
+    """
+
+    with tempfile.TemporaryDirectory(prefix="spi-test-") as scratch:
+        bound = _bind(service, suite, checkout, overrides, Path(scratch))
+        try:
+            variables = read_env_file(bound.env_file)
+        except (OSError, ValueError) as exc:
+            raise SuiteNotRun("resolver_failed", f"{bound.env_file.name}: {exc}") from exc
+        check_target(service, bound.expected)
+        args = bound.arguments(maven_arguments)
+        if checkout is None:
+            directory = f"{IMAGE_SUITE_ROOT}/{bound.test_dir}"
+            command = _docker_run(bound.image, bound.test_dir, env_file or "suite.env", args)
+        else:
+            directory = str(_suite_dir(bound.root, bound.test_dir))
+            command = _maven(bound.root, args)
+
+    secrets = secret_values(bound.bearers, variables)
+    redact = redactor(secrets, named=False)
+    return SuitePlan(
+        service,
+        suite,
+        bound.mode,
+        bound.label,
+        bound.image,
+        bound.commit,
+        directory,
+        tuple(map(redactor(secrets), command)),
+        bound.timeout_minutes,
+        variables,
+        {
+            name: "[redacted]" if secret_name(name) and value else redact(value)
+            for name, value in variables.items()
+        },
+        _expiry(bound.bearers.values()),
+        tuple(bound.contract.get("suites") or ()),
+    )
+
+
+def run_suite(
+    service: str,
+    *,
+    suite: str = "acceptance",
+    checkout: Path | None = None,
+    overrides: Mapping[str, str] | None = None,
+    maven_arguments: Sequence[str] = (),
+    inspect: Callable[[Path, Collection[str]], dict | None] | None = None,
+) -> SuiteResult:
+    """Run ``suite`` of ``service`` against the environment; raise SuiteNotRun otherwise.
+
+    ``inspect`` reads the suite directory and its reports before they are
+    discarded, given the credentials the run carried so it can leave them out.
+    """
+
     with tempfile.TemporaryDirectory(prefix="spi-test-") as scratch:
         work = Path(scratch)
-        if checkout is None:
-            if target is None:
-                raise SuiteNotRun("unpaired", f"{unpaired}. Run it from a checkout with --source.")
-            _require_pair_published(target)
-            commit = resolve_commit(target)
-            root = fetch_machinery(target.source_repo, commit, work / "commit")
-            mode, label, image = "paired", "", target.acceptance_image
-        else:
-            root = checkout.resolve()
-            _require_machinery(root)
-            label, commit = checkout_label(root, deployed_fork_commit(lock, service))
-            mode, image = "checkout", ""
-
-        facts = work / "facts.json"
-        facts.write_text(json.dumps(collect_facts()), encoding="utf-8")
-        bearers = mint_bearers()
-        contract, env_file = resolve_suite(
-            service, root, suite, facts, work, bearers, dict(overrides or {})
-        )
+        bound = _bind(service, suite, checkout, overrides, work)
+        root, env_file = bound.root, bound.env_file
         secrets: tuple[str, ...] = ()
         if inspect:
             try:
-                secrets = secret_values(bearers, read_env_file(env_file))
+                secrets = secret_values(bound.bearers, read_env_file(env_file))
             except (OSError, ValueError) as exc:
                 # Nothing of a run is shown when its credentials cannot be named.
                 console.print(
                     f"  [warning]No report: {escape(f'{env_file.name}: {exc}')}[/warning]"
                 )
                 inspect = None
-        test_dir = str(contract.get("test_dir", ""))
-        args = list(maven_arguments) or list(contract.get("maven_arguments") or [])
-        timeout = int(contract.get("timeout_minutes") or 0) * 60 or None
+        test_dir = bound.test_dir
+        args = bound.arguments(maven_arguments)
+        timeout = bound.timeout_minutes * 60 or None
 
-        revision = check_target(service, expected)
+        revision = check_target(service, bound.expected)
         try:
             if checkout is None:
                 reports = work / "reports"
-                code = run_paired(image, test_dir, env_file, args, timeout, reports)
+                code = run_paired(bound.image, test_dir, env_file, args, timeout, reports)
             else:
                 code, reports = run_checkout(root, test_dir, env_file, args, timeout)
         finally:
@@ -741,10 +903,20 @@ def run_suite(
         passed, verdict = judge(root, code, reports)
         tests = count_tests(reports)
         # A discarded run leaves nothing with the inspector.
-        check_target(service, expected, after=verdict, revision=revision)
+        check_target(service, bound.expected, after=verdict, revision=revision)
         report = inspect(reports, secrets) if inspect else None
 
-    declared = tuple(contract.get("suites") or ())
+    declared = tuple(bound.contract.get("suites") or ())
     return SuiteResult(
-        service, suite, mode, label, image, commit, passed, verdict, tests, report, declared
+        service,
+        suite,
+        bound.mode,
+        bound.label,
+        bound.image,
+        bound.commit,
+        passed,
+        verdict,
+        tests,
+        report,
+        declared,
     )

@@ -107,6 +107,16 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   `acceptance` by default, and repeats to run several in turn (ADR-037).
   Tokens after `--` replace one suite's `mavenArguments` and reach Maven as
   argv, never as a shell string; with more than one suite they are refused.
+- **A dry run binds and stops.** `--dry-run` runs the guards, the fetch,
+  the mint, the resolver, and the target check a run performs before the
+  suite, then prints the command, its directory, and the resolved variables
+  and exits 0 with no verdict; `--json` reports `planned`. Docker and Maven
+  are not looked for. A value under a credential's name prints as
+  `[redacted]`, as does a bearer inside any other value. `--env-file <path>`
+  writes the resolved map in full for one suite, mode `0600` where the
+  platform has file modes. A debugger attached through that file runs
+  outside the target check, so nothing it observes is a result, and its
+  bearers expire with the mint.
 - **A pruned pair is reported, not repaired.** When the recorded acceptance
   digest no longer pulls, the run fails with `pair_pruned`, and the fixes
   are `spi service refresh <service>` onto a newer commit or `--source` at
