@@ -497,6 +497,11 @@ forks:
 LOCATOR = "Acme/ops:environments/shared.yaml"
 
 
+def _flat(output: str) -> str:
+    """CLI output with the error box and its wrapping removed, whatever the terminal width."""
+    return " ".join(output.replace("│", " ").split())
+
+
 def _declared():
     from spi.environment import Declared, parse_declaration, parse_locator
 
@@ -545,9 +550,7 @@ class TestUpDeclaration:
         result, seen = up()
 
         assert result.exit_code == 2
-        assert "requires spi 0.24.0, but this process is spi 0.23.1" in " ".join(
-            result.output.split()
-        )
+        assert "requires spi 0.24.0, but this process is spi 0.23.1" in _flat(result.output)
         assert seen == {}
 
     def test_a_dry_run_does_not_hand_the_environment_to_the_declaration(self, up):
@@ -578,7 +581,10 @@ class TestUpDeclaration:
         result, seen = up(option, value)
 
         assert result.exit_code == 2
-        assert "conflicts with the declaration" in result.output and declared in result.output
+        assert (
+            f"conflicts with the declaration, which {'pins' if option == '--branch' else 'sets'} {declared}"
+            in _flat(result.output)
+        )
         assert seen == {}
 
 

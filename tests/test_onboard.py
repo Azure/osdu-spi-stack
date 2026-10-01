@@ -1301,7 +1301,7 @@ class TestCli:
         outcome, build, _ = self._reconcile(declared_owner(), "--write", target=bare)
 
         assert outcome.exit_code == 0
-        assert "no fork trust to reconcile" in outcome.output
+        assert "no fork trust to reconcile" in " ".join(outcome.output.split())
         build.assert_not_called()
 
     def test_reconcile_plans_by_default_and_applies_with_write(self):
