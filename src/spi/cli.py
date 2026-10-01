@@ -1366,7 +1366,7 @@ def onboard(
     ):
         raise typer.BadParameter("--list takes no other options", param_hint="--list")
     if reconcile_declared and (service or repo or remove or org or skip_repo or canonical_source):
-        raise typer.BadParameter("--reconcile takes only --write", param_hint="--reconcile")
+        raise typer.BadParameter("takes only --write", param_hint="--reconcile")
     if remove and (repo or org or skip_repo or canonical_source):
         raise typer.BadParameter(
             "--remove takes only the service and --write", param_hint="--remove"

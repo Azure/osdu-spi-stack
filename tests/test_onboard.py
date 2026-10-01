@@ -1244,7 +1244,7 @@ class TestCli:
             (["partition", "--remove", "--canonical-source", "fork"], "takes only the service"),
             (["partition", "--canonical-source", "upstream"], "expected fork or community"),
             ([], "name the service"),
-            (["partition", "--reconcile"], "--reconcile takes only --write"),
+            (["partition", "--reconcile"], "takes only --write"),
             (["--list", "--reconcile"], "takes no other options"),
         ],
     )
