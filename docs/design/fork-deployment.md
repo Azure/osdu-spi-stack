@@ -16,7 +16,8 @@ ownership-checked `reset --if-run`, the separate stale sweep
 (`reset --ephemeral --stale-only`), and `spi onboard` (all four phases
 below, `--list` and `--remove` for trust, source policy, and both
 projections, roster-derived pin validation, repository-derived GHCR package
-validation), `spi service refresh`, and `spi test` are implemented. Declaration
+validation), `spi service refresh`, `spi test`, and the local build path (`spi build`,
+`spi service pin --source`) are implemented. Declaration
 enforcement and the refresh workflow's stale-pin sweep step are ahead of the
 code (phases 3 and 4 of the roadmap in
 [environment-lifecycle.md](environment-lifecycle.md)).
@@ -86,9 +87,9 @@ The pin rides the `spi-stack.osdu.dev/pins` annotation on the
 
 | Field | Content |
 |---|---|
-| `origin` | `gitlab-mr` or `github` |
+| `origin` | `gitlab-mr`, `github`, or `local` |
 | `repository`, `tag`, `digest` | the pinned image |
-| `source_repo`, `source_sha` | what built it |
+| `source_repo`, `source_sha` | what built it; a local build records the checkout's commit, suffixed `-dirty` when its tree had uncommitted changes or `-prebuilt` when the JAR was not written by Maven in the same run, and no repository |
 | `source_run_url`, `run_id` | the owning workflow run; `run_id` drives ownership checks and the stale-run lookup, `source_run_url` is display-only and never fetched |
 | `ephemeral` | true when CI placed it; the only pins automation may sweep |
 | `applied_at` | pin time |
@@ -503,6 +504,29 @@ spi service reset partition
 An operator pin placed this way carries no `ephemeral` marker, so the weekday
 backstop leaves it alone until the reset.
 
+Prove a change from a fork checkout on a personal environment (ADR-038):
+
+```bash
+spi service pin partition --source ../partition   # mvn, ACR task, pin, wait for the rollout
+spi test partition --suite all --source ../partition
+spi service reset partition
+```
+
+The pin step runs Maven in the checkout, builds `build/Dockerfile` around the
+JAR as `<registry>/local/partition` with an ACR task, pins the pushed digest,
+and returns once a running pod carries it. `--skip-maven` reuses the JAR
+already in `target/`, and the pin then records the commit as `-prebuilt`.
+`spi service list` shows the pin as `local build <commit>`, and
+`spi test --source` labels the run `matched` when Maven built a clean checkout
+at that commit. Running the pin again after an edit replaces it and
+keeps the restore target. `spi build partition --source ../partition` stops
+after the push and prints the digest reference for `spi service pin --image`.
+
+The pin refuses while a workflow run borrows the service, and on an
+environment whose kubelet identity holds no AcrPull on the registry: one
+provisioned before that grant needs `spi up` once. The build needs Maven, a
+JDK, `git`, and `az` on the host, and write access to the registry.
+
 Inspect what a stranded pin belongs to:
 
 ```bash
@@ -520,10 +544,11 @@ kubectl get cm osdu-image-lock -n osdu-flux \
 - [ADR-034: Managed identities survive `spi down`](../decisions/034-deploy-identity-survives-down.md)
 - [ADR-036: `spi test` runs the deployed commit's own suites](../decisions/036-spi-test-runs-the-deployed-commit.md)
 - [ADR-037: `spi test` reports what a suite proves](../decisions/037-spi-test-reports-what-a-suite-proves.md)
+- [ADR-038: Local builds pin from the environment registry](../decisions/038-local-builds-pin-from-the-environment-registry.md)
 
 ## Source files
 
-- `src/spi/pins.py`, `src/spi/images.py`, `src/spi/cli.py`, `src/spi/guard.py`
+- `src/spi/pins.py`, `src/spi/images.py`, `src/spi/build.py`, `src/spi/cli.py`, `src/spi/guard.py`
 - `src/spi/onboard.py`, `src/spi/testing.py`
 - `software/charts/osdu-spi-service/templates/deployment.yaml`
 - The fork-side jobs: `Azure/osdu-spi` `.github/template-workflows/`

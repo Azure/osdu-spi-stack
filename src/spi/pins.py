@@ -36,10 +36,21 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Collection, Iterable, Mapping
 
+from .build import (
+    DIRTY_SUFFIX,
+    LOCAL_NAMESPACE,
+    PREBUILT_SUFFIX,
+    BuildError,
+    environment_registry,
+    local_repository,
+    require_cluster_pull,
+    require_local_manifest,
+)
 from .console import console, display_yaml
 from .deploy_record import DEPLOY_RECORD_CONFIGMAP, DeployRecordError, read_deploy_record
 from .images import (
     DEFAULT_IMAGE_BRANCH,
+    GHCR_HOST,
     GITLAB_HOST,
     IMAGE_LOCK_CONFIGMAP,
     IMAGE_LOCK_NAMESPACE,
@@ -84,6 +95,8 @@ PROJECTION_ANNOTATIONS = (TRUSTED_REPOS_ANNOTATION, CANONICAL_SOURCES_ANNOTATION
 # Pin origins recorded in the annotation.
 GITLAB_MR_ORIGIN = "gitlab-mr"
 GITHUB_ORIGIN = "github"
+# Built from a checkout into the environment's own registry; never a canonical.
+LOCAL_ORIGIN = "local"
 
 # Flux names each Helm release <targetNamespace>-<name>, so a service's
 # Deployment and container default to "osdu-<service>".
@@ -193,7 +206,22 @@ def describe_pin(pin: ServicePin) -> str:
         return f"MR !{pin.mr} ({pin.branch} @ {pin.tag[:12]})"
     if pin.run_id:
         return f"run {pin.run_id} ({pin.digest[:19]} digest)"
+    if pin.origin == LOCAL_ORIGIN:
+        return f"{local_build(pin)} ({pin.digest[:19]})"
     return f"operator digest pin ({pin.digest[:19]})"
+
+
+def local_build(pin: ServicePin) -> str:
+    """Name the checkout a local pin was built from, as far as the pin records it."""
+
+    commit, _, state = pin.source_sha.partition("-")
+    if not commit:
+        return "local build"
+    notes = {
+        DIRTY_SUFFIX.strip("-"): ", uncommitted changes",
+        PREBUILT_SUFFIX.strip("-"): ", JAR not rebuilt",
+    }
+    return f"local build {commit[:12]}{notes.get(state, '')}"
 
 
 @dataclass(frozen=True)
@@ -336,6 +364,8 @@ def pin_origin(pin: ServicePin) -> str:
     """Where a pin came from, without the digest an Image column already shows."""
     if pin.mr:
         return f"MR !{pin.mr} ({pin.branch})"
+    if pin.origin == LOCAL_ORIGIN:
+        return local_build(pin)
     origin = f"run {pin.run_id}" if pin.run_id else "operator"
     return f"{origin} (ephemeral)" if pin.ephemeral else origin
 
@@ -988,6 +1018,44 @@ def _require_trusted_source(lock: dict, service: str, source_repo: str) -> None:
         )
 
 
+def _borrowed(service: str, pin: ServicePin | None) -> PinError | None:
+    if pin is None or not pin.ephemeral:
+        return None
+    return PinError(
+        f"{service} is borrowed by run {pin.run_id} "
+        f"({pin.source_run_url or pin.source_repo}); retry once the run restores it."
+    )
+
+
+def require_local_pinnable(service: str) -> None:
+    """Refuse a local pin the environment would not take, before anything is built."""
+
+    if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
+        known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
+        raise PinError(f"Unknown service {service!r}. Known services: {known}")
+    require_deployable()
+    borrowed = _borrowed(service, live_pins().get(service))
+    if borrowed:
+        raise borrowed
+    try:
+        require_cluster_pull(environment_registry())
+    except BuildError as exc:
+        raise PinError(str(exc)) from exc
+
+
+def _require_local_image(service: str, repository: str, digest: str) -> None:
+    """A local pin must name this environment's own repository and a digest pushed to it."""
+
+    registry = environment_registry()
+    expected = local_repository(registry, service)
+    if repository != expected:
+        raise PinError(
+            f"{repository!r} is not this environment's local {service} repository, {expected}."
+        )
+    require_local_manifest(registry, service, digest)
+    require_cluster_pull(registry)
+
+
 def pin_service_image(
     service: str,
     image: str,
@@ -998,7 +1066,12 @@ def pin_service_image(
     source_sha: str = "",
     source_run_url: str = "",
 ) -> list[tuple[str, ServicePin]]:
-    """Pin a service to a fork-built GHCR image by manifest digest.
+    """Pin a service to a fork-built GHCR image, or a local build, by manifest digest.
+
+    A local build is the environment's own ``<registry>/local/<service>``
+    repository and nothing else. It is an operator pin: never ephemeral and
+    never placed over a workflow run's borrow, and refused until the cluster
+    can pull from the registry.
 
     The target is the named service. An ephemeral schema pin also pairs the
     loader the fork built beside the service image at ``source_sha`` (template
@@ -1023,10 +1096,18 @@ def pin_service_image(
 
     try:
         repository, digest = parse_image_digest_ref(image)
-        require_ghcr_repository(repository)
+        host, _, path = repository.partition("/")
+        local = host != GHCR_HOST and path == f"{LOCAL_NAMESPACE}/{service}"
+        if not local:
+            require_ghcr_repository(repository)
     except ImageResolutionError as exc:
         raise PinError(str(exc)) from exc
 
+    if local and (ephemeral or run_id or source_repo or source_run_url):
+        raise PinError(
+            "--ephemeral, --run-id, and --source-repo describe a fork workflow's GHCR image; "
+            "a local build is an operator pin."
+        )
     if ephemeral and not (run_id and source_repo and source_sha):
         raise PinError(
             "--ephemeral requires --run-id, --source-repo, and --source-sha: the "
@@ -1046,8 +1127,11 @@ def pin_service_image(
 
     require_deployable()
     try:
-        resolve_ghcr_manifest(repository, digest)
-    except ImageResolutionError as exc:
+        if local:
+            _require_local_image(service, repository, digest)
+        else:
+            resolve_ghcr_manifest(repository, digest)
+    except (ImageResolutionError, BuildError) as exc:
         raise PinError(str(exc)) from exc
 
     # Resolved once, outside the mutator, so the registry round trips do not
@@ -1100,6 +1184,9 @@ def pin_service_image(
             _require_trusted_source(lock, service, source_repo)
         lock_data = lock.get("data") or {}
         pins = decode_pins(lock)
+        borrowed = _borrowed(service, pins.get(service)) if local else None
+        if borrowed:
+            raise borrowed
         data = dict(lock_data)
         written_pins = {}
         prior_pins = {}
@@ -1142,7 +1229,7 @@ def pin_service_image(
                 canonical_digest=canonical[3],
                 applied_at=applied_at,
                 digest=target_digest,
-                origin=GITHUB_ORIGIN,
+                origin=LOCAL_ORIGIN if local else GITHUB_ORIGIN,
                 ephemeral=ephemeral,
                 run_id=run_id,
                 source_repo=source_repo,
@@ -1624,6 +1711,36 @@ def verify_service_image(
         f"No running pod's {container!r} imageID carries {digest} (saw: {detail})."
         + _collision_note(service, digest),
     )
+
+
+# Verify failures a rollout still in progress produces; anything else is final.
+_ROLLOUT_PENDING = frozenset(
+    {"template_mismatch", "rollout_incomplete", "pod_not_running", "pod_mismatch"}
+)
+ROLLOUT_WAIT_SECONDS = 600
+ROLLOUT_POLL_SECONDS = 10
+
+
+def await_service_image(
+    service: str, image: str, wait_seconds: float = ROLLOUT_WAIT_SECONDS
+) -> VerifyResult:
+    """Verify the digest once its rollout settles, or raise the last failure at the deadline.
+
+    An unreadable cluster is waited out like a rollout in progress: one failed
+    kubectl read must not end a wait the pin already stands behind.
+    """
+
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            return verify_service_image(service, image)
+        except VerifyError as exc:
+            if exc.code not in _ROLLOUT_PENDING or time.monotonic() >= deadline:
+                raise
+        except PinError:
+            if time.monotonic() >= deadline:
+                raise
+        time.sleep(ROLLOUT_POLL_SECONDS)
 
 
 def _github_run_status(source_repo: str, run_id: str) -> str | None:

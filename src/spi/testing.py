@@ -51,6 +51,7 @@ from .images import (
     resolve_ghcr_manifest,
 )
 from .pins import (
+    LOCAL_ORIGIN,
     WORKLOAD_NAMESPACE,
     PinError,
     VerifyError,
@@ -251,8 +252,12 @@ def paired_target(lock: dict, service: str) -> tuple[PairedTarget | None, str]:
 
 
 def deployed_fork_commit(lock: dict, service: str) -> str:
-    """The 12-character commit a fork canonical names, whether or not it has a pair."""
+    """The commit the running image names: a fork canonical's 12 characters, or the
+    checkout a local pin was built from. A dirty build names no commit a checkout can match."""
 
+    pin = decode_pins(lock).get(service)
+    if pin is not None and pin.origin == LOCAL_ORIGIN:
+        return pin.source_sha
     canonical, _ = _fork_canonical(lock, service)
     return canonical[2] if canonical else ""
 

@@ -35,7 +35,7 @@ records the resource-provider and template boundaries.
 | `cosmos-gremlin.bicep` | Shared entitlements graph and Cosmos-native data-plane role |
 | `storage-common.bicep` | Shared blob/table Storage account |
 | `partition.bicep` | One partition's Cosmos SQL data and role, Service Bus, Storage, metadata and `DISABLED` credential placeholders |
-| `rbac.bicep` | Workload resource access and deployer Key Vault access; a kubelet AcrPull grant the CLI does not enable |
+| `rbac.bicep` | Workload resource access and deployer Key Vault access; AcrPull for the cluster's kubelet identity |
 | `external-dns-identity.bicep`, `external-dns-role.bicep` | Conditional DNS identity and role in the DNS zone's resource group |
 
 `main.bicep` loops over `dataPartitions` to deploy partition modules. It also

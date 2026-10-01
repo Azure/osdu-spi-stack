@@ -204,5 +204,8 @@ output clusterResourceId string = aksCluster.id
 @description('OIDC issuer URL required when creating workload identity federated credentials.')
 output oidcIssuerUrl string = aksCluster.properties.?oidcIssuerProfile.?issuerURL ?? ''
 
+@description('Object ID of the kubelet identity that pulls container images; empty until the cluster reports it.')
+output kubeletIdentityObjectId string = aksCluster.properties.?identityProfile.?kubeletidentity.?objectId ?? ''
+
 @description('Principal ID of the control-plane identity used to reconcile network resources.')
 output clusterPrincipalId string = clusterIdentity.properties.principalId

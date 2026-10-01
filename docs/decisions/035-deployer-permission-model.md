@@ -2,7 +2,7 @@
 
 ## Context
 
-`spi up` creates resources and assigns eleven built-in roles to six
+`spi up` creates resources and assigns eleven built-in roles to seven
 identities: ten in the environment group and DNS Zone Contributor in the DNS
 zone's group, which is often a different group. Contributor creates every
 resource but excludes `Microsoft.Authorization/*/Write` and

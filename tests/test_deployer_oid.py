@@ -208,6 +208,16 @@ def test_bicep_params_receive_resolved_deployer_identity():
     assert params["deployerPrincipalType"] == "User"
 
 
+def test_bicep_params_carry_the_kubelet_identity_for_its_pull_grant():
+    params = _build_bicep_params(
+        Config(env="test"), "https://oidc.example/", OID, "User", "kubelet-oid"
+    )
+    assert params["kubeletIdentityObjectId"] == "kubelet-oid"
+
+    preview = _build_bicep_params(Config(env="test"), "", OID, "User")
+    assert preview["kubeletIdentityObjectId"] == ""
+
+
 def test_bicep_params_name_both_fork_identities():
     params = _build_bicep_params(Config.from_env("test"), "https://oidc.example/", OID, "User")
 
@@ -259,3 +269,31 @@ def test_unresolved_deployer_fails_before_suffix_persistence():
         _resolve_up_context("test")
 
     resolve_suffix.assert_not_called()
+
+
+def _provision(aks_outputs: dict) -> dict:
+    """Run `provision_azure_infra` past the cluster and return main.bicep's parameters."""
+
+    account = {"id": "subscription-id", "tenantId": TID}
+    with (
+        patch("spi.azure_infra._resolve_system_pool_zones", return_value=None),
+        patch("spi.azure_infra.create_resource_group"),
+        patch("spi.azure_infra.create_aks_automatic", return_value=aks_outputs),
+        patch("spi.azure_infra._recover_soft_deleted_keyvault"),
+        patch("spi.azure_infra.run_bicep_deployment", return_value={}) as deploy,
+    ):
+        provision_azure_infra(Config(env="test"), account=account, deployer_principal=(OID, "User"))
+    return deploy.call_args.kwargs["parameters"]
+
+
+def test_the_clusters_kubelet_identity_reaches_the_registry_grant():
+    parameters = _provision(
+        {"oidcIssuerUrl": "https://oidc.example/", "kubeletIdentityObjectId": "kubelet-oid"}
+    )
+    assert parameters["kubeletIdentityObjectId"] == "kubelet-oid"
+
+
+def test_a_cluster_reporting_no_kubelet_identity_is_called_out(capsys):
+    parameters = _provision({"oidcIssuerUrl": "https://oidc.example/"})
+    assert parameters["kubeletIdentityObjectId"] == ""
+    assert "no kubelet identity" in " ".join(capsys.readouterr().out.split())

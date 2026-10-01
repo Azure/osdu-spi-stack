@@ -46,8 +46,9 @@ per-partition Storage assignments are for blobs.
 Cosmos SQL and Gremlin Data Contributor grants are Cosmos-native assignments,
 declared in the partition and Gremlin modules. They do not appear in
 `az role assignment` output. Container pulls use the kubelet identity, not the
-pod's Workload Identity; `rbac.bicep` can grant it AcrPull, but the CLI passes
-no `kubeletIdentityObjectId`, so `spi up` creates no such grant.
+pod's Workload Identity; `spi up` passes the cluster's `kubeletIdentityObjectId`
+from `aks.bicep` and `rbac.bicep` grants it AcrPull, so a pod can run a local
+build from the environment's registry (ADR-038).
 
 These assignments simplify provisioning, but do not isolate one OSDU service's
 Azure access from another's. The cluster control-plane identity used for

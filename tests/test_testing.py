@@ -1186,3 +1186,33 @@ class TestReportCommand:
         code, _ = self._invoke("--suite", "integration", "--", "-Dtest=X")
 
         assert code == 0 and command["runs"] == [("integration", ["-Dtest=X"])]
+
+
+class TestLocalPinLabel:
+    def _local(self, source_sha: str) -> dict:
+        pin = _pin(
+            repository="r.azurecr.io/local/partition",
+            origin="local",
+            ephemeral=False,
+            run_id="",
+            source_repo="",
+            source_sha=source_sha,
+        )
+        return _lock(pin=pin)
+
+    def test_a_checkout_at_the_built_commit_matches(self, tmp_path):
+        checkout = _checkout(tmp_path)
+        head = _head(checkout)
+        deployed = testing.deployed_fork_commit(self._local(head), "partition")
+        assert testing.checkout_label(checkout, deployed) == ("matched", head)
+
+    def test_a_dirty_build_matches_no_checkout(self, tmp_path):
+        checkout = _checkout(tmp_path)
+        head = _head(checkout)
+        deployed = testing.deployed_fork_commit(self._local(f"{head}-dirty"), "partition")
+        assert testing.checkout_label(checkout, deployed) == ("unmatched", head)
+
+    def test_a_local_pin_that_names_no_commit_is_unpaired(self, tmp_path):
+        checkout = _checkout(tmp_path)
+        deployed = testing.deployed_fork_commit(self._local(""), "partition")
+        assert testing.checkout_label(checkout, deployed)[0] == "unpaired"

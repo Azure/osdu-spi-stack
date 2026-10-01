@@ -26,6 +26,7 @@ import typer
 from typer.testing import CliRunner
 
 from spi import cli, pins, status
+from spi.build import BuildError, BuiltImage, Registry
 from spi.deploy_record import DeployRecord, DeployRecordError
 from spi.images import (
     ImageNotFoundError,
@@ -3397,3 +3398,331 @@ class TestRefreshDue:
 
         assert found == due
         assert pins.refresh_due_message(found) == message
+
+
+_LOCAL_REGISTRY = Registry(
+    name="osdutest12345",
+    login_server="osdutest12345.azurecr.io",
+    resource_id="/registries/osdutest12345",
+    resource_group="spi-stack-test",
+    subscription="sub",
+    cluster="spi-stack-test",
+)
+_LOCAL_IMAGE = f"osdutest12345.azurecr.io/local/storage@{_GHCR_DIGEST}"
+
+
+class TestPinLocalBuild:
+    def _wire(self, monkeypatch, lock, *, pullable=True, pushed=True):
+        calls = _wire_lock(monkeypatch, lock)
+        calls["ghcr_checks"] = []
+        monkeypatch.setattr(pins, "environment_registry", lambda: _LOCAL_REGISTRY)
+        monkeypatch.setattr(
+            pins, "resolve_ghcr_manifest", lambda *args: calls["ghcr_checks"].append(args)
+        )
+
+        def fake_manifest(registry, service, digest):
+            if not pushed:
+                raise BuildError(f"{digest} is not in the local repository")
+
+        def fake_pull(registry):
+            if not pullable:
+                raise BuildError("Cluster spi-stack-test cannot pull from osdutest12345")
+
+        monkeypatch.setattr(pins, "require_local_manifest", fake_manifest)
+        monkeypatch.setattr(pins, "require_cluster_pull", fake_pull)
+        return calls
+
+    def test_a_local_build_is_an_operator_pin_from_the_environments_registry(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage"), trusted={}))
+
+        [(name, pin)] = pin_service_image("storage", _LOCAL_IMAGE, source_sha="b" * 40)
+
+        data, live = calls["patch"]
+        assert name == "storage"
+        assert pin.origin == "local"
+        assert pin.source_sha == "b" * 40
+        assert not pin.ephemeral
+        assert pin.canonical_repository == "repo/storage-master"
+        assert data["STORAGE_IMAGE_REF"] == _LOCAL_IMAGE
+        assert data["STORAGE_DO_NOT_DISRUPT"] == "false"
+        assert live["storage"] == pin
+        assert calls["reconciled"] == ["storage"]
+        assert calls["ghcr_checks"] == []
+
+    def test_a_reset_returns_the_canonical_image(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        pin_service_image("storage", _LOCAL_IMAGE)
+
+        reset_service("storage")
+
+        data, live = calls["patch"]
+        assert live == {}
+        assert data["STORAGE_IMAGE_REPOSITORY"] == "repo/storage-master"
+
+    def test_another_registrys_local_repository_is_refused(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        with pytest.raises(PinError, match="not this environment's local storage repository"):
+            pin_service_image("storage", f"other.azurecr.io/local/storage@{_GHCR_DIGEST}")
+        assert calls["patch"] is None
+
+    def test_another_services_local_repository_is_not_a_local_pin(self, monkeypatch):
+        self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        with pytest.raises(PinError, match="not a GHCR package"):
+            pin_service_image("storage", f"osdutest12345.azurecr.io/local/legal@{_GHCR_DIGEST}")
+
+    def test_a_local_build_is_never_ephemeral(self, monkeypatch):
+        self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        with pytest.raises(PinError, match="a local build is an operator pin"):
+            pin_service_image(
+                "storage",
+                _LOCAL_IMAGE,
+                ephemeral=True,
+                run_id="1",
+                source_repo="Azure/osdu-spi-storage",
+                source_sha="b" * 40,
+            )
+
+    def test_a_digest_never_pushed_is_refused(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), pushed=False)
+        with pytest.raises(PinError, match="is not in the local repository"):
+            pin_service_image("storage", _LOCAL_IMAGE)
+        assert calls["patch"] is None
+
+    def test_a_cluster_that_cannot_pull_is_refused_before_the_lock_changes(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), pullable=False)
+        with pytest.raises(PinError, match="cannot pull"):
+            pin_service_image("storage", _LOCAL_IMAGE)
+        assert calls["patch"] is None
+
+    def test_a_borrowed_service_is_left_to_its_run(self, monkeypatch):
+        borrowed = _image_pin()
+        lock = _lock(
+            data={**_canonical_data("storage"), **_pinned_data("storage", borrowed)},
+            pins_annotation=encode_pins({"storage": borrowed}),
+        )
+        calls = self._wire(monkeypatch, lock)
+
+        with pytest.raises(PinError, match="borrowed by run 1234"):
+            pin_service_image("storage", _LOCAL_IMAGE)
+        with pytest.raises(PinError, match="borrowed by run 1234"):
+            pins.require_local_pinnable("storage")
+        assert calls["patch"] is None
+
+    def test_a_cluster_that_cannot_pull_is_refused_before_anything_is_built(self, monkeypatch):
+        self._wire(monkeypatch, _lock(data=_canonical_data("storage")), pullable=False)
+        with pytest.raises(PinError, match="cannot pull"):
+            pins.require_local_pinnable("storage")
+
+    def test_a_ghcr_owner_named_local_is_still_a_ghcr_package(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage"), trusted={}))
+        [(_, pin)] = pin_service_image("storage", f"ghcr.io/local/storage@{_GHCR_DIGEST}")
+        assert pin.origin == "github"
+        assert calls["ghcr_checks"] == [("ghcr.io/local/storage", _GHCR_DIGEST)]
+
+    def test_a_local_pin_replaces_an_earlier_one_and_keeps_its_restore_target(self, monkeypatch):
+        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
+        pin_service_image("storage", _LOCAL_IMAGE, source_sha="b" * 40)
+        newer = f"osdutest12345.azurecr.io/local/storage@sha256:{'e' * 64}"
+
+        [(_, pin)] = pin_service_image("storage", newer, source_sha="c" * 40 + "-dirty")
+
+        assert pin.digest == "sha256:" + "e" * 64
+        assert pin.canonical_repository == "repo/storage-master"
+        assert calls["patch"][1]["storage"] == pin
+
+    def test_a_local_pin_names_its_checkout(self):
+        clean = _image_pin(origin="local", ephemeral=False, run_id="", source_repo="")
+        dirty = replace(clean, source_sha="b" * 40 + "-dirty")
+        unnamed = replace(clean, source_sha="")
+
+        assert pins.local_build(clean) == "local build " + "b" * 12
+        assert pins.local_build(dirty) == "local build " + "b" * 12 + ", uncommitted changes"
+        prebuilt = replace(clean, source_sha="b" * 40 + "-prebuilt")
+        assert pins.local_build(prebuilt) == "local build " + "b" * 12 + ", JAR not rebuilt"
+        assert pins.local_build(unnamed) == "local build"
+        assert pins.pin_origin(dirty) == pins.local_build(dirty)
+        assert describe_pin(clean).startswith("local build " + "b" * 12)
+
+
+class TestAwaitServiceImage:
+    def _wire(self, monkeypatch, outcomes):
+        calls = {"verified": 0, "slept": 0}
+
+        def fake_verify(service, image):
+            calls["verified"] += 1
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(pins, "verify_service_image", fake_verify)
+        monkeypatch.setattr(
+            pins.time, "sleep", lambda seconds: calls.__setitem__("slept", calls["slept"] + 1)
+        )
+        return calls
+
+    def test_a_rollout_in_progress_is_waited_out(self, monkeypatch):
+        done = pins.VerifyResult("osdu-storage", "osdu-storage", "pod-1", "repo@sha256:x")
+        calls = self._wire(
+            monkeypatch,
+            [
+                VerifyError("template_mismatch", "not yet"),
+                VerifyError("rollout_incomplete", "rolling"),
+                done,
+            ],
+        )
+        assert pins.await_service_image("storage", _LOCAL_IMAGE) is done
+        assert calls == {"verified": 3, "slept": 2}
+
+    def test_an_unreadable_cluster_is_waited_out(self, monkeypatch):
+        done = pins.VerifyResult("osdu-storage", "osdu-storage", "pod-1", "repo@sha256:x")
+        calls = self._wire(monkeypatch, [PinError("Could not read Deployment"), done])
+        assert pins.await_service_image("storage", _LOCAL_IMAGE) is done
+        assert calls["slept"] == 1
+
+    def test_a_cluster_still_unreadable_at_the_deadline_raises(self, monkeypatch):
+        self._wire(monkeypatch, [PinError("Could not read Deployment")])
+        with pytest.raises(PinError, match="Could not read Deployment"):
+            pins.await_service_image("storage", _LOCAL_IMAGE, wait_seconds=0)
+
+    def test_a_replaced_pin_fails_at_once(self, monkeypatch):
+        calls = self._wire(monkeypatch, [VerifyError("lock_mismatch", "replaced")])
+        with pytest.raises(VerifyError, match="replaced"):
+            pins.await_service_image("storage", _LOCAL_IMAGE)
+        assert calls["slept"] == 0
+
+    def test_the_last_failure_is_raised_at_the_deadline(self, monkeypatch):
+        self._wire(monkeypatch, [VerifyError("pod_not_running", "no pods")])
+        with pytest.raises(VerifyError, match="no pods"):
+            pins.await_service_image("storage", _LOCAL_IMAGE, wait_seconds=0)
+
+
+class TestServicePinSourceCli:
+    def _wire(self, monkeypatch, tmp_path, *, verified=True):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        monkeypatch.setattr(cli, "_environment_label", lambda: "test")
+        order: list = []
+        built = BuiltImage(
+            "storage",
+            "osdutest12345.azurecr.io/local/storage",
+            _GHCR_DIGEST,
+            "sha-bbbbbbbbbbbb",
+            "b" * 40,
+            False,
+        )
+        monkeypatch.setattr(
+            cli, "require_local_pinnable", lambda service: order.append(("preflight", service))
+        )
+
+        def fake_build(service, checkout, **kwargs):
+            order.append(("build", checkout, kwargs))
+            return built
+
+        def fake_pin(service, image, **kwargs):
+            order.append(("pin", image, kwargs["source_sha"]))
+            pin = _image_pin(
+                repository=built.repository,
+                origin="local",
+                ephemeral=False,
+                run_id="",
+                source_repo="",
+                source_sha=kwargs["source_sha"],
+            )
+            return [(service, pin)]
+
+        def fake_await(service, image):
+            order.append(("await", image))
+            if not verified:
+                raise VerifyError("pod_mismatch", "still the old image")
+            return pins.VerifyResult("osdu-storage", "osdu-storage", "pod-1", image)
+
+        monkeypatch.setattr(cli, "build_image", fake_build)
+        monkeypatch.setattr(cli, "pin_service_image", fake_pin)
+        monkeypatch.setattr(cli, "await_service_image", fake_await)
+        return order
+
+    def test_a_source_pin_builds_pins_and_waits_for_the_rollout(self, monkeypatch, tmp_path):
+        order = self._wire(monkeypatch, tmp_path)
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "pin", "storage", "--source", str(tmp_path), "--skip-maven"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert [step[0] for step in order] == ["preflight", "build", "pin", "await"]
+        assert order[1][2] == {"skip_maven": True, "jar": ""}
+        assert order[2][1:] == (_LOCAL_IMAGE, "b" * 40)
+        output = _plain(result.output)
+        assert "local build bbbbbbbbbbbb" in output
+        assert "runs the build in pod pod-1" in output
+        assert "Release with: spi service reset storage" in output
+        assert "spi test storage --source" in output
+
+    def test_the_test_hint_quotes_a_path_a_shell_or_markup_would_read(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, tmp_path)
+        checkout = tmp_path / "fork;echo [red]x"
+        checkout.mkdir()
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "pin", "storage", "--source", str(checkout), "--skip-maven"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "fork;echo [red]x'" in "".join(_plain(result.output).split("\n"))
+
+    def test_a_refused_preflight_builds_nothing(self, monkeypatch, tmp_path):
+        order = self._wire(monkeypatch, tmp_path)
+
+        def refuse(service):
+            raise PinError("storage is borrowed by run 1234")
+
+        monkeypatch.setattr(cli, "require_local_pinnable", refuse)
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "pin", "storage", "--source", str(tmp_path)]
+        )
+
+        assert result.exit_code == 1
+        assert "borrowed by run 1234" in result.output
+        assert order == []
+
+    def test_a_rollout_that_never_runs_the_build_exits_two_with_the_pin_standing(
+        self, monkeypatch, tmp_path
+    ):
+        self._wire(monkeypatch, tmp_path, verified=False)
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "pin", "storage", "--source", str(tmp_path)]
+        )
+
+        assert result.exit_code == 2
+        output = _plain(result.output)
+        assert "pinned but does not run the build (pod_mismatch)" in output
+        assert "Release with: spi service reset storage" in output
+
+    def test_source_is_exclusive_with_the_other_pin_kinds(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        result = CliRunner().invoke(
+            cli.app, ["service", "pin", "storage", "--source", str(tmp_path), "--mr", "1"]
+        )
+        assert result.exit_code == 1
+        assert "exactly one" in result.output
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "pin", "storage", "--mr", "1", "--skip-maven"]
+        )
+        assert result.exit_code == 1
+        assert "--source" in result.output
+
+    def test_the_pin_list_names_a_local_build(self, monkeypatch):
+        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+        local = _image_pin(
+            origin="local", ephemeral=False, run_id="", source_repo="", source_sha="b" * 40
+        )
+        monkeypatch.setattr(cli, "live_pins", lambda: {"storage": local})
+
+        result = CliRunner().invoke(cli.app, ["service", "list"])
+
+        # The table folds a cell at the column width.
+        output = _plain(result.output)
+        assert "local build" in output and "b" * 12 in output

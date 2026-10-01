@@ -164,7 +164,9 @@ verdict; `spi connect` obtains access to an existing cluster.
 
 `spi service pin --image --ephemeral` records a fork-built digest and its owning
 run in the image lock. Verification checks rollout and digest; an
-ownership-checked reset restores the captured canonical image. The environment
+ownership-checked reset restores the captured canonical image. `spi service pin
+--source` builds a checkout into the environment's registry and pins it as an
+operator pin (ADR-038). The environment
 deploy identity and namespace Roles are provisioned. `spi onboard` plans and
 applies repository protection, federation, per-service canonical-source policy,
 and both lock projections. `spi test` runs a service's suite from the

@@ -18,6 +18,7 @@ import contextlib
 import json
 import os
 import re
+import shlex
 import sys
 from functools import partial
 from pathlib import Path
@@ -31,6 +32,7 @@ from typer.completion import completion_init, install_callback, show_callback
 
 from . import __version__
 from .bootstrap import create_istio_revision_configmap, refresh_spi_init_values
+from .build import BuildError, build_image
 from .checks import PREREQ_TOOLS, check_prerequisites
 from .config import Config, IngressMode, Profile
 from .console import console, display_result, error_console
@@ -45,19 +47,23 @@ from .images import (
 )
 from .ingress import resolve_acme_email, resolve_ingress_mode
 from .pins import (
+    LOCAL_ORIGIN,
     PinError,
     ResetRefusedError,
     VerifyError,
     apply_image_lock,
     apply_schema_load_backfill,
+    await_service_image,
     describe_pin,
     live_pins,
+    local_build,
     pin_service,
     pin_service_image,
     read_lock,
     refresh_command,
     refresh_fork_services,
     refresh_services,
+    require_local_pinnable,
     reset_service,
     sweep_stale_ephemeral_pins,
     trusted_canonical_sources,
@@ -73,7 +79,8 @@ app = typer.Typer(
 )
 
 service_app = typer.Typer(
-    help="Pin individual services to merge-request or fork-built images for validation."
+    help="Pin individual services to merge-request, fork-built, or locally built images "
+    "for validation."
 )
 app.add_typer(service_app, name="service")
 
@@ -968,6 +975,90 @@ def token(
         typer.echo(minted.access_token)
 
 
+def _source_checkout(source: str, output_json: bool = False) -> Path:
+    checkout = Path(source).expanduser()
+    if not checkout.is_dir():
+        if output_json:
+            raise _usage_error(f"--source {source} is not a directory.", output_json)
+        raise typer.BadParameter(f"{source} is not a directory", param_hint="--source")
+    return checkout
+
+
+@app.command(
+    "build",
+    context_settings={"allow_extra_args": True},
+)
+def spi_build(
+    ctx: typer.Context,
+    service: str = typer.Argument(help="Service the checkout builds, for example partition."),
+    source: str = typer.Option(
+        ..., "--source", help="Checkout of the service's fork to build the image from."
+    ),
+    skip_maven: bool = typer.Option(
+        False, "--skip-maven", help="Reuse the JAR already built in the checkout."
+    ),
+    jar: str = typer.Option(
+        "",
+        "--jar",
+        help="Spring Boot JAR to package, relative to the checkout; needed only when the "
+        "checkout builds more than one Azure JAR.",
+    ),
+    output_json: bool = typer.Option(
+        False, "--json", help="Emit the outcome as a final machine-readable JSON line."
+    ),
+):
+    """Build a service image from a checkout into this environment's registry.
+
+    Maven builds the JAR on this machine and an ACR task packages it with the
+    checkout's build/Dockerfile as <registry>/local/<service>. Tokens after --
+    replace the Maven arguments. Nothing on the cluster changes; pin the
+    digest with 'spi service pin <service> --image', or build and pin in one
+    step with 'spi service pin <service> --source'.
+    """
+    if skip_maven and ctx.args:
+        raise _usage_error("--skip-maven runs no Maven to take arguments.", output_json)
+    checkout = _source_checkout(source, output_json)
+    ctx_name = _guarded_context(output_json)
+    if not output_json:
+        console.print(f"  [dim]Cluster context: {ctx_name}[/dim]")
+
+    try:
+        built = build_image(
+            service, checkout, skip_maven=skip_maven, maven_arguments=list(ctx.args), jar=jar
+        )
+    except BuildError as exc:
+        if output_json:
+            _emit_outcome("error", None, str(exc), service=service)
+        else:
+            console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+
+    if output_json:
+        _emit_outcome(
+            "built",
+            None,
+            f"{built.repository}:{built.tag}",
+            service=service,
+            image=built.reference,
+            commit=built.commit,
+            dirty=built.dirty,
+            prebuilt=built.prebuilt,
+        )
+        return
+    state = ""
+    if built.dirty:
+        state = " with uncommitted changes"
+    elif built.prebuilt:
+        state = ", packaging the JAR already there"
+    console.print(f"  [success]{service}[/success] built from {built.commit[:12]}{state}:")
+    # Unwrapped, so the reference copies as one token.
+    console.print(f"  {built.reference}", soft_wrap=True)
+    console.print(
+        f"[dim]Pin with: spi service pin {service} --image {built.reference}[/dim]",
+        soft_wrap=True,
+    )
+
+
 def _parse_overrides(values: List[str]) -> Dict[str, str]:
     overrides: Dict[str, str] = {}
     for value in values:
@@ -1192,11 +1283,7 @@ def spi_test(
     if not output_json:
         console.print(f"  [dim]Cluster context: {ctx_name}[/dim]")
     settings = _parse_overrides(overrides)
-    checkout = None
-    if source is not None:
-        checkout = Path(source).expanduser()
-        if not checkout.is_dir():
-            raise typer.BadParameter(f"{source} is not a directory", param_hint="--source")
+    checkout = _source_checkout(source, output_json) if source is not None else None
 
     if dry_run:
         _plan_suites(
@@ -1378,7 +1465,6 @@ def _plan_suites(
 
 
 def _print_suite_plan(plan: Any, written: Optional[Path]) -> None:
-    import shlex
 
     from rich.console import Group
     from rich.text import Text
@@ -1845,7 +1931,22 @@ def service_pin(
     image: Optional[str] = typer.Option(
         None,
         "--image",
-        help="Fork-built GHCR image as <repository>@sha256:<digest>; tags are rejected.",
+        help="Fork-built GHCR image, or this environment's local build, as "
+        "<repository>@sha256:<digest>; tags are rejected.",
+    ),
+    source: Optional[str] = typer.Option(
+        None,
+        "--source",
+        help="Build this checkout into the environment's registry, pin it, and wait for "
+        "the rollout.",
+    ),
+    skip_maven: bool = typer.Option(
+        False, "--skip-maven", help="With --source: reuse the JAR already built in the checkout."
+    ),
+    jar: str = typer.Option(
+        "",
+        "--jar",
+        help="With --source: the Spring Boot JAR to package, relative to the checkout.",
     ),
     ephemeral: bool = typer.Option(
         False,
@@ -1863,9 +1964,9 @@ def service_pin(
         "", "--source-run-url", help="Workflow run URL, recorded for display only."
     ),
 ):
-    """Pin a service to an MR pipeline image or a fork-built GHCR digest."""
-    if (mr is None) == (image is None):
-        console.print("[error]Provide exactly one of --mr or --image.[/error]")
+    """Pin a service to an MR pipeline image, a fork-built GHCR digest, or a local build."""
+    if sum(option is not None for option in (mr, image, source)) != 1:
+        console.print("[error]Provide exactly one of --mr, --image, or --source.[/error]")
         raise typer.Exit(code=1)
     provenance = run_id or source_repo or source_sha or source_run_url
     if image is None and (ephemeral or provenance):
@@ -1876,9 +1977,23 @@ def service_pin(
     if not ephemeral and provenance:
         console.print("[error]--run-id and --source-* require --ephemeral.[/error]")
         raise typer.Exit(code=1)
+    if (skip_maven or jar) and source is None:
+        console.print("[error]--skip-maven and --jar apply only to --source pins.[/error]")
+        raise typer.Exit(code=1)
+    checkout = _source_checkout(source) if source is not None else None
 
     ctx = verify_spi_cluster()
     console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+
+    if checkout is not None:
+        # Refused before Maven runs, so a pin the environment would not take costs no build.
+        try:
+            require_local_pinnable(service)
+            built = build_image(service, checkout, skip_maven=skip_maven, jar=jar)
+        except (PinError, BuildError) as exc:
+            console.print(f"[error]{exc}[/error]")
+            raise typer.Exit(code=1)
+        image, source_sha = built.reference, built.source_sha
 
     if image is not None:
         try:
@@ -1896,6 +2011,8 @@ def service_pin(
             raise typer.Exit(code=1)
         pin = dict(applied)[service]
         marker = f" (ephemeral, run {pin.run_id})" if pin.ephemeral else ""
+        if pin.origin == LOCAL_ORIGIN:
+            marker = f" ({local_build(pin)})"
         console.print(
             f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker} "
             f"on {_environment_label()}"
@@ -1917,6 +2034,8 @@ def service_pin(
             )
         else:
             console.print(f"[dim]Release with: spi service reset {service}[/dim]")
+        if checkout is not None:
+            _await_local_rollout(service, image, source or "")
         return
 
     assert mr is not None
@@ -1933,6 +2052,29 @@ def service_pin(
             f"on {environment}"
         )
     console.print(f"[dim]Release with: spi service reset {service}[/dim]")
+
+
+def _await_local_rollout(service: str, image: str, source: str) -> None:
+    """Hold a build-and-pin until the cluster runs the digest, so the next step can test it."""
+    console.print(f"  [dim]Waiting for {service} to run the build...[/dim]")
+    try:
+        result = await_service_image(service, image)
+    except VerifyError as exc:
+        console.print(
+            f"[error]{service} is pinned but does not run the build ({exc.code}): {exc}[/error]"
+        )
+        raise typer.Exit(code=2)
+    except PinError as exc:
+        console.print(
+            f"[error]{service} is pinned, but the rollout could not be read: {exc}[/error]"
+        )
+        raise typer.Exit(code=1)
+    console.print(f"  [success]{service}[/success] runs the build in pod {result.pod}")
+    console.print(
+        f"Test with: spi test {service} --source {shlex.quote(source)}",
+        style="dim",
+        markup=False,
+    )
 
 
 @service_app.command("verify")
@@ -2230,6 +2372,9 @@ def service_list():
         if pin.mr:
             source = f"MR !{pin.mr} ({pin.branch})"
             image_short = pin.tag[:12]
+        elif pin.origin == LOCAL_ORIGIN:
+            source = local_build(pin)
+            image_short = pin.digest[:19]
         else:
             source = pin.source_repo or "github"
             if pin.run_id:
