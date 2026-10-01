@@ -4,6 +4,7 @@
 
 """Release-tag deployment and source-finalization contracts."""
 
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -498,8 +499,8 @@ LOCATOR = "Acme/ops:environments/shared.yaml"
 
 
 def _flat(output: str) -> str:
-    """CLI output with the error box and its wrapping removed, whatever the terminal width."""
-    return " ".join(output.replace("│", " ").split())
+    """CLI output without color codes, the error box, or its wrapping."""
+    return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).replace("│", " ").split())
 
 
 def _declared():

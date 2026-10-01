@@ -35,6 +35,9 @@ from .onboard import (
     COMMUNITY_SOURCE,
     DEPLOY_ENVIRONMENT,
     FORK_SOURCE,
+    GITHUB_AUDIENCE,
+    GITHUB_ISSUER,
+    MAX_CREDENTIALS,
     REQUIRED_PROFILE,
     Credential,
     OnboardError,
@@ -245,8 +248,8 @@ def plan(
 
         intent = by_service[cred.service]
         subject = subjects[intent.service]
-        if subject:
-            return not cred.trusts(subject)
+        if subject or not cred.well_formed:
+            return not (subject and cred.trusts(subject))
         other = named.get(intent.service, "")
         return bool(other) and other.lower() != intent.repo.lower()
 
@@ -272,6 +275,14 @@ def plan(
             actions.append(Action(revoke, identity, cred.service))
             revoked.add((identity.identity_name, cred.service))
 
+    # What each identity holds once the revocations run, counted against Azure's cap.
+    kept = {
+        identity.identity_name: [
+            cred for cred in roster if (identity.identity_name, cred.service) not in revoked
+        ]
+        for identity, roster in identities
+    }
+
     for intent in intents:
         subject = subjects[intent.service]
         blocker = _write_blocker(intent, subject)
@@ -290,14 +301,25 @@ def plan(
                 rows.append(Row("azure", item, "missing", f"declares {intent.repo}"))
             else:
                 rows.append(Row("azure", item, "drifted", existing.subject))
+            holding = kept[identity.identity_name]
+            taken = next(
+                (c for c in holding if c.issuer == GITHUB_ISSUER and c.subject == subject), None
+            )
+            if not blocker and taken is not None:
+                blocker = f"{taken.name} on {identity.identity_name} already holds its subject"
+            elif not blocker and len(holding) >= MAX_CREDENTIALS:
+                blocker = (
+                    f"{identity.identity_name} already holds {MAX_CREDENTIALS} federated "
+                    "credentials, the Azure maximum"
+                )
             if blocker:
                 stranded = True
                 trusted = trusted and identity is not target
                 continue
-            remaining = tuple(cred for cred in roster if cred is not existing)
-            write = credential_step(identity, intent.service, intent.repo, subject, remaining)
+            write = credential_step(identity, intent.service, intent.repo, subject, ())
             assert write is not None
             actions.append(Action(write, identity, intent.service, intent.repo, subject))
+            holding.append(Credential(write.argv[5], GITHUB_ISSUER, subject, (GITHUB_AUDIENCE,)))
         if stranded:
             result.blocked.append(f"{intent.service} from {intent.repo}: {blocker}")
         if trusted:

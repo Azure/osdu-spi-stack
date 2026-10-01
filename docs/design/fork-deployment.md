@@ -348,7 +348,9 @@ stands. Credential writes are serial per identity with the same backoff as
 onboarding. A credential is written only for a repository whose `spi-stack`
 environment admits every branch, and a source tag moves to a fork only when
 that fork is trusted and its image resolves, under the same check as
-`--canonical-source fork`. An entry that fails either test gains nothing:
+`--canonical-source fork`. Planning also refuses a credential whose subject
+another credential on the identity already holds, or that would be the
+identity's twenty-first. An entry that fails any of these gains nothing:
 its stale credential is still revoked, a tag naming a fork returns to
 `community`, the rest are reconciled, and the command exits nonzero naming
 each one. A replaced repository therefore never keeps its trust while its

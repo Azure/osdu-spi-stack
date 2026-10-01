@@ -1302,7 +1302,7 @@ def _reconcile_declared_forks(target: Any, write: bool) -> None:
         return
     _onboard.require_target(target)
     owner = _onboard.read_declared(
-        target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", "")
+        target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", ""), target.env
     )
     if owner is None:
         console.print(
@@ -1366,7 +1366,9 @@ def onboard(
     ):
         raise typer.BadParameter("--list takes no other options", param_hint="--list")
     if reconcile_declared and (service or repo or remove or org or skip_repo or canonical_source):
-        raise typer.BadParameter("takes only --write", param_hint="--reconcile")
+        raise typer.BadParameter(
+            "cannot be combined with a service or its options", param_hint="--reconcile"
+        )
     if remove and (repo or org or skip_repo or canonical_source):
         raise typer.BadParameter(
             "--remove takes only the service and --write", param_hint="--remove"

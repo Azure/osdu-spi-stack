@@ -25,6 +25,7 @@ from spi.environment import DeclarationLocator, Declared, parse_declaration
 from spi.onboard import (
     GITHUB_AUDIENCE,
     GITHUB_ISSUER,
+    MAX_CREDENTIALS,
     Credential,
     OnboardError,
     Protection,
@@ -245,6 +246,40 @@ class TestPlan:
         assert [c.split(" ")[0] for c in commands(result) if " on " in c] == ["delete"] * 3
         assert result.blocked == [f"partition from {PARTITION}: HTTP 403"]
         assert result.trusted == {}
+
+    def test_an_unreadable_github_still_revokes_a_credential_this_cli_would_not_write(self):
+        forged = replace(cred("partition", PARTITION), issuer="https://elsewhere.example")
+        unread = intent("partition", PARTITION, subject="", protection=None, unread="HTTP 403")
+
+        result = plan(TARGET, owner(), (unread,), everywhere(forged), {})
+
+        assert [c.split(" ")[0] for c in commands(result) if " on " in c] == ["delete"] * 3
+        assert result.trusted == {}
+
+    def test_a_subject_another_credential_holds_is_refused_before_azure_rejects_it(self):
+        by_hand = replace(cred("x", PARTITION), name="by-hand")
+        state = replace(everywhere(), roster=(by_hand,))
+
+        result = reconcile(state, intent("partition", PARTITION))
+
+        # The mirrors follow the deployer, so none of the three is written.
+        assert [c for c in commands(result) if " on " in c] == []
+        assert result.blocked == [
+            f"partition from {PARTITION}: by-hand on {DEPLOYER} already holds its subject"
+        ]
+        assert result.trusted == {}
+
+    def test_an_identity_at_the_azure_maximum_gains_no_credential(self):
+        full = tuple(
+            Credential(f"other-{n}", "https://aks", f"system:serviceaccount:x:{n}", ())
+            for n in range(MAX_CREDENTIALS)
+        )
+        state = replace(everywhere(), roster=full)
+
+        result = reconcile(state, intent("partition", PARTITION))
+
+        assert f"create fork-partition on {DEPLOYER}" not in commands(result)
+        assert "already holds 20 federated credentials" in result.blocked[0]
 
     def test_an_unreadable_github_blocks_only_the_write_it_would_need(self):
         state = replace(

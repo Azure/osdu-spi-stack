@@ -1244,7 +1244,7 @@ class TestCli:
             (["partition", "--remove", "--canonical-source", "fork"], "takes only the service"),
             (["partition", "--canonical-source", "upstream"], "expected fork or community"),
             ([], "name the service"),
-            (["partition", "--reconcile"], "takes only --write"),
+            (["partition", "--reconcile"], "cannot be combined with a service"),
             (["--list", "--reconcile"], "takes no other options"),
         ],
     )
@@ -1831,6 +1831,15 @@ class TestDeclaredEnvironment:
 
         with pytest.raises(OnboardError, match=f"declared by {LOCATOR}, which could not be loaded"):
             READ_DECLARED("rg")
+
+    def test_a_locator_for_another_environment_does_not_own_this_one(self, monkeypatch):
+        tags = {"spi-environment-declaration": LOCATOR}
+        monkeypatch.setattr(onboard, "run_command", Shell(az__group__show=tags))
+        monkeypatch.setattr(onboard, "fetch_declared", lambda locator: declared_owner())
+
+        assert READ_DECLARED("rg", "", "dev1") == declared_owner()
+        with pytest.raises(OnboardError, match="it declares env 'dev1', not 'shared'"):
+            READ_DECLARED("rg", "", "shared")
 
     def test_list_rows_compare_trust_and_source_to_the_declaration(self):
         trusted = {"partition": "acme/OSDU-spi-partition", "schema": "Acme/osdu-spi-schema"}

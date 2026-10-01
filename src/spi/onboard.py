@@ -703,18 +703,24 @@ def retained_locator(tags: dict) -> str:
     )
 
 
-def read_declared(resource_group: str, subscription: str = "") -> Optional[Declared]:
+def read_declared(resource_group: str, subscription: str = "", env: str = "") -> Optional[Declared]:
     """The declaration that owns this environment, or None when it is undeclared.
 
-    A recorded locator that cannot be loaded raises: it blocks the change, and
-    never turns a declared environment into an undeclared one.
+    A recorded locator that cannot be loaded, or that declares another
+    environment than ``env``, raises: it blocks the change, and never turns a
+    declared environment into an undeclared one.
     """
 
     locator = retained_locator(read_group_tags(resource_group, subscription))
     if not locator:
         return None
     try:
-        return fetch_declared(parse_locator(locator))
+        declared = fetch_declared(parse_locator(locator))
+        if env and declared.declaration.env != env:
+            raise EnvironmentDeclarationError(
+                f"it declares env {declared.declaration.env!r}, not {env!r}"
+            )
+        return declared
     except EnvironmentDeclarationError as exc:
         raise OnboardError(
             f"{resource_group} is declared by {locator}, which could not be loaded: {exc}. "
@@ -1249,7 +1255,9 @@ def plan_onboard(
 ) -> Plan:
     require_target(target)
     require_known_service(service)
-    declared = read_declared(target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", ""))
+    declared = read_declared(
+        target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", ""), target.env
+    )
     entry = declared.declaration.fork(service) if declared else None
     repo_spec = repo_spec or (entry.repo if entry else "")
     canonical_source = agree_with_declaration(declared, service, repo_spec, canonical_source)
@@ -1284,7 +1292,9 @@ def plan_onboard(
 def plan_remove(target: Target, service: str) -> Plan:
     require_target(target)
     require_known_service(service)
-    declared = read_declared(target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", ""))
+    declared = read_declared(
+        target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", ""), target.env
+    )
     agree_with_declaration(declared, service, remove=True)
     plan = Plan(target, service, repo="", skip_repo=True, remove=True)
     plan.state = observe(target, repo="")
@@ -1636,7 +1646,9 @@ def list_trust(target: Target) -> list[Row]:
     sources = read_source_tags(target.resource_group, subscription)
     rows.extend(source_rows(trusted, sources, read_source_projection()))
     rows.extend(
-        declaration_rows(read_declared(target.resource_group, subscription), trusted, sources)
+        declaration_rows(
+            read_declared(target.resource_group, subscription, target.env), trusted, sources
+        )
     )
     return rows
 
