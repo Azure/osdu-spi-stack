@@ -37,6 +37,7 @@ jobs:
       ingress_mode: ${{ steps.export.outputs.ingress_mode }}
       image_branch: ${{ steps.export.outputs.image_branch }}
       name_suffix: ${{ steps.export.outputs.name_suffix }}
+      declares_forks: ${{ steps.export.outputs.declares_forks }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -296,6 +297,9 @@ jobs:
       IMAGE_BRANCH: ${{ needs.declare.outputs.image_branch }}
       NAME_SUFFIX: ${{ needs.declare.outputs.name_suffix }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
+      DECLARES_FORKS: ${{ needs.declare.outputs.declares_forks }}
+      # First release whose CLI has `spi up --declaration`.
+      DECLARED_FORKS_CLI_MIN_VERSION: v0.24.0
     steps:
       - uses: actions/checkout@v7
 
@@ -366,7 +370,8 @@ jobs:
       - name: spi up
         env:
           SPI_DEPLOYER_OID: ${{ steps.prelogin.outputs.oid }}
-          # Resolves id-subject fork credentials to repository names for the lock's roster.
+          # Reads the declaration and each fork's subject and environment rules, and
+          # resolves id-subject fork credentials to repository names for the lock's roster.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -382,6 +387,16 @@ jobs:
           # bare deploys no ingress substrate and spi up rejects the option.
           if [ "$PROFILE" != "bare" ]; then
             ARGS+=(--ingress-mode "$INGRESS_MODE")
+          fi
+          # Handing over the declaration makes it own the environment's trust, and
+          # spi up then revokes every fork it does not list. A declaration with no
+          # forks is therefore not handed over; trust stays with spi onboard.
+          if [ "$DECLARES_FORKS" = "true" ]; then
+            if [ "$(printf '%s\n' "$DECLARED_FORKS_CLI_MIN_VERSION" "$STACK_VERSION" | sort -V | head -n1)" != "$DECLARED_FORKS_CLI_MIN_VERSION" ]; then
+              echo "::notice::stackVersion $STACK_VERSION predates spi up --declaration (minimum $DECLARED_FORKS_CLI_MIN_VERSION); the declared forks are not reconciled"
+            else
+              ARGS+=(--declaration "${GITHUB_REPOSITORY}:${DECLARATION_PATH}")
+            fi
           fi
           spi up "${ARGS[@]}"
 

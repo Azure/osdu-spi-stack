@@ -307,26 +307,80 @@ spi service refresh partition                           # and back to community 
 ```
 
 The retained `spi-environment-declaration` RG tag identifies a declared
-environment (ADR-032). Onboarding loads that reviewed file from `main` and
-requires the requested service, repository, removal, and source to match;
-an omitted source option takes the declaration's `canonicalSource`.
-Conflicting intent is refused before writes, naming the file to change
-through a reviewed PR. An unreadable declaration is an error, not permission
-to use undeclared mode. Shared onboarding first declares a community source,
-then enables and proves the fork jobs; a later reviewed change promotes it.
+environment (ADR-032). Its value is a locator, `<owner>/<repo>:<path>`, and
+the file it names on `main` carries the fork intent
+(`src/spi/environment.py`):
+
+```yaml
+forks:
+  - service: partition
+    repo: Azure/osdu-spi-partition
+  - service: legal
+    repo: Azure/osdu-spi-legal
+    canonicalSource: fork
+```
+
+Onboarding loads that file before any other read and requires the requested
+service, repository, removal, and source to match; an omitted `--repo` or
+source option takes the declared value. Conflicting intent is refused before
+writes, naming the file to change through a reviewed PR. An unreadable
+declaration is an error, not permission to use undeclared mode. Shared
+onboarding first declares a community source, then enables and proves the
+fork jobs; a later reviewed change promotes it.
+
+`spi onboard --reconcile` moves the durable records to the declaration
+without naming a service (`src/spi/declared.py`). It plans by default and
+applies with `--write`, in this order:
+
+1. Record `community` for every undeclared service whose tag follows a fork.
+2. Revoke, on the deploy, member, and no-access identities, every
+   `fork-<service>` credential the declaration does not list and every
+   listed one whose subject is not the one GitHub signs for its declared
+   repository.
+3. Create each declared credential that is now absent.
+4. Record each declared source tag.
+5. Rebuild the lock's `trusted-repos` and `canonical-sources` projections.
+
+Revocation precedes trust because Azure keeps a subject unique on an
+identity: a repository moved from one service to another, or two services
+swapping repositories, cannot gain a new credential while the old one
+stands. Credential writes are serial per identity with the same backoff as
+onboarding. A credential is written only for a repository whose `spi-stack`
+environment admits every branch, and a source tag moves to a fork only when
+that fork is trusted and its image resolves, under the same check as
+`--canonical-source fork`. Planning also refuses a credential whose subject
+another credential on the identity already holds, or that would be the
+identity's twenty-first. An entry that fails any of these gains nothing:
+its stale credential is still revoked, a tag naming a fork returns to
+`community`, the rest are reconciled, and the command exits nonzero naming
+each one. A replaced repository therefore never keeps its trust while its
+successor waits. When GitHub cannot report a repository's subject, a
+credential that already names the repository stands as `unverified`, and
+only an entry that needs a write is refused. The reads involved need no
+token on a public fork; a private fork needs `GH_TOKEN` able to read its
+Actions settings. The command
+does not create a fork's `spi-stack` environment or stamp its five values;
+`spi onboard <service> --write` remains the step that sets up the repository
+side. On an undeclared environment it changes nothing and exits 0.
 
 `spi onboard --list` reports trust, canonical-source policy, declaration
-ownership, and projection drift separately. `spi onboard --remove <service>`
-records community, deletes the credential, and updates the lock projections;
-it requires removal from the declaration first when one owns the environment.
-Interrupted removal reports the unfinished phases and can be re-run.
+ownership, and projection drift separately; the declaration rows mark a
+trusted repository the file does not list, a listed one that is not trusted,
+and a source tag or repository casing that differs from the file.
+`spi onboard --remove <service>` records community, deletes the credential,
+and updates the lock projections; it requires removal from the declaration
+first when one owns the environment. Interrupted removal reports the
+unfinished phases and can be re-run.
 
 The credentials persist trust; `spi-source-<service>` RG tags persist source
 policy, including community for a trusted repository. Both outlive
 `spi down` (ADR-034). Fork CI cannot read these ARM records, so the lock
 carries their separate projections. `spi up` loads authoritative intent
 before resolving images, reconciles its durable records, then rebuilds the
-projections during bootstrap. A standing environment changes its resolved
+projections during bootstrap. On a declared environment that intent is the
+`forks:` list: the run checks every entry before the resource group is
+touched, resolves images from the declared sources, and stops there when an
+entry cannot be trusted or resolved. A standing environment changes its resolved
 image only on refresh; policy changes and projection repairs preserve active
 pins and their captured restore targets.
 

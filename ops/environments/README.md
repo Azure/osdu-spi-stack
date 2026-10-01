@@ -19,6 +19,12 @@ location: westus3
 ingressMode: azure
 imageBranch: master
 nameSuffix: a43c7
+forks:
+  - service: partition
+    repo: Azure/osdu-spi-partition
+  - service: legal
+    repo: Azure/osdu-spi-legal
+    canonicalSource: fork
 ```
 
 | Key | Meaning |
@@ -31,10 +37,40 @@ nameSuffix: a43c7
 | `imageBranch` | OSDU community registry branch canonical images resolve from. |
 | `nameSuffix` | The five-character lowercase alphanumeric suffix that keeps Azure resource names, and the environment's hostname, stable across an upgrade or a future reset. |
 
-The file is flat and strict: no other keys are accepted, and every value is
+`forks` is optional. Each entry trusts one repository to deploy one service
+against the environment and says which image that service's canonical entry
+follows:
+
+| Entry field | Meaning |
+|---|---|
+| `service` | The service the repository builds; unique within the list. `forks` is valid only with `profile: core`. |
+| `repo` | The `<org>/<fork>` the service's `fork-<service>` credential trusts; unique within the list, compared without case, at most nineteen entries (ADR-032). |
+| `canonicalSource` | `community` or `fork`, default `community`; a fork is trusted first and promoted by a later reviewed change (ADR-033). |
+
+The file is strict: no other keys are accepted, and every value is
 validated before a lifecycle workflow acts on it (`scripts/export_environment.py`
-exports the parsed result to `$GITHUB_OUTPUT`; no workflow step
-shell-evaluates the YAML directly).
+exports the seven scalar keys and `declares_forks` to `$GITHUB_OUTPUT`; no
+workflow step shell-evaluates the YAML directly).
+
+## Fork ownership
+
+A stack becomes declared when `spi up --declaration <owner>/<repo>:<path>`
+runs against it, for example with the locator
+`Azure/osdu-spi-stack:ops/environments/shared.yaml`. The CLI reads the file
+on `main`, takes the seven keys as its provisioning options, refuses an
+explicit option that disagrees, and records the locator in the resource-group
+tag `spi-environment-declaration`. Later runs reuse the tag when the option is
+omitted and refuse a different locator or a file they cannot load.
+
+From then on the list owns the environment's trust and source policy. `spi up`
+and the `env-refresh` step `spi onboard --reconcile --write` restore a
+credential or `spi-source-<service>` tag the list names and revoke every
+`fork-*` credential it does not, and `spi onboard` refuses a request that
+disagrees with the file. A declaration with no `forks` therefore revokes all
+fork trust, so `env-upgrade` passes `--declaration` only when the file lists
+at least one fork; until then trust stays with `spi onboard`. Add every
+repository the environment already trusts in the change that adds the first
+entry. Mechanics are in `docs/design/fork-deployment.md`.
 
 ## Why the declaration is excluded from release parsing
 
@@ -67,42 +103,11 @@ already be applied; see `docs/CI_SETUP.md`.
 - `env-upgrade`: first provision and later `stackVersion` upgrades.
 - `env-refresh`: the weekday reconcile-and-probe schedule.
 
+- `forks:` and the declaration locator, reconciled by `spi up` and by
+  `env-refresh` (ADR-032, ADR-033).
+
 ## What is still future work
 
 - `env-reset` (cold rebuild) and `env-teardown` (protected manual deletion).
-- `forks:` in the declaration, `spi onboard`, and intent reconciliation
-  before image resolution (ADR-032, ADR-033).
-
-The planned `forks:` entry has three fields; this is not accepted by the
-implemented schema above yet:
-
-| Entry field | Meaning |
-|---|---|
-| `service` | The service being onboarded; unique within the declaration. `forks:` is valid only with `profile: core`. |
-| `repo` | The `<org>/<fork>` trusted by its `fork-<service>` credential; unique within the declaration, at most nineteen entries (ADR-032). |
-| `canonicalSource` | `community` or `fork`, default `community`; trust-only onboarding precedes an explicit promotion. |
-
-The declaration owns both trust and canonical-source policy. A reviewed PR
-adds or removes an entry, changes a repository, or promotes a source before
-`spi onboard` may apply that intent. Conflicting imperative requests are
-refused; they do not create temporary overrides for the next lifecycle run
-to undo.
-
-The planned first-provision input is
-`spi up --declaration <owner>/<repo>:<path>`, for example the locator
-`Azure/osdu-spi-stack:ops/environments/shared.yaml`. The CLI loads the
-reviewed file on `main`, not a copy bundled in the release wheel, and takes
-its provisioning fields and fork intent; conflicting explicit flags are
-refused. It records the locator in the retained RG tag
-`spi-environment-declaration`. Later runs reuse that tag when the option is
-omitted and reject a conflicting locator or an unreadable or invalid file.
-Without an input or retained locator, a stack is undeclared.
-
-The planned `env-upgrade` wiring exports `declaration_locator` from its
-`declare` job and passes it to `spi up --declaration` in `provision`, gated
-on a release that supports the option. This is part of onboarding, not an
-argument accepted by the implemented CLI. Source intent is loaded before
-image resolution. Credentials, `spi-source-<service>` RG tags, and lock
-projections are reconciled copies, not competing owners.
 
 See `docs/design/environment-lifecycle.md` for the complete roadmap.

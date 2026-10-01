@@ -359,6 +359,83 @@ class TestForkCanonicalRefresh:
         assert self._run_step(tmp_path, "v0.22.0", spi_exit=3).returncode == 3
 
 
+class TestDeclaredForks:
+    STEP = "Reconcile declared forks"
+
+    def _run(self, tmp_path, script: str, **env: str):
+        """Run a step's script against a stub `spi` that echoes its arguments."""
+        stub = tmp_path / "spi"
+        stub.write_text('#!/usr/bin/env bash\necho "spi $*"\n', encoding="utf-8")
+        stub.chmod(0o755)
+        env["PATH"] = f"{tmp_path}{os.pathsep}{os.environ['PATH']}"
+        return run_process(["bash", "-c", script], env=env, capture_output=True, text=True)
+
+    def test_env_refresh_reconciles_before_the_fork_refresh_reads_the_lock(self):
+        steps = _steps(_workflow(ENV_REFRESH)["jobs"]["refresh"])
+        names = list(steps)
+        step = steps[self.STEP]
+
+        assert (
+            names.index("Quiesce (set maintenance)")
+            < names.index(self.STEP)
+            < names.index("Refresh fork-sourced canonicals")
+        )
+        assert step["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+        # A fork left unreconciled fails the run, which leaves maintenance set.
+        assert "if" not in step and "continue-on-error" not in step
+
+    @pytest.mark.parametrize(
+        ("stack_version", "reconciled"), [("v0.23.1", False), ("v0.24.0", True)]
+    )
+    def test_env_refresh_reconciles_only_on_a_cli_that_has_the_option(
+        self, tmp_path, stack_version, reconciled
+    ):
+        job = _workflow(ENV_REFRESH)["jobs"]["refresh"]
+
+        result = self._run(
+            tmp_path,
+            _steps(job)[self.STEP]["run"],
+            STACK_VERSION=stack_version,
+            DECLARED_FORKS_CLI_MIN_VERSION=job["env"]["DECLARED_FORKS_CLI_MIN_VERSION"],
+        )
+
+        assert result.returncode == 0
+        assert ("spi onboard --reconcile --write" in result.stdout.splitlines()) is reconciled
+
+    @pytest.mark.parametrize(
+        ("declares_forks", "stack_version", "handed_over"),
+        [("true", "v0.24.0", True), ("true", "v0.23.1", False), ("false", "v0.24.0", False)],
+    )
+    def test_env_upgrade_hands_over_only_a_declaration_that_lists_forks(
+        self, tmp_path, declares_forks, stack_version, handed_over
+    ):
+        # Handing over a declaration with no forks would revoke every fork onboarded by hand.
+        workflow = _workflow(ENV_UPGRADE)
+        job = workflow["jobs"]["provision"]
+        assert job["env"]["DECLARES_FORKS"] == "${{ needs.declare.outputs.declares_forks }}"
+        assert "declares_forks" in workflow["jobs"]["declare"]["outputs"]
+
+        result = self._run(
+            tmp_path,
+            _steps(job)["spi up"]["run"],
+            ENV_NAME="shared",
+            PROFILE="core",
+            LOCATION="westus3",
+            INGRESS_MODE="azure",
+            IMAGE_BRANCH="master",
+            NAME_SUFFIX="a43c7",
+            STACK_VERSION=stack_version,
+            DECLARES_FORKS=declares_forks,
+            DECLARED_FORKS_CLI_MIN_VERSION=job["env"]["DECLARED_FORKS_CLI_MIN_VERSION"],
+            GITHUB_REPOSITORY="Azure/osdu-spi-stack",
+            DECLARATION_PATH=workflow["env"]["DECLARATION_PATH"],
+        )
+
+        assert result.returncode == 0, result.stderr
+        locator = "--declaration Azure/osdu-spi-stack:ops/environments/shared.yaml"
+        assert (locator in result.stdout) is handed_over
+
+
 class TestAssertionsAndDeployability:
     def test_env_upgrade_verify_asserts_ref_resolved_commit_and_suspended(self):
         verify_steps = _steps(_workflow(ENV_UPGRADE)["jobs"]["verify"])
