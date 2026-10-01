@@ -315,7 +315,13 @@ def task_document(image: str, jar: str) -> str:
 def stage_context(checkout: Path, jar: str, image: str, into: Path) -> Path:
     """Copy what the Dockerfile reads into ``into``: its own directory and the JAR."""
 
-    shutil.copytree(checkout / BUILD_DIRECTORY, into / BUILD_DIRECTORY)
+    source = checkout / BUILD_DIRECTORY
+    # copytree follows links, and the context is uploaded to the registry.
+    links = sorted(path for path in (source, *source.rglob("*")) if path.is_symlink())
+    if links:
+        found = ", ".join(str(path.relative_to(checkout)) for path in links)
+        raise BuildError(f"{BUILD_DIRECTORY}/ holds symbolic links ({found}); replace them.")
+    shutil.copytree(source, into / BUILD_DIRECTORY)
     target = into / jar
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(checkout / jar, target)

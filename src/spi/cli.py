@@ -18,6 +18,7 @@ import contextlib
 import json
 import os
 import re
+import shlex
 import sys
 from functools import partial
 from pathlib import Path
@@ -1462,7 +1463,6 @@ def _plan_suites(
 
 
 def _print_suite_plan(plan: Any, written: Optional[Path]) -> None:
-    import shlex
 
     from rich.console import Group
     from rich.text import Text
@@ -2068,8 +2068,11 @@ def _await_local_rollout(service: str, image: str, source: str) -> None:
         )
         raise typer.Exit(code=1)
     console.print(f"  [success]{service}[/success] runs the build in pod {result.pod}")
-    quoted = f'"{source}"' if " " in source else source
-    console.print(f"[dim]Test with: spi test {service} --source {quoted}[/dim]")
+    console.print(
+        f"Test with: spi test {service} --source {shlex.quote(source)}",
+        style="dim",
+        markup=False,
+    )
 
 
 @service_app.command("verify")

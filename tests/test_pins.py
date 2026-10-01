@@ -3658,6 +3658,18 @@ class TestServicePinSourceCli:
         assert "Release with: spi service reset storage" in output
         assert "spi test storage --source" in output
 
+    def test_the_test_hint_quotes_a_path_a_shell_or_markup_would_read(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch, tmp_path)
+        checkout = tmp_path / "fork;echo [red]x"
+        checkout.mkdir()
+
+        result = CliRunner().invoke(
+            cli.app, ["service", "pin", "storage", "--source", str(checkout), "--skip-maven"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "fork;echo [red]x'" in "".join(_plain(result.output).split("\n"))
+
     def test_a_refused_preflight_builds_nothing(self, monkeypatch, tmp_path):
         order = self._wire(monkeypatch, tmp_path)
 

@@ -211,6 +211,18 @@ class TestTask:
         )
         assert staged == ["acr-task.yaml", "build/Dockerfile", "build/docker-entrypoint.sh", jar]
 
+    def test_a_link_under_build_is_not_followed_into_the_context(self, tmp_path):
+        root = _checkout(tmp_path)
+        secret = tmp_path / "secret"
+        secret.write_text("token", encoding="utf-8")
+        (root / "build/leak").symlink_to(secret)
+        context = tmp_path / "context"
+        context.mkdir()
+
+        with pytest.raises(BuildError, match="symbolic links .*leak"):
+            stage_context(root, resolve_jar(root, "partition"), "local/partition:x", context)
+        assert not (context / "build").exists()
+
     def test_maven_uses_the_checkouts_settings_and_the_template_profiles(self, tmp_path):
         root = _checkout(tmp_path)
         assert maven_command(root)[3:] == ["clean", "install", "-P", "core,azure", "-DskipTests"]
