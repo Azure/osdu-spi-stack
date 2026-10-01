@@ -667,12 +667,20 @@ def _findings(facts: Mapping) -> str:
     review = facts.get("review")
     if not review:
         return ""
+    # A test's name can hold a dot, and so can a class named in full.
+    cited = {
+        name: (name[: -len(test["name"]) - 1], test["name"])
+        for suite in facts["suites"]
+        for name, test in named_tests(suite)
+    }
     cards = "".join(
         f'<article class="card finding {_e(finding["severity"])}"><h3>{_e(finding["title"])} '
         f'<span class="chip {_e(finding["severity"])}">{_e(finding["severity"])}</span></h3>'
         + (f'<p class="in">{_e(finding["suite"])}</p>' if finding.get("suite") else "")
         + f'<p class="message">{_e(finding["detail"])}</p>'
-        + _grouped((test.partition(".")[::2] for test in finding["tests"]), "low")
+        + _grouped(
+            (cited.get(test) or test.rpartition(".")[::2] for test in finding["tests"]), "low"
+        )
         + "</article>"
         for finding in review["findings"]
     )
@@ -758,7 +766,7 @@ def latest(pages: Iterable[tuple[str, Mapping]]) -> list[tuple[str, Mapping]]:
     for link, facts in pages:
         service = str(facts["run"].get("service"))
         held = chosen.get(service)
-        if held is None or score(facts) is not None or score(held[1]) is None:
+        if held is None or facts.get("review") or not held[1].get("review"):
             chosen[service] = (link, facts)
     return [chosen[service] for service in sorted(chosen)]
 
@@ -802,10 +810,14 @@ def render_scoreboard(pages: Iterable[tuple[str, Mapping]], run: Mapping) -> str
             f"{_e(facts['run'].get('generated'))}</td></tr>"
         )
         if not scored:
+            unscored = (
+                '<span class="chip none">not scored</span> its review placed no test on a row'
+                if facts.get("review")
+                else '<span class="chip none">not reviewed</span> run it with --review to score it'
+            )
             scores += (
                 f'<tr><td><a href="{_e(link)}">{service}</a></td>'
-                f'<td colspan="{5 + len(names)}"><span class="chip none">not reviewed</span> '
-                "run it with --review to score it</td></tr>"
+                f'<td colspan="{5 + len(names)}">{unscored}</td></tr>'
             )
             continue
         split = scored["split"]

@@ -624,6 +624,16 @@ class TestReport:
         assert result.report == {"totals": {"tests": 11}}
         assert testing.run_suite("partition").report is None
 
+    def test_a_discarded_run_is_not_inspected(self, cluster):
+        cluster["revisions"] = ["7", "9"]
+        seen = []
+
+        with pytest.raises(SuiteNotRun) as exc:
+            testing.run_suite("partition", inspect=lambda *run: seen.append(run))
+
+        assert exc.value.code == "target_changed"
+        assert seen == []
+
     def test_an_env_file_that_cannot_be_read_costs_the_report_and_not_the_run(
         self, cluster, monkeypatch
     ):
