@@ -270,6 +270,18 @@ class TestPage:
             assert color != "none", name
             assert f".bar .{kind}{{background:var(--{color})}}" in page, name
 
+    def test_a_finding_names_a_test_whose_class_is_cited_in_full(self):
+        facts = _facts()
+        twin = copy.deepcopy(facts["suites"][1]["classes"][0])
+        twin["name"] = "org.other.TestList"
+        facts["suites"][1]["classes"].append(twin)
+        facts["review"]["findings"][0]["tests"] = ["org.other.TestList.should_401"]
+
+        page = render(facts)
+
+        assert '<td class="test">should_401</td>' in page
+        assert '<span class="chip low">org.other.TestList</span>' in page
+
     def test_a_page_without_a_review_shows_the_runs_and_judges_nothing(self):
         page = render(_facts(review=False))
 
@@ -382,6 +394,16 @@ class TestScoreboard:
         ):
             assert shown in page, shown
         assert embedded(page) is None
+
+    def test_a_review_that_placed_no_test_is_not_called_unreviewed(self):
+        unplaced = _facts()
+        for row in unplaced["review"]["rows"]:
+            row["suites"] = {}
+
+        page = render_scoreboard([("p.html", unplaced)], RUN)
+
+        assert "not scored" in page
+        assert "not reviewed" not in page and "--review" not in page
 
     def test_a_row_from_another_environment_is_named_as_such(self):
         legal = _facts(review=False, service="legal")

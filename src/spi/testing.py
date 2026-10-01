@@ -740,9 +740,10 @@ def run_suite(
             env_file.unlink(missing_ok=True)
         passed, verdict = judge(root, code, reports)
         tests = count_tests(reports)
+        # A discarded run leaves nothing with the inspector.
+        check_target(service, expected, after=verdict, revision=revision)
         report = inspect(reports, secrets) if inspect else None
 
-    check_target(service, expected, after=verdict, revision=revision)
     declared = tuple(contract.get("suites") or ())
     return SuiteResult(
         service, suite, mode, label, image, commit, passed, verdict, tests, report, declared
