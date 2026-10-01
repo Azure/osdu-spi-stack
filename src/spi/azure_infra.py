@@ -118,10 +118,8 @@ def create_resource_group(config: Config):
     if exists:
         if read_rg_suffix_tag(config.resource_group) is None:
             write_rg_suffix_tag(config.resource_group, config.name_suffix)
-        if config.declaration_locator and (
-            read_rg_tag(config.resource_group, RG_DECLARATION_TAG) != config.declaration_locator
-        ):
-            write_rg_tag(config.resource_group, RG_DECLARATION_TAG, config.declaration_locator)
+        if config.declaration_locator:
+            _retain_declaration_locator(config.resource_group, config.declaration_locator)
         display_result(f"Resource group {config.resource_group} ready")
         return
     tags = [f"{RG_SUFFIX_TAG}={config.name_suffix}"]
@@ -144,6 +142,20 @@ def create_resource_group(config: Config):
         description=f"Create resource group: {config.resource_group}",
     )
     display_result(f"Resource group {config.resource_group} ready")
+
+
+def _retain_declaration_locator(resource_group: str, locator: str) -> None:
+    """Record the locator on a group that has none; a group another file owns is refused."""
+    from .environment import parse_locator
+
+    retained = read_rg_tag(resource_group, RG_DECLARATION_TAG)
+    if retained is None:
+        write_rg_tag(resource_group, RG_DECLARATION_TAG, locator)
+    elif not parse_locator(retained).same_file(parse_locator(locator)):
+        raise RuntimeError(
+            f"{resource_group} is already declared by {retained}, not {locator}; "
+            "a declared environment keeps one declaration."
+        )
 
 
 def read_rg_suffix_tag(resource_group: str) -> "str | None":

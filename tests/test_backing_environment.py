@@ -791,3 +791,12 @@ class TestDeclarationTag:
             argv[argv.index("--set") + 1] for argv in calls if argv[:3] == ["az", "group", "update"]
         ]
         assert updates == ([f"tags.spi-environment-declaration={LOCATOR}"] if written else [])
+
+    def test_a_group_another_declaration_owns_is_refused_not_overwritten(self, az):
+        calls, state = az
+        state.update(exists="true", tag="Acme/ops:environments/other/shared.yaml")
+
+        with pytest.raises(RuntimeError, match="already declared by Acme/ops:environments/other"):
+            azure_infra.create_resource_group(self._config())
+
+        assert not [argv for argv in calls if argv[:3] == ["az", "group", "update"]]
