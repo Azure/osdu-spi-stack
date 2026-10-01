@@ -172,6 +172,7 @@ class SuitePlan:
     commit: str
     # Where the command runs: on the host from a checkout, inside the image when paired.
     directory: str
+    # As it may be displayed, like ``shown``: an argument's credential is left out.
     command: tuple[str, ...]
     timeout_minutes: int
     variables: dict[str, str]
@@ -488,7 +489,8 @@ def resolve_suite(
     if result.returncode != 0:
         error = report.get("error") or {}
         stderr = (result.stderr or "").strip().splitlines()
-        detail = error.get("detail") or (stderr[-1] if stderr else "")
+        # The resolver held the bearers, so what it says of a failure may quote one.
+        detail = redactor(bearers.values())(error.get("detail") or (stderr[-1] if stderr else ""))
         code, exit_code = _RESOLVER_EXITS.get(result.returncode, ("resolver_failed", EXIT_NOT_RUN))
         raise SuiteNotRun(
             code,
@@ -527,7 +529,10 @@ def write_env_file(path: Path, variables: Mapping[str, str]) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         # An existing file keeps its mode through the open.
-        os.chmod(path, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        else:
+            os.chmod(path, 0o600)
         handle.writelines(f"{name}={value}\n" for name, value in variables.items())
 
 
@@ -830,7 +835,8 @@ def plan_suite(
             directory = str(_suite_dir(bound.root, bound.test_dir))
             command = _maven(bound.root, args)
 
-    redact = redactor(secret_values(bound.bearers, variables), named=False)
+    secrets = secret_values(bound.bearers, variables)
+    redact = redactor(secrets, named=False)
     return SuitePlan(
         service,
         suite,
@@ -839,7 +845,7 @@ def plan_suite(
         bound.image,
         bound.commit,
         directory,
-        tuple(command),
+        tuple(map(redactor(secrets), command)),
         bound.timeout_minutes,
         variables,
         {

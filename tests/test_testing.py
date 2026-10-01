@@ -40,7 +40,8 @@ report = {
     "error": None,
 }
 if behavior.get("exit"):
-    report["error"] = {"code": "WHY", "detail": "because"}
+    said = os.environ.get(behavior.get("quote", ""), "")
+    report["error"] = {"code": "WHY", "detail": f"because {said}".strip()}
     pathlib.Path(args.report).write_text(json.dumps(report))
     sys.exit(behavior["exit"])
 pathlib.Path(args.env_file).write_text("HOST=https://gw\\nTOKEN=a=b\\n")
@@ -676,6 +677,26 @@ class TestDryRun:
         }
         assert plan.variables == resolved
         assert plan.expires == "2026-09-21 14:13 UTC"
+
+    def test_a_credential_in_an_argument_is_left_out_of_the_command(self, cluster, tmp_path):
+        plan = testing.plan_suite(
+            "partition",
+            checkout=_checkout(tmp_path),
+            maven_arguments=["-Dclient_secret=hunter2hunter2", "-Dtest=One", "test"],
+        )
+
+        assert plan.command[-3:] == ("-Dclient_secret=[redacted]", "-Dtest=One", "test")
+
+    def test_a_resolver_that_quotes_a_bearer_in_its_refusal_is_not_repeated(
+        self, cluster, monkeypatch
+    ):
+        _machinery(cluster["commit_tree"], exit=3, quote="RESOLVER_TOKEN")
+        monkeypatch.setattr(testing, "mint_bearers", lambda: {"RESOLVER_TOKEN": "opaque-bearer-1"})
+
+        with pytest.raises(SuiteNotRun, match=r"WHY: because \[redacted\]$") as exc:
+            testing.plan_suite("partition")
+
+        assert exc.value.code == "env_not_ready"
 
     def test_a_bearer_with_no_readable_expiry_leaves_the_plan_undated(self, cluster, monkeypatch):
         monkeypatch.setattr(
