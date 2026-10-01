@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import shutil
 import tempfile
 from dataclasses import dataclass, replace
@@ -291,28 +292,29 @@ def maven_command(checkout: Path, arguments: Sequence[str] = ()) -> list[str]:
     return [*command, *(arguments or MAVEN_ARGUMENTS)]
 
 
-def task_document(image: str, jar: str) -> str:
+def task_document(image: str, jar: str, staging: str = "") -> str:
     """The ACR task: a BuildKit build of the checkout's Dockerfile, then the push.
 
     ``az acr build`` runs the classic builder, which rejects the Dockerfile's
     ``ADD --checksum`` and ``COPY --chmod``.
     """
 
+    images = [f"$Registry/{name}" for name in (image, staging) if name]
     build = (
-        f"-t $Registry/{image} -f {DOCKERFILE_PATH} --platform {BUILD_PLATFORM} "
-        f"--build-arg JAR_FILE={jar} ."
+        f"{' '.join(f'-t {name}' for name in images)} -f {DOCKERFILE_PATH} "
+        f"--platform {BUILD_PLATFORM} --build-arg JAR_FILE={jar} ."
     )
     document = {
         "version": "v1.1.0",
         "steps": [
             {"build": build, "env": ["DOCKER_BUILDKIT=1"]},
-            {"push": [f"$Registry/{image}"]},
+            {"push": images},
         ],
     }
     return yaml.safe_dump(document, sort_keys=False)
 
 
-def stage_context(checkout: Path, jar: str, image: str, into: Path) -> Path:
+def stage_context(checkout: Path, jar: str, image: str, into: Path, staging: str = "") -> Path:
     """Copy what the Dockerfile reads into ``into``: its own directory and the JAR."""
 
     source = checkout / BUILD_DIRECTORY
@@ -325,7 +327,7 @@ def stage_context(checkout: Path, jar: str, image: str, into: Path) -> Path:
     target = into / jar
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(checkout / jar, target)
-    (into / TASK_FILE).write_text(task_document(image, jar), encoding="utf-8")
+    (into / TASK_FILE).write_text(task_document(image, jar, staging), encoding="utf-8")
     return into
 
 
@@ -391,9 +393,11 @@ def build_image(
     built = replace(built, prebuilt=prebuilt)
     tag = f"sha-{commit[:12]}{built.suffix}"
     image = f"{LOCAL_NAMESPACE}/{service}:{tag}"
+    # A tag of this run alone: a concurrent build of the same commit moves the shared one.
+    staging = f"{image}-{secrets.token_hex(4)}"
     scope = ["--subscription", registry.subscription] if registry.subscription else []
     with tempfile.TemporaryDirectory(prefix="spi-build-") as scratch:
-        context = stage_context(checkout, jar_path, image, Path(scratch))
+        context = stage_context(checkout, jar_path, image, Path(scratch), staging)
         ran = run_command(
             ["az", "acr", "run", "--registry", registry.name, "--platform", BUILD_PLATFORM]
             + ["--file", TASK_FILE, *scope, "."],
@@ -406,8 +410,13 @@ def build_image(
         raise BuildError(f"The ACR task exited {ran.returncode}; {image} was not pushed.")
 
     shown = run_process(
-        ["az", "acr", "repository", "show", "--name", registry.name, "--image", image, *scope]
+        ["az", "acr", "repository", "show", "--name", registry.name, "--image", staging, *scope]
         + ["--query", "digest", "-o", "tsv"],
+        capture_output=True,
+        text=True,
+    )
+    run_process(
+        ["az", "acr", "repository", "untag", "--name", registry.name, "--image", staging, *scope],
         capture_output=True,
         text=True,
     )

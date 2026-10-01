@@ -975,9 +975,11 @@ def token(
         typer.echo(minted.access_token)
 
 
-def _source_checkout(source: str) -> Path:
+def _source_checkout(source: str, output_json: bool = False) -> Path:
     checkout = Path(source).expanduser()
     if not checkout.is_dir():
+        if output_json:
+            raise _usage_error(f"--source {source} is not a directory.", output_json)
         raise typer.BadParameter(f"{source} is not a directory", param_hint="--source")
     return checkout
 
@@ -1015,7 +1017,7 @@ def spi_build(
     """
     if skip_maven and ctx.args:
         raise _usage_error("--skip-maven runs no Maven to take arguments.", output_json)
-    checkout = _source_checkout(source)
+    checkout = _source_checkout(source, output_json)
     ctx_name = _guarded_context(output_json)
     if not output_json:
         console.print(f"  [dim]Cluster context: {ctx_name}[/dim]")
@@ -1281,7 +1283,7 @@ def spi_test(
     if not output_json:
         console.print(f"  [dim]Cluster context: {ctx_name}[/dim]")
     settings = _parse_overrides(overrides)
-    checkout = _source_checkout(source) if source is not None else None
+    checkout = _source_checkout(source, output_json) if source is not None else None
 
     if dry_run:
         _plan_suites(

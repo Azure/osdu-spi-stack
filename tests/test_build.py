@@ -196,6 +196,16 @@ class TestTask:
         assert "--platform linux/amd64" in build_step["build"]
         assert push_step == {"push": ["$Registry/local/partition:sha-abc"]}
 
+    def test_a_staging_tag_is_built_and_pushed_beside_the_image(self):
+        document = yaml.safe_load(
+            task_document("local/partition:sha-abc", "app.jar", "local/partition:sha-abc-1f")
+        )
+        build_step, push_step = document["steps"]
+        assert build_step["build"].startswith(
+            "-t $Registry/local/partition:sha-abc -t $Registry/local/partition:sha-abc-1f "
+        )
+        assert push_step["push"][1] == "$Registry/local/partition:sha-abc-1f"
+
     def test_the_context_holds_only_what_the_dockerfile_reads(self, tmp_path):
         root = _checkout(tmp_path)
         (root / "src").mkdir()
@@ -374,6 +384,24 @@ class TestBuildImage:
         assert commands[1][:5] == ["az", "acr", "run", "--registry", "osdutest12345"]
         assert "acr-task.yaml" in staged["files"]
 
+    def test_the_digest_is_read_through_a_tag_of_this_run_alone(self, monkeypatch, tmp_path):
+        self._wire(monkeypatch)
+        queried: list[list[str]] = []
+
+        def fake_run_process(cmd, **kwargs):
+            queried.append(cmd)
+            return _completed(_DIGEST + "\n")
+
+        monkeypatch.setattr(build, "run_process", fake_run_process)
+
+        built = build_image("partition", _checkout(tmp_path))
+
+        shown, untagged = queried
+        staging = shown[shown.index("--image") + 1]
+        assert staging.startswith(f"local/partition:{built.tag}-") and staging != built.tag
+        assert untagged[:4] == ["az", "acr", "repository", "untag"]
+        assert untagged[untagged.index("--image") + 1] == staging
+
     def test_a_dirty_checkout_never_reads_as_its_commit(self, monkeypatch, tmp_path):
         self._wire(monkeypatch, dirty=True)
         built = build_image("partition", _checkout(tmp_path))
@@ -473,3 +501,12 @@ class TestBuildCli:
             cli.app, ["build", "partition", "--source", str(tmp_path / "missing")]
         )
         assert result.exit_code == 2
+
+    def test_json_keeps_its_envelope_for_a_source_that_is_not_a_directory(self, tmp_path):
+        result = CliRunner().invoke(
+            cli.app, ["build", "partition", "--source", str(tmp_path / "missing"), "--json"]
+        )
+        assert result.exit_code == 1
+        outcome = json.loads(result.output.strip().splitlines()[-1])
+        assert outcome["outcome"] == "error"
+        assert "is not a directory" in outcome["detail"]
