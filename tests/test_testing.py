@@ -4,7 +4,10 @@
 
 """spi test: pairing, the commit's own machinery, guards, and verdicts."""
 
+import base64
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -603,6 +606,175 @@ class TestCommand:
         assert envelope["outcome"] == "failed"
         assert seen["maven_arguments"] == ["-Dtest=X", "test"]
         assert seen["overrides"] == {"A": "b=c"}
+
+
+def _jwt(exp) -> str:
+    claims = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+    return f"eyJhbGciOiJub25lIn0.{claims}.signature"
+
+
+class TestDryRun:
+    def test_a_paired_plan_binds_the_suite_and_starts_nothing(self, cluster):
+        plan = testing.plan_suite("partition", env_file="ide.env")
+
+        image = f"ghcr.io/acme/partition-acceptance@{PAIR}"
+        assert [cmd for cmd, _ in cluster["commands"] if cmd[0] == "docker"] == []
+        assert plan.variables == {"HOST": "https://gw", "TOKEN": "a=b"}
+        assert plan.shown == {"HOST": "https://gw", "TOKEN": "[redacted]"}
+        assert plan.command[plan.command.index("--env-file") + 1] == "ide.env"
+        assert plan.command[plan.command.index(image) + 1 :] == ("verify",)
+        assert (plan.mode, plan.commit, plan.image) == ("paired", SHA, image)
+        assert (plan.directory, plan.timeout_minutes) == ("/suite/suite", 5)
+
+    def test_a_checkout_plan_names_the_native_command_and_where_it_runs(self, cluster, tmp_path):
+        checkout = _checkout(tmp_path)
+
+        plan = testing.plan_suite("partition", checkout=checkout, maven_arguments=["-Dtest=One"])
+
+        assert _commands(cluster, ["mvn", "-B"]) == []
+        assert plan.command[:3] == ("mvn", "-B", "--no-transfer-progress")
+        assert plan.command[-3:] == (
+            "--settings",
+            str(checkout / testing.SETTINGS_PATH),
+            "-Dtest=One",
+        )
+        assert plan.directory == str(checkout.resolve() / "suite")
+
+    def test_a_plan_refuses_where_the_run_would(self, cluster, monkeypatch):
+        def verify(service, ref):
+            raise VerifyError("pod_mismatch", "no running pod carries it")
+
+        monkeypatch.setattr(testing, "verify_service_image", verify)
+
+        with pytest.raises(SuiteNotRun) as exc:
+            testing.plan_suite("partition")
+
+        assert (exc.value.code, exc.value.exit_code) == ("not_deployable", 2)
+
+    def test_a_bearer_is_left_out_wherever_it_sits_and_dates_the_plan(self, cluster, monkeypatch):
+        soon, later = _jwt(1790000000), _jwt(1790003600)
+        monkeypatch.setattr(
+            testing,
+            "mint_bearers",
+            lambda: {"RESOLVER_TOKEN": later, "RESOLVER_MEMBER_TOKEN": soon},
+        )
+        resolved = {
+            "CALLER": soon,
+            "AUTH": f"Bearer {later}",
+            "FLAG": "true",
+            "TOKEN_CHECK": "true",
+        }
+        monkeypatch.setattr(testing, "read_env_file", lambda path: resolved)
+
+        plan = testing.plan_suite("partition")
+
+        assert plan.shown == {
+            "CALLER": "[redacted]",
+            "AUTH": "Bearer [redacted]",
+            "FLAG": "true",
+            "TOKEN_CHECK": "[redacted]",
+        }
+        assert plan.variables == resolved
+        assert plan.expires == "2026-09-21 14:13 UTC"
+
+    def test_a_bearer_with_no_readable_expiry_leaves_the_plan_undated(self, cluster, monkeypatch):
+        monkeypatch.setattr(
+            testing, "mint_bearers", lambda: {"RESOLVER_TOKEN": _jwt(1e30), "OTHER": "opaque"}
+        )
+
+        assert testing.plan_suite("partition").expires == ""
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+    def test_the_env_file_is_the_owners_alone_even_over_an_open_one(self, tmp_path):
+        path = tmp_path / "ide.env"
+        path.write_text("STALE=1\n")
+        path.chmod(0o644)
+
+        testing.write_env_file(path, {"HOST": "https://gw", "TOKEN": "a=b"})
+
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert testing.read_env_file(path) == {"HOST": "https://gw", "TOKEN": "a=b"}
+
+
+class TestDryRunCommand:
+    @pytest.fixture
+    def guarded(self, cluster, monkeypatch):
+        monkeypatch.setattr(cli, "_guarded_context", lambda output_json: "ctx")
+        monkeypatch.setattr(
+            testing, "run_suite", lambda *args, **kwargs: pytest.fail("a suite was started")
+        )
+        return cluster
+
+    def test_the_panel_leaves_credentials_out_and_the_file_holds_them(self, guarded, tmp_path):
+        path = tmp_path / "ide.env"
+
+        result = CliRunner().invoke(
+            cli.app, ["test", "partition", "--dry-run", "--env-file", str(path)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "https://gw" in result.output and "[redacted]" in result.output
+        assert "a=b" not in result.output
+        assert testing.read_env_file(path) == {"HOST": "https://gw", "TOKEN": "a=b"}
+
+    def test_json_names_the_plan_without_its_credentials(self, guarded):
+        result = CliRunner().invoke(cli.app, ["test", "partition", "--dry-run", "--json"])
+
+        envelope = json.loads(result.output.strip().splitlines()[-1])
+        [suite] = envelope["suites"]
+        assert (result.exit_code, envelope["outcome"]) == (0, "planned")
+        assert suite["variables"] == {"HOST": "https://gw", "TOKEN": "[redacted]"}
+        assert suite["command"][:2] == ["docker", "run"]
+        assert "a=b" not in result.output
+
+    def test_a_plan_refused_keeps_the_runs_exit_code_and_writes_no_file(self, guarded, tmp_path):
+        guarded["locks"] = [_lock(pin=_pin())]
+        path = tmp_path / "ide.env"
+
+        result = CliRunner().invoke(
+            cli.app, ["test", "partition", "--dry-run", "--env-file", str(path), "--json"]
+        )
+
+        envelope = json.loads(result.output.strip().splitlines()[-1])
+        assert (result.exit_code, envelope["code"]) == (2, "service_borrowed")
+        assert envelope["suite"] == "acceptance"
+        assert not path.exists()
+
+    def test_the_command_names_the_file_where_it_was_written(self, guarded, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        result = CliRunner().invoke(
+            cli.app, ["test", "partition", "--dry-run", "--env-file", "~/ide.env", "--json"]
+        )
+
+        envelope = json.loads(result.output.strip().splitlines()[-1])
+        command = envelope["suites"][0]["command"]
+        assert command[command.index("--env-file") + 1] == envelope["env_file"]
+        assert (
+            Path(envelope["env_file"]) == tmp_path / "ide.env" and (tmp_path / "ide.env").exists()
+        )
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            ["--env-file", "ide.env"],
+            ["--dry-run", "--report"],
+            ["--dry-run", "--env-file", "ide.env", "--suite", "all"],
+        ],
+    )
+    def test_flags_that_do_not_combine_are_refused_before_anything_binds(
+        self, guarded, monkeypatch, tmp_path, arguments
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            testing, "plan_suite", lambda *args, **kwargs: pytest.fail("a suite was bound")
+        )
+
+        result = CliRunner().invoke(cli.app, ["test", "partition", *arguments])
+
+        assert result.exit_code == 1
+        assert not (tmp_path / "ide.env").exists()
 
 
 class TestReport:

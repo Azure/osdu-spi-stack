@@ -352,9 +352,11 @@ class Sources:
 def secret_values(*sources: Mapping[str, str]) -> tuple[str, ...]:
     """Values a run carried under a name that reads as a credential."""
 
-    return tuple(
-        value for source in sources for name, value in source.items() if _SECRET_NAME.search(name)
-    )
+    return tuple(value for source in sources for name, value in source.items() if secret_name(name))
+
+
+def secret_name(name: str) -> bool:
+    return bool(_SECRET_NAME.search(name))
 
 
 def redactor(secrets: Iterable[str] = (), *, named: bool = True) -> Callable[[str], str]:
