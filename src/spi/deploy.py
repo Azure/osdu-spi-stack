@@ -42,6 +42,7 @@ from .bootstrap import (
 from .config import Config, IngressMode, Profile
 from .console import console, display_result, display_yaml
 from .deploy_record import upsert_deploy_record
+from .environment import Declared
 from .images import (
     DEFAULT_IMAGE_BRANCH,
     ImageResolutionError,
@@ -194,12 +195,19 @@ def _resolve_image_lock(
     return resolved
 
 
-def _project_trusted_repos(config: Config) -> None:
-    """Carry the roster and source policy into the lock a rebuilt cluster lacks."""
+def _project_trusted_repos(config: Config, declared: Optional[Declared] = None) -> None:
+    """Carry the roster and source policy into the lock a rebuilt cluster lacks.
+
+    A declared environment's durable records are brought to the declaration
+    first, so the lock never projects trust the declaration dropped.
+    """
 
     if config.profile is not Profile.CORE:
         return
     from .onboard import sync_projection_from_identity, sync_sources_from_tags
+
+    if declared is not None:
+        _reconcile_declared(config, declared, write=True)
 
     trusted = sync_projection_from_identity(config.deploy_identity_name, config.resource_group)
     if trusted:
@@ -223,6 +231,36 @@ def _source_policy(config: Config) -> dict[str, str]:
     from .onboard import read_source_policy
 
     return read_source_policy(config.resource_group, config.deploy_identity_name)
+
+
+def _reconcile_declared(config: Config, declared: Declared, *, write: bool) -> dict[str, str]:
+    """Bring trust and source policy to the declaration; return the fork each service follows.
+
+    Without ``write`` it is the check before anything is provisioned: the
+    identities may not exist yet, and a declared fork that cannot be trusted
+    or resolved stops the run there. The lock projections follow separately.
+    """
+
+    from . import declared as _declared
+
+    target = _declared.bootstrap_target(
+        config.env,
+        config.resource_group,
+        config.deploy_identity_name,
+        config.member_identity_name,
+        config.no_access_identity_name,
+    )
+    result = _declared.build(target, declared, lock=False, missing_ok=not write)
+    if not write:
+        if result.blocked:
+            raise RuntimeError(
+                f"{declared.locator} cannot be reconciled: " + "; ".join(result.blocked)
+            )
+        return dict(result.sources)
+    if result.actions:
+        console.print(f"\n[bold]Reconciling trust to {declared.locator}...[/bold]")
+    _declared.apply(result)
+    return dict(result.sources)
 
 
 def _ensure_image_lock(
@@ -545,18 +583,24 @@ def deploy_azure(
     image_branch: str = DEFAULT_IMAGE_BRANCH,
     azure_account: Optional[Dict[str, Any]] = None,
     deployer_principal: Optional[Tuple[str, str]] = None,
+    declared: Optional[Declared] = None,
 ) -> None:
     """Provision Azure infra, bootstrap Kubernetes, deploy via GitOps.
 
     Under ``dry_run`` only the Bicep what-if previews run; the Kubernetes
-    bootstrap and GitOps activation are skipped.
+    bootstrap and GitOps activation are skipped. A ``declared`` environment
+    takes its fork trust and source policy from the declaration, not from the
+    records the resource group retained.
     """
     resolved_images: dict[str, ResolvedImage] = {}
     sources: dict[str, str] = {}
     # Only core consumes the image lock. Resolving before provisioning means a
     # registry failure stops the run before anything is half-configured.
     if not dry_run and config.profile is Profile.CORE:
-        sources = _source_policy(config)
+        if declared is not None:
+            sources = _reconcile_declared(config, declared, write=False)
+        else:
+            sources = _source_policy(config)
         if refresh_images:
             resolved_images = _resolve_image_lock(image_branch, sources=sources)
 
@@ -586,7 +630,7 @@ def deploy_azure(
     create_storage_classes()
     install_gateway_api_crds()
     _ensure_image_lock(config, refresh_images, image_branch, resolved_images, sources)
-    _project_trusted_repos(config)
+    _project_trusted_repos(config, declared)
     _create_osdu_config(config, infra_outputs)
     _create_istio_auth(config, infra_outputs)
     _create_spi_init_values(config, infra_outputs)

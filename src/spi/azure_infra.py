@@ -40,7 +40,7 @@ from typing import Any, Dict, Optional, Tuple
 import typer
 
 from .bicep import run_bicep_deployment
-from .config import RG_SUFFIX_TAG, Config
+from .config import RG_DECLARATION_TAG, RG_SUFFIX_TAG, Config
 from .console import console, display_result
 from .paths import INFRA_ROOT
 from .permissions import AKS_RBAC_CLUSTER_ADMIN_ROLE_ID
@@ -118,8 +118,15 @@ def create_resource_group(config: Config):
     if exists:
         if read_rg_suffix_tag(config.resource_group) is None:
             write_rg_suffix_tag(config.resource_group, config.name_suffix)
+        if config.declaration_locator and (
+            read_rg_tag(config.resource_group, RG_DECLARATION_TAG) != config.declaration_locator
+        ):
+            write_rg_tag(config.resource_group, RG_DECLARATION_TAG, config.declaration_locator)
         display_result(f"Resource group {config.resource_group} ready")
         return
+    tags = [f"{RG_SUFFIX_TAG}={config.name_suffix}"]
+    if config.declaration_locator:
+        tags.append(f"{RG_DECLARATION_TAG}={config.declaration_locator}")
     run_command(
         [
             "az",
@@ -130,7 +137,7 @@ def create_resource_group(config: Config):
             "--location",
             config.location,
             "--tags",
-            f"{RG_SUFFIX_TAG}={config.name_suffix}",
+            *tags,
             "--output",
             "json",
         ],
@@ -147,6 +154,11 @@ def read_rg_suffix_tag(resource_group: str) -> "str | None":
         tag exists,
       - None when the resource group doesn't exist or doesn't carry the tag.
     """
+    return read_rg_tag(resource_group, RG_SUFFIX_TAG)
+
+
+def read_rg_tag(resource_group: str, name: str) -> "str | None":
+    """One tag's value, or None when the group or the tag is absent."""
     result = run_command(
         [
             "az",
@@ -155,11 +167,11 @@ def read_rg_suffix_tag(resource_group: str) -> "str | None":
             "--name",
             resource_group,
             "--query",
-            f'tags."{RG_SUFFIX_TAG}"',
+            f'tags."{name}"',
             "--output",
             "tsv",
         ],
-        description=f"Read suffix tag from resource group: {resource_group}",
+        description=f"Read {name} tag from resource group: {resource_group}",
         display=False,
         check=False,
     )
@@ -174,6 +186,11 @@ def read_rg_suffix_tag(resource_group: str) -> "str | None":
 
 def write_rg_suffix_tag(resource_group: str, suffix: str) -> None:
     """Persist the suffix on the resource group without disturbing other tags."""
+    write_rg_tag(resource_group, RG_SUFFIX_TAG, suffix)
+
+
+def write_rg_tag(resource_group: str, name: str, value: str) -> None:
+    """Persist one tag on the resource group without disturbing the others."""
     run_command(
         [
             "az",
@@ -182,11 +199,11 @@ def write_rg_suffix_tag(resource_group: str, suffix: str) -> None:
             "--name",
             resource_group,
             "--set",
-            f"tags.{RG_SUFFIX_TAG}={suffix}",
+            f"tags.{name}={value}",
             "--output",
             "none",
         ],
-        description=f"Persist {RG_SUFFIX_TAG} tag on resource group: {resource_group}",
+        description=f"Persist {name} tag on resource group: {resource_group}",
     )
 
 

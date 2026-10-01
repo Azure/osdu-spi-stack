@@ -1,8 +1,9 @@
 name: Environment Refresh
 
 # Proves the standing environment in ops/environments/shared.yaml still
-# serves: quiesce, reconcile the pinned source, refresh fork-sourced
-# canonicals, wait for Flux, probe the gateway, reopen for deploys. Every
+# serves: quiesce, reconcile the pinned source, restore declared fork trust,
+# refresh fork-sourced canonicals, wait for Flux, probe the gateway, reopen
+# for deploys. Every
 # operational call uses the `spi` wheel of the declared stackVersion, never
 # `uv run spi`; the lifecycle contract is
 # docs/design/environment-lifecycle.md.
@@ -122,6 +123,8 @@ jobs:
       LIFECYCLE_CLI_MIN_VERSION: v0.10.0
       # First release whose CLI has `spi service refresh --forks`.
       FORK_REFRESH_CLI_MIN_VERSION: v0.22.0
+      # First release whose CLI has `spi onboard --reconcile`.
+      DECLARED_FORKS_CLI_MIN_VERSION: v0.24.0
     steps:
       - name: Refuse a declaration older than the lifecycle CLI
         run: |
@@ -203,6 +206,20 @@ jobs:
       - name: spi reconcile
         # No --refresh-images: the pinned source and current image lock stand.
         run: spi reconcile --image-branch "$IMAGE_BRANCH"
+
+      - name: Reconcile declared forks
+        # Before the refresh, which resolves from the lock projections this repairs.
+        # An environment whose resource group records no declaration is left as it is.
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$(printf '%s\n' "$DECLARED_FORKS_CLI_MIN_VERSION" "$STACK_VERSION" | sort -V | head -n1)" != "$DECLARED_FORKS_CLI_MIN_VERSION" ]; then
+            echo "::notice::stackVersion $STACK_VERSION predates spi onboard --reconcile (minimum $DECLARED_FORKS_CLI_MIN_VERSION); declared forks are not reconciled"
+            exit 0
+          fi
+          spi onboard --reconcile --write
 
       - name: Refresh fork-sourced canonicals
         # Inside the job budget, and short of the hour the cached Azure token lasts.

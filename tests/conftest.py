@@ -43,6 +43,17 @@ def _offline_running_version(monkeypatch):
     monkeypatch.setattr("spi.info.collect_running_version", stack_version.RunningVersion)
 
 
+@pytest.fixture(autouse=True)
+def _undeclared_up(monkeypatch):
+    """Keep `spi up` from reading a live resource group's declaration locator.
+
+    Returns the real function for the tests that exercise it.
+    """
+    original = cli._up_declaration
+    monkeypatch.setattr(cli, "_up_declaration", lambda env, option: None)
+    return original
+
+
 @pytest.fixture
 def real_environment_facts(_offline_environment_facts, monkeypatch):
     monkeypatch.setattr(cli, "_environment_facts", _offline_environment_facts)

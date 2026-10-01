@@ -36,7 +36,16 @@ from typing import Callable, Optional
 from rich.syntax import Syntax
 from rich.table import Table
 
+from .config import RG_DECLARATION_TAG
 from .console import console
+from .environment import (
+    COMMUNITY_SOURCE,
+    FORK_SOURCE,
+    Declared,
+    EnvironmentDeclarationError,
+    fetch_declared,
+    parse_locator,
+)
 from .images import (
     IMAGE_REGISTRY,
     SCHEMA_LOAD_SERVICE_NAME,
@@ -75,8 +84,6 @@ VARIABLE_NAMES = (
 REQUIRED_PROFILE = "core"
 CONFLICT_BACKOFF_SECONDS = (5, 15, 30)
 SOURCE_TAG_PREFIX = "spi-source-"
-COMMUNITY_SOURCE = "community"
-FORK_SOURCE = "fork"
 # The projection copies both durable records, so it runs after either is written.
 PHASES = ("repository", "azure", "source", "cluster")
 # Removal records community before revoking, so no rebuild can promote a revoked fork.
@@ -461,11 +468,18 @@ def require_target(target: Target) -> None:
         )
 
 
-def read_roster(target: Target) -> tuple[Credential, ...]:
-    payload = _read_json(
-        ["az", "identity", "federated-credential", "list", *target.az_scope(), "-o", "json"],
-        f"federated credentials on {target.identity_name}",
-    )
+def read_roster(target: Target, *, missing_ok: bool = False) -> tuple[Credential, ...]:
+    """The identity's federated credentials; ``missing_ok`` reads an absent identity as none."""
+
+    try:
+        payload = _read_json(
+            ["az", "identity", "federated-credential", "list", *target.az_scope(), "-o", "json"],
+            f"federated credentials on {target.identity_name}",
+        )
+    except OnboardError as exc:
+        if missing_ok and re.search(r"\(Resource(Group)?NotFound\)", str(exc)):
+            return ()
+        raise
     roster = [
         Credential(
             name=str(item.get("name", "")),
@@ -647,14 +661,14 @@ def read_source_projection() -> dict[str, str]:
     return _read_lock_projection(decode_canonical_sources)
 
 
-def read_source_tags(
+def read_group_tags(
     resource_group: str, subscription: str = "", *, missing_ok: bool = False
 ) -> dict[str, str]:
-    """Service to canonical source from the resource group's ``spi-source-*`` tags.
+    """The resource group's tags.
 
     ``missing_ok`` reads a group that does not exist yet as no tags, for a
     first provision; any other failure raises, because an unread policy must
-    not resolve as community.
+    not resolve as community, nor an unread locator as undeclared.
     """
 
     argv = ["az", "group", "show", "--name", resource_group, "--query", "tags", "-o", "json"]
@@ -665,12 +679,83 @@ def read_source_tags(
         stderr = (result.stderr or result.stdout or "").strip()
         if missing_ok and "ResourceGroupNotFound" in stderr:
             return {}
-        raise OnboardError(f"Could not read source tags on {resource_group}: {stderr}")
+        raise OnboardError(f"Could not read tags on {resource_group}: {stderr}")
     try:
         tags = json.loads((result.stdout or "").strip() or "null")
     except json.JSONDecodeError as exc:
         raise OnboardError(f"Could not parse tags on {resource_group}: {exc}") from exc
-    return parse_source_tags(tags if isinstance(tags, dict) else {})
+    return tags if isinstance(tags, dict) else {}
+
+
+def read_source_tags(
+    resource_group: str, subscription: str = "", *, missing_ok: bool = False
+) -> dict[str, str]:
+    """Service to canonical source from the resource group's ``spi-source-*`` tags."""
+
+    return parse_source_tags(read_group_tags(resource_group, subscription, missing_ok=missing_ok))
+
+
+def retained_locator(tags: dict) -> str:
+    """The declaration locator a resource group's tags record; empty on an undeclared stack."""
+
+    return next(
+        (str(value).strip() for key, value in tags.items() if key.lower() == RG_DECLARATION_TAG), ""
+    )
+
+
+def read_declared(resource_group: str, subscription: str = "") -> Optional[Declared]:
+    """The declaration that owns this environment, or None when it is undeclared.
+
+    A recorded locator that cannot be loaded raises: it blocks the change, and
+    never turns a declared environment into an undeclared one.
+    """
+
+    locator = retained_locator(read_group_tags(resource_group, subscription))
+    if not locator:
+        return None
+    try:
+        return fetch_declared(parse_locator(locator))
+    except EnvironmentDeclarationError as exc:
+        raise OnboardError(
+            f"{resource_group} is declared by {locator}, which could not be loaded: {exc}. "
+            "A declared environment changes only from its declaration."
+        ) from exc
+
+
+def agree_with_declaration(
+    declared: Optional[Declared],
+    service: str,
+    repo: str = "",
+    canonical_source: str = "",
+    *,
+    remove: bool = False,
+) -> str:
+    """Refuse a request the declaration disagrees with; return the source to apply.
+
+    An omitted source takes the declared one. On an undeclared environment the
+    request stands as given.
+    """
+
+    if declared is None:
+        return canonical_source
+    entry = declared.declaration.fork(service)
+    fix = f"change {declared.locator} through a reviewed PR first."
+    if remove:
+        if entry is not None:
+            raise OnboardError(
+                f"{service} is declared from {entry.repo}; remove the entry, then revoke: {fix}"
+            )
+        return canonical_source
+    if entry is None:
+        raise OnboardError(f"{service} is not declared; add it under forks, then onboard: {fix}")
+    if repo.lower() != entry.repo.lower():
+        raise OnboardError(f"{service} is declared from {entry.repo}, not {repo}; {fix}")
+    if canonical_source and canonical_source != entry.canonical_source:
+        raise OnboardError(
+            f"{service} is declared with canonicalSource {entry.canonical_source}, not "
+            f"{canonical_source}; {fix}"
+        )
+    return entry.canonical_source
 
 
 def _id_credential_names(cred: Credential, repo: str) -> bool:
@@ -920,11 +1005,8 @@ def desired_source_projection(plan: Plan) -> dict[str, str]:
     return fork_sources({**plan.state.sources, plan.service: desired_source(plan)})
 
 
-def source_step(plan: Plan) -> Optional[Step]:
-    value = desired_source(plan)
-    if observed_source(plan) == value:
-        return None
-    subscription = plan.target.values.get("AZURE_SUBSCRIPTION_ID")
+def record_source_step(target: Target, service: str, value: str) -> Step:
+    subscription = target.values.get("AZURE_SUBSCRIPTION_ID")
     return Step(
         "source",
         [
@@ -932,15 +1014,22 @@ def source_step(plan: Plan) -> Optional[Step]:
             "group",
             "update",
             "--name",
-            plan.target.resource_group,
+            target.resource_group,
             "--set",
-            f"tags.{source_tag(plan.service)}={value}",
+            f"tags.{source_tag(service)}={value}",
             "--output",
             "none",
             *(["--subscription", subscription] if subscription else []),
         ],
-        f"Record {value} as the canonical source of {plan.service}",
+        f"Record {value} as the canonical source of {service}",
     )
+
+
+def source_step(plan: Plan) -> Optional[Step]:
+    value = desired_source(plan)
+    if observed_source(plan) == value:
+        return None
+    return record_source_step(plan.target, plan.service, value)
 
 
 def protection_row(repo: str, protection: Protection) -> Row:
@@ -1026,7 +1115,10 @@ def plan_rows(plan: Plan, *, stamped: bool = False) -> list[Row]:
         rows.extend(
             value_rows(plan.target, plan.org or plan.repo, plan.state.values, stamped=stamped)
         )
-    rows.extend(credential_row(plan, target, roster) for target, roster in _identity_rosters(plan))
+    rows.extend(
+        credential_row(plan, target, roster)
+        for target, roster in identity_rosters(plan.target, plan.state)
+    )
     rows.append(source_row(plan))
     rows.append(projection_row(desired_projection(plan), plan.state.projection))
     rows.append(
@@ -1044,7 +1136,7 @@ def plan_steps(plan: Plan) -> list[Step]:
     if plan.remove:
         record = source_step(plan)
         steps.extend([record] if record else [])
-        for target, roster in _identity_rosters(plan):
+        for target, roster in identity_rosters(plan.target, plan.state):
             revoke = revoke_step(target, plan.service, roster)
             steps.extend([revoke] if revoke else [])
     else:
@@ -1055,7 +1147,7 @@ def plan_steps(plan: Plan) -> list[Step]:
         # Trust never precedes the rules; without --skip-repo the steps above establish them.
         if plan.blocked:
             return steps
-        for target, roster in _identity_rosters(plan):
+        for target, roster in identity_rosters(plan.target, plan.state):
             trust = credential_step(target, plan.service, plan.repo, plan.subject, roster)
             steps.extend([trust] if trust else [])
         record = source_step(plan)
@@ -1073,14 +1165,14 @@ def plan_steps(plan: Plan) -> list[Step]:
     return steps
 
 
-def _identity_rosters(plan: Plan) -> list[tuple[Target, tuple[Credential, ...]]]:
+def identity_rosters(target: Target, state: State) -> list[tuple[Target, tuple[Credential, ...]]]:
     """The deployer first, then the member and no-access identities the target names."""
 
-    pairs = [(plan.target, plan.state.roster)]
-    if plan.target.member_identity_name:
-        pairs.append((plan.target.member(), plan.state.member_roster))
-    if plan.target.no_access_identity_name:
-        pairs.append((plan.target.no_access(), plan.state.no_access_roster))
+    pairs = [(target, state.roster)]
+    if target.member_identity_name:
+        pairs.append((target.member(), state.member_roster))
+    if target.no_access_identity_name:
+        pairs.append((target.no_access(), state.no_access_roster))
     return pairs
 
 
@@ -1106,7 +1198,7 @@ def refuse(plan: Plan) -> None:
                 f"{plan.repo} already backs {cred.service or cred.name}; one repository "
                 "backs one service. Remove that credential first."
             )
-    for target, roster in _identity_rosters(plan):
+    for target, roster in identity_rosters(plan.target, plan.state):
         if find_credential(roster, plan.service) is None and len(roster) >= MAX_CREDENTIALS:
             raise OnboardError(
                 f"{target.identity_name} already holds {MAX_CREDENTIALS} federated "
@@ -1157,6 +1249,10 @@ def plan_onboard(
 ) -> Plan:
     require_target(target)
     require_known_service(service)
+    declared = read_declared(target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", ""))
+    entry = declared.declaration.fork(service) if declared else None
+    repo_spec = repo_spec or (entry.repo if entry else "")
+    canonical_source = agree_with_declaration(declared, service, repo_spec, canonical_source)
     roster = read_roster(target)
     if not repo_spec:
         existing = find_credential(roster, service)
@@ -1188,6 +1284,8 @@ def plan_onboard(
 def plan_remove(target: Target, service: str) -> Plan:
     require_target(target)
     require_known_service(service)
+    declared = read_declared(target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", ""))
+    agree_with_declaration(declared, service, remove=True)
     plan = Plan(target, service, repo="", skip_repo=True, remove=True)
     plan.state = observe(target, repo="")
     plan.steps = plan_steps(plan)
@@ -1267,14 +1365,14 @@ def _quote(argv: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _run(step: Step) -> None:
+def run_step(step: Step) -> None:
     result = _run_command(step.argv, description=step.description)
     if result.returncode != 0:
         stderr = (result.stderr or result.stdout or "").strip()
         raise OnboardError(f"{step.description} failed: {stderr or 'command failed'}")
 
 
-def _write_credential(
+def write_credential(
     target: Target, build: Callable[[tuple[Credential, ...]], Optional[Step]]
 ) -> None:
     """Serial credential write with bounded backoff on a busy identity.
@@ -1405,7 +1503,7 @@ def apply_plan(plan: Plan) -> list[Row]:
         def work() -> None:
             for step in plan.steps:
                 if step.phase == name:
-                    _run(step)
+                    run_step(step)
 
         return work
 
@@ -1413,11 +1511,11 @@ def apply_plan(plan: Plan) -> list[Row]:
         service, repo = plan.service, plan.repo
         if not plan.remove and not read_protection(repo).satisfied:
             raise _unprotected(repo)
-        for target, _ in _identity_rosters(plan):
+        for target, _ in identity_rosters(plan.target, plan.state):
             if plan.remove:
-                _write_credential(target, lambda roster, t=target: revoke_step(t, service, roster))
+                write_credential(target, lambda roster, t=target: revoke_step(t, service, roster))
             else:
-                _write_credential(
+                write_credential(
                     target,
                     lambda roster, t=target: credential_step(
                         t, service, repo, plan.subject, roster
@@ -1534,13 +1632,54 @@ def list_trust(target: Target) -> list[Row]:
                         f"trusts {_name(mirrored)}; {target.identity_name} does not",
                     )
                 )
+    subscription = target.values.get("AZURE_SUBSCRIPTION_ID", "")
+    sources = read_source_tags(target.resource_group, subscription)
+    rows.extend(source_rows(trusted, sources, read_source_projection()))
     rows.extend(
-        source_rows(
-            trusted,
-            read_source_tags(target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", "")),
-            read_source_projection(),
-        )
+        declaration_rows(read_declared(target.resource_group, subscription), trusted, sources)
     )
+    return rows
+
+
+def declaration_rows(
+    declared: Optional[Declared], trusted: dict[str, str], sources: dict[str, str]
+) -> list[Row]:
+    """Each declared or trusted service against the declaration; nothing when undeclared."""
+
+    if declared is None:
+        return []
+    forks = {entry.service: entry for entry in declared.declaration.forks}
+    rows = []
+    for service in sorted(set(forks) | set(trusted)):
+        item = f"{service} in {declared.locator}"
+        entry, repo = forks.get(service), trusted.get(service)
+        if entry is None:
+            rows.append(Row("declaration", item, "drifted", f"{repo} is trusted but not declared"))
+            continue
+        if repo is None:
+            rows.append(Row("declaration", item, "missing", f"declares {entry.repo}; not trusted"))
+            continue
+        want = repo if entry.canonical_source == FORK_SOURCE else COMMUNITY_SOURCE
+        recorded = sources.get(service, COMMUNITY_SOURCE)
+        if repo.lower() != entry.repo.lower():
+            rows.append(
+                Row("declaration", item, "drifted", f"declares {entry.repo}; {repo} is trusted")
+            )
+        elif recorded.lower() != want.lower():
+            rows.append(
+                Row(
+                    "declaration",
+                    item,
+                    "drifted",
+                    f"declares canonicalSource {entry.canonical_source}; the tag records {recorded}",
+                )
+            )
+        elif repo != entry.repo:
+            rows.append(
+                Row("declaration", item, "drifted", f"declares {entry.repo}; GitHub stores {repo}")
+            )
+        else:
+            rows.append(Row("declaration", item, "correct", f"{repo}, {entry.canonical_source}"))
     return rows
 
 

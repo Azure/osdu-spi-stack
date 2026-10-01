@@ -34,6 +34,7 @@ from .bootstrap import create_istio_revision_configmap, refresh_spi_init_values
 from .checks import PREREQ_TOOLS, check_prerequisites
 from .config import Config, IngressMode, Profile
 from .console import console, display_result, error_console
+from .environment import Declared
 from .guard import get_suspend_status, verify_spi_cluster
 from .images import (
     DEFAULT_IMAGE_BRANCH,
@@ -520,6 +521,73 @@ def check(
         raise typer.Exit(code=1)
 
 
+def _check_tag(tag: Optional[str], branch: Optional[str]) -> None:
+    """Refuse a tag this process cannot deploy: with a branch, malformed, or another release."""
+    if tag and branch is not None:
+        raise typer.BadParameter(
+            "--tag cannot be combined with an explicit --branch",
+            param_hint="--tag",
+        )
+    if tag and not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+        raise typer.BadParameter(
+            "must match vX.Y.Z",
+            param_hint="--tag",
+        )
+    if tag and __version__ == "0.0.0+source":
+        raise typer.BadParameter(
+            "requires the released spi wheel matching the requested tag",
+            param_hint="--tag",
+        )
+    if tag and tag.removeprefix("v") != __version__:
+        raise typer.BadParameter(
+            f"requires spi {tag.removeprefix('v')}, but this process is spi {__version__}",
+            param_hint="--tag",
+        )
+
+
+def _up_declaration(env: str, option: Optional[str]) -> Optional[Declared]:
+    """The declaration that owns this environment: the option, or the locator its group retains.
+
+    An option that names another file than the retained locator is refused,
+    and a locator that cannot be loaded stops the run instead of provisioning
+    the environment as undeclared.
+    """
+    from .environment import EnvironmentDeclarationError, fetch_declared, parse_locator
+    from .onboard import OnboardError, read_group_tags, retained_locator
+
+    resource_group = Config.from_env(env).resource_group
+    try:
+        retained = retained_locator(read_group_tags(resource_group, missing_ok=True))
+        locator = parse_locator(option or retained) if option or retained else None
+        if locator is None:
+            return None
+        if option and retained and not locator.same_file(parse_locator(retained)):
+            raise typer.BadParameter(
+                f"{resource_group} is already declared by {retained}",
+                param_hint="--declaration",
+            )
+        declared = fetch_declared(locator)
+    except (EnvironmentDeclarationError, OnboardError) as exc:
+        console.print(f"\n[error]{exc}[/error]")
+        raise typer.Exit(code=1)
+    if declared.declaration.env != env:
+        raise typer.BadParameter(
+            f"{locator} declares env {declared.declaration.env!r}",
+            param_hint="--env",
+        )
+    return declared
+
+
+def _declared_value(flag: str, given: Any, declared: Any) -> Any:
+    """The declared value; an explicit option that disagrees with it is refused."""
+    if given is not None and given != declared:
+        shown = getattr(declared, "value", declared)
+        raise typer.BadParameter(
+            f"conflicts with the declaration, which sets {shown}", param_hint=flag
+        )
+    return declared
+
+
 @app.command()
 def up(
     profile: Optional[Profile] = typer.Option(
@@ -544,10 +612,11 @@ def up(
         "--tag",
         help="Immutable release tag for the GitOps source, e.g. v0.6.0.",
     ),
-    location: str = typer.Option(
-        "westus3",
+    location: Optional[str] = typer.Option(
+        None,
         "--location",
-        help="Azure region (eastus2/centralus have shown API Server VNet Integration capacity constraints)",
+        help="Azure region; westus3 by default (eastus2/centralus have shown API Server "
+        "VNet Integration capacity constraints)",
     ),
     data_partitions: Optional[List[str]] = typer.Option(
         None, "--partition", help="Data partition names (can specify multiple)"
@@ -585,38 +654,46 @@ def up(
         "--refresh-images/--no-refresh-images",
         help="Refresh canonical service images, or preserve an existing image lock by default.",
     ),
-    image_branch: str = typer.Option(
-        DEFAULT_IMAGE_BRANCH,
+    image_branch: Optional[str] = typer.Option(
+        None,
         "--image-branch",
-        help="OSDU image branch suffix to resolve from the community registry.",
+        help="OSDU image branch suffix to resolve from the community registry; "
+        f"{DEFAULT_IMAGE_BRANCH} by default.",
     ),
     name_suffix: Optional[str] = typer.Option(
         None,
         "--name-suffix",
         help="Stable five-character resource-name suffix for a declared environment.",
     ),
+    declaration: Optional[str] = typer.Option(
+        None,
+        "--declaration",
+        help="Reviewed environment declaration as <owner>/<repo>:<path>, read from main. "
+        "It supplies the provisioning options and the trusted forks; later runs reuse it.",
+    ),
 ):
     """Provision Azure infrastructure and deploy the OSDU SPI stack."""
-    if tag and branch is not None:
-        raise typer.BadParameter(
-            "--tag cannot be combined with an explicit --branch",
-            param_hint="--tag",
-        )
-    if tag and not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
-        raise typer.BadParameter(
-            "must match vX.Y.Z",
-            param_hint="--tag",
-        )
-    if tag and __version__ == "0.0.0+source":
-        raise typer.BadParameter(
-            "requires the released spi wheel matching the requested tag",
-            param_hint="--tag",
-        )
-    if tag and tag.removeprefix("v") != __version__:
-        raise typer.BadParameter(
-            f"requires spi {tag.removeprefix('v')}, but this process is spi {__version__}",
-            param_hint="--tag",
-        )
+    # Argument errors surface before the first Azure read.
+    _check_tag(tag, branch)
+    declared = _up_declaration(env, declaration)
+    if declared is not None:
+        intent = declared.declaration
+        if branch is not None:
+            raise typer.BadParameter(
+                f"conflicts with the declaration, which pins {intent.stack_version}",
+                param_hint="--branch",
+            )
+        profile = _declared_value("--profile", profile, intent.profile)
+        tag = _declared_value("--tag", tag, intent.stack_version)
+        location = _declared_value("--location", location, intent.location)
+        image_branch = _declared_value("--image-branch", image_branch, intent.image_branch)
+        name_suffix = _declared_value("--name-suffix", name_suffix, intent.name_suffix)
+        # bare deploys no ingress substrate, so its declared mode is not applied.
+        if profile is not Profile.BARE:
+            ingress_mode = _declared_value("--ingress-mode", ingress_mode, intent.ingress_mode)
+    location = location or "westus3"
+    image_branch = image_branch or DEFAULT_IMAGE_BRANCH
+    _check_tag(tag, branch)
     resolved_branch = branch or "main"
 
     if profile is None:
@@ -667,6 +744,9 @@ def up(
         acme_email=resolve_acme_email(acme_email),
         name_suffix=name_suffix,
     )
+    # A preview provisions nothing, so it does not hand the environment to the declaration.
+    if declared is not None and not dry_run:
+        config.declaration_locator = str(declared.locator)
 
     _show_config(config)
 
@@ -680,6 +760,7 @@ def up(
             image_branch=image_branch,
             azure_account=azure_account,
             deployer_principal=deployer_principal,
+            declared=declared,
         )
         if dry_run:
             console.print(
@@ -1208,6 +1289,36 @@ def _print_suite_result(result: Any, environment: Dict[str, Any]) -> None:
     )
 
 
+def _reconcile_declared_forks(target: Any, write: bool) -> None:
+    from . import declared as _declared
+    from . import onboard as _onboard
+
+    # Only core deploys services a fork can back, so only core can declare forks.
+    if target.profile != _onboard.REQUIRED_PROFILE:
+        console.print(
+            f"[info]Profile {target.profile or 'unknown'} deploys no OSDU services; "
+            "there is no fork trust to reconcile.[/info]"
+        )
+        return
+    _onboard.require_target(target)
+    owner = _onboard.read_declared(
+        target.resource_group, target.values.get("AZURE_SUBSCRIPTION_ID", "")
+    )
+    if owner is None:
+        console.print(
+            "[info]This environment has no declaration; its trust and canonical sources are "
+            "the ones 'spi onboard' recorded.[/info]"
+        )
+        return
+    result = _declared.build(target, owner)
+    if not write:
+        _declared.render(result)
+        return
+    _onboard.render_rows(result.rows, f"Observed against {owner.locator}")
+    _declared.apply(result)
+    console.print(f"[success]{target.env or 'Environment'} matches {owner.locator}.[/success]")
+
+
 @app.command()
 def onboard(
     service: Optional[str] = typer.Argument(
@@ -1233,14 +1344,29 @@ def onboard(
         help="fork: the next image refresh follows the fork's main; community: it follows "
         "the community registry. Omitted keeps the recorded source.",
     ),
+    reconcile_declared: bool = typer.Option(
+        False,
+        "--reconcile",
+        help="Restore the trust and canonical sources the environment's declaration lists, "
+        "and revoke what it does not; nothing to do on an undeclared environment.",
+    ),
 ):
     """Trust a fork repository to deploy against the connected environment."""
     from . import onboard as _onboard
 
     if list_trusted and (
-        service or repo or remove or write or org or skip_repo or canonical_source
+        service
+        or repo
+        or remove
+        or write
+        or org
+        or skip_repo
+        or canonical_source
+        or reconcile_declared
     ):
         raise typer.BadParameter("--list takes no other options", param_hint="--list")
+    if reconcile_declared and (service or repo or remove or org or skip_repo or canonical_source):
+        raise typer.BadParameter("--reconcile takes only --write", param_hint="--reconcile")
     if remove and (repo or org or skip_repo or canonical_source):
         raise typer.BadParameter(
             "--remove takes only the service and --write", param_hint="--remove"
@@ -1254,7 +1380,7 @@ def onboard(
         raise typer.BadParameter(
             "--org stamps GitHub values, which --skip-repo leaves alone", param_hint="--org"
         )
-    if not list_trusted and not service:
+    if not list_trusted and not reconcile_declared and not service:
         raise typer.BadParameter("name the service to onboard", param_hint="SERVICE")
 
     ctx = verify_spi_cluster()
@@ -1271,6 +1397,9 @@ def onboard(
                 _onboard.render_rows(rows, f"Trusted repositories on {target.env or 'environment'}")
             else:
                 console.print("[info]No repository is trusted on this environment yet.[/info]")
+            return
+        if reconcile_declared:
+            _reconcile_declared_forks(target, write)
             return
         assert service is not None
         if remove:

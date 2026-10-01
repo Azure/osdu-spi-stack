@@ -34,6 +34,7 @@ _NAME_SUFFIX_LEN = 5
 # Resource group tag carrying the per-deployment suffix. An empty value marks
 # a legacy deployment whose names stay unsuffixed.
 RG_SUFFIX_TAG = "spi-name-suffix"
+RG_DECLARATION_TAG = "spi-environment-declaration"
 
 
 def generate_name_suffix() -> str:
@@ -73,6 +74,8 @@ class Config(BaseModel):
     location: str = "eastus2"
     # Suffix on globally unique resource names, read back from RG_SUFFIX_TAG.
     name_suffix: str = ""
+    # <owner>/<repo>:<path> of the reviewed declaration, kept on RG_DECLARATION_TAG.
+    declaration_locator: str = ""
     data_partitions: List[str] = ["opendes"]
     identity_name: str = ""
     deploy_identity_name: str = ""

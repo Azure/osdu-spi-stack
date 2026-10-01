@@ -10,10 +10,11 @@ verb applies, what it costs, and what it will not fix; improvising that during
 an incident is how a 20-minute refresh becomes a 4-hour rebuild.
 
 **Status.** `env-upgrade` and `env-refresh` are implemented and described
-below as built, as is the test-identity ensure step. `env-reset` and
-`env-teardown`, the stale-pin sweep's workflow step, the drain, and
-onboarding-intent reconciliation remain unbuilt; those sections still
-describe the target mechanism ahead of the code. Remove the remaining marks
+below as built, as is the test-identity ensure step. Onboarding-intent
+reconciliation is implemented in the CLI and both workflows and is inert on
+`shared` until its declaration lists forks. `env-reset` and `env-teardown`,
+the stale-pin sweep's workflow step, and the drain remain unbuilt; those
+sections still describe the target mechanism ahead of the code. Remove the remaining marks
 as those phases land.
 
 ![The backing environment at a glance](../diagrams/environment-lifecycle.png)
@@ -100,13 +101,16 @@ tag, and the shared RG carries neither.
 **Refresh** (`env-refresh.yml`, implemented) proves the environment is
 serving: set the `maintenance` flag in a named quiesce step, run plain `spi
 reconcile` (preserving the version-pinned source and the current image
-lock), run `spi service refresh --forks` to advance fork-sourced canonicals
-(ADR-033), gate on `scripts/wait_for_flux_ready.sh` plus the gateway probes
+lock), run `spi onboard --reconcile --write` to restore declared fork trust
+and source policy, run `spi service refresh --forks` to advance fork-sourced
+canonicals (ADR-033), gate on `scripts/wait_for_flux_ready.sh` plus the gateway probes
 shared with `smoke.yml` via `scripts/probe_gateway.sh`, assert the deployed
 ref and source suspension are unchanged, and clear the flag only after every
 check passes. Community-sourced canonicals do not advance on this schedule.
-The fork refresh runs when the declared `stackVersion` is v0.22.0 or later;
-an older declaration logs a notice and skips the step. The schedule starts
+The fork refresh runs when the declared `stackVersion` is v0.22.0 or later,
+and the reconcile when it is v0.24.0 or later; an older declaration logs a
+notice and skips the step. The reconcile is capped at 5 minutes and changes
+nothing on an environment whose resource group records no declaration. The schedule starts
 an hour before the fork template's retention job (Mondays 05:00 UTC), so a
 canonical moves to a fork's weekend build before retention deletes the image
 that build replaced. A failed step leaves the flag set (ADR-029), so a red
@@ -136,35 +140,51 @@ pass moves canonical images during an upgrade, but the bump pins only the
 stack-definition axis. Weekday refreshes preserve community canonicals and
 advance fork-sourced ones (ADR-033).
 
-**Onboarding intent** (unbuilt) is loaded from the reviewed declaration before
-refresh or upgrade resolves an image. `forks:` owns trust and
+**Onboarding intent** is loaded from the reviewed declaration before the
+refresh or upgrade workflow resolves an image; `spi service refresh` and
+`spi reconcile --refresh-images` run by hand read the lock's projections as
+the last reconcile left them. `forks:` owns trust and
 `canonicalSource`; retained credentials and `spi-source-<service>` tags
 cannot override it. First declared provision takes
 `spi up --declaration <owner>/<repo>:<path>`. The CLI reads that file on
 `main`, takes its provisioning fields and fork intent, and rejects
 conflicting explicit flags before provisioning or image resolution. It
 persists the locator in the RG's `spi-environment-declaration` tag when the
-group is created. With an existing locator, an omitted option reuses it and
-a conflicting locator is refused.
+group is created, or on the next run against a group that lacks it. With an
+existing locator, an omitted option reuses it and a conflicting locator is
+refused.
 
-The planned `env-upgrade.yml` handoff carries the locator through the same
-jobs that already carry the declaration's individual fields:
+`env-upgrade.yml` carries the locator through the jobs that already carry
+the declaration's individual fields:
 
-| Surface | Planned wiring |
+| Surface | Wiring |
 |---|---|
-| `declare` job | Export `declaration_locator` as `${{ github.repository }}:$DECLARATION_PATH` alongside the validated declaration fields read from `main`. |
-| `provision` job | Set `DECLARATION_LOCATOR` from `needs.declare.outputs.declaration_locator` and append `--declaration "$DECLARATION_LOCATOR"` to the `spi up` argument array. |
-| Release gate | Raise `LIFECYCLE_CLI_MIN_VERSION` to the first release supporting `--declaration` and `forks:` before activating this wiring; install that declaration's exact release wheel as before. |
-| Reset workflow | Use the same declaration input for re-provisioning; the retained locator must agree rather than supplying competing intent. |
+| `declare` job | Exports `declares_forks`, true when the file lists at least one fork, beside the validated fields read from `main`. |
+| `provision` job | Appends `--declaration "${GITHUB_REPOSITORY}:${DECLARATION_PATH}"` to the `spi up` argument array when `declares_forks` is true and `stackVersion` is v0.24.0 or later; an older version logs a notice and provisions undeclared. |
+| Reset workflow (unbuilt) | Use the same declaration input for re-provisioning; the retained locator must agree rather than supplying competing intent. |
 
-This handoff is unbuilt with onboarding; the implemented workflow and recipe
-below still pass individual fields and cannot establish declaration
-ownership. The ensure path checks repository protection before enabling
-credentials, serializes credential writes per identity, reconciles source
-tags, and repairs the lock's separate trust and source projections before
-refresh. During `spi up`, durable-record reconciliation and projection happen
-at bootstrap, using intent loaded before image resolution. It is not a
+The `declares_forks` gate exists because a declaration with no forks revokes
+every fork credential on the identities. `shared` trusts repositories that
+`spi onboard` added by hand, so handing over the file before it lists them
+would remove them at the next upgrade. Once the locator is retained, every
+later `spi up` and refresh reconciles to the file whether or not the
+workflow passes it, including down to an empty list.
+
+Reconciliation runs in one order wherever it runs
+(`src/spi/declared.py`): record `community` for undeclared sources, revoke
+undeclared and stale credentials, write declared credentials, record
+declared sources, then rebuild the lock's trust and source projections. The ensure path checks
+repository protection before enabling a credential and serializes credential
+writes per identity. `spi up` plans that reconciliation twice. The first
+pass runs before the resource group is touched, against identities that may
+not exist yet, and stops the run when a declared fork cannot be trusted or
+its image cannot resolve; images then resolve from the declared sources, not
+from retained tags. The second pass applies the writes at bootstrap, after
+the identities exist and before the projections are rebuilt. It is not a
 post-provision step that first corrects an obsolete image source.
+`env-refresh` runs the same reconciliation on the standing cluster as
+`spi onboard --reconcile --write`, ahead of the fork refresh that reads the
+projections.
 
 **Reset** (unbuilt) is deletion plus cold provision at the pinned tag: load and
 validate the declaration, flag, drain, snapshot the lock, then `spi down`.
@@ -254,10 +274,11 @@ where every Kustomization is still Ready for the revision being replaced.
 
 This recipe is provision-only: the fresh environment holds `maintenance`
 (ADR-029) until the `env-refresh` workflow, or its manual dispatch, runs the
-probes and clears it. Once declaration-aware onboarding is implemented, this
-invocation also passes
-`--declaration Azure/osdu-spi-stack:ops/environments/shared.yaml`; the
-installed release must support that option and the planned handoff above.
+probes and clears it. Once the declaration lists forks, the same provision is
+`spi up --env shared --declaration
+Azure/osdu-spi-stack:ops/environments/shared.yaml --refresh-images` on a
+v0.24.0 or later wheel: the file supplies every option above, and repeating
+one with a different value is refused.
 
 Check why the environment is not ready:
 
@@ -293,9 +314,11 @@ gh run watch
    identity and RG-tag retention in `spi down` (ADR-034), and the trust path
    of `spi onboard` (repository protection, the five values, the federated
    credential, the roster projection with roster-derived pin validation) and
-   `--canonical-source` with its source-policy phase are built. Still unbuilt:
-   `forks:` and the declaration locator with pre-resolution intent loading;
-   onboard `osdu-spi-partition` with a community canonical. The template
+   `--canonical-source` with its source-policy phase are built, as are
+   `forks:`, the declaration locator with pre-resolution intent loading, and
+   `spi onboard --reconcile`. Still unbuilt: listing the repositories
+   `shared` already trusts in `ops/environments/shared.yaml`, which is what
+   turns its declaration ownership on. The template
    implements one `deploy-test` job with borrow, prove, and restore steps;
    `validation-summary` reports its result through the required summary check.
    See [fork deployment](fork-deployment.md#the-sequence).

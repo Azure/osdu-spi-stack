@@ -23,6 +23,7 @@ import pytest
 from typer.testing import CliRunner
 
 from spi import onboard
+from spi.environment import Declared, EnvironmentDeclarationError, parse_declaration, parse_locator
 from spi.images import ImageResolutionError
 from spi.onboard import (
     COMMUNITY_SOURCE,
@@ -64,14 +65,16 @@ TARGET = Target(
 PROTECTED = Protection(exists=True)
 ABSENT = Protection(exists=False)
 READ_SOURCE_TAGS = onboard.read_source_tags
+READ_DECLARED = onboard.read_declared
 
 
 @pytest.fixture(autouse=True)
 def no_source_tags(monkeypatch):
-    """Tests about trust see no source tags; source tests set their own."""
+    """Tests about trust see no source tags and no declaration; others set their own."""
 
     monkeypatch.setattr(onboard, "read_source_tags", lambda *args, **kwargs: {})
     monkeypatch.setattr(onboard, "read_source_projection", lambda: {})
+    monkeypatch.setattr(onboard, "read_declared", lambda *args, **kwargs: None)
 
 
 def cred(service: str, repo: str, **overrides) -> Credential:
@@ -1131,7 +1134,7 @@ class TestSourceReads:
         )
 
         assert READ_SOURCE_TAGS("rg", missing_ok=True) == {}
-        with pytest.raises(OnboardError, match="Could not read source tags"):
+        with pytest.raises(OnboardError, match="Could not read tags"):
             READ_SOURCE_TAGS("rg")
 
     def test_tags_are_read_in_the_given_subscription(self, monkeypatch):
@@ -1241,6 +1244,8 @@ class TestCli:
             (["partition", "--remove", "--canonical-source", "fork"], "takes only the service"),
             (["partition", "--canonical-source", "upstream"], "expected fork or community"),
             ([], "name the service"),
+            (["partition", "--reconcile"], "--reconcile takes only --write"),
+            (["--list", "--reconcile"], "takes no other options"),
         ],
     )
     def test_contradictory_options_are_refused_before_any_read(self, args, message):
@@ -1265,6 +1270,48 @@ class TestCli:
 
         assert result.exit_code == 1
         assert "already backs schema" in result.output
+
+    def _reconcile(self, owner, *args, target=TARGET):
+        from spi import declared
+        from spi.cli import app
+
+        result = declared.Reconciliation(TARGET, owner, (), State((), {}))
+        with (
+            patch("spi.cli.verify_spi_cluster", return_value="ctx"),
+            patch("spi.onboard.load_target", return_value=target),
+            patch("spi.onboard.read_declared", return_value=owner),
+            patch("spi.declared.build", return_value=result) as build,
+            patch("spi.declared.apply") as apply,
+        ):
+            outcome = CliRunner().invoke(app, ["onboard", "--reconcile", *args])
+        return outcome, build, apply
+
+    def test_reconcile_leaves_an_undeclared_environment_alone(self):
+        outcome, build, apply = self._reconcile(None, "--write")
+
+        assert outcome.exit_code == 0
+        assert "no declaration" in outcome.output
+        build.assert_not_called()
+        apply.assert_not_called()
+
+    def test_reconcile_is_a_clean_skip_on_a_profile_with_no_services(self):
+        # env-refresh runs the step on every profile; a red run would hold maintenance.
+        bare = replace(TARGET, profile="bare")
+
+        outcome, build, _ = self._reconcile(declared_owner(), "--write", target=bare)
+
+        assert outcome.exit_code == 0
+        assert "no fork trust to reconcile" in outcome.output
+        build.assert_not_called()
+
+    def test_reconcile_plans_by_default_and_applies_with_write(self):
+        outcome, _, apply = self._reconcile(declared_owner())
+        assert outcome.exit_code == 0 and LOCATOR in outcome.output
+        apply.assert_not_called()
+
+        outcome, _, apply = self._reconcile(declared_owner(), "--write")
+        assert outcome.exit_code == 0
+        apply.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1688,3 +1735,154 @@ class TestLookupFailures:
 
         assert rows["by-hand"][0] == "unverified"
         assert "owner id" not in rows["by-hand"][1]
+
+
+DECLARED_YAML = """\
+env: dev1
+stackVersion: v0.24.0
+profile: core
+location: westus3
+ingressMode: azure
+imageBranch: master
+nameSuffix: x7k2q
+forks:
+  - service: partition
+    repo: Acme/osdu-spi-partition
+  - service: legal
+    repo: Acme/osdu-spi-legal
+    canonicalSource: fork
+"""
+LOCATOR = "Acme/ops:environments/dev1.yaml"
+
+
+def declared_owner() -> Declared:
+    return Declared(parse_locator(LOCATOR), parse_declaration(DECLARED_YAML))
+
+
+class TestDeclaredEnvironment:
+    @pytest.mark.parametrize(
+        ("request_", "message"),
+        [
+            (("schema", "Acme/osdu-spi-schema", ""), "schema is not declared; add it under forks"),
+            (("partition", "Other/partition", ""), f"declared from {REPO}, not Other/partition"),
+            (("partition", REPO, "fork"), "declared with canonicalSource community, not fork"),
+            (("legal", "Acme/osdu-spi-legal", "community"), "canonicalSource fork, not community"),
+        ],
+    )
+    def test_a_request_the_declaration_disagrees_with_names_the_file(self, request_, message):
+        with pytest.raises(OnboardError, match=message) as exc:
+            onboard.agree_with_declaration(declared_owner(), *request_)
+
+        assert f"change {LOCATOR} through a reviewed PR first" in str(exc.value)
+
+    def test_removal_waits_for_the_entry_to_leave_the_declaration(self):
+        with pytest.raises(OnboardError, match=f"partition is declared from {REPO}; remove"):
+            onboard.agree_with_declaration(declared_owner(), "partition", remove=True)
+
+        assert onboard.agree_with_declaration(declared_owner(), "schema", remove=True) == ""
+
+    @pytest.mark.parametrize(
+        ("service", "repo", "source"),
+        [
+            ("partition", "acme/OSDU-spi-partition", "community"),
+            ("legal", "Acme/osdu-spi-legal", "fork"),
+        ],
+    )
+    def test_an_omitted_source_takes_the_declared_one(self, service, repo, source):
+        assert onboard.agree_with_declaration(declared_owner(), service, repo) == source
+
+    def test_an_undeclared_environment_keeps_the_request_as_given(self):
+        assert onboard.agree_with_declaration(None, "schema", "Any/repo", "fork") == "fork"
+
+    def test_planning_refuses_before_it_reads_the_identity_or_github(self, monkeypatch):
+        monkeypatch.setattr(onboard, "read_declared", lambda *a, **k: declared_owner())
+
+        def unreachable(*args, **kwargs):
+            raise AssertionError("refusal must precede every other read")
+
+        monkeypatch.setattr(onboard, "read_roster", unreachable)
+        monkeypatch.setattr(onboard, "run_command", unreachable)
+
+        with pytest.raises(OnboardError, match="schema is not declared"):
+            onboard.plan_onboard(TARGET, "schema", "Acme/osdu-spi-schema")
+        with pytest.raises(OnboardError, match="remove the entry"):
+            onboard.plan_remove(TARGET, "partition")
+
+    def test_the_locator_tag_decides_whether_the_environment_is_declared(self, monkeypatch):
+        fetched = []
+        monkeypatch.setattr(
+            onboard, "fetch_declared", lambda locator: fetched.append(str(locator)) or "owner"
+        )
+        monkeypatch.setattr(onboard, "run_command", Shell(az__group__show={"spi-name-suffix": "x"}))
+        assert READ_DECLARED("rg") is None
+
+        tags = {"spi-environment-declaration": LOCATOR}
+        monkeypatch.setattr(onboard, "run_command", Shell(az__group__show=tags))
+        assert READ_DECLARED("rg") == "owner"
+        assert fetched == [LOCATOR]
+
+    def test_an_unloadable_declaration_is_an_error_not_an_undeclared_environment(self, monkeypatch):
+        def gone(locator):
+            raise EnvironmentDeclarationError("could not read it: HTTP 404")
+
+        tags = {"spi-environment-declaration": LOCATOR}
+        monkeypatch.setattr(onboard, "run_command", Shell(az__group__show=tags))
+        monkeypatch.setattr(onboard, "fetch_declared", gone)
+
+        with pytest.raises(OnboardError, match=f"declared by {LOCATOR}, which could not be loaded"):
+            READ_DECLARED("rg")
+
+    def test_list_rows_compare_trust_and_source_to_the_declaration(self):
+        trusted = {"partition": "acme/OSDU-spi-partition", "schema": "Acme/osdu-spi-schema"}
+
+        rows = {
+            row.item.split(" ")[0]: (row.state, row.detail)
+            for row in onboard.declaration_rows(declared_owner(), trusted, {})
+        }
+
+        assert rows == {
+            "legal": ("missing", "declares Acme/osdu-spi-legal; not trusted"),
+            "partition": ("drifted", f"declares {REPO}; GitHub stores acme/OSDU-spi-partition"),
+            "schema": ("drifted", "Acme/osdu-spi-schema is trusted but not declared"),
+        }
+        assert onboard.declaration_rows(None, trusted, {}) == []
+
+    def test_list_reports_a_source_tag_the_declaration_does_not_record(self):
+        trusted = {"partition": REPO, "legal": "Acme/osdu-spi-legal"}
+        sources = {"partition": REPO, "legal": "Acme/osdu-spi-legal"}
+
+        rows = {
+            row.item.split(" ")[0]: (row.state, row.detail)
+            for row in onboard.declaration_rows(declared_owner(), trusted, sources)
+        }
+
+        assert rows["legal"] == ("correct", "Acme/osdu-spi-legal, fork")
+        assert rows["partition"] == (
+            "drifted",
+            f"declares canonicalSource community; the tag records {REPO}",
+        )
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "(ResourceGroupNotFound) Resource group 'spi-stack-dev1' could not be found.",
+            "(ResourceNotFound) The Resource 'spi-stack-dev1-deployer' was not found.",
+        ],
+    )
+    def test_a_first_provision_reads_an_absent_identity_as_no_credentials(
+        self, monkeypatch, stderr
+    ):
+        monkeypatch.setattr(onboard, "run_command", lambda argv, **_: failed(stderr))
+
+        assert onboard.read_roster(TARGET, missing_ok=True) == ()
+        with pytest.raises(OnboardError, match="Could not read federated credentials"):
+            onboard.read_roster(TARGET)
+
+    @pytest.mark.parametrize(
+        "stderr", ["(AuthorizationFailed) no access", "(SubscriptionNotFound) no such subscription"]
+    )
+    def test_a_first_provision_still_fails_on_an_unreadable_identity(self, monkeypatch, stderr):
+        monkeypatch.setattr(onboard, "run_command", lambda argv, **_: failed(stderr))
+
+        with pytest.raises(OnboardError, match="Could not read federated credentials"):
+            onboard.read_roster(TARGET, missing_ok=True)

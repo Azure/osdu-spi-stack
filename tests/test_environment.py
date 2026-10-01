@@ -15,13 +15,19 @@ from pathlib import Path
 
 import pytest
 
+from spi import environment
 from spi.config import IngressMode, Profile
 from spi.environment import (
+    MAX_FORKS,
+    DeclarationLocator,
     EnvironmentDeclaration,
     EnvironmentDeclarationError,
+    fetch_declared,
     load_declaration,
     parse_declaration,
+    parse_locator,
 )
+from spi.images import ImageResolutionError
 
 VALID_YAML = """\
 env: shared
@@ -57,6 +63,7 @@ def test_to_github_output_uses_camelcase_source_values_as_plain_strings():
         "ingress_mode": "azure",
         "image_branch": "master",
         "name_suffix": "x7k2q",
+        "declares_forks": "false",
     }
 
 
@@ -232,3 +239,131 @@ def test_load_declaration_accepts_a_matching_env_and_filename(tmp_path: Path):
 
     assert isinstance(declaration, EnvironmentDeclaration)
     assert declaration.env == "other"
+
+
+FORKS_YAML = (
+    VALID_YAML
+    + """\
+forks:
+  - service: partition
+    repo: Acme/osdu-spi-partition
+  - service: legal
+    repo: Acme/osdu-spi-legal
+    canonicalSource: fork
+"""
+)
+
+
+def test_forks_default_to_the_community_source():
+    declaration = parse_declaration(FORKS_YAML)
+
+    assert [(f.service, f.repo, f.canonical_source) for f in declaration.forks] == [
+        ("partition", "Acme/osdu-spi-partition", "community"),
+        ("legal", "Acme/osdu-spi-legal", "fork"),
+    ]
+    assert declaration.to_github_output()["declares_forks"] == "true"
+
+
+def _with_forks(*entries: str, profile: str = "core") -> str:
+    return (
+        VALID_YAML.replace("profile: core", f"profile: {profile}") + "forks:\n" + "".join(entries)
+    )
+
+
+def _entry(service: str, repo: str, extra: str = "") -> str:
+    return f"  - service: {service}\n    repo: {repo}\n{extra}"
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        (_with_forks(_entry("partition", "Acme/p"), profile="minimal"), "requires profile 'core'"),
+        (
+            _with_forks(_entry("partition", "Acme/fork"), _entry("legal", "acme/FORK")),
+            "acme/FORK is listed more than once",
+        ),
+        (
+            _with_forks(_entry("partition", "Acme/a"), _entry("partition", "Acme/b")),
+            "partition is listed more than once",
+        ),
+        (_with_forks(_entry("nonesuch", "Acme/p")), "unknown service 'nonesuch'"),
+        (_with_forks(_entry("schema-load", "Acme/p")), "unknown service 'schema-load'"),
+        (_with_forks(_entry("partition", "not-a-repo")), "must be <owner>/<name>"),
+        (
+            _with_forks(_entry("partition", "Acme/p", "    canonicalSource: gitlab\n")),
+            "forks.0.canonicalSource",
+        ),
+        (
+            _with_forks(_entry("partition", "Acme/p", "    canonical_source: fork\n")),
+            "the on-disk schema uses 'canonicalSource'",
+        ),
+        (
+            _with_forks(*(_entry("partition", f"Acme/r{n}") for n in range(MAX_FORKS + 1))),
+            "holds at most 19",
+        ),
+    ],
+)
+def test_rejects_forks_the_environment_cannot_hold(raw, message):
+    with pytest.raises(EnvironmentDeclarationError, match=message):
+        parse_declaration(raw)
+
+
+def test_parses_a_locator_into_repository_and_path():
+    locator = parse_locator("Azure/osdu-spi-stack:ops/environments/shared.yaml")
+
+    assert locator == DeclarationLocator("Azure/osdu-spi-stack", "ops/environments/shared.yaml")
+    assert str(locator) == "Azure/osdu-spi-stack:ops/environments/shared.yaml"
+    assert locator.same_file(DeclarationLocator("azure/OSDU-spi-stack", locator.path))
+    assert not locator.same_file(DeclarationLocator(locator.repo, "ops/environments/other.yaml"))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "ops/environments/shared.yaml",
+        "Azure:shared.yaml",
+        "Azure/stack:/etc/shared.yaml",
+        "Azure/stack:ops/../shared.yaml",
+        "Azure/stack:ops/./shared.yaml",
+        "Azure/..:shared.yaml",
+        "Azure/stack:shared.json",
+        "Azure/stack:shared.yaml?ref=evil",
+    ],
+)
+def test_rejects_a_locator_that_is_not_a_repository_file(value):
+    with pytest.raises(EnvironmentDeclarationError, match="must be <owner>/<repo>:<path>"):
+        parse_locator(value)
+
+
+class TestFetchDeclared:
+    LOCATOR = DeclarationLocator("Azure/osdu-spi-stack", "ops/environments/shared.yaml")
+
+    def test_reads_the_file_on_main(self, monkeypatch):
+        asked = []
+
+        def github_file(repo, path, ref):
+            asked.append((repo, path, ref))
+            return FORKS_YAML.encode()
+
+        monkeypatch.setattr(environment, "github_file", github_file)
+
+        declared = fetch_declared(self.LOCATOR)
+
+        assert asked == [("Azure/osdu-spi-stack", "ops/environments/shared.yaml", "main")]
+        assert declared.locator == self.LOCATOR
+        assert [f.canonical_source for f in declared.declaration.forks] == ["community", "fork"]
+
+    def test_refuses_a_file_whose_env_is_not_its_name(self, monkeypatch):
+        monkeypatch.setattr(environment, "github_file", lambda *a: FORKS_YAML.encode())
+
+        with pytest.raises(EnvironmentDeclarationError, match="expected dev1.yaml"):
+            fetch_declared(DeclarationLocator("Azure/osdu-spi-stack", "ops/dev1.yaml"))
+
+    def test_an_unreadable_file_is_an_error_not_an_absent_declaration(self, monkeypatch):
+        def github_file(*args):
+            raise ImageResolutionError("GitHub API repos/x: HTTP 404")
+
+        monkeypatch.setattr(environment, "github_file", github_file)
+
+        with pytest.raises(EnvironmentDeclarationError, match="could not read .*HTTP 404"):
+            fetch_declared(self.LOCATOR)
