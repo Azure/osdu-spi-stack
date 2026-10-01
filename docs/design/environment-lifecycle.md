@@ -11,8 +11,8 @@ an incident is how a 20-minute refresh becomes a 4-hour rebuild.
 
 **Status.** `env-upgrade` and `env-refresh` are implemented and described
 below as built, as is the test-identity ensure step. Onboarding-intent
-reconciliation is implemented in the CLI and both workflows and is inert on
-`shared` until its declaration lists forks. `env-reset` and `env-teardown`,
+reconciliation is implemented in the CLI and both workflows, and `shared`'s
+declaration lists the five repositories it trusts. `env-reset` and `env-teardown`,
 the stale-pin sweep's workflow step, and the drain remain unbuilt; those
 sections still describe the target mechanism ahead of the code. Remove the remaining marks
 as those phases land.
@@ -316,9 +316,8 @@ gh run watch
    credential, the roster projection with roster-derived pin validation) and
    `--canonical-source` with its source-policy phase are built, as are
    `forks:`, the declaration locator with pre-resolution intent loading, and
-   `spi onboard --reconcile`. Still unbuilt: listing the repositories
-   `shared` already trusts in `ops/environments/shared.yaml`, which is what
-   turns its declaration ownership on. The template
+   `spi onboard --reconcile`. `ops/environments/shared.yaml` lists the
+   repositories `shared` trusts, each on a community canonical. The template
    implements one `deploy-test` job with borrow, prove, and restore steps;
    `validation-summary` reports its result through the required summary check.
    See [fork deployment](fork-deployment.md#the-sequence).
