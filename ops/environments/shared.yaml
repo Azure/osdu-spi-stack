@@ -5,3 +5,14 @@ location: westus3
 ingressMode: azure
 imageBranch: master
 nameSuffix: a43c7
+forks:
+  - service: partition
+    repo: Azure/osdu-spi-partition
+  - service: entitlements
+    repo: Azure/osdu-spi-entitlements
+  - service: legal
+    repo: Azure/osdu-spi-legal
+  - service: schema
+    repo: Azure/osdu-spi-schema
+  - service: file
+    repo: Azure/osdu-spi-file
