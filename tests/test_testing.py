@@ -687,14 +687,15 @@ class TestDryRun:
 
         assert plan.command[-3:] == ("-Dclient_secret=[redacted]", "-Dtest=One", "test")
 
-    def test_a_resolver_that_quotes_a_bearer_in_its_refusal_is_not_repeated(
-        self, cluster, monkeypatch
+    @pytest.mark.parametrize("quoted", ["RESOLVER_TOKEN", "CLIENT_SECRET"])
+    def test_a_resolver_that_quotes_a_credential_in_its_refusal_is_not_repeated(
+        self, cluster, monkeypatch, quoted
     ):
-        _machinery(cluster["commit_tree"], exit=3, quote="RESOLVER_TOKEN")
+        _machinery(cluster["commit_tree"], exit=3, quote=quoted)
         monkeypatch.setattr(testing, "mint_bearers", lambda: {"RESOLVER_TOKEN": "opaque-bearer-1"})
 
         with pytest.raises(SuiteNotRun, match=r"WHY: because \[redacted\]$") as exc:
-            testing.plan_suite("partition")
+            testing.plan_suite("partition", overrides={"CLIENT_SECRET": "hunter2hunter2"})
 
         assert exc.value.code == "env_not_ready"
 

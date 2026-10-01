@@ -489,8 +489,9 @@ def resolve_suite(
     if result.returncode != 0:
         error = report.get("error") or {}
         stderr = (result.stderr or "").strip().splitlines()
-        # The resolver held the bearers, so what it says of a failure may quote one.
-        detail = redactor(bearers.values())(error.get("detail") or (stderr[-1] if stderr else ""))
+        # The resolver held these credentials, so what it says of a failure may quote one.
+        redact = redactor(secret_values(bearers, overrides))
+        detail = redact(error.get("detail") or (stderr[-1] if stderr else ""))
         code, exit_code = _RESOLVER_EXITS.get(result.returncode, ("resolver_failed", EXIT_NOT_RUN))
         raise SuiteNotRun(
             code,
