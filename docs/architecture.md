@@ -171,7 +171,9 @@ deploy identity and namespace Roles are provisioned. `spi onboard` plans and
 applies repository protection, federation, per-service canonical-source policy,
 and both lock projections. `spi test` runs a service's suite from the
 acceptance image paired with its deployed commit, or from a checkout
-(ADR-036), and reports what the suites prove (ADR-037). Declaration enforcement and the reset and teardown workflows remain
+(ADR-036), and reports what the suites prove (ADR-037). `spi load` loads
+reference data from the release the environment's registry pins and publishes
+each load's state in `spi info --json` (ADR-040). Declaration enforcement and the reset and teardown workflows remain
 unbuilt. See
 [environment lifecycle](design/environment-lifecycle.md) and
 [fork deployment](design/fork-deployment.md) for the implemented contract and

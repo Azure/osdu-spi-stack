@@ -54,7 +54,9 @@ def _wire(
     members_seeded=True,
     entitlements_domain="dataservices.energy",
     image_lock=None,
+    loads=None,
 ):
+    monkeypatch.setattr(info, "collect_load_facts", lambda partitions, services: loads or {})
     monkeypatch.setattr(
         info,
         "_read_ingress_config",
@@ -818,3 +820,51 @@ def test_the_schema_loader_reports_the_schema_source_policy(monkeypatch):
     services = info.collect_info()["osdu_versions"]["services"]
 
     assert services["schema-load"]["source"] == "Acme/schema"
+
+
+_LOADS = {
+    "reference-data": {
+        "state": "complete",
+        "source": "osdu/data/data-definitions@99f8fc88d8ad",
+        "version": "v0.30.0",
+        "partitions": {
+            "opendes": {
+                "state": "complete",
+                "completedAt": "2026-10-02T15:04:11Z",
+                "records": {"total": 80103, "loaded": 80103, "failed": 0},
+            }
+        },
+    }
+}
+
+
+def test_collect_info_publishes_the_loads_block(monkeypatch):
+    _wire(monkeypatch, loads=_LOADS)
+
+    assert info.collect_info()["loads"] == _LOADS
+
+
+def test_collect_info_reads_loads_for_the_environment_partitions_and_lock(monkeypatch):
+    _wire(monkeypatch, partitions=["opendes", "second"], image_lock=_lock())
+    seen = {}
+
+    def collect(partitions, services):
+        seen.update(partitions=partitions, services=sorted(services))
+        return {}
+
+    monkeypatch.setattr(info, "collect_load_facts", collect)
+
+    assert info.collect_info()["loads"] == {}
+    assert seen == {"partitions": ["opendes", "second"], "services": ["partition", "storage"]}
+
+
+def test_render_info_shows_the_loads_table(monkeypatch, capsys):
+    _wire(monkeypatch, loads=_LOADS)
+    monkeypatch.setattr(info, "get_ingress_ip", lambda: "")
+
+    info.render_info()
+
+    out = capsys.readouterr().out
+    assert "Loads" in out
+    assert "reference-data" in out
+    assert "80103" in out

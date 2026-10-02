@@ -116,6 +116,13 @@ end of `spi up` records how the environment was last provisioned.
   absent, so a consumer that needs a compliant tag gates on this field rather
   than on `deployable`. `partitions[].legal_tag_desired` always carries the
   configured name (ADR-015), for diagnosing a seed that has not landed.
+- `loads` carries one entry per load the environment's registry names
+  (ADR-040): `state`, `source`, `version`, and `partitions`, each with its own
+  `state`, `completedAt`, `records` when the loader's outcome line was
+  captured, and `message` on failure. It is an empty object when the stack
+  version delivers no registry. Loads are non-gating like legal seeding, so a
+  consumer that needs seeded data gates on a load's `state` being `complete`
+  or `stale`.
 
 Rejected: resolve the release at read time by comparing the applied commit
 with the repository's tags. Exact for any commit, but every status read then

@@ -15,7 +15,8 @@
 """YAML templates for Kubernetes resources."""
 
 import hashlib
-from typing import Sequence
+import json
+from typing import Mapping, Sequence
 
 
 def storage_class(
@@ -375,3 +376,94 @@ def entitlements_members_job_name(
     seed = f"{admins}|{users}#{generation}" if users else f"{admins}#{generation}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
     return f"{ENTITLEMENTS_MEMBERS_COMPONENT}-{partition}-{digest}"
+
+
+# The image and scripts ConfigMap of the osdu-spi-init chart; a render test
+# holds these to its values.
+LOAD_JOB_IMAGE = "python:3.12-slim"
+LOAD_JOB_SCRIPTS = "osdu-spi-init-scripts"
+LOAD_JOB_DEADLINE_SECONDS = 7200
+
+
+def load_job(name: str, dataset: str, partition: str, source: str, env: Mapping[str, str]) -> str:
+    """The Job `spi load` creates for one dataset and partition (ADR-040).
+
+    It mirrors the init chart's pod spec so admission treats it the same. No
+    ttlSecondsAfterFinished: the Job is the record `spi info` reads. The
+    memory limit covers the largest reference-data manifest, 76 MB of JSON.
+    """
+    variables = "\n".join(
+        f"            - name: {key}\n              value: {json.dumps(value)}"
+        for key, value in env.items()
+    )
+    return f"""\
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {name}
+  namespace: osdu
+  labels:
+    app.kubernetes.io/managed-by: osdu-spi-stack
+    app.kubernetes.io/component: data-load
+    osdu.spi/role: data-load
+    osdu.spi/dataset: {dataset}
+    osdu.spi/partition: {partition}
+  annotations:
+    osdu.spi/source: {json.dumps(source)}
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: {LOAD_JOB_DEADLINE_SECONDS}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: osdu-spi-stack
+        app.kubernetes.io/component: data-load
+        osdu.spi/role: data-load
+        osdu.spi/dataset: {dataset}
+        osdu.spi/partition: {partition}
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: workload-identity-sa
+      restartPolicy: Never
+      nodeSelector:
+        spi-pool: osdu
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: "osdu"
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: scripts
+          configMap:
+            name: {LOAD_JOB_SCRIPTS}
+            defaultMode: 0755
+      containers:
+        - name: loader
+          image: {LOAD_JOB_IMAGE}
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - /scripts/load_records.py
+          env:
+{variables}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsUser: 1000
+            capabilities:
+              drop: [ALL]
+"""

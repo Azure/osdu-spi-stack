@@ -227,7 +227,10 @@ removal leaves the identities and group standing (ADR-034).
   the deploy identity's client id with the tenant, subscription, resource
   group, and cluster (the five values a fork holds; ADR-032), and the
   `environment` identity block (name, stack version, profile) that
-  `spi status --json` publishes from the same deploy record.
+  `spi status --json` publishes from the same deploy record. Its `loads`
+  block names each load in the environment's registry with a state, source,
+  and per-partition record counts (ADR-040); the fork deploy identity reads
+  it and cannot start a load.
   Acceptance secret names come from each service descriptor, and their values
   are fetched separately from Key Vault. In `azure` ingress mode the FQDN
   embeds the environment's name suffix; the declaration file persists the

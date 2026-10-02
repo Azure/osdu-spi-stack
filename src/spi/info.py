@@ -50,6 +50,8 @@ from .images import (
     runs_fork_package,
 )
 from .ingress import get_ingress_ip
+from .loads import collect_facts as collect_load_facts
+from .loads import loads_table
 from .pins import (
     PinError,
     decode_canonical_sources,
@@ -492,6 +494,7 @@ def _collect_info() -> dict:
     members_seeded = gather_reads(
         [partial(_entitlements_seeded, name, members, member_users) for name in partitions]
     )
+    versions = _osdu_versions(image_lock)
 
     info = {
         "apiVersion": STATUS_API_VERSION,
@@ -551,7 +554,10 @@ def _collect_info() -> dict:
         # Observed from the running Deployment; empty until entitlements is deployed.
         "entitlements_domain": entitlements_domain,
         "suspended": suspended,
-        "osdu_versions": _osdu_versions(image_lock),
+        "osdu_versions": versions,
+        # Every load the environment's registry names, read from its Jobs
+        # (ADR-040); empty when the stack version delivers no registry.
+        "loads": collect_load_facts(partitions, versions["services"]),
     }
 
     return info
@@ -783,6 +789,11 @@ def render_info(show_secrets: bool = False, show_apis: bool = False, output_json
         for label, cosmos, sb, storage, legal_tag, entitlements in partition_rows:
             ptable.add_row(label, cosmos, sb, storage, legal_tag, entitlements)
         console.print(ptable)
+        console.print()
+
+    ltable = loads_table(info["loads"])
+    if ltable is not None:
+        console.print(ltable)
         console.print()
 
     table = Table(title="Internal Services (use port-forward)", border_style="cyan", expand=True)

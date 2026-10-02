@@ -88,6 +88,15 @@ def test_up_next_steps_name_the_teardown_command(monkeypatch):
     assert "spi down --env dev1" in _plain(result.stdout)
 
 
+def test_up_next_steps_name_the_load_only_where_the_registry_ships(monkeypatch):
+    core = _run_up(monkeypatch)
+    bare = _run_up(monkeypatch, "--profile", "bare")
+
+    assert "spi load" in _plain(core.stdout)
+    assert bare.exit_code == 0, bare.output
+    assert "spi load" not in _plain(bare.stdout)
+
+
 def test_up_branch_hint_says_reconcile_pulls_the_branch_head(monkeypatch):
     result = _run_up(monkeypatch, "--branch", "feat/x")
 

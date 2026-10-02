@@ -115,6 +115,10 @@ kubectl get jobs -n osdu
 kubectl logs job/schema-load -n osdu
 ```
 
+`spi load --status` shows the schema load beside the reference-data load, and
+`spi load --dataset schemas --force` deletes the `schema-load` Job and
+reconciles `spi-osdu-schema-load` so Flux applies it again (ADR-040).
+
 Timeouts are defined per Kustomization. Increasing a timeout can accommodate a
 slow rollout, but will not fix a missing Secret, bad image reference, or invalid
 manifest.
