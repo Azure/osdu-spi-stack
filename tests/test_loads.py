@@ -33,7 +33,7 @@ REGISTRY_FILE = REPO_ROOT / "software" / "stacks" / "osdu" / "init" / "load-regi
 CHART_VALUES = REPO_ROOT / "software" / "charts" / "osdu-spi-init" / "values.yaml"
 STACK = REPO_ROOT / "software" / "stacks" / "osdu" / "profiles" / "core" / "stack.yaml"
 COMMIT = "99f8fc88d8ad838b5738ac5ad92ac643538b5766"
-SOURCE = f"osdu/data/data-definitions@{COMMIT}"
+SOURCE = f"osdu/data/data-definitions@{COMMIT}:ReferenceValues/Manifests/reference-data"
 OUTCOME = (
     "load-records outcome: loaded: source=osdu/data/data-definitions@99f8fc88d8ad "
     "total=80103 loaded=80103 skipped=0 failed=0"
@@ -785,3 +785,49 @@ def test_progress_reads_the_loader_container_of_the_newest_pod(monkeypatch):
     assert loads._progress("load-x") == "[5000/80103] loaded=5000 failed=0"
     assert commands[0][:3] == ["kubectl", "logs", "retry"]
     assert commands[0][commands[0].index("-c") + 1] == "loader"
+
+
+def test_a_changed_path_at_the_same_commit_is_another_source(registry):
+    load = registry.get("reference-data")
+    moved = load.model_copy(
+        update={"source": load.source.model_copy(update={"path": "ReferenceValues/Other"})}
+    )
+    loaded = _job("complete")
+
+    assert loads.plan_load(load, loaded, force=False) is Action.NONE
+    assert loads.plan_load(moved, loaded, force=False) is Action.SUPERSEDE
+    assert moved.source.identity != load.source.identity
+
+
+def test_a_replacement_started_without_waiting_is_cleaned_up_by_the_next_run(monkeypatch, registry):
+    old = _job("complete", source="osdu/data/data-definitions@old", name="load-old")
+    cluster = _Cluster(monkeypatch, registry, [old], finish="running")
+    _run(registry, wait=False)
+    assert cluster.names() == ["load-old", "load-reference-data-opendes-99f8fc88"]
+
+    cluster.jobs[-1] = _job("complete", created="2026-10-05T00:00:00Z", outcome=OUTCOME)
+    _run(registry)
+
+    assert cluster.names() == ["load-reference-data-opendes-99f8fc88"]
+    assert cluster.deleted() == ["load-old"]
+
+
+def test_a_requirement_unmet_after_this_run_changed_something_is_not_a_refusal(
+    monkeypatch, registry
+):
+    cluster = _Cluster(monkeypatch, registry)
+
+    def reconcile(command, **kwargs):
+        cluster.commands.append(command)
+        if command[:3] == ["kubectl", "delete", "job"]:
+            cluster.schema_job = _schema_job("running")
+
+    monkeypatch.setattr(loads, "run_command", reconcile)
+
+    with pytest.raises(loads.LoadError) as raised:
+        _run(registry, force=True, wait=False)
+
+    assert raised.value.code == "requires_unmet"
+    assert not raised.value.refused
+    assert "Already started in this run: schemas" in str(raised.value)
+    assert cluster.created == []

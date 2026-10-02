@@ -97,8 +97,9 @@ class Source(BaseModel):
 
     @property
     def identity(self) -> str:
-        """What a Job records as its source and a later run compares."""
-        return f"{self.project}@{self.commit}"
+        """What a Job records as its source and a later run compares. The path
+        selects the records, so a changed path is a different source."""
+        return f"{self.project}@{self.commit}:{self.path.strip('/')}"
 
 
 class Load(BaseModel):
@@ -566,7 +567,8 @@ def _finish(load: Load, partition: str, name: str, others: list[str]) -> None:
 
 def _run_job_load(
     load: Load, partitions: list[str], target: Target, force: bool, wait: bool
-) -> None:
+) -> bool:
+    """Run one job load; True when a Job was created or deleted."""
     if not target.entitlements_domain:
         raise _refused(
             "entitlements_missing",
@@ -577,10 +579,11 @@ def _run_job_load(
         raise _refused(
             "legal_tag_missing",
             f"{load.name} needs the default legal tag, which legal-init has not created for "
-            f"{', '.join(unseeded)}. Nothing was created.",
+            f"{', '.join(unseeded)}; {load.name} was not started.",
         )
     jobs = read_load_jobs()
     pending: list[tuple[str, str, list[str]]] = []
+    changed = False
     for partition in partitions:
         existing = jobs_for(jobs, load, partition)
         newest = existing[-1] if existing else None
@@ -588,6 +591,10 @@ def _run_job_load(
         name = job_name(load, partition)
         if action is Action.NONE and newest is not None:
             _record_outcome(newest)
+            # Jobs a --no-wait run left behind when it started this one.
+            for job in existing[:-1]:
+                _delete_job(_name(job))
+                changed = True
             console.print(f"  {load.name:<16} complete for {partition}, nothing to do")
             continue
         if action is Action.WAIT and newest is not None:
@@ -602,21 +609,24 @@ def _run_job_load(
             _delete_job(doomed_name)
         console.print(f"  {load.name:<16} creating Job {name}")
         _create_job(load, partition, target)
+        changed = True
         pending.append((partition, name, [_name(j) for j in existing if _name(j) not in doomed]))
     if not wait:
         for partition, name, _others in pending:
             console.print(f"  {load.name:<16} Job {name} left running for {partition}")
-        return
+        return changed
     for partition, name, others in pending:
         _finish(load, partition, name, others)
+    return changed
 
 
-def _run_flux_load(load: Load, facts: dict, force: bool, wait: bool) -> None:
+def _run_flux_load(load: Load, facts: dict, force: bool, wait: bool) -> bool:
+    """Report the Flux-owned load, or with force re-run it; True when re-run."""
     state = facts["state"]
     if not force:
         version = facts.get("version") or "no version"
         console.print(f"  {load.name:<16} {state}, {version}, nothing to do")
-        return
+        return False
     _delete_job(SCHEMA_JOB)
     if wait:
         run_command(
@@ -633,7 +643,7 @@ def _run_flux_load(load: Load, facts: dict, force: bool, wait: bool) -> None:
             description=f"Recreate the {load.name} Job and wait for it",
         )
         console.print(f"  [success]{load.name:<16} complete[/success]")
-        return
+        return True
     run_command(
         [
             "kubectl",
@@ -646,6 +656,7 @@ def _run_flux_load(load: Load, facts: dict, force: bool, wait: bool) -> None:
         ],
         description=f"Trigger Kustomization reconciliation ({SCHEMA_KUSTOMIZATION})",
     )
+    return True
 
 
 def current_facts(registry: Registry, target: Target) -> dict:
@@ -677,21 +688,34 @@ def run_loads(
             require_deployable()
         except PinError as exc:
             raise _refused("not_deployable", str(exc)) from exc
+    started: list[str] = []
     for load in selected:
-        facts = current_facts(registry, target)
-        for needed in load.requires:
-            state = facts[needed]["state"]
-            if state not in SATISFYING:
-                raise _refused(
-                    "requires_unmet",
-                    f"{load.name} requires {needed}, which is {state}; {load.name} was not started.",
-                )
-        if not scoped[load.name]:
-            console.print(f"  {load.name:<16} does not load into {partition}, nothing to do")
-        elif load.runner == "flux":
-            _run_flux_load(load, facts[load.name], force, wait)
-        else:
-            _run_job_load(load, scoped[load.name], target, force, wait)
+        try:
+            facts = current_facts(registry, target)
+            for needed in load.requires:
+                state = facts[needed]["state"]
+                if state not in SATISFYING:
+                    raise _refused(
+                        "requires_unmet",
+                        f"{load.name} requires {needed}, which is {state}; "
+                        f"{load.name} was not started.",
+                    )
+            if not scoped[load.name]:
+                console.print(f"  {load.name:<16} does not load into {partition}, nothing to do")
+            elif load.runner == "flux":
+                changed = _run_flux_load(load, facts[load.name], force, wait)
+            else:
+                changed = _run_job_load(load, scoped[load.name], target, force, wait)
+        except LoadError as exc:
+            # A refusal promises that nothing changed, which stops being true
+            # once an earlier load in this run was started.
+            if exc.refused and started:
+                raise LoadError(
+                    exc.code, f"{exc} Already started in this run: {', '.join(started)}."
+                ) from exc
+            raise
+        if scoped[load.name] and changed:
+            started.append(load.name)
 
 
 _STATE_STYLES = {COMPLETE: "ready", STALE: "notready", RUNNING: "notready", FAILED: "failed"}
