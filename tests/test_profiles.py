@@ -721,3 +721,59 @@ class TestForkRbac:
             assert subject["name"] == (
                 "${DEPLOY_IDENTITY_PRINCIPAL_ID:=spi-deploy-identity-unprovisioned}"
             )
+
+
+class TestLoadRegistry:
+    """The named loads `spi load` reads from the cluster."""
+
+    INIT = STACKS / "init"
+
+    def _registry(self) -> dict:
+        return yaml.safe_load((self.INIT / "load-registry.yaml").read_text(encoding="utf-8"))
+
+    def test_init_layer_generates_the_configmap_under_a_stable_name(self):
+        kustomization = yaml.safe_load(
+            (self.INIT / "kustomization.yaml").read_text(encoding="utf-8")
+        )
+        assert kustomization["configMapGenerator"] == [
+            {
+                "name": "spi-load-registry",
+                "namespace": "osdu",
+                "files": ["registry.yaml=load-registry.yaml"],
+            }
+        ]
+        assert kustomization["generatorOptions"] == {"disableNameSuffixHash": True}
+
+    def test_only_the_core_profile_delivers_it(self):
+        delivering = {
+            profile.value
+            for profile in Profile
+            if "./software/stacks/osdu/init" in _referenced_paths(PROFILES_DIR / profile.value)
+        }
+        assert delivering == {"core"}
+
+    def test_init_layer_substitutes_nothing_into_the_registry(self):
+        assert "postBuild" not in _kustomization(PROFILES_DIR / "core", "spi-osdu-init")["spec"]
+
+    def test_names_are_unique_and_requirements_resolve(self):
+        loads = self._registry()["loads"]
+        names = [load["name"] for load in loads]
+        assert len(names) == len(set(names))
+        for load in loads:
+            assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", load["name"])
+            assert set(load.get("requires", [])) <= set(names) - {load["name"]}
+
+    def test_an_archive_source_is_pinned_by_commit(self):
+        archives = [
+            load["source"]
+            for load in self._registry()["loads"]
+            if load["source"]["type"] == "gitlab-archive"
+        ]
+        assert archives
+        for source in archives:
+            assert re.fullmatch(r"[0-9a-f]{40}", source["commit"])
+
+    def test_the_schema_load_stays_with_flux(self):
+        schemas = next(load for load in self._registry()["loads"] if load["name"] == "schemas")
+        assert schemas["runner"] == "flux"
+        assert schemas["source"] == {"type": "paired-image", "service": "schema"}

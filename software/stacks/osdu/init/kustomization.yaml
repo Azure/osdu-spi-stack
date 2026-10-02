@@ -2,3 +2,10 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - release.yaml
+configMapGenerator:
+  - name: spi-load-registry
+    namespace: osdu
+    files:
+      - registry.yaml=load-registry.yaml
+generatorOptions:
+  disableNameSuffixHash: true
