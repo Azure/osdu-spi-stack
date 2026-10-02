@@ -32,7 +32,8 @@ from the CLI, and `spi token --me` prints the person's own bearer.
   other presets' groups, then adds that preset's groups; `users` stays. When a
   write fails, the groups that run added in the partition are removed again,
   so the person never keeps the old role or half of the new one; a rerun
-  finishes. Partitions written before the failure stay written.
+  finishes. Partitions written before the failure stay written, and those
+  after it are not touched.
 - **The deploy identity writes.** `src/spi/users.py` calls the public
   entitlements API with the bearer `spi token` mints. The deploy identity sits
   in `users.datalake.ops`, which entitlements lets manage any group and which
@@ -44,6 +45,8 @@ from the CLI, and `spi token --me` prints the person's own bearer.
   text refusal means the mesh refused the token and is reported at once.
 - **The seeded identities are refused on `add` and `remove`.** Their client ids come
   from the cluster config and the workload ServiceAccount; `spi up` owns them.
+  A group address is refused too, since entitlements would nest the group and
+  give the role to every member of it.
 - **`list` reads role groups, not every group.** Members of `users` are the
   roster; the role is the preset whose role groups the member holds directly,
   `custom` for another mix, `none` for `users` alone, and `seeded` for the

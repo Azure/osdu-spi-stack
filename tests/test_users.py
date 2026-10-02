@@ -242,6 +242,19 @@ def test_add_refuses_a_seeded_identity_before_any_call(served):
     assert server.calls == []
 
 
+@pytest.mark.parametrize("call", [users.add_user, users.remove_user])
+def test_a_group_address_is_refused_before_any_call(served, call):
+    server = served(groups={"users": {ALICE}})
+    group = f"Users@opendes.{DOMAIN}"
+    args = (ENV, "deploy", group, "ops", ENV.partitions)
+
+    with pytest.raises(users.UsersError, match="not a person") as raised:
+        call(*args) if call is users.add_user else call(*args[:3], args[4])
+
+    assert raised.value.code == "group_address"
+    assert server.calls == []
+
+
 def test_add_matches_a_stored_id_whatever_its_case(served):
     server = served(groups={"users": {ALICE}, "users.datalake.admins": {ALICE}})
 

@@ -136,7 +136,9 @@ def person_token(resource: Optional[str] = None) -> PersonToken:
             "Your az token carries no claim the mesh uses to name a caller "
             "(looked for unique_name, appid with oid, upn, oid, azp)."
         )
-    if claim in _APP_CLAIMS or claims.get("idtyp") == "app":
+    # A v2 app-only token is projected by oid and may omit idtyp; only a delegated one has scp.
+    app_only = claim == "oid" and not claims.get("scp")
+    if claim in _APP_CLAIMS or claims.get("idtyp") == "app" or app_only:
         raise IdentityError(
             f"az is signed in as the application {user_id}, not a person. "
             "Sign in with 'az login' as yourself."

@@ -101,9 +101,23 @@ def test_person_token_names_az_login_when_az_has_no_session():
         _person_token(returncode=1, stderr="ERROR: Please run 'az login' to setup account.")
 
 
-def test_person_token_refuses_a_service_principal_login():
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"iss": V1, "oid": "oid-1", "appid": "app-1"},
+        {"iss": V2, "oid": "oid-1", "azp": "app-1"},
+        {"iss": V2, "oid": "oid-1", "azp": "app-1", "scp": "user_impersonation", "idtyp": "app"},
+    ],
+)
+def test_person_token_refuses_a_service_principal_login(claims):
     with pytest.raises(identity.IdentityError, match="not a person"):
-        _person_token({"iss": V1, "oid": "oid-1", "appid": "app-1"})
+        _person_token(claims)
+
+
+def test_person_token_accepts_a_delegated_v2_token_named_by_oid():
+    person, _ = _person_token({"iss": V2, "oid": "oid-1", "azp": "az-cli", "scp": "access"})
+
+    assert (person.user_id, person.claim) == ("oid-1", "oid")
 
 
 def test_person_token_refuses_a_token_the_filter_cannot_name():

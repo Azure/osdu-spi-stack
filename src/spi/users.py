@@ -234,7 +234,13 @@ def _remove_from_group(
         raise _refused(f"removing from {group}", partition, status, body)
 
 
-def _refuse_seeded(env: Environment, member: str, verb: str) -> None:
+def _refuse_reserved(env: Environment, member: str, verb: str) -> None:
+    # Entitlements takes a group address as a member and nests it, granting the role to all of it.
+    if member.lower().endswith(tuple(f"@{p}.{env.domain}".lower() for p in env.partitions)):
+        raise UsersError(
+            f"Refusing to {verb} {member}: it is an entitlements group, not a person.",
+            code="group_address",
+        )
     kind = env.kind(member)
     if kind != "user":
         raise UsersError(
@@ -260,7 +266,7 @@ def add_user(
     env: Environment, token: str, member: str, role: str, partitions: tuple[str, ...]
 ) -> dict:
     """Set a member's role in each partition: drop the other roles' groups, add its own."""
-    _refuse_seeded(env, member, "change")
+    _refuse_reserved(env, member, "change")
     preset = ROLE_PRESETS[role]
     changes: dict[str, dict[str, str]] = {}
     previous: Optional[str] = None
@@ -342,7 +348,7 @@ def remove_user(
     env: Environment, token: str, member: str, partitions: tuple[str, ...]
 ) -> dict[str, str]:
     """Delete a member from every group in each partition; seeded identities are refused."""
-    _refuse_seeded(env, member, "remove")
+    _refuse_reserved(env, member, "remove")
     outcome: dict[str, str] = {}
     for partition in partitions:
         # Entitlements answers 204 for a stranger too, so membership is read first.
