@@ -33,6 +33,7 @@ import time
 import types
 import urllib.error
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, cast
@@ -398,6 +399,7 @@ def test_init_scripts_compile(init_scripts):
     stray indent or quote breaks them only at Job runtime. Compile each one."""
     assert "init_legal.py" in init_scripts
     assert "init_members.py" in init_scripts
+    assert "load_records.py" in init_scripts
     for name, source in init_scripts.items():
         compile(source, name, "exec")
 
@@ -1230,3 +1232,364 @@ def test_legal_init_times_out_waiting_for_partition_record(legal_init):
     assert result.exit_code == 1
     assert "legal-init outcome: partition_record_timeout" in result.stdout
     assert result.routed("keyvault") == []
+
+
+# --- load_records.py execution harness ---------------------------------------
+
+_LOAD_COMMIT = "99f8fc88d8ad838b5738ac5ad92ac643538b5766"
+_LOAD_PATH = "ReferenceValues/Manifests/reference-data"
+_LOAD_ROOT = f"data-definitions-{_LOAD_COMMIT}-ReferenceValues-Manifests-reference-data"
+_BRACES = ("{" * 2, "}" * 2)
+
+
+def _token(name: str) -> str:
+    return f"{_BRACES[0]}{name}{_BRACES[1]}"
+
+
+def _reference_record(name: str, kind: str = "ActivityType:1.0.0") -> dict:
+    entity = kind.split(":", 1)[0]
+    return {
+        "id": f"{_token('NAMESPACE')}:reference-data--{entity}:{name}",
+        "kind": f"osdu:wks:reference-data--{kind}",
+        "acl": {"owners": [_token("DATA_OWNERS_GROUP")], "viewers": ["someone@else"]},
+        "legal": {
+            "legaltags": [_token("LEGAL_TAG")],
+            "otherRelevantDataCountries": [_token("ISO_3166_ALPHA_2_CODE")],
+        },
+        "data": {"Name": name},
+    }
+
+
+def _manifest(*records: dict) -> bytes:
+    return json.dumps({"kind": "osdu:wks:Manifest:1.0.0", "ReferenceData": list(records)}).encode()
+
+
+def _archive(files: dict[str, bytes], sequence: list[str] | None, comment: str = _LOAD_COMMIT):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, body in files.items():
+            archive.writestr(f"{_LOAD_ROOT}/{_LOAD_PATH}/{name}", body)
+        if sequence is not None:
+            listing = [{"FileName": f"{_LOAD_PATH}/{name}"} for name in sequence]
+            archive.writestr(
+                f"{_LOAD_ROOT}/{_LOAD_PATH}/IngestionSequence.json", json.dumps(listing)
+            )
+        archive.comment = comment.encode()
+    return buffer.getvalue()
+
+
+_LOAD_FILES = {
+    "OPEN/B.json": _manifest(
+        _reference_record("b1"), _reference_record("b2", "UnitOfMeasure:1.0.0")
+    ),
+    "FIXED/A.json": _manifest(_reference_record("a1"), _reference_record("b1")),
+}
+
+
+def _run_load(init_scripts, monkeypatch, capsys, *, files=None, sequence=None, **routes):
+    """Execute load_records.py against a routed fake of urlopen.
+
+    Routes: ``archive`` (the GitLab download), ``schema`` (GET one kind),
+    ``put`` (PUT records); each a handler(url) returning a _FakeResponse or
+    raising. ``info=False`` fails the /info wait; ``token`` replaces get_token.
+    """
+    files = _LOAD_FILES if files is None else files
+    sequence = ["FIXED/A.json", "OPEN/B.json"] if sequence is None else sequence
+    env = {
+        "PARTITION": "opendes",
+        "LEGAL_TAG": "opendes-demo-legaltag",
+        "ENTITLEMENTS_DOMAIN": "dataservices.energy",
+        "SOURCE_PROJECT": "osdu/data/data-definitions",
+        "SOURCE_COMMIT": _LOAD_COMMIT,
+        "SOURCE_PATH": _LOAD_PATH,
+        **routes.pop("env", {}),
+    }
+    for name, value in env.items():
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    termination_log = Path(tempfile.mkdtemp()) / "termination-log"
+    monkeypatch.setenv("TERMINATION_MESSAGE_PATH", str(termination_log))
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", routes.get("token", lambda: "test-token"))
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: routes.get("info", True))
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+
+    namespace: dict[str, object] = {"__name__": "load_records_test"}
+    exec(init_scripts["load_records.py"], namespace)
+    for name, value in routes.get("constants", {}).items():
+        namespace[name] = value
+    calls: list[_Call] = []
+    defaults = {
+        "archive": _responds(200, _archive(files, sequence)),
+        "schema": _responds(200),
+        "put": _responds(201, b'{"recordCount": 1, "skippedRecordIds": []}'),
+    }
+
+    def urlopen(req, timeout):
+        url, method = req.full_url, req.get_method()
+        if "/-/archive/" in url:
+            route = "archive"
+        elif "/api/schema-service/v1/schema/" in url and method == "GET":
+            route = "schema"
+        elif url.endswith("/api/storage/v2/records?skipdupes=true") and method == "PUT":
+            route = "put"
+        else:
+            raise _Unrouted(f"{method} {url}")
+        calls.append(_Call(route, url, method, dict(req.headers), req.data))
+        return routes.get(route, defaults[route])(url)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    main = cast(Callable[[], int], namespace["main"])
+    rc = main()
+    message = termination_log.read_text() if termination_log.exists() else ""
+    return _Result(rc, capsys.readouterr().out, calls, message)
+
+
+def _put_records(result: _Result) -> list[dict]:
+    return [record for call in result.routed("put") for record in json.loads(call.body or b"[]")]
+
+
+def test_load_records_loads_every_record_once_in_sequence_order(init_scripts, monkeypatch, capsys):
+    result = _run_load(init_scripts, monkeypatch, capsys)
+
+    assert result.exit_code == 0
+    assert [record["data"]["Name"] for record in _put_records(result)] == ["a1", "b1", "b2"]
+    assert result.termination_message == (
+        "load-records outcome: loaded: source=osdu/data/data-definitions@99f8fc88d8ad "
+        "total=3 loaded=3 skipped=0 failed=0"
+    )
+    assert f"/-/archive/{_LOAD_COMMIT}/data-definitions-{_LOAD_COMMIT}.zip" in (
+        result.routed("archive")[0].url
+    )
+
+
+def test_load_records_substitutes_tokens_and_replaces_acl_and_legal(
+    init_scripts, monkeypatch, capsys
+):
+    result = _run_load(init_scripts, monkeypatch, capsys)
+
+    record = _put_records(result)[0]
+    assert record["id"] == "opendes:reference-data--ActivityType:a1"
+    assert record["acl"] == {
+        "owners": ["data.default.owners@opendes.dataservices.energy"],
+        "viewers": ["data.default.viewers@opendes.dataservices.energy"],
+    }
+    assert record["legal"] == {
+        "legaltags": ["opendes-demo-legaltag"],
+        "otherRelevantDataCountries": ["US"],
+    }
+    assert _BRACES[0] not in json.dumps(_put_records(result))
+    headers = {key.lower(): value for key, value in result.routed("put")[0].headers.items()}
+    assert headers["data-partition-id"] == "opendes"
+    assert headers["authorization"] == "Bearer test-token"
+
+
+def test_load_records_appends_manifests_the_sequence_omits(init_scripts, monkeypatch, capsys):
+    result = _run_load(init_scripts, monkeypatch, capsys, sequence=["OPEN/B.json"])
+
+    assert [record["data"]["Name"] for record in _put_records(result)] == ["b1", "b2", "a1"]
+
+
+def test_load_records_checks_every_kind_before_any_write(init_scripts, monkeypatch, capsys):
+    def schema(url: str):
+        if "UnitOfMeasure" in url:
+            return _http_error(404)(url)
+        return _FakeResponse(200, b"{}")
+
+    result = _run_load(init_scripts, monkeypatch, capsys, schema=schema)
+
+    assert result.exit_code == 1
+    assert len(result.routed("schema")) == 2
+    assert result.routed("put") == []
+    assert "load-records outcome: schema_behind" in result.termination_message
+    assert "1 of 2 kinds are not registered" in result.termination_message
+    assert "osdu:wks:reference-data--UnitOfMeasure:1.0.0" in result.termination_message
+
+
+def test_load_records_names_at_most_twenty_missing_kinds(init_scripts, monkeypatch, capsys):
+    records = [_reference_record(f"r{i}", f"Kind{i:02d}:1.0.0") for i in range(25)]
+    result = _run_load(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        files={"OPEN/Many.json": _manifest(*records)},
+        sequence=[],
+        schema=_http_error(404),
+    )
+
+    assert "25 of 25 kinds are not registered" in result.termination_message
+    assert result.termination_message.count("reference-data--Kind") == 20
+    assert result.termination_message.endswith("and 5 more")
+
+
+def test_load_records_does_not_read_a_schema_outage_as_a_missing_kind(
+    init_scripts, monkeypatch, capsys
+):
+    result = _run_load(init_scripts, monkeypatch, capsys, schema=_http_error(503))
+
+    assert result.exit_code == 1
+    assert result.routed("put") == []
+    assert "load-records outcome: schema_unavailable" in result.termination_message
+
+
+def test_load_records_splits_batches_at_the_storage_limit(init_scripts, monkeypatch, capsys):
+    records = [_reference_record(f"r{i}") for i in range(5)]
+    result = _run_load(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        files={"OPEN/Five.json": _manifest(*records)},
+        sequence=[],
+        constants={"BATCH_SIZE": 2},
+    )
+
+    assert sorted(len(json.loads(call.body or b"[]")) for call in result.routed("put")) == [1, 2, 2]
+    assert "total=5 loaded=5" in result.termination_message
+
+
+def test_load_records_counts_a_conflict_and_skipped_duplicates_as_loaded(
+    init_scripts, monkeypatch, capsys
+):
+    conflict = _run_load(init_scripts, monkeypatch, capsys, put=_http_error(409))
+    assert conflict.exit_code == 0
+    assert "total=3 loaded=3 skipped=0 failed=0" in conflict.termination_message
+
+    body = json.dumps({"recordCount": 3, "skippedRecordIds": ["x", "y", "z"]}).encode()
+    skipped = _run_load(init_scripts, monkeypatch, capsys, put=_responds(201, body))
+    assert skipped.exit_code == 0
+    assert "total=3 loaded=3 skipped=3 failed=0" in skipped.termination_message
+
+
+def test_load_records_retries_a_server_error_then_succeeds(init_scripts, monkeypatch, capsys):
+    answers = iter([_http_error(503), _transport_error(), _responds(201)])
+
+    result = _run_load(init_scripts, monkeypatch, capsys, put=lambda url: next(answers)(url))
+
+    assert result.exit_code == 0
+    assert len(result.routed("put")) == 3
+
+
+def test_load_records_fails_a_rejected_batch_without_retrying(init_scripts, monkeypatch, capsys):
+    result = _run_load(
+        init_scripts, monkeypatch, capsys, put=_http_error(400, b"Invalid legal tags")
+    )
+
+    assert result.exit_code == 1
+    assert len(result.routed("put")) == 1
+    assert "load-records outcome: threshold_exceeded" in result.termination_message
+    assert "total=3 loaded=0 skipped=0 failed=3" in result.termination_message
+    assert "first failure: 400 Invalid legal tags" in result.termination_message
+
+
+def test_load_records_tolerates_failures_under_the_threshold(init_scripts, monkeypatch, capsys):
+    records = [_reference_record(f"r{i}") for i in range(4)]
+    answers = iter([_http_error(400), _responds(201), _responds(201), _responds(201)])
+    result = _run_load(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        files={"OPEN/Four.json": _manifest(*records)},
+        sequence=[],
+        constants={"BATCH_SIZE": 1, "WORKERS": 1, "FAILURE_THRESHOLD": 0.25},
+        put=lambda url: next(answers)(url),
+    )
+
+    assert result.exit_code == 0
+    assert "load-records outcome: loaded" in result.termination_message
+    assert "total=4 loaded=3 skipped=0 failed=1" in result.termination_message
+
+
+def test_load_records_fails_before_any_request_when_a_manifest_does_not_parse(
+    init_scripts, monkeypatch, capsys
+):
+    files = {**_LOAD_FILES, "OPEN/Broken.json": b'{"ReferenceData": ['}
+    result = _run_load(init_scripts, monkeypatch, capsys, files=files)
+
+    assert result.exit_code == 1
+    assert [call.route for call in result.calls] == ["archive"]
+    assert "load-records outcome: manifest_invalid" in result.termination_message
+    assert "1 of 3 manifests did not parse: Broken.json" in result.termination_message
+
+
+def test_load_records_fails_when_the_sequence_lists_a_file_the_archive_lacks(
+    init_scripts, monkeypatch, capsys
+):
+    result = _run_load(init_scripts, monkeypatch, capsys, sequence=["OPEN/Gone.json"])
+
+    assert result.exit_code == 1
+    assert "load-records outcome: manifest_invalid" in result.termination_message
+    assert "OPEN/Gone.json" in result.termination_message
+
+
+def test_load_records_refuses_an_archive_cut_from_another_commit(init_scripts, monkeypatch, capsys):
+    other = _archive(_LOAD_FILES, [], comment="0" * 40)
+    result = _run_load(init_scripts, monkeypatch, capsys, archive=_responds(200, other))
+
+    assert result.exit_code == 1
+    assert [call.route for call in result.calls] == ["archive"]
+    assert "load-records outcome: source_unavailable" in result.termination_message
+
+
+def test_load_records_reports_an_unreachable_source(init_scripts, monkeypatch, capsys):
+    missing = _run_load(init_scripts, monkeypatch, capsys, archive=_http_error(404))
+    assert missing.exit_code == 1
+    assert len(missing.routed("archive")) == 1
+    assert "load-records outcome: source_unavailable" in missing.termination_message
+
+    down = _run_load(init_scripts, monkeypatch, capsys, archive=_transport_error())
+    assert down.exit_code == 1
+    assert len(down.routed("archive")) == 3
+    assert "load-records outcome: source_unavailable" in down.termination_message
+
+
+def test_load_records_times_out_waiting_for_the_services(init_scripts, monkeypatch, capsys):
+    result = _run_load(init_scripts, monkeypatch, capsys, info=False)
+
+    assert result.exit_code == 1
+    assert [call.route for call in result.calls] == ["archive"]
+    assert "load-records outcome: service_timeout" in result.termination_message
+
+
+def test_load_records_fails_on_missing_config(init_scripts, monkeypatch, capsys):
+    result = _run_load(init_scripts, monkeypatch, capsys, env={"LEGAL_TAG": None})
+
+    assert result.exit_code == 1
+    assert result.calls == []
+    assert result.termination_message == (
+        "load-records outcome: config_missing: missing environment: LEGAL_TAG"
+    )
+
+
+def test_load_records_refreshes_the_token_during_a_long_load(init_scripts, monkeypatch, capsys):
+    minted = iter(f"token-{i}" for i in range(100))
+    records = [_reference_record(f"r{i}") for i in range(3)]
+    result = _run_load(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        files={"OPEN/Three.json": _manifest(*records)},
+        sequence=[],
+        constants={"BATCH_SIZE": 1, "WORKERS": 1, "TOKEN_MAX_AGE": -1},
+        token=lambda: next(minted),
+    )
+
+    assert result.exit_code == 0
+    bearers = {
+        {key.lower(): value for key, value in call.headers.items()}["authorization"]
+        for call in result.routed("put")
+    }
+    assert len(bearers) > 1
+
+
+def test_load_records_carries_no_helm_action():
+    """Helm parses a doubled brace anywhere in scripts.yaml, so the script
+    assembles the manifest tokens instead of spelling them."""
+    template = (CHART_DIR / "templates" / "scripts.yaml").read_text(encoding="utf-8")
+    start = template.index("  load_records.py: |")
+    assert _BRACES[0] not in template[start : template.rindex(_BRACES[0])]

@@ -1,0 +1,26 @@
+# The named loads this stack version offers. `spi load` and `spi info` read
+# the copy Flux delivers as the ConfigMap spi-load-registry.
+apiVersion: spi.osdu.dev/v1
+loads:
+  - name: schemas
+    default: true
+    # Flux owns the Job: schema-load, behind spi-osdu-schema-load (ADR-013).
+    runner: flux
+    source:
+      type: paired-image
+      service: schema
+    scope: primary-partition
+
+  - name: reference-data
+    default: true
+    runner: job
+    requires: [schemas]
+    source:
+      type: gitlab-archive
+      project: osdu/data/data-definitions
+      ref: v0.30.0
+      # The commit v0.30.0 points to. The Job fetches by commit; ref is for people.
+      commit: 99f8fc88d8ad838b5738ac5ad92ac643538b5766
+      path: ReferenceValues/Manifests/reference-data
+    loader: records
+    scope: each-partition

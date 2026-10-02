@@ -836,4 +836,414 @@ data:
             outcome("unexpected_error", f"{type(e).__name__}: {e}")
             rc = 1
         sys.exit(rc)
+  load_records.py: |
+    """Load storage records from a pinned archive of OSDU manifests.
+
+    A load Job created by `spi load` runs this as the workload identity. The
+    archive is fetched from community GitLab by commit, so a moved tag cannot
+    change what an environment loads.
+
+    Flow:
+      1. Fetch the archive of SOURCE_PATH at SOURCE_COMMIT.
+      2. Order the manifests by IngestionSequence.json, then any it omits by
+         name. Substitute the manifest tokens, give every record the
+         partition's default data groups and LEGAL_TAG, and keep the first
+         record of each id. A manifest that does not parse fails the load here.
+      3. Wait for storage and schema /info to return 200.
+      4. GET every distinct kind from the schema service. A kind that is not
+         registered fails the load before any record is written.
+      5. PUT the records to storage in batches of BATCH_SIZE with skipdupes.
+         200, 201 and 409 are success. A 5xx, a 429 or a transport error is
+         tried ATTEMPTS times; any other status fails the batch at once.
+      6. Fail when more than FAILURE_THRESHOLD of the records failed.
+
+    Every exit prints "load-records outcome: <code>: <detail>", one of: loaded,
+    schema_behind, schema_unavailable, source_unavailable, manifest_invalid,
+    threshold_exceeded, service_timeout, config_missing, auth_failed,
+    unexpected_error, and writes the same line to the pod termination message.
+    `spi load` copies it onto the Job, and `spi info` reads the counts from it.
+    """
+    import concurrent.futures
+    import io
+    import json
+    import os
+    import sys
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    import zipfile
+
+    sys.path.insert(0, "/scripts")
+    from auth import get_token
+    from wait import wait_for_status
+
+    REQUIRED_ENV = (
+        "PARTITION",
+        "LEGAL_TAG",
+        "ENTITLEMENTS_DOMAIN",
+        "SOURCE_PROJECT",
+        "SOURCE_COMMIT",
+        "SOURCE_PATH",
+    )
+    GITLAB_HOST = "https://community.opengroup.org"
+    # Helm parses a doubled brace in this file, so the manifest tokens are assembled.
+    OPEN, CLOSE = "{" * 2, "}" * 2
+    NOT_MANIFESTS = ("IngestionSequence.json", "ReferenceValueTypeDependencies.json")
+    RECORD_KEYS = ("ReferenceData", "MasterData")
+    OTHER_RELEVANT_DATA_COUNTRY = "US"
+    # Storage rejects a request carrying more than 500 records.
+    BATCH_SIZE = 500
+    WORKERS = 3
+    ATTEMPTS = 3
+    RETRY_DELAY = 5.0
+    REQUEST_TIMEOUT = 120
+    ARCHIVE_TIMEOUT = 300
+    FAILURE_THRESHOLD = 0.01
+    MAX_NAMED = 20
+    PROGRESS_EVERY = 10
+    # The exchanged token lasts about an hour and a load can outlast it.
+    TOKEN_MAX_AGE = 1800
+    INFO_ATTEMPTS = 30
+    WAIT_DELAY = 2.0
+    WAIT_SOCKET_TIMEOUT = 5.0
+    MESSAGE_LIMIT = 2000
+    TERMINATION_MESSAGE_PATH = os.environ.get(
+        "TERMINATION_MESSAGE_PATH", "/dev/termination-log"
+    )
+
+
+    class LoadError(Exception):
+        def __init__(self, code: str, detail: str):
+            super().__init__(detail)
+            self.code = code
+            self.detail = detail
+
+
+    def outcome(code: str, detail: str = "") -> None:
+        line = f"load-records outcome: {code}"
+        if detail:
+            line = f"{line}: {detail}"[:MESSAGE_LIMIT]
+        print(line)
+        try:
+            with open(TERMINATION_MESSAGE_PATH, "w") as handle:
+                handle.write(line)
+        except OSError:
+            pass
+
+
+    def named(items) -> str:
+        items = sorted(items)
+        more = f" and {len(items) - MAX_NAMED} more" if len(items) > MAX_NAMED else ""
+        return ", ".join(items[:MAX_NAMED]) + more
+
+
+    def call(url: str, headers: dict, method: str = "GET", body: bytes | None = None):
+        """One request, retried on a 5xx, a 429 or a transport error."""
+        code, payload = 0, ""
+        for attempt in range(1, ATTEMPTS + 1):
+            req = urllib.request.Request(url, data=body, method=method, headers=headers)
+            try:
+                resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT)
+                return resp.getcode(), resp.read().decode(errors="replace")
+            except urllib.error.HTTPError as e:
+                code, payload = e.code, e.read().decode(errors="replace")
+                if code < 500 and code != 429:
+                    return code, payload
+            except Exception as e:
+                code, payload = 0, f"{type(e).__name__}: {e}"
+            if attempt < ATTEMPTS:
+                time.sleep(RETRY_DELAY * attempt)
+        return code, payload
+
+
+    def fetch_archive(project: str, commit: str, path: str) -> zipfile.ZipFile:
+        name = project.rsplit("/", 1)[-1]
+        url = os.environ.get("ARCHIVE_URL") or (
+            f"{GITLAB_HOST}/{project}/-/archive/{commit}/{name}-{commit}.zip"
+            f"?path={urllib.parse.quote(path)}"
+        )
+        print(f"  Fetching {url}")
+        detail = ""
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                resp = urllib.request.urlopen(
+                    urllib.request.Request(url), timeout=ARCHIVE_TIMEOUT
+                )
+                archive = zipfile.ZipFile(io.BytesIO(resp.read()))
+                break
+            except urllib.error.HTTPError as e:
+                detail = f"{url} returned {e.code}"
+                if e.code < 500 and e.code != 429:
+                    raise LoadError("source_unavailable", detail)
+            except Exception as e:
+                detail = f"{url}: {type(e).__name__}: {e}"
+            if attempt < ATTEMPTS:
+                time.sleep(RETRY_DELAY * attempt)
+        else:
+            raise LoadError("source_unavailable", detail)
+        # GitLab writes the commit an archive was cut from into the zip comment.
+        stamped = archive.comment.decode(errors="replace").strip()
+        if stamped and stamped != commit:
+            raise LoadError(
+                "source_unavailable", f"the archive is for commit {stamped}, not {commit}"
+            )
+        return archive
+
+
+    def manifest_names(archive: zipfile.ZipFile, path: str) -> list:
+        """Archive members under path, in ingestion order."""
+        prefix = path.strip("/") + "/"
+        by_path = {}
+        for member in archive.namelist():
+            relative = member.split("/", 1)[-1]
+            if relative.startswith(prefix) and relative.endswith(".json"):
+                by_path[relative] = member
+        sequence_member = by_path.get(prefix + "IngestionSequence.json")
+        manifests = {
+            relative: member
+            for relative, member in by_path.items()
+            if relative.rsplit("/", 1)[-1] not in NOT_MANIFESTS
+        }
+        if not manifests:
+            raise LoadError("manifest_invalid", f"the archive holds no manifest under {path}")
+        ordered = []
+        if sequence_member:
+            try:
+                sequence = json.loads(archive.read(sequence_member))
+                listed = [entry["FileName"] for entry in sequence]
+            except (ValueError, KeyError, TypeError) as e:
+                raise LoadError("manifest_invalid", f"IngestionSequence.json: {e}")
+            absent = [name for name in listed if name not in manifests]
+            if absent:
+                raise LoadError(
+                    "manifest_invalid",
+                    f"IngestionSequence.json lists files the archive lacks: {named(absent)}",
+                )
+            ordered = list(dict.fromkeys(listed))
+        ordered += sorted(set(manifests) - set(ordered))
+        return [manifests[relative] for relative in ordered]
+
+
+    def records_of(archive: zipfile.ZipFile, member: str, tokens: dict, acl: dict, legal: dict):
+        text = archive.read(member).decode("utf-8")
+        for token, value in tokens.items():
+            text = text.replace(token, value)
+        manifest = json.loads(text)
+        if not isinstance(manifest, dict):
+            raise ValueError("not a JSON object")
+        records = []
+        for key in RECORD_KEYS:
+            for record in manifest.get(key) or []:
+                if not isinstance(record, dict):
+                    raise ValueError(f"{key} holds a value that is not a record")
+                if not isinstance(record.get("id"), str) or not isinstance(record.get("kind"), str):
+                    raise ValueError(f"{key} holds a record without an id or a kind")
+                record["acl"] = acl
+                record["legal"] = legal
+                records.append(record)
+        return records
+
+
+    def unique_records(archive, members, tokens, acl, legal, invalid=None):
+        """Every record once, in order. With `invalid`, a manifest that does not
+        parse is recorded there instead of raising."""
+        seen = set()
+        for member in members:
+            try:
+                records = records_of(archive, member, tokens, acl, legal)
+            except (ValueError, UnicodeDecodeError) as e:
+                if invalid is None:
+                    raise
+                invalid[member.rsplit("/", 1)[-1]] = str(e)
+                continue
+            for record in records:
+                if record["id"] not in seen:
+                    seen.add(record["id"])
+                    yield record
+
+
+    def batches_of(records):
+        batch = []
+        for record in records:
+            batch.append(record)
+            if len(batch) == BATCH_SIZE:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+
+
+    def bounded(pool, fn, items, limit: int):
+        """Results of fn over items with at most `limit` items in flight, so the
+        encoded batches never all sit in memory at once."""
+        pending = set()
+        for item in items:
+            pending.add(pool.submit(fn, item))
+            if len(pending) >= limit:
+                done, pending = concurrent.futures.wait(
+                    pending, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                for future in done:
+                    yield future.result()
+        for future in concurrent.futures.as_completed(pending):
+            yield future.result()
+
+
+    def main() -> int:
+        missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
+        if missing:
+            outcome("config_missing", f"missing environment: {', '.join(missing)}")
+            return 1
+        partition = os.environ["PARTITION"]
+        domain = os.environ["ENTITLEMENTS_DOMAIN"]
+        project = os.environ["SOURCE_PROJECT"]
+        commit = os.environ["SOURCE_COMMIT"]
+        path = os.environ["SOURCE_PATH"]
+        storage = os.environ.get("STORAGE_HOST", "http://storage.osdu.svc.cluster.local")
+        schema = os.environ.get("SCHEMA_HOST", "http://schema.osdu.svc.cluster.local")
+        storage_base = f"{storage}/api/storage/v2"
+        schema_base = f"{schema}/api/schema-service/v1"
+        source = f"source={project}@{commit[:12]}"
+
+        owners = f"data.default.owners@{partition}.{domain}"
+        viewers = f"data.default.viewers@{partition}.{domain}"
+        tokens = {
+            OPEN + "NAMESPACE" + CLOSE: partition,
+            OPEN + "DATA_OWNERS_GROUP" + CLOSE: owners,
+            OPEN + "DATA_VIEWERS_GROUP" + CLOSE: viewers,
+            OPEN + "LEGAL_TAG" + CLOSE: os.environ["LEGAL_TAG"],
+            OPEN + "ISO_3166_ALPHA_2_CODE" + CLOSE: OTHER_RELEVANT_DATA_COUNTRY,
+        }
+        acl = {"owners": [owners], "viewers": [viewers]}
+        legal = {
+            "legaltags": [os.environ["LEGAL_TAG"]],
+            "otherRelevantDataCountries": [OTHER_RELEVANT_DATA_COUNTRY],
+        }
+        print(f"Loading {project}@{commit} {path} into '{partition}'")
+
+        try:
+            archive = fetch_archive(project, commit, path)
+            members = manifest_names(archive, path)
+        except LoadError as e:
+            outcome(e.code, f"{source} {e.detail}")
+            return 1
+
+        invalid: dict = {}
+        kinds = set()
+        total = 0
+        for record in unique_records(archive, members, tokens, acl, legal, invalid):
+            kinds.add(record["kind"])
+            total += 1
+        if invalid:
+            outcome(
+                "manifest_invalid",
+                f"{source} {len(invalid)} of {len(members)} manifests did not parse: "
+                f"{named(f'{name} ({reason})' for name, reason in invalid.items())}",
+            )
+            return 1
+        print(f"  {len(members)} manifests, {total} records, {len(kinds)} kinds")
+
+        for base in (storage_base, schema_base):
+            if not wait_for_status(
+                f"{base}/info",
+                {200},
+                attempts=INFO_ATTEMPTS,
+                delay=WAIT_DELAY,
+                timeout=WAIT_SOCKET_TIMEOUT,
+            ):
+                outcome("service_timeout", f"{source} {base}/info did not answer 200")
+                return 1
+
+        print("  Acquiring bearer token via Workload Identity...")
+        headers = {
+            "Authorization": f"Bearer {get_token()}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "data-partition-id": partition,
+        }
+        token_at = time.monotonic()
+
+        def lookup(kind: str):
+            code, _ = call(f"{schema_base}/schema/{urllib.parse.quote(kind, safe=':')}", headers)
+            return kind, code
+
+        def put(batch: list):
+            code, payload = call(
+                f"{storage_base}/records?skipdupes=true",
+                headers,
+                "PUT",
+                json.dumps(batch).encode(),
+            )
+            skipped = 0
+            if code in (200, 201):
+                try:
+                    skipped = len(json.loads(payload).get("skippedRecordIds") or [])
+                except (ValueError, AttributeError):
+                    pass
+            return len(batch), code, skipped, payload
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            answers = dict(pool.map(lookup, sorted(kinds)))
+            unanswered = {kind: code for kind, code in answers.items() if code not in (200, 404)}
+            if unanswered:
+                outcome(
+                    "schema_unavailable",
+                    f"{source} the schema service did not answer for {len(unanswered)} of "
+                    f"{len(kinds)} kinds: {named(f'{k} ({c})' for k, c in unanswered.items())}",
+                )
+                return 1
+            absent = [kind for kind, code in answers.items() if code == 404]
+            if absent:
+                outcome(
+                    "schema_behind",
+                    f"{source} {len(absent)} of {len(kinds)} kinds are not registered: "
+                    f"{named(absent)}",
+                )
+                return 1
+            print(f"  kinds {len(kinds)}/{len(kinds)} registered")
+
+            def fresh(batches):
+                nonlocal token_at
+                for batch in batches:
+                    if time.monotonic() - token_at > TOKEN_MAX_AGE:
+                        headers["Authorization"] = f"Bearer {get_token()}"
+                        token_at = time.monotonic()
+                    yield batch
+
+            loaded = skipped = failed = done = 0
+            first_failure = ""
+            records = unique_records(archive, members, tokens, acl, legal)
+            for count, code, dupes, payload in bounded(
+                pool, put, fresh(batches_of(records)), WORKERS * 2
+            ):
+                done += 1
+                if code in (200, 201, 409):
+                    loaded += count
+                    skipped += dupes
+                else:
+                    failed += count
+                    print(f"  WARNING: a batch of {count} failed ({code}): {payload[:300]}")
+                    first_failure = first_failure or f"{code} {payload[:300]}"
+                if done % PROGRESS_EVERY == 0 or loaded + failed == total:
+                    print(f"  PROGRESS: [{loaded + failed}/{total}] loaded={loaded} failed={failed}")
+
+        counts = f"{source} total={total} loaded={loaded} skipped={skipped} failed={failed}"
+        if total and failed / total > FAILURE_THRESHOLD:
+            outcome("threshold_exceeded", f"{counts}; first failure: {first_failure}")
+            return 1
+        outcome("loaded", counts)
+        return 0
+
+
+    if __name__ == "__main__":
+        try:
+            rc = main()
+        except SystemExit as e:
+            outcome("auth_failed", str(e))
+            rc = 1
+        except Exception as e:
+            outcome("unexpected_error", f"{type(e).__name__}: {e}")
+            rc = 1
+        sys.exit(rc)
 {{- end }}
