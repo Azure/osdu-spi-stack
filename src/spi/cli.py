@@ -281,6 +281,8 @@ def _show_next_steps(config: Config):
         table.add_row("Check middleware", "kubectl get pods -n platform")
         table.add_row("Check services", "kubectl get pods -n osdu")
     table.add_row("View status", "spi status")
+    if config.profile is Profile.CORE:
+        table.add_row("Load reference data", "spi load")
     table.add_row("Cleanup", f"spi down{config.env_flag}")
 
     console.print(table)
@@ -1987,6 +1989,78 @@ def users_remove(
         return
     for name, change in outcome.items():
         console.print(f"  {name}  {change:<8} {member_id}")
+
+
+@app.command()
+def load(
+    dataset: Optional[List[str]] = typer.Option(
+        None, "--dataset", "-d", help="A load to run; repeatable. The default set when omitted"
+    ),
+    partition: Optional[str] = typer.Option(
+        None, "--partition", help="Limit to one partition; every partition by default"
+    ),
+    force: bool = typer.Option(False, "--force", help="Run a load again although it is complete"),
+    show_status: bool = typer.Option(False, "--status", help="Show the loads and change nothing"),
+    no_wait: bool = typer.Option(False, "--no-wait", help="Start the Jobs and return"),
+    output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
+):
+    """Load schemas and reference data, each from the source the environment pins.
+
+    Exit 0 when every selected load is complete or was left running with
+    --no-wait, 1 when a load failed, 2 when it was refused before anything
+    changed.
+    """
+    ctx = _verify_cluster(stderr=output_json) if show_status else _guarded_context(output_json)
+
+    from .loads import (
+        LoadError,
+        current_facts,
+        loads_table,
+        read_registry,
+        read_target,
+        run_loads,
+    )
+    from .pins import PinError
+    from .status import STATUS_API_VERSION
+
+    def fail(code: str, message: str, exit_code: int) -> typer.Exit:
+        if show_status and output_json:
+            typer.echo(message, err=True)
+        elif output_json:
+            _emit_outcome("refused" if exit_code == 2 else "error", code, message)
+        else:
+            console.print(f"[error]{message}[/error]")
+        return typer.Exit(code=exit_code)
+
+    if not output_json:
+        console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+    try:
+        registry = read_registry()
+        if registry is None:
+            raise fail(
+                "no_registry",
+                "This environment delivers no load registry: its profile runs no OSDU "
+                "services, or its stack version predates 'spi load'.",
+                2,
+            )
+        target = read_target()
+        if show_status:
+            facts = current_facts(registry, target)
+            if output_json:
+                document = {"apiVersion": STATUS_API_VERSION, "loads": facts}
+                typer.echo(json.dumps(document, indent=2))
+            else:
+                console.print(loads_table(facts))
+            return
+        console.print(f"  Environment: {_environment_label()}")
+        run_loads(registry, target, dataset or [], partition, force, not no_wait)
+        facts = current_facts(registry, target)
+    except LoadError as exc:
+        raise fail(exc.code, str(exc), 2 if exc.refused else 1)
+    except PinError as exc:
+        raise fail("read_failed", str(exc), 1)
+    if output_json:
+        _emit_outcome("ok", None, "", loads=facts)
 
 
 @app.command()
