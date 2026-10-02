@@ -418,11 +418,14 @@ jobs:
     if: needs.declare.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     environment: azure-shared
-    # smoke.yml's verify budget plus the wheel install and connect steps.
-    timeout-minutes: 300
+    # smoke.yml's verify budget plus the wheel install, the connect steps, and
+    # the 30-minute load step.
+    timeout-minutes: 330
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
+      # First release whose CLI has `spi load`.
+      LOAD_CLI_MIN_VERSION: v0.27.0
     steps:
       - uses: actions/checkout@v7
 
@@ -569,6 +572,20 @@ jobs:
 
       - name: Require deployable status
         run: spi status --json
+
+      - name: Load default datasets
+        # After maintenance clears: a load needs a deployable environment and
+        # never changes that verdict. A complete load returns at once; a first
+        # load of the reference data took 7 minutes on a core environment.
+        if: needs.declare.outputs.profile == 'core'
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          if [ "$(printf '%s\n' "$LOAD_CLI_MIN_VERSION" "$STACK_VERSION" | sort -V | head -n1)" != "$LOAD_CLI_MIN_VERSION" ]; then
+            echo "::notice::stackVersion $STACK_VERSION predates spi load (minimum $LOAD_CLI_MIN_VERSION); no data is loaded"
+            exit 0
+          fi
+          spi load
 
       - name: Capture diagnostics on failure
         if: failure()

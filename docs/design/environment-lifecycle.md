@@ -65,8 +65,8 @@ pin file starts the upgrade. Nothing else moves the stack-definition version
 
 | Verb | Workflow | Trigger | Budget |
 |---|---|---|---|
-| refresh | `env-refresh` | weekday cron 04:00 UTC, dispatch | 4.5 h |
-| upgrade | `env-upgrade` | push to `main` touching the pin file, dispatch | 6 h |
+| refresh | `env-refresh` | weekday cron 04:00 UTC, dispatch | 5 h |
+| upgrade | `env-upgrade` | push to `main` touching the pin file, dispatch | 6.5 h |
 | reset | `env-reset` | Saturday cron 06:00 UTC, confirm-dispatch | 7 h |
 | teardown | `env-teardown` | protected dispatch | 1 h |
 
@@ -74,13 +74,17 @@ The budgets contain their worst cases: a reset spends up to 45 minutes on
 deletion, 75 minutes provisioning, and 230 minutes in the cold-cluster
 schema-load converge before probes; an upgrade whose `--refresh-images` pass
 moves the schema image spends up to 60 minutes in `spi up` plus the same
-230-minute converge, hence its 6-hour budget. A refresh is normally a
+230-minute converge, hence its 6.5-hour budget. A refresh is normally a
 re-reconcile of already-scheduled workloads, but its wait keeps the same
 230-minute allowance for a schema-load Job the standing environment re-runs,
-for example after a node recycle, hence its 4.5-hour budget. The fork
+for example after a node recycle, hence its 5-hour budget. The fork
 canonical refresh ahead of that wait is capped at 20 minutes; it waits on
 Flux only for a service whose image moved, and a rollout still running at
-the cap fails the run.
+the cap fails the run. Both verbs end with `spi load` for the registry's
+default loads (ADR-040), after maintenance clears and capped at 30 minutes: a
+first reference-data load took 7 minutes on a core environment and a complete
+load returns at once. A failed load fails the run and leaves the environment
+deployable.
 
 All four verbs share concurrency group `env-shared` with
 `cancel-in-progress: false`, so lifecycle operations serialize against each

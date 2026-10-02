@@ -359,6 +359,71 @@ class TestForkCanonicalRefresh:
         assert self._run_step(tmp_path, "v0.22.0", spi_exit=3).returncode == 3
 
 
+class TestLoadStep:
+    STEP = "Load default datasets"
+    JOBS = [(ENV_REFRESH, "refresh"), (ENV_UPGRADE, "verify")]
+
+    @pytest.mark.parametrize(("path", "job_name"), JOBS, ids=["refresh", "upgrade"])
+    def test_load_runs_after_the_environment_is_deployable(self, path, job_name):
+        job = _workflow(path)["jobs"][job_name]
+        steps = _steps(job)
+        names = list(steps)
+        step = steps[self.STEP]
+        wait_seconds = re.search(
+            r"--timeout (\d+)", steps["Wait for Flux Kustomizations to be Ready"]["run"]
+        )
+
+        assert (
+            names.index("Clear maintenance")
+            < names.index("Require deployable status")
+            < names.index(self.STEP)
+            < names.index("Capture diagnostics on failure")
+        )
+        # The registry ships only with the core profile.
+        assert step["if"] == "needs.declare.outputs.profile == 'core'"
+        # A failed load fails the run; it cannot set maintenance again.
+        assert "continue-on-error" not in step
+        assert wait_seconds is not None
+        budget = int(job["timeout-minutes"]) - int(wait_seconds.group(1)) // 60
+        assert budget - int(step["timeout-minutes"]) >= 20
+        # The cached Azure token lasts an hour.
+        assert int(step["timeout-minutes"]) < 60
+
+    def _run_step(self, tmp_path, path, job_name, stack_version: str, spi_exit: int = 0):
+        job = _workflow(path)["jobs"][job_name]
+        stub = tmp_path / "spi"
+        stub.write_text(f'#!/usr/bin/env bash\necho "spi $*"\nexit {spi_exit}\n', encoding="utf-8")
+        stub.chmod(0o755)
+        env = {
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "STACK_VERSION": stack_version,
+            "LOAD_CLI_MIN_VERSION": job["env"]["LOAD_CLI_MIN_VERSION"],
+        }
+        return run_process(
+            ["bash", "-c", _steps(job)[self.STEP]["run"]], env=env, capture_output=True, text=True
+        )
+
+    @pytest.mark.parametrize(("path", "job_name"), JOBS, ids=["refresh", "upgrade"])
+    @pytest.mark.parametrize(
+        ("stack_version", "loaded"),
+        [("v0.26.0", False), ("v0.27.0", True), ("v0.100.0", True)],
+    )
+    def test_load_runs_only_on_a_cli_that_has_the_command(
+        self, tmp_path, path, job_name, stack_version, loaded
+    ):
+        result = self._run_step(tmp_path, path, job_name, stack_version)
+
+        assert result.returncode == 0
+        assert ("spi load" in result.stdout.splitlines()) is loaded
+        assert ("::notice::" in result.stdout) is not loaded
+
+    @pytest.mark.parametrize("spi_exit", [1, 2])
+    def test_a_failed_or_refused_load_fails_the_step(self, tmp_path, spi_exit):
+        result = self._run_step(tmp_path, ENV_REFRESH, "refresh", "v0.27.0", spi_exit=spi_exit)
+
+        assert result.returncode == spi_exit
+
+
 class TestDeclaredForks:
     STEP = "Reconcile declared forks"
 
