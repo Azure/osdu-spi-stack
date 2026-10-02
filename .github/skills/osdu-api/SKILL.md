@@ -42,7 +42,7 @@ Use `me` when the question is about a person's permissions. A person is a
 member only after `spi users add`:
 
 ```bash
-uv run spi users add --me --role viewer       # viewer, editor, admin (default), ops
+uv run spi users add --me --role viewer       # viewer, editor, admin (default)
 osdu connect --as me
 osdu call GET /api/entitlements/v2/groups
 ```
@@ -67,7 +67,7 @@ osdu call <METHOD> <PATH> [options]
 |--------|---------|
 | `-d`, `--data` | JSON body, `@file.json` to read one, or `-` for stdin |
 | `-q`, `--query` | Query string, for example `'limit=10&offset=0'` |
-| `-p`, `--partition` | Partition for this call; defaults to the primary, or `osdu_DATA_PARTITION` |
+| `-p`, `--partition` | Partition for this call; defaults to the primary, or `$OSDU_DATA_PARTITION` |
 | `--as` | Identity for this call |
 | `--fail` | Exit 22 when the HTTP status is 400 or higher |
 
