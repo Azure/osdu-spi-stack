@@ -144,12 +144,17 @@ def served():
         patcher.stop()
 
 
+def admin_groups(member):
+    return {group: {member} for group in users.ROLE_PRESETS["admin"]}
+
+
 @pytest.mark.parametrize(
     "groups, role",
     [
         (["users"], "none"),
         (["users", "users.datalake.viewers"], "viewer"),
-        (["users.datalake.admins", "service.legal.user"], "admin"),
+        (["users.datalake.admins", "users.datalake.ops", "service.legal.user"], "admin"),
+        (["users.datalake.admins"], "custom"),
         (["users.data.root", "users.datalake.ops"], "ops"),
         (["users.datalake.ops"], "custom"),
         (["users.datalake.viewers", "users.datalake.admins"], "custom"),
@@ -165,12 +170,18 @@ def test_add_writes_the_role_preset_for_a_new_member(served):
     result = users.add_user(ENV, "deploy", ALICE, "admin", ENV.partitions)
 
     assert result["previousRole"] is None
-    assert result["partitions"] == {"opendes": {"users": "added", "users.datalake.admins": "added"}}
-    assert ALICE in server.groups["users"] and ALICE in server.groups["users.datalake.admins"]
+    assert result["partitions"] == {
+        "opendes": {
+            "users": "added",
+            "users.datalake.admins": "added",
+            "users.datalake.ops": "added",
+        }
+    }
+    assert all(ALICE in server.groups[group] for group in result["partitions"]["opendes"])
 
 
 def test_add_with_another_role_replaces_the_role_and_keeps_users(served):
-    server = served(groups={"users": {ALICE}, "users.datalake.admins": {ALICE}})
+    server = served(groups=admin_groups(ALICE))
 
     result = users.add_user(ENV, "deploy", ALICE, "viewer", ENV.partitions)
 
@@ -179,13 +190,14 @@ def test_add_with_another_role_replaces_the_role_and_keeps_users(served):
         "users": "already",
         "users.datalake.viewers": "added",
         "users.datalake.admins": "removed",
+        "users.datalake.ops": "removed",
     }
     assert ALICE in server.groups["users"]
     assert ALICE not in server.groups["users.datalake.admins"]
 
 
 def test_add_with_the_role_already_held_changes_nothing(served):
-    server = served(groups={"users": {ALICE}, "users.datalake.admins": {ALICE}})
+    server = served(groups=admin_groups(ALICE))
 
     result = users.add_user(ENV, "deploy", ALICE, "admin", ENV.partitions)
 
@@ -193,12 +205,13 @@ def test_add_with_the_role_already_held_changes_nothing(served):
     assert result["partitions"]["opendes"] == {
         "users": "already",
         "users.datalake.admins": "already",
+        "users.datalake.ops": "already",
     }
     assert ALICE in server.groups["users.datalake.admins"]
 
 
 def test_a_failed_role_change_does_not_leave_the_old_role_standing(served):
-    server = served(groups={"users": {ALICE}, "users.datalake.admins": {ALICE}})
+    server = served(groups=admin_groups(ALICE))
     server.failing = {("POST", "users.datalake.viewers")}
 
     with pytest.raises(users.UsersError, match="adding to users.datalake.viewers was refused"):
@@ -238,7 +251,7 @@ def test_a_failed_add_takes_back_a_group_whose_answer_was_lost(served):
 
 
 def test_previous_role_is_mixed_when_partitions_disagree(served):
-    server = served(groups={"users": {ALICE}, "users.datalake.admins": {ALICE}})
+    server = served(groups=admin_groups(ALICE))
     server.elsewhere = {"second": {"users": {ALICE}, "users.datalake.editors": {ALICE}}}
     two = users.Environment(BASE, ("opendes", "second"), DOMAIN, ENV.seeded)
 
@@ -292,7 +305,7 @@ def test_a_group_address_is_refused_before_any_call(served, call):
 
 
 def test_add_matches_a_stored_id_whatever_its_case(served):
-    server = served(groups={"users": {ALICE}, "users.datalake.admins": {ALICE}})
+    server = served(groups=admin_groups(ALICE))
 
     result = users.add_user(ENV, "deploy", "Alice@Contoso.com", "viewer", ENV.partitions)
 
@@ -386,7 +399,7 @@ def test_remove_refuses_a_seeded_identity_before_any_call(served):
 
 
 def test_remove_deletes_a_member_and_reports_a_stranger_as_absent(served):
-    server = served(groups={"users": {ALICE}, "users.datalake.admins": {ALICE}})
+    server = served(groups=admin_groups(ALICE))
 
     assert users.remove_user(ENV, "deploy", ALICE, ENV.partitions) == {"opendes": "removed"}
     assert users.remove_user(ENV, "deploy", BOB, ENV.partitions) == {"opendes": "absent"}
@@ -464,7 +477,7 @@ def test_add_for_someone_else_is_reported_as_not_verified(invoke):
 def test_add_shows_the_role_change(invoke):
     result, _ = invoke(
         ["add", "--me", "--role", "viewer"],
-        groups={"users": {ALICE}, "users.datalake.admins": {ALICE}},
+        groups=admin_groups(ALICE),
     )
 
     assert "admin -> viewer" in result.output
@@ -530,9 +543,7 @@ def test_add_of_a_seeded_identity_exits_2(invoke):
 
 
 def test_remove_me_removes_the_signed_in_person(invoke):
-    result, server = invoke(
-        ["remove", "--me"], groups={"users": {ALICE}, "users.datalake.admins": {ALICE}}
-    )
+    result, server = invoke(["remove", "--me"], groups=admin_groups(ALICE))
 
     assert result.exit_code == 0
     assert "removed" in result.output

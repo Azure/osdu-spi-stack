@@ -39,7 +39,8 @@ ELEMENTARY_GROUP = "users"
 ROLE_PRESETS = {
     "viewer": (ELEMENTARY_GROUP, "users.datalake.viewers"),
     "editor": (ELEMENTARY_GROUP, "users.datalake.editors"),
-    "admin": (ELEMENTARY_GROUP, "users.datalake.admins"),
+    # Only the ops group reaches legal and schema admin and lets a caller manage members.
+    "admin": (ELEMENTARY_GROUP, "users.datalake.admins", "users.datalake.ops"),
     # The data root is what lets ops create and reassign data groups.
     "ops": (ELEMENTARY_GROUP, "users.data.root", "users.datalake.ops"),
 }
