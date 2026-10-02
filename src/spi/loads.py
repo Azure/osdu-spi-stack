@@ -24,6 +24,7 @@ from typing import Any, Callable, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -485,8 +486,29 @@ def _record_outcome(job: dict) -> str:
 
 
 def _progress(name: str) -> str:
+    """The loader's newest progress line, from the Job's newest pod.
+
+    The pod carries the mesh sidecar, so the container is named. A retried
+    Job keeps an earlier pod whose container never started, and kubectl
+    stops at it when asked for the Job's logs.
+    """
+    from .pins import PinError
+
+    try:
+        data = _kubectl_read_json(
+            ["get", "pods", "-n", LOAD_NAMESPACE, "-l", f"job-name={name}"], f"the pods of {name}"
+        )
+    except PinError:
+        return ""
+    pods = sorted(
+        (item.get("metadata") or {} for item in (data or {}).get("items") or []),
+        key=lambda meta: meta.get("creationTimestamp", ""),
+    )
+    if not pods:
+        return ""
     result = run_process(
-        ["kubectl", "logs", f"job/{name}", "-n", LOAD_NAMESPACE, "--tail", "40"],
+        ["kubectl", "logs", pods[-1].get("name", ""), "-n", LOAD_NAMESPACE, "-c", "loader"]
+        + ["--tail", "40"],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -517,7 +539,7 @@ def _await_job(load: Load, name: str) -> dict:
             return job
         line = _progress(name)
         if line and line != shown:
-            console.print(f"  {load.name:<16} {line}")
+            console.print(f"  {load.name:<16} {escape(line)}")
             shown = line
         if time.monotonic() >= deadline:
             raise LoadError(

@@ -449,6 +449,9 @@ spec:
             - python
             - /scripts/load_records.py
           env:
+            # Unbuffered, so `spi load` can show progress while the Job runs.
+            - name: PYTHONUNBUFFERED
+              value: "1"
 {variables}
           volumeMounts:
             - name: scripts

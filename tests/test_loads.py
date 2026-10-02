@@ -386,6 +386,7 @@ def test_load_job_meets_what_admission_grants_the_init_jobs():
     assert _millicores(container["resources"]["requests"]["cpu"]) >= 100
     assert container["command"] == ["python", "/scripts/load_records.py"]
     assert container["env"] == [
+        {"name": "PYTHONUNBUFFERED", "value": "1"},
         {"name": "PARTITION", "value": "opendes"},
         {"name": "LEGAL_TAG", "value": "opendes-demo-legaltag"},
     ]
@@ -489,6 +490,7 @@ def test_a_first_load_creates_the_job_and_records_its_outcome(monkeypatch, regis
         for e in cluster.created[0]["spec"]["template"]["spec"]["containers"][0]["env"]
     }
     assert env == {
+        "PYTHONUNBUFFERED": "1",
         "PARTITION": "opendes",
         "LEGAL_TAG": "opendes-demo-legaltag",
         "ENTITLEMENTS_DOMAIN": "dataservices.energy",
@@ -761,3 +763,25 @@ def test_spi_load_status_table_names_each_load(monkeypatch, connected):
     assert result.exit_code == 0, result.output
     for expected in ("schemas", "reference-data", "complete", "80103", "v0.30.0"):
         assert expected in result.output
+
+
+def test_progress_reads_the_loader_container_of_the_newest_pod(monkeypatch):
+    pods = {
+        "items": [
+            {"metadata": {"name": "retry", "creationTimestamp": "2026-10-02T13:22:22Z"}},
+            {"metadata": {"name": "first", "creationTimestamp": "2026-10-02T13:21:56Z"}},
+        ]
+    }
+    monkeypatch.setattr(loads, "_kubectl_read_json", lambda args, describe: pods)
+    commands = []
+
+    def run_process(command, **kwargs):
+        commands.append(command)
+        stdout = "  kinds 584/584 registered\n  PROGRESS: [5000/80103] loaded=5000 failed=0\n"
+        return type("Result", (), {"returncode": 0, "stdout": stdout})()
+
+    monkeypatch.setattr(loads, "run_process", run_process)
+
+    assert loads._progress("load-x") == "[5000/80103] loaded=5000 failed=0"
+    assert commands[0][:3] == ["kubectl", "logs", "retry"]
+    assert commands[0][commands[0].index("-c") + 1] == "loader"
