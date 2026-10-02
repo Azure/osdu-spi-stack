@@ -309,6 +309,15 @@ def test_schemas_failed_and_running_follow_the_job(registry):
     assert _facts(registry, schema_job=_schema_job("running"))["schemas"]["state"] == "running"
 
 
+def test_a_flux_load_reports_the_partitions_its_scope_names(registry):
+    schemas = registry.get("schemas").model_copy(update={"scope": "each-partition"})
+    every = registry.model_copy(update={"loads": [schemas]})
+    partitions = ("opendes", "second")
+
+    assert list(_facts(every, partitions=partitions)["schemas"]["partitions"]) == list(partitions)
+    assert list(_facts(registry, partitions=partitions)["schemas"]["partitions"]) == ["opendes"]
+
+
 def test_collect_facts_is_empty_without_a_registry(monkeypatch):
     monkeypatch.setattr(loads, "read_registry", lambda: None)
     monkeypatch.setattr(loads, "read_load_jobs", lambda: [])

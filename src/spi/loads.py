@@ -320,7 +320,7 @@ def _flux_load_facts(
         "state": state,
         "source": f"{repository}@{digest}" if repository and digest else repository,
         "version": image.get("tag", ""),
-        "partitions": {partition: _partition_facts(state, job, "") for partition in partitions[:1]},
+        "partitions": {partition: _partition_facts(state, job, "") for partition in partitions},
     }
 
 
