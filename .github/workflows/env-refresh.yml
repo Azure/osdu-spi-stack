@@ -112,9 +112,10 @@ jobs:
     if: needs.declare.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     environment: azure-shared
-    # Same budget as smoke.yml's verify job: a re-reconcile is usually quick,
-    # but a recycled node can put the schema-load Job through its cold window.
-    timeout-minutes: 270
+    # smoke.yml's verify budget plus the 30-minute load step: a re-reconcile is
+    # usually quick, but a recycled node can put the schema-load Job through its
+    # cold window.
+    timeout-minutes: 300
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
       IMAGE_BRANCH: ${{ needs.declare.outputs.image_branch }}
@@ -125,6 +126,8 @@ jobs:
       FORK_REFRESH_CLI_MIN_VERSION: v0.22.0
       # First release whose CLI has `spi onboard --reconcile`.
       DECLARED_FORKS_CLI_MIN_VERSION: v0.24.0
+      # First release whose CLI has `spi load`.
+      LOAD_CLI_MIN_VERSION: v0.27.0
     steps:
       - name: Refuse a declaration older than the lifecycle CLI
         run: |
@@ -294,6 +297,20 @@ jobs:
 
       - name: Require deployable status
         run: spi status --json
+
+      - name: Load default datasets
+        # After maintenance clears: a load needs a deployable environment and
+        # never changes that verdict. A complete load returns at once; a first
+        # load of the reference data took 7 minutes on a core environment.
+        if: needs.declare.outputs.profile == 'core'
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          if [ "$(printf '%s\n' "$LOAD_CLI_MIN_VERSION" "$STACK_VERSION" | sort -V | head -n1)" != "$LOAD_CLI_MIN_VERSION" ]; then
+            echo "::notice::stackVersion $STACK_VERSION predates spi load (minimum $LOAD_CLI_MIN_VERSION); no data is loaded"
+            exit 0
+          fi
+          spi load
 
       - name: Capture diagnostics on failure
         if: failure()
