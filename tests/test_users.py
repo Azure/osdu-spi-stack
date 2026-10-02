@@ -65,6 +65,8 @@ class Entitlements:
         self.calls = []
         self.partitions = []
         self.failing = set()
+        self.lost = set()
+        self.elsewhere = {}
         self.caller_answers = []
 
     def _refuse(self, url, status, body):
@@ -89,7 +91,8 @@ class Entitlements:
         group = parts[1].split("@")[0]
         if group not in self.groups:
             raise self._refuse(url, 404, {"message": "Not Found"})
-        members = self.groups[group]
+        partition = parts[1].split("@")[1].split(".")[0]
+        members = self.elsewhere.get(partition, self.groups).setdefault(group, set())
         if (request.method, group) in self.failing:
             raise self._refuse(url, 500, {"message": "store unavailable"})
         if request.method == "GET":
@@ -101,6 +104,8 @@ class Entitlements:
             if member in members:
                 raise self._refuse(url, 409, {"message": "already a member"})
             members.add(member)
+            if (request.method, group) in self.lost:
+                raise TimeoutError("timed out")
             return _Response(b"{}")
         members.discard(parts[3])
         return _Response(b"")
@@ -220,6 +225,28 @@ def test_a_failed_add_names_a_group_it_could_not_take_back(served):
         users.add_user(ENV, "deploy", BOB, "ops", ENV.partitions)
 
     assert BOB not in server.groups["users"]
+
+
+def test_a_failed_add_takes_back_a_group_whose_answer_was_lost(served):
+    server = served()
+    server.lost = {("POST", "users.data.root")}
+
+    with pytest.raises(users.UsersError, match="groups this run added were removed"):
+        users.add_user(ENV, "deploy", BOB, "ops", ENV.partitions)
+
+    assert not [group for group, members in server.groups.items() if BOB in members]
+
+
+def test_previous_role_is_mixed_when_partitions_disagree(served):
+    server = served(groups={"users": {ALICE}, "users.datalake.admins": {ALICE}})
+    server.elsewhere = {"second": {"users": {ALICE}, "users.datalake.editors": {ALICE}}}
+    two = users.Environment(BASE, ("opendes", "second"), DOMAIN, ENV.seeded)
+
+    result = users.add_user(two, "deploy", ALICE, "viewer", two.partitions)
+
+    assert result["previousRole"] == "mixed"
+    assert result["previousRoles"] == {"opendes": "admin", "second": "editor"}
+    assert server.elsewhere["second"]["users.datalake.editors"] == set()
 
 
 def test_a_failed_add_keeps_groups_the_member_already_held(served):

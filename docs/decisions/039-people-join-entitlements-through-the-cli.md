@@ -30,8 +30,9 @@ from the CLI, and `spi token --me` prints the person's own bearer.
   or `.admins`; `ops` is `users`, `users.data.root`, and `users.datalake.ops`.
   The default is `admin`. Running `add` again with another role removes the
   other presets' groups, then adds that preset's groups; `users` stays. When
-  an addition fails, the groups that run added in the partition are removed
-  again, so the person holds neither the old role nor half of the new one.
+  an addition fails, the preset's groups the person did not hold before the
+  run are removed again in that partition, so the person holds neither the
+  old role nor half of the new one.
   When a removal fails, the run stops before adding anything and the person
   keeps what is left of the old role. A rerun finishes either case. Partitions
   written before the failure stay written, and those after it are not touched.

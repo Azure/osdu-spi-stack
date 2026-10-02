@@ -270,7 +270,7 @@ def add_user(
     _refuse_reserved(env, member, "change")
     preset = ROLE_PRESETS[role]
     changes: dict[str, dict[str, str]] = {}
-    previous: Optional[str] = None
+    previous: dict[str, Optional[str]] = {}
     # Every partition is read before the first write, so a missing group grants nothing.
     current = {
         partition: _role_members(env, token, partition, require=preset) for partition in partitions
@@ -278,8 +278,7 @@ def add_user(
     for partition in partitions:
         role_members = current[partition]
         held = [group for group in ROLE_GROUPS if member.lower() in role_members[group]]
-        if previous is None and held:
-            previous = role_of(held)
+        previous[partition] = role_of(held) if held else None
         # Removals come first so a failed addition never leaves the old role standing.
         dropped = [group for group in held if group not in preset]
         for group in dropped:
@@ -289,12 +288,20 @@ def add_user(
             for group in preset:
                 changes[partition][group] = _add_member(env, token, partition, group, member)
         except UsersError as exc:
-            added = [group for group, change in changes[partition].items() if change == "added"]
+            # An add can commit and still fail to answer, so the undo goes by the first read.
+            absent = [group for group in preset if member.lower() not in role_members[group]]
             raise UsersError(
-                f"{exc} {_undo(env, token, partition, added, member)}", code=exc.code
+                f"{exc} {_undo(env, token, partition, absent, member)}", code=exc.code
             ) from None
         changes[partition].update(dict.fromkeys(dropped, "removed"))
-    return {"member": member, "role": role, "previousRole": previous, "partitions": changes}
+    distinct = set(previous.values())
+    return {
+        "member": member,
+        "role": role,
+        "previousRole": distinct.pop() if len(distinct) == 1 else "mixed",
+        "previousRoles": previous,
+        "partitions": changes,
+    }
 
 
 def verify(

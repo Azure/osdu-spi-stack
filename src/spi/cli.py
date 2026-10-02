@@ -1850,6 +1850,7 @@ def users_add(
             "claim": person.claim if person else None,
             "role": role.value,
             "previousRole": previous,
+            "previousRoles": result["previousRoles"],
             "partitions": result["partitions"],
             "verified": verified,
         }
