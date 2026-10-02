@@ -102,5 +102,9 @@ of every rebuild.
 - The loader holds one manifest in memory at a time and the largest is 76 MB
   of JSON, which is why the Job's memory limit is 2Gi where the bootstrap
   Jobs have 512Mi.
-- The time to load through the Azure storage service is unmeasured. The Job
-  deadline is 7200 s until a run on an environment replaces the guess.
+- A first load of the 80,103 records took 7 minutes on a core environment,
+  5 of them in the loader, and a forced reload that skips every record took 3.
+  The 7200 s Job deadline is headroom for a larger dataset, not a measured need.
+- A load pod carries the mesh sidecar. On a node provisioned for it the
+  sidecar's validation container can fail once before the loader starts;
+  `backoffLimit: 2` retries the pod.
