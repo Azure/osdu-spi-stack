@@ -243,6 +243,19 @@ def _refuse_seeded(env: Environment, member: str, verb: str) -> None:
         )
 
 
+def _undo(env: Environment, token: str, partition: str, added: list[str], member: str) -> str:
+    """Take back this run's additions, ``users`` last, and say what the member is left with."""
+    kept = []
+    for group in reversed(added):
+        try:
+            _remove_from_group(env, token, partition, group, member)
+        except UsersError:
+            kept.append(group)
+    if kept:
+        return f"Could not undo {', '.join(reversed(kept))}; remove the member and run it again."
+    return "The groups this run added were removed."
+
+
 def add_user(
     env: Environment, token: str, member: str, role: str, partitions: tuple[str, ...]
 ) -> dict:
@@ -264,9 +277,15 @@ def add_user(
         dropped = [group for group in held if group not in preset]
         for group in dropped:
             _remove_from_group(env, token, partition, group, member)
-        changes[partition] = {
-            group: _add_member(env, token, partition, group, member) for group in preset
-        }
+        changes[partition] = {}
+        try:
+            for group in preset:
+                changes[partition][group] = _add_member(env, token, partition, group, member)
+        except UsersError as exc:
+            added = [group for group, change in changes[partition].items() if change == "added"]
+            raise UsersError(
+                f"{exc} {_undo(env, token, partition, added, member)}", code=exc.code
+            ) from None
         changes[partition].update(dict.fromkeys(dropped, "removed"))
     return {"member": member, "role": role, "previousRole": previous, "partitions": changes}
 

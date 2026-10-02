@@ -202,6 +202,36 @@ def test_a_failed_role_change_does_not_leave_the_old_role_standing(served):
     assert ALICE not in server.groups["users.datalake.admins"]
 
 
+def test_a_failed_add_takes_back_the_groups_it_wrote(served):
+    server = served()
+    server.failing = {("POST", "users.datalake.ops")}
+
+    with pytest.raises(users.UsersError, match="groups this run added were removed"):
+        users.add_user(ENV, "deploy", BOB, "ops", ENV.partitions)
+
+    assert not [group for group, members in server.groups.items() if BOB in members]
+
+
+def test_a_failed_add_names_a_group_it_could_not_take_back(served):
+    server = served()
+    server.failing = {("POST", "users.datalake.ops"), ("DELETE", "users.data.root")}
+
+    with pytest.raises(users.UsersError, match="Could not undo users.data.root"):
+        users.add_user(ENV, "deploy", BOB, "ops", ENV.partitions)
+
+    assert BOB not in server.groups["users"]
+
+
+def test_a_failed_add_keeps_groups_the_member_already_held(served):
+    server = served(groups={"users": {BOB}})
+    server.failing = {("POST", "users.datalake.admins")}
+
+    with pytest.raises(users.UsersError):
+        users.add_user(ENV, "deploy", BOB, "admin", ENV.partitions)
+
+    assert BOB in server.groups["users"]
+
+
 def test_add_refuses_a_seeded_identity_before_any_call(served):
     server = served(groups={"users": {DEPLOY}, "users.datalake.ops": {DEPLOY}})
 
