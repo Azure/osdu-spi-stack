@@ -179,11 +179,19 @@ def group_members(env: Environment, token: str, partition: str, group: str) -> O
     ]
 
 
-def _role_members(env: Environment, token: str, partition: str) -> dict[str, set[str]]:
-    return {
-        group: {member.lower() for member in group_members(env, token, partition, group) or []}
-        for group in ROLE_GROUPS
-    }
+def _role_members(
+    env: Environment, token: str, partition: str, require: tuple[str, ...] = ()
+) -> dict[str, set[str]]:
+    """Lowercased direct members of each role group; a ``require`` group must exist."""
+    listing = {}
+    for group in dict.fromkeys((*ROLE_GROUPS, *require)):
+        members = group_members(env, token, partition, group)
+        if members is None and group in require:
+            raise UsersError(
+                f"{partition}: the group {group} does not exist.", code="group_missing"
+            )
+        listing[group] = {member.lower() for member in members or []}
+    return listing
 
 
 def role_of(groups: Any) -> str:
@@ -233,8 +241,12 @@ def add_user(
     preset = ROLE_PRESETS[role]
     changes: dict[str, dict[str, str]] = {}
     previous: Optional[str] = None
+    # Every partition is read before the first write, so a missing group grants nothing.
+    current = {
+        partition: _role_members(env, token, partition, require=preset) for partition in partitions
+    }
     for partition in partitions:
-        role_members = _role_members(env, token, partition)
+        role_members = current[partition]
         held = [group for group in ROLE_GROUPS if member.lower() in role_members[group]]
         if previous is None and held:
             previous = role_of(held)
@@ -251,6 +263,7 @@ def add_user(
 def verify(
     env: Environment,
     token: str,
+    partition: str,
     *,
     timeout: float = VERIFY_TIMEOUT,
     interval: float = VERIFY_INTERVAL,
@@ -260,7 +273,6 @@ def verify(
     A JSON refusal is entitlements not knowing the caller; a plain-text one
     is the mesh refusing the token, which membership cannot fix.
     """
-    partition = env.partitions[0]
     deadline = time.monotonic() + timeout
     while True:
         status, body = _request("GET", f"{env.base}/groups", token, partition)

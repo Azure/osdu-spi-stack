@@ -63,6 +63,7 @@ class Entitlements:
             self.groups[group] = set(members)
         self.known = set(known)
         self.calls = []
+        self.partitions = []
         self.caller_answers = []
 
     def _refuse(self, url, status, body):
@@ -74,6 +75,7 @@ class Entitlements:
         parts = urllib.parse.urlsplit(url).path.removeprefix("/api/entitlements/v2/").split("/")
         parts = [urllib.parse.unquote(part) for part in parts]
         self.calls.append((request.method, url))
+        self.partitions.append(request.get_header("Data-partition-id"))
         if parts == ["groups"]:
             status, body = self.caller_answers.pop(0) if self.caller_answers else (200, {})
             if status != 200:
@@ -209,21 +211,25 @@ def test_member_ids_and_group_addresses_are_percent_encoded(served):
     )
 
 
-def test_add_names_a_role_group_the_partition_lacks(served):
+@pytest.mark.parametrize(
+    "role, missing", [("admin", "users.datalake.admins"), ("ops", "users.datalake.ops")]
+)
+def test_add_writes_nothing_when_the_partition_lacks_a_group_of_the_role(served, role, missing):
     server = served()
-    del server.groups["users.datalake.admins"]
+    del server.groups[missing]
 
-    with pytest.raises(users.UsersError, match="users.datalake.admins does not exist") as raised:
-        users.add_user(ENV, "deploy", ALICE, "admin", ENV.partitions)
+    with pytest.raises(users.UsersError, match=f"{missing} does not exist") as raised:
+        users.add_user(ENV, "deploy", ALICE, role, ENV.partitions)
 
     assert raised.value.code == "group_missing"
+    assert server.writes() == []
 
 
 def test_verify_waits_for_entitlements_to_admit_the_caller(served, clock):
     server = served()
     server.caller_answers = [(401, {"message": "not authorized"}), (200, {"groups": [{}, {}]})]
 
-    result = users.verify(ENV, "person")
+    result = users.verify(ENV, "person", "opendes")
 
     assert result == {"ok": True, "status": 200, "groups": 2}
     clock.assert_called_once_with(users.VERIFY_INTERVAL)
@@ -233,7 +239,7 @@ def test_verify_does_not_wait_when_the_mesh_refuses_the_token(served, clock):
     server = served()
     server.caller_answers = [(401, "Jwt verification fails")]
 
-    result = users.verify(ENV, "person")
+    result = users.verify(ENV, "person", "opendes")
 
     assert (result["ok"], result["layer"], result["status"]) == (False, "mesh", 401)
     clock.assert_not_called()
@@ -243,7 +249,7 @@ def test_verify_gives_up_on_entitlements_after_the_timeout(served, clock):
     server = served()
     server.caller_answers = [(401, {"message": "not authorized"})] * 20
 
-    result = users.verify(ENV, "person", timeout=10, interval=5)
+    result = users.verify(ENV, "person", "opendes", timeout=10, interval=5)
 
     assert (result["ok"], result["layer"]) == (False, "entitlements")
     assert len(server.calls) == 3
@@ -296,13 +302,13 @@ def test_an_unknown_partition_is_refused():
 def invoke(monkeypatch, served, clock):
     """Run a users command against a served entitlements, signed in as alice."""
 
-    def run(args, *, person=ALICE, **kwargs):
+    def run(args, *, person=ALICE, env=ENV, **kwargs):
         server = served(**kwargs)
         monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
         signed_in = identity.PersonToken("person-bearer", "1", "aud", person, "unique_name")
         minted = token.MintedToken("deploy-bearer", "1", DEPLOY, "spi-deployer", "aud")
         with (
-            patch("spi.users.load_environment", return_value=ENV),
+            patch("spi.users.load_environment", return_value=env),
             patch("spi.token.mint_token", return_value=minted),
             patch("spi.identity.person_token", return_value=signed_in),
         ):
@@ -327,6 +333,15 @@ def test_add_me_defaults_to_admin_and_verifies(invoke):
     assert result.exit_code == 0
     assert ALICE in server.groups["users.datalake.admins"]
     assert "verified" in result.output and "not verified" not in result.output
+
+
+def test_add_me_verifies_in_the_partition_it_wrote(invoke):
+    two = users.Environment(BASE, ("opendes", "second"), DOMAIN, ENV.seeded)
+
+    result, server = invoke(["add", "--me", "--partition", "second"], env=two)
+
+    assert result.exit_code == 0
+    assert set(server.partitions) == {"second"}
 
 
 def test_add_for_someone_else_is_reported_as_not_verified(invoke):

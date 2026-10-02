@@ -1834,10 +1834,10 @@ def users_add(
     if person:
         try:
             if output_json:
-                verified = verify_person(env, person.access_token)
+                verified = verify_person(env, person.access_token, partitions[0])
             else:
                 with console.status("Verifying with your token..."):
-                    verified = verify_person(env, person.access_token)
+                    verified = verify_person(env, person.access_token, partitions[0])
         except UsersError as exc:
             raise _users_fail(str(exc), output_json)
 

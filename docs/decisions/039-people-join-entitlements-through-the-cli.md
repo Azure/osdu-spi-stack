@@ -36,7 +36,7 @@ from the CLI, and `spi token --me` prints the person's own bearer.
   gates member deletion. Anyone who can mint that token can already call every
   API as an operator, so granting a person a role adds no authority.
 - **`add --me` verifies with the person's token.** It calls the entitlements
-  group listing in the primary partition for up to a minute. A JSON refusal
+  group listing in the first partition written for up to a minute. A JSON refusal
   after that means the stored id is not the one the mesh projects; a plain
   text refusal means the mesh refused the token and is reported at once.
 - **The seeded identities are refused on `remove`.** Their client ids come
@@ -80,6 +80,6 @@ one command can write and verify.
   set, rejects any member id that is not an object id or client id. Turning it
   on makes `add --me` fail with entitlements' 400 until the filter projects
   `oid` for people.
-- `verify` proves entitlements admits the person in the primary partition. It
+- `verify` proves entitlements admits the person in the first partition written. It
   calls no other service and says nothing about data whose ACL names groups
   the role does not hold.
