@@ -64,6 +64,7 @@ class Entitlements:
         self.known = set(known)
         self.calls = []
         self.partitions = []
+        self.failing = set()
         self.caller_answers = []
 
     def _refuse(self, url, status, body):
@@ -89,6 +90,8 @@ class Entitlements:
         if group not in self.groups:
             raise self._refuse(url, 404, {"message": "Not Found"})
         members = self.groups[group]
+        if (request.method, group) in self.failing:
+            raise self._refuse(url, 500, {"message": "store unavailable"})
         if request.method == "GET":
             listing = [{"email": member, "memberType": "USER"} for member in sorted(members)]
             listing.append({"email": f"nested@opendes.{DOMAIN}", "memberType": "GROUP"})
@@ -187,6 +190,26 @@ def test_add_with_the_role_already_held_changes_nothing(served):
         "users.datalake.admins": "already",
     }
     assert ALICE in server.groups["users.datalake.admins"]
+
+
+def test_a_failed_role_change_does_not_leave_the_old_role_standing(served):
+    server = served(groups={"users": {ALICE}, "users.datalake.admins": {ALICE}})
+    server.failing = {("POST", "users.datalake.viewers")}
+
+    with pytest.raises(users.UsersError, match="adding to users.datalake.viewers was refused"):
+        users.add_user(ENV, "deploy", ALICE, "viewer", ENV.partitions)
+
+    assert ALICE not in server.groups["users.datalake.admins"]
+
+
+def test_add_refuses_a_seeded_identity_before_any_call(served):
+    server = served(groups={"users": {DEPLOY}, "users.datalake.ops": {DEPLOY}})
+
+    with pytest.raises(users.UsersError, match="deploy identity") as raised:
+        users.add_user(ENV, "deploy", DEPLOY.upper(), "viewer", ENV.partitions)
+
+    assert raised.value.code == "seeded_identity"
+    assert server.calls == []
 
 
 def test_add_matches_a_stored_id_whatever_its_case(served):
@@ -416,6 +439,14 @@ def test_remove_of_a_seeded_identity_exits_2_with_stdout_clean(invoke):
     assert result.exit_code == 2
     assert result.stdout == ""
     assert "Refusing to remove the deploy identity" in result.stderr
+    assert server.calls == []
+
+
+def test_add_of_a_seeded_identity_exits_2(invoke):
+    result, server = invoke(["add", DEPLOY, "-r", "viewer"], groups={"users": {DEPLOY}})
+
+    assert result.exit_code == 2
+    assert "Refusing to change the deploy identity" in result.output
     assert server.calls == []
 
 

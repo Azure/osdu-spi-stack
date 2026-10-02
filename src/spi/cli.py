@@ -1816,7 +1816,9 @@ def users_add(
         member_id = person.user_id if person else str(member)
         deploy = mint_token(caller="deploy")
         result = add_user(env, deploy.access_token, member_id, role.value, partitions)
-    except (ClusterConfigError, IdentityError, TokenError, UsersError) as exc:
+    except UsersError as exc:
+        raise _users_fail(str(exc), output_json, code=2 if exc.code == "seeded_identity" else 1)
+    except (ClusterConfigError, IdentityError, TokenError) as exc:
         raise _users_fail(str(exc), output_json)
 
     previous = result["previousRole"]
@@ -1974,7 +1976,7 @@ def users_remove(
         member_id = person_token().user_id if me else str(member)
         outcome = remove_user(env, mint_token(caller="deploy").access_token, member_id, partitions)
     except UsersError as exc:
-        raise _users_fail(str(exc), output_json, code=2 if exc.code else 1)
+        raise _users_fail(str(exc), output_json, code=2 if exc.code == "seeded_identity" else 1)
     except (ClusterConfigError, IdentityError, TokenError) as exc:
         raise _users_fail(str(exc), output_json)
 

@@ -28,8 +28,10 @@ from the CLI, and `spi token --me` prints the person's own bearer.
 - **A role is one of four presets and is set, not accumulated.** `viewer`,
   `editor`, and `admin` are `users` plus `users.datalake.viewers`, `.editors`,
   or `.admins`; `ops` is `users`, `users.data.root`, and `users.datalake.ops`.
-  The default is `admin`. Running `add` again with another role adds that
-  preset's groups and removes the other presets' groups; `users` stays.
+  The default is `admin`. Running `add` again with another role removes the
+  other presets' groups, then adds that preset's groups; `users` stays. A
+  write that fails midway leaves the person with less than the role asked
+  for, never the old role, and a rerun finishes.
 - **The deploy identity writes.** `src/spi/users.py` calls the public
   entitlements API with the bearer `spi token` mints. The deploy identity sits
   in `users.datalake.ops`, which entitlements lets manage any group and which
@@ -39,7 +41,7 @@ from the CLI, and `spi token --me` prints the person's own bearer.
   group listing in the first partition written for up to a minute. A JSON refusal
   after that means the stored id is not the one the mesh projects; a plain
   text refusal means the mesh refused the token and is reported at once.
-- **The seeded identities are refused on `remove`.** Their client ids come
+- **The seeded identities are refused on `add` and `remove`.** Their client ids come
   from the cluster config and the workload ServiceAccount; `spi up` owns them.
 - **`list` reads role groups, not every group.** Members of `users` are the
   roster; the role is the preset whose role groups the member holds directly,

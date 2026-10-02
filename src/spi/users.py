@@ -234,10 +234,20 @@ def _remove_from_group(
         raise _refused(f"removing from {group}", partition, status, body)
 
 
+def _refuse_seeded(env: Environment, member: str, verb: str) -> None:
+    kind = env.kind(member)
+    if kind != "user":
+        raise UsersError(
+            f"Refusing to {verb} the {kind}. The environment's test callers are seeded by spi up.",
+            code="seeded_identity",
+        )
+
+
 def add_user(
     env: Environment, token: str, member: str, role: str, partitions: tuple[str, ...]
 ) -> dict:
-    """Set a member's role in each partition: add its groups, drop the other roles' groups."""
+    """Set a member's role in each partition: drop the other roles' groups, add its own."""
+    _refuse_seeded(env, member, "change")
     preset = ROLE_PRESETS[role]
     changes: dict[str, dict[str, str]] = {}
     previous: Optional[str] = None
@@ -250,13 +260,14 @@ def add_user(
         held = [group for group in ROLE_GROUPS if member.lower() in role_members[group]]
         if previous is None and held:
             previous = role_of(held)
+        # Removals come first so a write that fails midway never leaves the old role standing.
+        dropped = [group for group in held if group not in preset]
+        for group in dropped:
+            _remove_from_group(env, token, partition, group, member)
         changes[partition] = {
             group: _add_member(env, token, partition, group, member) for group in preset
         }
-        for group in held:
-            if group not in preset:
-                _remove_from_group(env, token, partition, group, member)
-                changes[partition][group] = "removed"
+        changes[partition].update(dict.fromkeys(dropped, "removed"))
     return {"member": member, "role": role, "previousRole": previous, "partitions": changes}
 
 
@@ -312,12 +323,7 @@ def remove_user(
     env: Environment, token: str, member: str, partitions: tuple[str, ...]
 ) -> dict[str, str]:
     """Delete a member from every group in each partition; seeded identities are refused."""
-    kind = env.kind(member)
-    if kind != "user":
-        raise UsersError(
-            f"Refusing to remove the {kind}. The environment's test callers are seeded by spi up.",
-            code="seeded_identity",
-        )
+    _refuse_seeded(env, member, "remove")
     outcome: dict[str, str] = {}
     for partition in partitions:
         # Entitlements answers 204 for a stranger too, so membership is read first.
