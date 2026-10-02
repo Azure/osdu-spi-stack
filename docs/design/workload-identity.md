@@ -166,8 +166,7 @@ person's token until it answers 200, for up to a minute.
 |---|---|
 | `viewer` | `users`, `users.datalake.viewers` |
 | `editor` | `users`, `users.datalake.editors` |
-| `admin` (default) | `users`, `users.datalake.admins`, `users.datalake.ops` |
-| `ops` | `users`, `users.data.root`, `users.datalake.ops` |
+| `admin` (default) | `users`, `users.datalake.admins`, `users.data.root`, `users.datalake.ops` |
 
 Running `add` with another role replaces the role. `spi users add <id>` writes
 the same groups for an id typed for someone else and verifies nothing.

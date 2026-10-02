@@ -1760,7 +1760,6 @@ class UserRole(str, Enum):
     viewer = "viewer"
     editor = "editor"
     admin = "admin"
-    ops = "ops"
 
 
 _USERS_MEMBER_HELP = "The id the mesh gives the person's token, usually their sign-in address"

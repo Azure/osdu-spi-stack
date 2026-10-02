@@ -153,9 +153,17 @@ def admin_groups(member):
     [
         (["users"], "none"),
         (["users", "users.datalake.viewers"], "viewer"),
-        (["users.datalake.admins", "users.datalake.ops", "service.legal.user"], "admin"),
+        (
+            [
+                "users.datalake.admins",
+                "users.data.root",
+                "users.datalake.ops",
+                "service.legal.user",
+            ],
+            "admin",
+        ),
         (["users.datalake.admins"], "custom"),
-        (["users.data.root", "users.datalake.ops"], "ops"),
+        (["users.data.root", "users.datalake.ops"], "custom"),
         (["users.datalake.ops"], "custom"),
         (["users.datalake.viewers", "users.datalake.admins"], "custom"),
     ],
@@ -174,6 +182,7 @@ def test_add_writes_the_role_preset_for_a_new_member(served):
         "opendes": {
             "users": "added",
             "users.datalake.admins": "added",
+            "users.data.root": "added",
             "users.datalake.ops": "added",
         }
     }
@@ -190,6 +199,7 @@ def test_add_with_another_role_replaces_the_role_and_keeps_users(served):
         "users": "already",
         "users.datalake.viewers": "added",
         "users.datalake.admins": "removed",
+        "users.data.root": "removed",
         "users.datalake.ops": "removed",
     }
     assert ALICE in server.groups["users"]
@@ -205,6 +215,7 @@ def test_add_with_the_role_already_held_changes_nothing(served):
     assert result["partitions"]["opendes"] == {
         "users": "already",
         "users.datalake.admins": "already",
+        "users.data.root": "already",
         "users.datalake.ops": "already",
     }
     assert ALICE in server.groups["users.datalake.admins"]
@@ -225,7 +236,7 @@ def test_a_failed_add_takes_back_the_groups_it_wrote(served):
     server.failing = {("POST", "users.datalake.ops")}
 
     with pytest.raises(users.UsersError, match="groups this run added were removed"):
-        users.add_user(ENV, "deploy", BOB, "ops", ENV.partitions)
+        users.add_user(ENV, "deploy", BOB, "admin", ENV.partitions)
 
     assert not [group for group, members in server.groups.items() if BOB in members]
 
@@ -235,7 +246,7 @@ def test_a_failed_add_names_a_group_it_could_not_take_back(served):
     server.failing = {("POST", "users.datalake.ops"), ("DELETE", "users.data.root")}
 
     with pytest.raises(users.UsersError, match="Could not undo users.data.root"):
-        users.add_user(ENV, "deploy", BOB, "ops", ENV.partitions)
+        users.add_user(ENV, "deploy", BOB, "admin", ENV.partitions)
 
     assert BOB not in server.groups["users"]
 
@@ -245,7 +256,7 @@ def test_a_failed_add_takes_back_a_group_whose_answer_was_lost(served):
     server.lost = {("POST", "users.data.root")}
 
     with pytest.raises(users.UsersError, match="groups this run added were removed"):
-        users.add_user(ENV, "deploy", BOB, "ops", ENV.partitions)
+        users.add_user(ENV, "deploy", BOB, "admin", ENV.partitions)
 
     assert not [group for group, members in server.groups.items() if BOB in members]
 
@@ -295,7 +306,7 @@ def test_the_bearer_is_not_resent_to_a_redirect_target():
 def test_a_group_address_is_refused_before_any_call(served, call):
     server = served(groups={"users": {ALICE}})
     group = f"Users@opendes.{DOMAIN}"
-    args = (ENV, "deploy", group, "ops", ENV.partitions)
+    args = (ENV, "deploy", group, "admin", ENV.partitions)
 
     with pytest.raises(users.UsersError, match="not a person") as raised:
         call(*args) if call is users.add_user else call(*args[:3], args[4])
@@ -327,7 +338,7 @@ def test_member_ids_and_group_addresses_are_percent_encoded(served):
 
 
 @pytest.mark.parametrize(
-    "role, missing", [("admin", "users.datalake.admins"), ("ops", "users.datalake.ops")]
+    "role, missing", [("admin", "users.datalake.admins"), ("admin", "users.datalake.ops")]
 )
 def test_add_writes_nothing_when_the_partition_lacks_a_group_of_the_role(served, role, missing):
     server = served()
@@ -460,7 +471,7 @@ def test_add_me_verifies_in_the_partition_it_wrote(invoke):
 
 
 def test_add_for_someone_else_is_reported_as_not_verified(invoke):
-    result, server = invoke(["add", BOB, "-r", "ops", "--json"])
+    result, server = invoke(["add", BOB, "-r", "editor", "--json"])
 
     assert result.exit_code == 0
     document = json.loads(result.stdout)
@@ -468,8 +479,7 @@ def test_add_for_someone_else_is_reported_as_not_verified(invoke):
     assert (document["member"], document["claim"], document["verified"]) == (BOB, None, None)
     assert document["partitions"]["opendes"] == {
         "users": "added",
-        "users.data.root": "added",
-        "users.datalake.ops": "added",
+        "users.datalake.editors": "added",
     }
     assert not [url for method, url in server.calls if url.endswith("/groups")]
 

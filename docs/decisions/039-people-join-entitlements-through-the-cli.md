@@ -25,14 +25,15 @@ from the CLI, and `spi token --me` prints the person's own bearer.
 - **An id for someone else is stored as typed.** `spi users add <id>` makes no
   directory lookup and verifies nothing; only the person holding the token
   can prove the id, by running `add --me`.
-- **A role is one of four presets and is set, not accumulated.** `viewer` and
+- **A role is one of three presets and is set, not accumulated.** `viewer` and
   `editor` are `users` plus `users.datalake.viewers` or `.editors`. `admin` is
-  `users`, `users.datalake.admins`, and `users.datalake.ops`: entitlements
-  puts only the ops group in `service.legal.admin` and
-  `service.schema-service.admin` and lets only its members manage other
-  groups' members, so an admin without it cannot delete a legal tag or add a
-  colleague. `ops` is `users`, `users.data.root`, and `users.datalake.ops`.
-  The default is `admin`. Running `add` again with another role removes the
+  `users`, `users.datalake.admins`, `users.datalake.ops`, and
+  `users.data.root`: entitlements puts only the ops group in
+  `service.legal.admin` and `service.schema-service.admin` and lets only its
+  members manage other groups' members, so an admin without it cannot delete
+  a legal tag or add a colleague. A member of the ops group can add anyone to
+  the data root, themself included, so there is no narrower operator role to
+  offer and `admin` holds the root outright. The default is `admin`. Running `add` again with another role removes the
   other presets' groups, then adds that preset's groups; `users` stays. When
   an addition fails, the preset's groups the person did not hold before the
   run are removed again in that partition, so the person holds neither the
