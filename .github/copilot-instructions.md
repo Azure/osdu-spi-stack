@@ -13,6 +13,8 @@ Skills under `.github/skills/` carry the repo's working discipline:
 - `code-review` is the rubric for reviewing pull requests in this repo: the
   invariants a diff can break silently, and the classes of comment not to
   leave.
+- `osdu-api` calls the OSDU APIs of the connected environment as a seeded
+  identity or as the signed-in person.
 
 Path-scoped rules live in `.github/instructions/`.
 
