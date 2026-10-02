@@ -398,7 +398,8 @@ token to prove those steps itself.
 ## Recipes
 
 The stack provisions three test identities and the CLI can mint each with
-`spi token`, `spi token --member`, or `spi token --no-access`. The shipped
+`spi token`, `spi token --member`, or `spi token --no-access`; `spi token --me`
+prints the operator's own bearer instead. The shipped
 fork CI lane supplies `token` (`RESOLVER_TOKEN`), optional `noAccessToken`
 (`RESOLVER_NO_ACCESS_TOKEN`), and, when provisioned, `memberToken`
 (`RESOLVER_MEMBER_TOKEN`) bindings. A suite requiring the member caller needs

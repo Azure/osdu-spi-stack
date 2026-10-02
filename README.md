@@ -167,7 +167,8 @@ See [Ingress modes](docs/architecture.md#ingress-profiles) and
 | `spi build` | Build a service image from a fork checkout into the environment's own registry, as `<registry>/local/<service>` |
 | `spi service` | Pin services to merge-request or fork-built images, or with `pin --source <checkout>` build and pin a local one, and `refresh` one service's canonical image, or the fork-sourced ones with `--forks`, without touching the rest |
 | `spi onboard` | Trust a fork repository to deploy against the environment, and with `--canonical-source fork` make its `main` the service's canonical image; `--reconcile` restores what the environment's declaration lists; plans by default, `--write` applies |
-| `spi token` | Mint an app-only bearer as the deploy identity for acceptance suites; `--member` for the suites' `NO_ACCESS_USER` caller, `--no-access` for 401 tests |
+| `spi token` | Mint an app-only bearer as the deploy identity for acceptance suites; `--member` for the suites' `NO_ACCESS_USER` caller, `--no-access` for 401 tests, `--me` for your own `az` token |
+| `spi users` | Let a person call the OSDU APIs with their own token: `add --me` sets your role (`viewer`, `editor`, `admin`, `ops`) and verifies it, `add <id>` sets a colleague's, `list` shows members and roles, `remove` drops one |
 | `spi test` | Run a service's suite as its deployed commit shipped it, from the paired acceptance image or natively with `--source <checkout>`; `--dry-run` shows the command and variables a run would use and `--env-file` writes them for an IDE; `--report` writes a page of what ran, `--review` adds which contract rows each test proves |
 | `spi update` | Check for and install a newer CLI release |
 | `spi maintenance` | Set or clear the deploy-blocking maintenance flag |

@@ -114,7 +114,7 @@ def _read_osdu_config() -> dict:
     return data.get("data", {}) or {}
 
 
-def _read_entitlements_domain() -> str:
+def read_entitlements_domain() -> str:
     """Read the entitlements service domain from its Deployment. Empty if missing."""
     data = kubectl_json(["get", "deployment", "osdu-entitlements", "-n", "osdu"])
     pod_spec = (((data or {}).get("spec") or {}).get("template") or {}).get("spec") or {}
@@ -466,7 +466,7 @@ def _collect_info() -> dict:
             _read_flux_extension_values,
             _read_cluster_config,
             _read_init_values_yaml,
-            _read_entitlements_domain,
+            read_entitlements_domain,
             get_suspend_status,
             _read_deploy_record,
             read_workload_identity_client_id,

@@ -108,7 +108,7 @@ def _wire(
         "_entitlements_seeded",
         lambda partition, members, member_users=(): bool(members) and members_seeded,
     )
-    monkeypatch.setattr(info, "_read_entitlements_domain", lambda: entitlements_domain)
+    monkeypatch.setattr(info, "read_entitlements_domain", lambda: entitlements_domain)
     monkeypatch.setattr(info, "_read_deploy_record", lambda: record)
     monkeypatch.setattr(info, "read_workload_identity_client_id", lambda: "application-id")
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: True)
@@ -313,7 +313,7 @@ def test_info_json_reports_entitlements_seeded_per_partition(monkeypatch):
 
 
 def test_info_json_reports_entitlements_domain_from_deployment(monkeypatch):
-    read_entitlements_domain = info._read_entitlements_domain
+    read_entitlements_domain = info.read_entitlements_domain
     _wire(monkeypatch)
     seen = []
 
@@ -340,14 +340,14 @@ def test_info_json_reports_entitlements_domain_from_deployment(monkeypatch):
         }
 
     monkeypatch.setattr(info, "kubectl_json", fake_kubectl_json)
-    monkeypatch.setattr(info, "_read_entitlements_domain", read_entitlements_domain)
+    monkeypatch.setattr(info, "read_entitlements_domain", read_entitlements_domain)
 
     assert info.collect_info()["entitlements_domain"] == "dataservices.energy"
     assert seen == [["get", "deployment", "osdu-entitlements", "-n", "osdu"]]
 
 
 def test_info_json_reports_empty_entitlements_domain_without_deployment(monkeypatch):
-    read_entitlements_domain = info._read_entitlements_domain
+    read_entitlements_domain = info.read_entitlements_domain
     _wire(monkeypatch)
     seen = []
 
@@ -356,7 +356,7 @@ def test_info_json_reports_empty_entitlements_domain_without_deployment(monkeypa
         return None
 
     monkeypatch.setattr(info, "kubectl_json", fake_kubectl_json)
-    monkeypatch.setattr(info, "_read_entitlements_domain", read_entitlements_domain)
+    monkeypatch.setattr(info, "read_entitlements_domain", read_entitlements_domain)
 
     assert info.collect_info()["entitlements_domain"] == ""
     assert seen == [["get", "deployment", "osdu-entitlements", "-n", "osdu"]]
