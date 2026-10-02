@@ -20,6 +20,7 @@ import os
 import re
 import shlex
 import sys
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Any, Collection, Dict, List, NoReturn, Optional, Tuple
@@ -86,6 +87,9 @@ app.add_typer(service_app, name="service")
 
 maintenance_app = typer.Typer(help="Manage backing-environment maintenance state.")
 app.add_typer(maintenance_app, name="maintenance")
+
+users_app = typer.Typer(help="Let people call the OSDU APIs: entitlements membership by role.")
+app.add_typer(users_app, name="users")
 
 # Wired by hand rather than add_completion=True: Typer's stock installer runs
 # "Set-ExecutionPolicy Unrestricted" on PowerShell.
@@ -937,6 +941,9 @@ def token(
     no_access: bool = typer.Option(
         False, "--no-access", help="Mint as the no-access identity for 401 tests"
     ),
+    me: bool = typer.Option(
+        False, "--me", help="Print your own az token instead of minting as an identity"
+    ),
     resource: Optional[str] = typer.Option(
         None,
         "--resource",
@@ -944,21 +951,37 @@ def token(
     ),
     output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
 ):
-    """Mint an app-only bearer token as the deploy, member, or no-access identity.
+    """Mint a bearer token as the deploy, member, or no-access identity, or print your own.
 
-    The deploy identity is the default. The token is written to stdout alone,
-    so it composes:
+    The deploy identity is the default. --me prints the signed-in person's
+    token, which calls the APIs once 'spi users add --me' has made them a
+    member. The token is written to stdout alone, so it composes:
     INTEGRATION_TESTER_ACCESS_TOKEN=$(spi token).
     """
     ctx = _verify_cluster(stderr=True)
 
     from .bootstrap import ClusterConfigError
+    from .identity import IdentityError, person_token
     from .token import TokenError, mint_token
 
     error_console.print(f"  [dim]Cluster context: {ctx}[/dim]")
-    if member and no_access:
-        error_console.print("[error]Choose one of --member and --no-access.[/error]")
+    if sum((member, no_access, me)) > 1:
+        error_console.print("[error]Choose one of --member, --no-access, and --me.[/error]")
         raise typer.Exit(code=1)
+    if me:
+        try:
+            person = person_token(resource)
+        except (ClusterConfigError, IdentityError) as exc:
+            error_console.print(f"[error]{exc}[/error]")
+            raise typer.Exit(code=1)
+        error_console.print(
+            f"  [dim]Signed in as {person.user_id} ({person.claim}) for {person.audience}[/dim]"
+        )
+        if output_json:
+            typer.echo(json.dumps(person.as_dict(), indent=2))
+        else:
+            typer.echo(person.access_token)
+        return
     caller = "member" if member else "no_access" if no_access else "deploy"
     try:
         minted = mint_token(caller=caller, resource=resource)
@@ -1731,6 +1754,236 @@ def maintenance_clear():
         console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
     console.print("[success]Environment maintenance cleared.[/success]")
+
+
+class UserRole(str, Enum):
+    viewer = "viewer"
+    editor = "editor"
+    admin = "admin"
+    ops = "ops"
+
+
+_USERS_MEMBER_HELP = "The id the mesh gives the person's token, usually their sign-in address"
+_USERS_PARTITION_HELP = "Limit to one partition; every partition by default"
+
+
+def _users_fail(message: str, output_json: bool, code: int = 1) -> typer.Exit:
+    """Report a users failure off stdout under `--json`, which carries only the document."""
+    if output_json:
+        typer.echo(message, err=True)
+    else:
+        console.print(f"[error]{message}[/error]")
+    return typer.Exit(code=code)
+
+
+def _users_target(member: Optional[str], me: bool, output_json: bool) -> None:
+    if bool(member) == me:
+        raise _users_fail("Give either --me or one member id.", output_json)
+
+
+@users_app.command("add")
+def users_add(
+    member: Optional[str] = typer.Argument(None, help=_USERS_MEMBER_HELP),
+    me: bool = typer.Option(False, "--me", help="Add yourself, then verify with your own token"),
+    role: UserRole = typer.Option(
+        UserRole.admin, "--role", "-r", help="The role to set; replaces any role held"
+    ),
+    partition: Optional[str] = typer.Option(None, "--partition", help=_USERS_PARTITION_HELP),
+    output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
+):
+    """Set a person's role so their own token can call the OSDU APIs.
+
+    With --me the member id is read from your az token and the result is
+    verified with that token. An id given for someone else is stored as
+    typed and cannot be verified.
+    """
+    _users_target(member, me, output_json)
+    ctx = _verify_cluster(stderr=output_json)
+
+    from .bootstrap import ClusterConfigError
+    from .identity import IdentityError, person_token
+    from .status import STATUS_API_VERSION
+    from .token import TokenError, mint_token
+    from .users import VERIFY_TIMEOUT, UsersError, add_user, load_environment, select_partitions
+    from .users import verify as verify_person
+
+    if not output_json:
+        console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+    try:
+        env = load_environment()
+        partitions = select_partitions(env, partition)
+        person = person_token() if me else None
+        member_id = person.user_id if person else str(member)
+        deploy = mint_token(caller="deploy")
+        result = add_user(env, deploy.access_token, member_id, role.value, partitions)
+    except (ClusterConfigError, IdentityError, TokenError, UsersError) as exc:
+        raise _users_fail(str(exc), output_json)
+
+    previous = result["previousRole"]
+    if not output_json:
+        source = f"{person.claim}, from your az token" if person else "as given"
+        changed = previous and previous != role.value
+        console.print(f"  Member: {member_id} [dim]({source})[/dim]")
+        console.print(f"  Role:   {f'{previous} -> {role.value}' if changed else role.value}\n")
+        for name, changes in result["partitions"].items():
+            for group, change in changes.items():
+                console.print(f"  {name}  {change:<8} {group}")
+        console.print()
+
+    verified = None
+    if person:
+        try:
+            if output_json:
+                verified = verify_person(env, person.access_token)
+            else:
+                with console.status("Verifying with your token..."):
+                    verified = verify_person(env, person.access_token)
+        except UsersError as exc:
+            raise _users_fail(str(exc), output_json)
+
+    if output_json:
+        document = {
+            "apiVersion": STATUS_API_VERSION,
+            "member": member_id,
+            "claim": person.claim if person else None,
+            "role": role.value,
+            "previousRole": previous,
+            "partitions": result["partitions"],
+            "verified": verified,
+        }
+        typer.echo(json.dumps(document, indent=2))
+    if person is None or verified is None:
+        if not output_json:
+            console.print(
+                f"  [warning]not verified[/warning]: only {member_id} can prove this id "
+                "matches their token."
+            )
+            console.print(
+                f"  They can confirm with: [cyan]spi users add --me --role {role.value}[/cyan]"
+            )
+        return
+    if verified["ok"]:
+        if not output_json:
+            console.print(
+                f"  [success]verified[/success] your token calls OSDU APIs "
+                f"({verified['groups']} groups)"
+            )
+        return
+    if verified["layer"] == "mesh":
+        message = (
+            f"The mesh refused your token ({verified['status']}: {verified['detail']}). "
+            "Membership is not the cause; check the token audience against 'spi info'."
+        )
+    else:
+        message = (
+            f"Entitlements still refuses your token after {VERIFY_TIMEOUT:.0f} s "
+            f"({verified['status']}). The membership was written for {member_id} "
+            f"({person.claim}), so the mesh is giving your token a different id."
+        )
+    raise _users_fail(message, output_json)
+
+
+@users_app.command("list")
+def users_list(
+    output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
+):
+    """Show every member of each partition with its kind and role."""
+    ctx = _verify_cluster(stderr=output_json)
+
+    from .bootstrap import ClusterConfigError
+    from .identity import IdentityError, person_token
+    from .status import STATUS_API_VERSION
+    from .token import TokenError, mint_token
+    from .users import UsersError, list_users, load_environment
+
+    if not output_json:
+        console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+    try:
+        env = load_environment()
+        listing = list_users(env, mint_token(caller="deploy").access_token)
+    except (ClusterConfigError, TokenError, UsersError) as exc:
+        raise _users_fail(str(exc), output_json)
+    try:
+        person = person_token()
+    except (ClusterConfigError, IdentityError):
+        person = None
+
+    you = person.user_id.lower() if person else None
+    missing = [
+        name for name, rows in listing.items() if you not in {row["member"].lower() for row in rows}
+    ]
+    for rows in listing.values():
+        for row in rows:
+            row["you"] = row["member"].lower() == you
+
+    if output_json:
+        document = {
+            "apiVersion": STATUS_API_VERSION,
+            "partitions": listing,
+            "you": {"member": person.user_id, "claim": person.claim, "isMember": not missing}
+            if person
+            else None,
+        }
+        typer.echo(json.dumps(document, indent=2))
+        return
+
+    for name, rows in listing.items():
+        table = Table(title=f"Members of {name}")
+        table.add_column("Member", overflow="fold")
+        for column in ("Kind", "Role", "Groups"):
+            table.add_column(column)
+        for row in rows:
+            groups = row["groups"]
+            shown = ", ".join(groups[:2]) + (f" (+{len(groups) - 2})" if len(groups) > 2 else "")
+            label = f"{row['member']} (you)" if row["you"] else row["member"]
+            table.add_row(label, row["kind"], row["role"], shown)
+        if person and name in missing:
+            table.add_row(
+                f"{person.user_id} (you)",
+                "user",
+                "none",
+                "[warning]cannot call OSDU APIs[/warning]",
+            )
+        console.print(table)
+    if person and missing:
+        console.print("  Add yourself with: [cyan]spi users add --me[/cyan]")
+
+
+@users_app.command("remove")
+def users_remove(
+    member: Optional[str] = typer.Argument(None, help=_USERS_MEMBER_HELP),
+    me: bool = typer.Option(False, "--me", help="Remove yourself"),
+    partition: Optional[str] = typer.Option(None, "--partition", help=_USERS_PARTITION_HELP),
+    output_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output"),
+):
+    """Remove a person from every group. The seeded identities are refused."""
+    _users_target(member, me, output_json)
+    ctx = _verify_cluster(stderr=output_json)
+
+    from .bootstrap import ClusterConfigError
+    from .identity import IdentityError, person_token
+    from .status import STATUS_API_VERSION
+    from .token import TokenError, mint_token
+    from .users import UsersError, load_environment, remove_user, select_partitions
+
+    if not output_json:
+        console.print(f"  [dim]Cluster context: {ctx}[/dim]")
+    try:
+        env = load_environment()
+        partitions = select_partitions(env, partition)
+        member_id = person_token().user_id if me else str(member)
+        outcome = remove_user(env, mint_token(caller="deploy").access_token, member_id, partitions)
+    except UsersError as exc:
+        raise _users_fail(str(exc), output_json, code=2 if exc.code else 1)
+    except (ClusterConfigError, IdentityError, TokenError) as exc:
+        raise _users_fail(str(exc), output_json)
+
+    if output_json:
+        document = {"apiVersion": STATUS_API_VERSION, "member": member_id, "partitions": outcome}
+        typer.echo(json.dumps(document, indent=2))
+        return
+    for name, change in outcome.items():
+        console.print(f"  {name}  {change:<8} {member_id}")
 
 
 @app.command()

@@ -14,11 +14,11 @@
 
 """Mint an app-only Entra token as the environment's deploy, member, or no-access identity.
 
-Every OSDU Azure service admits only app-only tokens, so a developer's own
-``az account get-access-token`` (which carries ``upn``) is refused. A
-developer with cluster access instead asks the API server for a projected
-ServiceAccount token and exchanges it at Entra, the same federation fork CI
-performs with a GitHub OIDC token. The result carries the identity's
+A developer's own ``az account get-access-token`` passes the mesh but holds
+no entitlements groups unless ``spi users`` added them, and the suites need
+the seeded callers. A developer with cluster access asks the API server for a
+projected ServiceAccount token and exchanges it at Entra, the same federation
+fork CI performs with a GitHub OIDC token. The result carries the identity's
 ``appid`` and the v1 issuer, which the Istio filter projects as the caller.
 """
 

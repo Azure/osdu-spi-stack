@@ -170,10 +170,10 @@ config.
   `system:serviceaccount:spi-test:spi-member`, and the no-access identity
   to `system:serviceaccount:spi-test:spi-no-access` on the AKS OIDC issuer,
   and `spi up` applies the three ServiceAccounts, annotated for workload
-  identity, in the `spi-test` namespace it creates outside the mesh. Every
-  Azure-provider service admits app-only tokens alone, so a developer's own
-  `az account get-access-token`, which carries `upn`, is refused on every
-  endpoint. `spi token` requests a ten-minute projected token for the
+  identity, in the `spi-test` namespace it creates outside the mesh. A
+  developer's own `az account get-access-token` passes the mesh but holds no
+  entitlements groups until `spi users` adds them (ADR-039), so the suites
+  need a caller that is seeded. `spi token` requests a ten-minute projected token for the
   ServiceAccount and exchanges it at the Entra v1 endpoint for a bearer
   whose `appid` is the deploy identity, the same principal fork CI holds
   through GitHub federation; `--member` and `--no-access` mint the two

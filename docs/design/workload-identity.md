@@ -150,6 +150,32 @@ and entitlements decides what each may do. The exact claim handling is in
 [`istio_auth_resources()`](../../src/spi/templates.py), not in the federation
 module.
 
+### People
+
+A person's `az` token for `azure.token_audience` is a v1 token, and the filter
+names its caller by `unique_name`. Entitlements holds no groups for that id
+until `spi users add --me` writes them
+([ADR-039](../decisions/039-people-join-entitlements-through-the-cli.md)). The
+command reads the id from the person's own token with the filter's claim
+order ([`identity.py`](../../src/spi/identity.py)), mints the deploy identity's
+bearer the way `spi token` does, and adds the id to `users` and the groups of
+one role through the entitlements API. It then calls entitlements with the
+person's token until it answers 200, for up to a minute.
+
+| Role | Groups |
+|---|---|
+| `viewer` | `users`, `users.datalake.viewers` |
+| `editor` | `users`, `users.datalake.editors` |
+| `admin` (default) | `users`, `users.datalake.admins` |
+| `ops` | `users`, `users.data.root`, `users.datalake.ops` |
+
+Running `add` with another role replaces the role. `spi users add <id>` writes
+the same groups for an id typed for someone else and verifies nothing.
+`spi users list` shows each partition's members with kind and role, and
+`spi users remove` deletes a member from every group, refusing the three
+seeded identities. `spi token --me` prints the person's bearer for use with
+`curl`. Membership is not declared anywhere, so a reset removes it.
+
 ## Audiences used by OSDU callers
 
 Bootstrap Jobs and acceptance callers obtain management-scoped tokens.
