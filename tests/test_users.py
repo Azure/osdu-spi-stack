@@ -242,6 +242,15 @@ def test_add_refuses_a_seeded_identity_before_any_call(served):
     assert server.calls == []
 
 
+def test_the_bearer_is_not_resent_to_a_redirect_target():
+    with patch("spi.users.urllib.request.urlopen", return_value=_Response(b"{}")) as urlopen:
+        users._request("GET", f"{BASE}/groups", "deploy", "opendes")
+
+    request = urlopen.call_args.args[0]
+    assert request.get_header("Authorization") == "Bearer deploy"
+    assert "Authorization" not in request.headers
+
+
 @pytest.mark.parametrize("call", [users.add_user, users.remove_user])
 def test_a_group_address_is_refused_before_any_call(served, call):
     server = served(groups={"users": {ALICE}})

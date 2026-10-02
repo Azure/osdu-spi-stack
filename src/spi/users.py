@@ -138,12 +138,13 @@ def _request(
         data=json.dumps(body).encode() if body is not None else None,
         method=method,
         headers={
-            "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
             "data-partition-id": partition,
         },
     )
+    # urllib resends ordinary headers to a redirect target, another host included.
+    request.add_unredirected_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:  # nosec B310
             return response.status, _parse(response.read())
@@ -279,7 +280,7 @@ def add_user(
         held = [group for group in ROLE_GROUPS if member.lower() in role_members[group]]
         if previous is None and held:
             previous = role_of(held)
-        # Removals come first so a write that fails midway never leaves the old role standing.
+        # Removals come first so a failed addition never leaves the old role standing.
         dropped = [group for group in held if group not in preset]
         for group in dropped:
             _remove_from_group(env, token, partition, group, member)

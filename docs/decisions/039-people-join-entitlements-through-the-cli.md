@@ -29,11 +29,12 @@ from the CLI, and `spi token --me` prints the person's own bearer.
   `editor`, and `admin` are `users` plus `users.datalake.viewers`, `.editors`,
   or `.admins`; `ops` is `users`, `users.data.root`, and `users.datalake.ops`.
   The default is `admin`. Running `add` again with another role removes the
-  other presets' groups, then adds that preset's groups; `users` stays. When a
-  write fails, the groups that run added in the partition are removed again,
-  so the person never keeps the old role or half of the new one; a rerun
-  finishes. Partitions written before the failure stay written, and those
-  after it are not touched.
+  other presets' groups, then adds that preset's groups; `users` stays. When
+  an addition fails, the groups that run added in the partition are removed
+  again, so the person holds neither the old role nor half of the new one.
+  When a removal fails, the run stops before adding anything and the person
+  keeps what is left of the old role. A rerun finishes either case. Partitions
+  written before the failure stay written, and those after it are not touched.
 - **The deploy identity writes.** `src/spi/users.py` calls the public
   entitlements API with the bearer `spi token` mints. The deploy identity sits
   in `users.datalake.ops`, which entitlements lets manage any group and which
