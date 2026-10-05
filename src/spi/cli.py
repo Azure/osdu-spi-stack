@@ -2799,13 +2799,36 @@ def update(
                 "set GITHUB_TOKEN or `gh auth login` to raise rate limits)[/info]"
             )
 
+    if _update.defers_upgrade(installer):
+        try:
+            log_path = _update.schedule_upgrade(wheel_url, display=not silent)
+        except _update.UpdateError as exc:
+            if silent:
+                typer.echo(str(exc), err=True)
+            else:
+                console.print(f"[error]{exc}[/error]", soft_wrap=True)
+            raise typer.Exit(code=1)
+        if silent:
+            typer.echo(f"spi {latest} installs after this command exits; log: {log_path}")
+        else:
+            console.print(
+                Panel(
+                    f"[success]spi {current} -> {latest} installs after this command exits."
+                    "[/success]\n"
+                    f"Log: {log_path}\n"
+                    "Run `spi --version` once the log shows uv exited with code 0.",
+                    border_style="green",
+                )
+            )
+        raise typer.Exit(code=0)
+
     try:
         rc = _update.run_upgrade(installer, wheel_url, display=not silent)
     except _update.UpdateError as exc:
         if silent:
             typer.echo(str(exc), err=True)
         else:
-            console.print(f"[error]{exc}[/error]")
+            console.print(f"[error]{exc}[/error]", soft_wrap=True)
         raise typer.Exit(code=1)
     if rc != 0:
         if silent:

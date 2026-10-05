@@ -209,6 +209,38 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
     proc.kill()
 
 
+def display_command(cmd_list: List[str], description: Optional[str] = None) -> None:
+    """Show a command in the panel ``run_command`` prints before running it."""
+    formatted_parts = []
+    if cmd_list:
+        formatted_parts.append(cmd_list[0])
+
+    i = 1
+    while i < len(cmd_list):
+        if cmd_list[i].startswith("-"):
+            formatted_parts.append("\\\n  " + shlex.quote(cmd_list[i]))
+        else:
+            formatted_parts.append(shlex.quote(cmd_list[i]))
+        i += 1
+
+    formatted_cmd = " ".join(formatted_parts)
+
+    first = cmd_list[0] if cmd_list else ""
+    style_map = {
+        "az": ("azure", "[azure]Azure CLI[/azure]"),
+        "kubectl": ("kubectl", "[kubectl]Kubernetes[/kubectl]"),
+        "flux": ("flux", "[flux]Flux CD[/flux]"),
+        "helm": ("helm", "[helm]Helm[/helm]"),
+    }
+    style, title = style_map.get(first, ("white", "Command"))
+
+    if description:
+        title = f"{title}: {description}"
+
+    command_syntax = Syntax(formatted_cmd, "bash", theme="monokai", line_numbers=False)
+    console.print(Panel(command_syntax, title=title, border_style=style))
+
+
 def run_command(
     cmd_list: List[str],
     capture_output: bool = True,
@@ -226,35 +258,8 @@ def run_command(
     returncode 124 and the reason on stderr, like any other failed launch.
     ``env`` replaces the inherited environment rather than extending it.
     """
-    formatted_parts = []
-    if cmd_list:
-        formatted_parts.append(cmd_list[0])
-
-    i = 1
-    while i < len(cmd_list):
-        if cmd_list[i].startswith("-"):
-            formatted_parts.append("\\\n  " + shlex.quote(cmd_list[i]))
-        else:
-            formatted_parts.append(shlex.quote(cmd_list[i]))
-        i += 1
-
-    formatted_cmd = " ".join(formatted_parts)
-
     if display:
-        first = cmd_list[0] if cmd_list else ""
-        style_map = {
-            "az": ("azure", "[azure]Azure CLI[/azure]"),
-            "kubectl": ("kubectl", "[kubectl]Kubernetes[/kubectl]"),
-            "flux": ("flux", "[flux]Flux CD[/flux]"),
-            "helm": ("helm", "[helm]Helm[/helm]"),
-        }
-        style, title = style_map.get(first, ("white", "Command"))
-
-        if description:
-            title = f"{title}: {description}"
-
-        command_syntax = Syntax(formatted_cmd, "bash", theme="monokai", line_numbers=False)
-        console.print(Panel(command_syntax, title=title, border_style=style))
+        display_command(cmd_list, description)
 
     try:
         result = run_process(
