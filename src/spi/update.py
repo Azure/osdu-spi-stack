@@ -400,9 +400,9 @@ def schedule_upgrade(wheel_url: str, *, display: bool = True) -> Path:
     """
     _require_https(wheel_url)
     uv = shutil.which("uv")
-    tool_base = _uv_tool_dir()
+    tool_dir = _uv_tool_spi_dir()
     bin_dir = _uv_tool_dir("--bin")
-    if not uv or tool_base is None or bin_dir is None:
+    if not uv or tool_dir is None or bin_dir is None:
         raise UpdateError(
             "cannot locate uv or its tool directories. Run this from a new terminal "
             f"instead:\n{manual_upgrade_command(wheel_url)}"
@@ -410,7 +410,7 @@ def schedule_upgrade(wheel_url: str, *, display: bool = True) -> Path:
     script = build_helper_script(
         uv=uv,
         wheel_url=wheel_url,
-        tool_dir=tool_base / "spi",
+        tool_dir=tool_dir,
         launcher=bin_dir / "spi.exe",
         pid=os.getpid(),
     )
