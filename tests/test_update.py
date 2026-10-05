@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -164,6 +165,98 @@ def test_run_upgrade_uv_blocks_in_process_windows_replacement():
     ):
         upd.run_upgrade("uv", wheel_url, display=False)
     rc.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("installer", "system", "expected"),
+    [("uv", "Windows", True), ("uv", "Linux", False), ("pipx", "Windows", False)],
+)
+def test_defers_upgrade_only_for_windows_uv(installer, system, expected):
+    with patch("spi.update.platform.system", return_value=system):
+        assert upd.defers_upgrade(installer) is expected
+
+
+def test_ps_literal_doubles_every_powershell_single_quote():
+    assert upd._ps_literal("o'brien") == "'o''brien'"
+    assert upd._ps_literal("o\u2019brien") == "'o\u2019\u2019brien'"
+    assert upd._ps_literal("plain") == "'plain'"
+
+
+def test_build_helper_script_waits_then_installs():
+    wheel_url = "https://github.com/x/y/releases/download/v1.0.0/spi-1.0.0-py3-none-any.whl"
+    script = upd.build_helper_script(
+        uv=r"C:\bin\uv.exe",
+        wheel_url=wheel_url,
+        tool_dir=Path(r"C:\Users\o'brien\uv\tools\spi"),
+        launcher=Path(r"C:\Users\o'brien\.local\bin\spi.exe"),
+        pid=4242,
+        wait_seconds=30,
+    )
+    assert '"' not in script
+    assert "AddSeconds(30)" in script
+    assert "$_.Id -eq 4242" in script
+    assert r"$toolDir = 'C:\Users\o''brien\uv\tools\spi' + '\'" in script
+    assert r"$launcher = 'C:\Users\o''brien\.local\bin\spi.exe'" in script
+    assert (
+        f"& 'C:\\bin\\uv.exe' 'tool' 'install' '--force' '--default-index' "
+        f"'{upd.MICROSOFT_PYPI_PROXY}' '{wheel_url}'"
+    ) in script
+    assert script.index("while ($true)") < script.index("& 'C:\\bin\\uv.exe'")
+
+
+def _schedule(popen, *, which="C:/bin/uv.exe", dirs=(Path("C:/uv/tools"), Path("C:/bin"))):
+    wheel_url = "https://github.com/x/y/releases/download/v1.0.0/spi-1.0.0-py3-none-any.whl"
+    with (
+        patch("spi.update.shutil.which", return_value=which),
+        patch("spi.update._uv_tool_dir", side_effect=list(dirs)),
+        patch("spi.update.prepare_command", side_effect=lambda cmd: cmd),
+        patch("spi.update.subprocess.Popen", popen),
+    ):
+        return upd.schedule_upgrade(wheel_url, display=False)
+
+
+def test_schedule_upgrade_starts_detached_helper(tmp_path):
+    popen = MagicMock()
+    with patch("spi.update.tempfile.gettempdir", return_value=str(tmp_path)):
+        log_path = _schedule(popen)
+    assert log_path == tmp_path / upd.UPDATE_LOG_NAME
+    popen.assert_called_once()
+    cmd = popen.call_args.args[0]
+    assert cmd[0].endswith("powershell.exe")
+    assert cmd[1:4] == ["-NoProfile", "-NonInteractive", "-Command"]
+    assert upd._ps_literal(str(Path("C:/uv/tools") / "spi")) in cmd[4]
+    assert upd._ps_literal(str(Path("C:/bin") / "spi.exe")) in cmd[4]
+    flags = popen.call_args.kwargs["creationflags"]
+    assert flags & upd.CREATE_NO_WINDOW
+    assert flags & upd.CREATE_NEW_PROCESS_GROUP
+    assert flags & upd.CREATE_BREAKAWAY_FROM_JOB
+
+
+def test_schedule_upgrade_retries_without_breakaway(tmp_path):
+    popen = MagicMock(side_effect=[PermissionError("access denied"), MagicMock()])
+    with patch("spi.update.tempfile.gettempdir", return_value=str(tmp_path)):
+        _schedule(popen)
+    assert popen.call_count == 2
+    assert not popen.call_args.kwargs["creationflags"] & upd.CREATE_BREAKAWAY_FROM_JOB
+
+
+def test_schedule_upgrade_reports_manual_command_when_helper_fails(tmp_path):
+    popen = MagicMock(side_effect=OSError("no powershell"))
+    with (
+        patch("spi.update.tempfile.gettempdir", return_value=str(tmp_path)),
+        pytest.raises(upd.UpdateError, match=upd.MICROSOFT_PYPI_PROXY),
+    ):
+        _schedule(popen)
+
+
+def test_schedule_upgrade_requires_uv_tool_dirs(tmp_path):
+    popen = MagicMock()
+    with (
+        patch("spi.update.tempfile.gettempdir", return_value=str(tmp_path)),
+        pytest.raises(upd.UpdateError, match="cannot locate uv"),
+    ):
+        _schedule(popen, dirs=(Path("C:/uv/tools"), None))
+    popen.assert_not_called()
 
 
 def test_run_upgrade_pipx_uses_force_install():

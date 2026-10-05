@@ -15,16 +15,20 @@
 """Self-update support for the spi CLI.
 
 Checks GitHub Releases for a newer version and re-runs the installer with
-the release's wheel URL when that can safely upgrade the active install.
-Native Windows `uv` installs get a manual recovery command instead.
+the release's wheel URL. Native Windows `uv` installs hand the reinstall to a
+detached helper that runs once spi has exited.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
 import json
+import ntpath
 import os
 import platform
+import shutil
+import subprocess
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,7 +37,7 @@ from typing import Literal, Optional
 
 from packaging.version import InvalidVersion, Version
 
-from .shell import run_command
+from .shell import display_command, prepare_command, run_command
 
 GITHUB_OWNER = "Azure"
 GITHUB_REPO = "osdu-spi-stack"
@@ -41,6 +45,14 @@ GITHUB_API_BASE = "https://api.github.com"
 RELEASES_LATEST = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 RELEASES_LIST = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=30"
 MICROSOFT_PYPI_PROXY = "https://packagefeedproxy.microsoft.io/pypi/simple/"
+UPDATE_LOG_NAME = "spi-update.log"
+HELPER_WAIT_SECONDS = 120
+
+# Win32 process creation flags, spelled out because `subprocess` only defines
+# them on Windows and the tests run everywhere.
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+CREATE_NO_WINDOW = 0x08000000
 
 Installer = Literal["uv", "pipx"]
 
@@ -131,15 +143,20 @@ def _is_descendant(child: Path, ancestor: Path) -> bool:
     return True
 
 
-def _uv_tool_spi_dir() -> Optional[Path]:
+def _uv_tool_dir(*flags: str) -> Optional[Path]:
     try:
-        result = run_command(["uv", "tool", "dir"], display=False, check=False)
+        result = run_command(["uv", "tool", "dir", *flags], display=False, check=False)
     except FileNotFoundError:
         return None
     if result.returncode != 0 or not result.stdout:
         return None
     base = result.stdout.strip()
-    return Path(base) / "spi" if base else None
+    return Path(base) if base else None
+
+
+def _uv_tool_spi_dir() -> Optional[Path]:
+    base = _uv_tool_dir()
+    return base / "spi" if base else None
 
 
 def _pipx_spi_dir() -> Optional[Path]:
@@ -255,6 +272,33 @@ def installed_version() -> Optional[Version]:
         return None
 
 
+def defers_upgrade(installer: Installer) -> bool:
+    """Return True when the upgrade must wait until this process has exited.
+
+    On native Windows the running `spi.exe` launcher and the files the tool
+    environment has loaded are locked, so `uv tool install --force` run from
+    inside spi deletes part of the environment and orphans the launcher.
+    """
+    return installer == "uv" and platform.system() == "Windows"
+
+
+def _uv_install_command(wheel_url: str) -> list[str]:
+    return [
+        "uv",
+        "tool",
+        "install",
+        "--force",
+        "--default-index",
+        MICROSOFT_PYPI_PROXY,
+        wheel_url,
+    ]
+
+
+def manual_upgrade_command(wheel_url: str) -> str:
+    """The upgrade command an operator can run from a new terminal."""
+    return " ".join(_uv_install_command(wheel_url))
+
+
 def run_upgrade(
     installer: Installer,
     wheel_url: str,
@@ -263,31 +307,135 @@ def run_upgrade(
 ) -> int:
     """Re-install spi from a GitHub Release wheel asset URL.
 
-    Both uv and pipx accept a direct URL to a wheel as the install spec. Native
-    Windows uv installs raise UpdateError with a manual recovery command because
-    replacing the active tool environment can orphan the launcher. Returns the
-    subprocess exit code; run_command prints stderr on failure.
+    Both uv and pipx accept a direct URL to a wheel as the install spec.
+    Installs where `defers_upgrade` is true raise UpdateError without running
+    anything; use `schedule_upgrade` for those. Returns the subprocess exit
+    code; run_command prints stderr on failure.
     """
     _require_https(wheel_url)
+    if defers_upgrade(installer):
+        raise UpdateError(
+            "uv cannot replace the running spi on Windows. Run this from a new terminal "
+            f"instead:\n{manual_upgrade_command(wheel_url)}"
+        )
     if installer == "uv":
-        if platform.system() == "Windows":
-            raise UpdateError(
-                "uv self-update is disabled on Windows because replacing the "
-                "active tool environment can orphan the spi launcher. Run this "
-                "from a new terminal instead:\n"
-                "uv tool install --force "
-                f"--default-index {MICROSOFT_PYPI_PROXY} {wheel_url}"
-            )
-        cmd = [
-            "uv",
-            "tool",
-            "install",
-            "--force",
-            "--default-index",
-            MICROSOFT_PYPI_PROXY,
-            wheel_url,
-        ]
+        cmd = _uv_install_command(wheel_url)
     else:
         cmd = ["pipx", "install", "--force", wheel_url]
     result = run_command(cmd, description="Upgrade spi", display=display, check=False)
     return result.returncode
+
+
+def _ps_literal(value: str) -> str:
+    # PowerShell ends a single-quoted string at any of these quote characters;
+    # doubling one makes it literal.
+    quotes = "'\u2018\u2019\u201a\u201b"
+    return "'" + "".join(ch * 2 if ch in quotes else ch for ch in value) + "'"
+
+
+def build_helper_script(
+    *,
+    uv: str,
+    wheel_url: str,
+    tool_dir: Path,
+    launcher: Path,
+    pid: int,
+    wait_seconds: int = HELPER_WAIT_SECONDS,
+) -> str:
+    """PowerShell that waits for every spi process to exit, then reinstalls spi.
+
+    The tool's `python.exe` is a venv launcher whose child, the base
+    interpreter, holds the tool's packages open, so the wait matches `pid`
+    (that interpreter) plus anything running from the tool directory or the
+    `spi.exe` launcher. That also covers other spi commands still running.
+    The script uses no double quotes, so it survives the Windows command line
+    as a single argument.
+    """
+    install = " ".join(_ps_literal(arg) for arg in _uv_install_command(wheel_url)[1:])
+    manual = _ps_literal(manual_upgrade_command(wheel_url))
+    return f"""\
+$deadline = (Get-Date).AddSeconds({wait_seconds})
+$toolDir = {_ps_literal(str(tool_dir))} + '\\'
+$launcher = {_ps_literal(str(launcher))}
+Write-Output ((Get-Date -Format s) + ' waiting for spi to exit')
+while ($true) {{
+    $busy = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {{
+        $_.Id -eq {pid} -or ($_.Path -and ($_.Path -eq $launcher -or
+            $_.Path.StartsWith($toolDir, [StringComparison]::OrdinalIgnoreCase)))
+    }})
+    if ($busy.Count -eq 0) {{ break }}
+    if ((Get-Date) -gt $deadline) {{
+        Write-Output ('spi is still running (pid ' + ($busy.Id -join ', ') + '); update not applied.')
+        Write-Output 'Close every spi command, then run this from a new terminal:'
+        Write-Output {manual}
+        exit 1
+    }}
+    Start-Sleep -Milliseconds 500
+}}
+Write-Output ((Get-Date -Format s) + ' running: ' + {manual})
+& {_ps_literal(uv)} {install}
+$code = $LASTEXITCODE
+Write-Output ((Get-Date -Format s) + ' uv exited with code ' + $code)
+exit $code
+"""
+
+
+def _powershell_exe() -> str:
+    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+    if not ntpath.isabs(root):
+        root = r"C:\Windows"
+    return ntpath.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+
+
+def schedule_upgrade(wheel_url: str, *, display: bool = True) -> Path:
+    """Start a detached helper that reinstalls spi once this process exits.
+
+    The helper runs the same `uv tool install --force` as the manual
+    recovery, after the launcher and tool environment are no longer locked.
+    It gets its own hidden console, so closing the terminal does not end it.
+    uv's launcher job allows silent breakaway; breaking away explicitly also
+    covers an outer job that permits it, and an outer job that does not makes
+    the first attempt fail, so the second runs without the flag. Returns the
+    helper's log path.
+    """
+    _require_https(wheel_url)
+    uv = shutil.which("uv")
+    tool_dir = _uv_tool_spi_dir()
+    bin_dir = _uv_tool_dir("--bin")
+    if not uv or tool_dir is None or bin_dir is None:
+        raise UpdateError(
+            "cannot locate uv or its tool directories. Run this from a new terminal "
+            f"instead:\n{manual_upgrade_command(wheel_url)}"
+        )
+    script = build_helper_script(
+        uv=uv,
+        wheel_url=wheel_url,
+        tool_dir=tool_dir,
+        launcher=bin_dir / "spi.exe",
+        pid=os.getpid(),
+    )
+    cmd = prepare_command([_powershell_exe(), "-NoProfile", "-NonInteractive", "-Command", script])
+    log_path = Path(tempfile.gettempdir()) / UPDATE_LOG_NAME
+    if display:
+        display_command(_uv_install_command(wheel_url), description="Upgrade spi after exit")
+
+    flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+    with open(log_path, "w", encoding="utf-8") as log:
+        for extra in (CREATE_BREAKAWAY_FROM_JOB, 0):
+            try:
+                subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    creationflags=flags | extra,
+                    close_fds=True,
+                )
+                break
+            except OSError as exc:
+                if extra == 0:
+                    raise UpdateError(
+                        f"could not start the update helper ({exc}). Run this from a new "
+                        f"terminal instead:\n{manual_upgrade_command(wheel_url)}"
+                    ) from exc
+    return log_path

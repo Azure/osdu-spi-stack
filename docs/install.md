@@ -116,9 +116,15 @@ spi update --check   # Report whether an update is available
 spi update --force   # Reinstall the latest version
 ```
 
-On native Windows installations managed by `uv`, `spi update` exits before
-replacing its active tool environment. Run the recovery command it prints from a
-new terminal:
+On native Windows installations managed by `uv`, the running `spi.exe` and its
+tool environment are locked, so `spi update` cannot replace them in place. It
+starts a hidden helper and exits; the helper waits until no `spi` process is
+running, then runs the same `uv tool install --force` command and writes its
+output to `%TEMP%\spi-update.log`. Run `spi --version` once the log shows
+`uv exited with code 0`.
+
+If another `spi` command is still running after two minutes, the helper stops
+without changing the install and logs the command to run from a new terminal:
 
 ```powershell
 uv tool install --force --default-index https://packagefeedproxy.microsoft.io/pypi/simple/ <wheel-url>
