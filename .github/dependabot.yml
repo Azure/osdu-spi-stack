@@ -7,9 +7,23 @@
 # and failed the `lock` job in validate.yml.
 
 version: 2
+
+# Dependabot only reaches hosts declared here, even anonymous ones. The proxy's
+# simple index links its files to the ms-feed-25 feed, so both hosts are needed.
+registries:
+  microsoft-pypi-proxy:
+    type: python-index
+    url: https://packagefeedproxy.microsoft.io/pypi/simple/
+  microsoft-pypi-feed:
+    type: python-index
+    url: https://ms-feed-25.pkgs.visualstudio.com/6f084628-a36d-42cb-934d-057357e379dc/_packaging/49d7402f-07bb-4b18-a9ce-086e6e98a554/pypi/simple/
+
 updates:
   - package-ecosystem: uv
     directory: "/"
+    registries:
+      - microsoft-pypi-proxy
+      - microsoft-pypi-feed
     schedule:
       interval: weekly
       day: monday
