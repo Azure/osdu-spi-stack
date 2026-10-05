@@ -33,7 +33,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AZURE_LOCATION: centralus
+  # centralus rejects new AKS Automatic clusters for lack of API Server VNet
+  # Integration capacity; westus3 is the CLI default and hosts the live envs.
+  AZURE_LOCATION: westus3
 
 jobs:
   provision:
@@ -85,6 +87,16 @@ jobs:
 
       - name: Install Flux CLI
         uses: fluxcd/flux2/action@main
+
+      # `az bicep version` otherwise downloads Bicep on first use inside spi's
+      # prerequisite check, and a failed download there aborts spi up.
+      - name: Install Bicep CLI
+        run: |
+          for attempt in 1 2 3; do
+            az bicep install && break
+            sleep 10
+          done
+          az bicep version
 
       - name: Azure login (OIDC)
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
