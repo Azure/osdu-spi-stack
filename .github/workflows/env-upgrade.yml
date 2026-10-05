@@ -39,13 +39,13 @@ jobs:
       name_suffix: ${{ steps.export.outputs.name_suffix }}
       declares_forks: ${{ steps.export.outputs.declares_forks }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The first-activation check reads the declaration at the pre-push commit.
           fetch-depth: 0
 
       - name: Set up uv + Python
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
 
@@ -123,7 +123,7 @@ jobs:
       ENV_NAME: ${{ needs.declare.outputs.env }}
     steps:
       - name: Azure login (OIDC)
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -168,10 +168,10 @@ jobs:
       ENV_NAME: ${{ needs.declare.outputs.env }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v5
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
         with:
           version: latest
 
@@ -190,7 +190,7 @@ jobs:
         uses: fluxcd/flux2/action@main
 
       - name: Azure login (OIDC)
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -258,7 +258,7 @@ jobs:
           fi
 
       - name: Upload image lock snapshot
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: osdu-image-lock-snapshot-${{ github.run_id }}
           path: osdu-image-lock-snapshot.yaml
@@ -270,7 +270,7 @@ jobs:
 
       - name: Upload diagnostics artifact
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: env-upgrade-diagnostics-quiesce-${{ github.run_id }}
           path: diagnostics/
@@ -301,10 +301,10 @@ jobs:
       # First release whose CLI has `spi up --declaration`.
       DECLARED_FORKS_CLI_MIN_VERSION: v0.24.0
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v5
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
         with:
           version: latest
 
@@ -320,7 +320,7 @@ jobs:
           kubelogin --version
 
       - name: Install Helm
-        uses: azure/setup-helm@v5
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: 'v3.16.2'
 
@@ -328,7 +328,7 @@ jobs:
         uses: fluxcd/flux2/action@main
 
       - name: Azure login (OIDC)
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -406,7 +406,7 @@ jobs:
 
       - name: Upload diagnostics artifact
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: env-upgrade-diagnostics-provision-${{ github.run_id }}
           path: diagnostics/
@@ -427,10 +427,10 @@ jobs:
       # First release whose CLI has `spi load`.
       LOAD_CLI_MIN_VERSION: v0.27.0
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v5
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
         with:
           version: latest
 
@@ -449,7 +449,7 @@ jobs:
         uses: fluxcd/flux2/action@main
 
       - name: Azure login (OIDC)
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -593,7 +593,7 @@ jobs:
 
       - name: Upload diagnostics artifact
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: env-upgrade-diagnostics-verify-${{ github.run_id }}
           path: diagnostics/
