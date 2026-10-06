@@ -115,6 +115,7 @@ def _wire(
     monkeypatch.setattr(info, "read_workload_identity_client_id", lambda: "application-id")
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: True)
     monkeypatch.setattr(info, "_read_image_lock", lambda: image_lock)
+    monkeypatch.setattr(info, "get_ingress_ip", lambda: "")
 
 
 def _lock(pins: dict | None = None) -> dict:
@@ -860,7 +861,6 @@ def test_collect_info_reads_loads_for_the_environment_partitions_and_lock(monkey
 
 def test_render_info_shows_the_loads_table(monkeypatch, capsys):
     _wire(monkeypatch, loads=_LOADS)
-    monkeypatch.setattr(info, "get_ingress_ip", lambda: "")
 
     info.render_info()
 
