@@ -179,10 +179,13 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-03-01' = {
         revisions: [
           'asm-1-30'
         ]
+        // The stack's Gateway in platform gets its own ingress workload and
+        // public IP from managed Istio; the add-on's gateway stays off so an
+        // existing cluster releases its DNS label for the Gateway's public IP.
         components: {
           ingressGateways: [
             {
-              enabled: true
+              enabled: false
               mode: 'External'
             }
           ]

@@ -18,16 +18,16 @@
 # while :443 refuses connections, so the https probe retries through ACME lag.
 #
 # Usage: probe_gateway.sh <gateway|https>
-#   gateway  the add-on Service exists and has a ready endpoint
+#   gateway  the Gateway's generated Service exists and has a ready endpoint
 #   https    a handshake against the Gateway's HTTPS listener; no-op in ip mode
 #
 # Exit codes: 0 passed or not applicable, 1 failed, 2 usage error.
 
 set -euo pipefail
 
-# The Service the AKS managed Istio add-on owns; the Gateway binds to it by hostname.
-ISTIO_NAMESPACE="aks-istio-ingress"
-ISTIO_INGRESS_SERVICE="aks-istio-ingressgateway-external"
+# The Service managed Istio generates for the Gateway (<gateway>-<class>).
+GATEWAY_NAMESPACE="platform"
+GATEWAY_SERVICE="spi-gateway-istio"
 
 usage() {
     cat <<'EOF'
@@ -41,30 +41,30 @@ probe_gateway() {
     # Endpoints deprecation warning cannot satisfy the non-empty check.
     local addresses stderr_file stderr_output
     stderr_file=$(mktemp)
-    if ! addresses=$(kubectl get endpoints "$ISTIO_INGRESS_SERVICE" -n "$ISTIO_NAMESPACE" \
+    if ! addresses=$(kubectl get endpoints "$GATEWAY_SERVICE" -n "$GATEWAY_NAMESPACE" \
         -o jsonpath='{.subsets[*].addresses[*].ip}' 2>"$stderr_file"); then
         stderr_output=$(cat "$stderr_file")
         rm -f "$stderr_file"
-        echo "Failed to read endpoints for ${ISTIO_INGRESS_SERVICE} in ${ISTIO_NAMESPACE}: ${stderr_output}" >&2
-        kubectl get svc -n "$ISTIO_NAMESPACE" || true
-        kubectl get pods -n "$ISTIO_NAMESPACE" || true
+        echo "Failed to read endpoints for ${GATEWAY_SERVICE} in ${GATEWAY_NAMESPACE}: ${stderr_output}" >&2
+        kubectl get svc -n "$GATEWAY_NAMESPACE" || true
+        kubectl get pods -n "$GATEWAY_NAMESPACE" || true
         return 1
     fi
     stderr_output=$(cat "$stderr_file")
     rm -f "$stderr_file"
     if [[ -z "$addresses" ]]; then
-        echo "${ISTIO_INGRESS_SERVICE} exists but has no ready endpoint addresses; dumping service and pod state" >&2
+        echo "${GATEWAY_SERVICE} exists but has no ready endpoint addresses; dumping service and pod state" >&2
         [[ -n "$stderr_output" ]] && echo "kubectl stderr: ${stderr_output}" >&2
-        kubectl get svc -n "$ISTIO_NAMESPACE" || true
-        kubectl get pods -n "$ISTIO_NAMESPACE" || true
+        kubectl get svc -n "$GATEWAY_NAMESPACE" || true
+        kubectl get pods -n "$GATEWAY_NAMESPACE" || true
         return 1
     fi
-    echo "${ISTIO_INGRESS_SERVICE} has ready endpoint(s): ${addresses}"
+    echo "${GATEWAY_SERVICE} has ready endpoint(s): ${addresses}"
 }
 
 probe_https() {
     local host
-    host=$(kubectl get gateway spi-gateway -n "$ISTIO_NAMESPACE" \
+    host=$(kubectl get gateway spi-gateway -n "$GATEWAY_NAMESPACE" \
         -o jsonpath='{.spec.listeners[?(@.protocol=="HTTPS")].hostname}' | awk '{print $1}')
     if [[ -z "$host" ]]; then
         echo "No HTTPS listener on spi-gateway; skipping TLS probe (ip mode)."

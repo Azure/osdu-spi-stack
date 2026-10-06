@@ -1,25 +1,19 @@
-# ADR-022: TLS Certificates in platform with Gateway ReferenceGrants
+# ADR-022: TLS Certificates in platform
 
 ## Context
 
-The gateway TLS overlays declared their cert-manager `Certificate` resources in `aks-istio-ingress`, next to the Gateway whose listeners consume the secrets. On AKS Automatic that namespace is managed: the `aks-managed-protect-system-namespaces` ValidatingAdmissionPolicy denies writes to it from non-exempt identities. Flux's controllers are exempt (ADR-019), so the Certificate *applied* cleanly, but cert-manager's controller is not exempt, so its every status update was denied. No CertificateRequest, no ACME order, no secret; the HTTPS:443 listener never opened while every Kustomization reported Ready.
-
-The failure was silent twice over: a status-less Certificate passes Flux's health checks, and the smoke workflow probed pods and Services but never performed a TLS handshake.
-
-cert-manager must be able to write status on the resources it reconciles, and no SPI-controlled identity can be exempted from the AKS-managed policy. The Gateway itself must stay in `aks-istio-ingress` (managed Istio owns the GatewayClass there), and the deployer cannot hand-patch resources in managed namespaces either; the declarative Flux path is the only write path, so the topology must be correct in Git.
+cert-manager must write status on every Certificate it reconciles, and on AKS Automatic the `aks-managed-protect-system-namespaces` ValidatingAdmissionPolicy denies those writes in managed namespaces such as `aks-istio-ingress`. A Certificate applied there gets no CertificateRequest, no ACME order, and no secret, while a status-less Certificate still passes Flux's health checks, so the HTTPS listener never opens and every Kustomization reports Ready. No SPI-controlled identity can be exempted from the AKS-managed policy.
 
 ## Decision
 
-Issue Certificates into `platform` and bridge with ReferenceGrants. `platform` already hosts cert-manager-issued material (`redis-tls-cert`), proving the write path. Each TLS overlay declares its Certificates in `platform` plus a ReferenceGrant (in `platform`) allowing the `spi-gateway` Gateway in `aks-istio-ingress` to read the named secrets; listener `certificateRefs` carry an explicit `namespace: platform`. HTTP-01 solver routes are created in the challenge's namespace (now `platform`) and attach to the gateway via its `allowedRoutes: from: All` listeners, so issuance needs no writes to the managed namespace at all.
+Certificates issue into `platform`, the Gateway's own namespace (ADR-026), and listener `certificateRefs` name the secret without a namespace or a ReferenceGrant (`software/overlays/gateway-tls-single-host/`, `software/overlays/gateway-tls-multi-host/`). HTTP-01 solver routes are created in the challenge's namespace and attach to the Gateway through its `allowedRoutes: from: All` listeners. The smoke workflow performs an HTTPS handshake, so a status-less Certificate fails CI instead of passing a health check.
+
+Rejected: declare Certificates beside a Gateway in a managed namespace. Keeps the trust topology in one place, but cert-manager's status writes are denied there and issuance stalls silently.
 
 Rejected: exempt cert-manager from the policy. Not possible; the policy and its binding are AKS-managed.
 
-Rejected: run cert-manager inside a managed namespace. Exemption is by identity, not location; this changes nothing and violates the managed boundary.
-
 ## Consequences
 
-- Issuance works under the managed-namespace policy; validated live (issuance completed in ~30 s in `platform` after stalling indefinitely in `aks-istio-ingress`).
-- cert-manager can now publish `Ready` conditions, so the `spi-gateway-tls` Kustomization genuinely gates on issuance instead of passing a status-less Certificate.
-- The smoke workflow performs an HTTPS handshake, so a status-less Certificate no longer passes CI.
-- The TLS trust topology spans two namespaces; readers must follow a ReferenceGrant to see why the listener resolves.
-- Flux prunes the stalled Certificates from `aks-istio-ingress` on reconcile (it is exempt and owns them).
+- The handshake check in CI is what catches a stalled Certificate; Flux's health check alone does not.
+- Issuance and the listener resolve in one namespace under ordinary RBAC, and `platform` already hosts cert-manager-issued material (`redis-tls-cert`).
+- Nothing the stack owns lives in a managed namespace, so the policy's exemption list cannot stall issuance.

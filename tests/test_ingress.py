@@ -4,10 +4,10 @@
 
 """Ingress LoadBalancer address discovery."""
 
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 from spi.info import _compute_endpoints
-from spi.ingress import ISTIO_INGRESS_NAMESPACE, ISTIO_INGRESS_SERVICE, get_ingress_ip
+from spi.ingress import GATEWAY_NAMESPACE, GATEWAY_SERVICE, get_ingress_ip
 
 
 def _service(
@@ -32,14 +32,14 @@ class TestGetIngressIp:
         with patch("spi.ingress.kubectl_json", return_value=services) as kubectl_json:
             assert get_ingress_ip() == "gateway.example.com"
 
-        kubectl_json.assert_called_once_with(["get", "svc", "-n", ISTIO_INGRESS_NAMESPACE])
+        kubectl_json.assert_called_once_with(["get", "svc", "-n", GATEWAY_NAMESPACE])
 
-    def test_prefers_the_managed_service_then_sorts_alternates_by_name(self):
+    def test_prefers_the_gateway_service_then_sorts_alternates_by_name(self):
         services = {
             "items": [
                 _service("zeta-ingress", ip="10.0.0.3"),
                 _service("alpha-ingress", ip="10.0.0.1"),
-                _service(ISTIO_INGRESS_SERVICE, ip="10.0.0.2"),
+                _service(GATEWAY_SERVICE, ip="10.0.0.2"),
             ]
         }
 
@@ -50,27 +50,25 @@ class TestGetIngressIp:
         with patch("spi.ingress.kubectl_json", return_value=services):
             assert get_ingress_ip() == "10.0.0.1"
 
-    def test_falls_back_to_istio_system_when_the_managed_namespace_is_unresolved(self):
-        responses = [
-            {"items": [_service(ISTIO_INGRESS_SERVICE)]},
-            {"items": [_service("legacy-ingress", ip="10.0.0.4")]},
-        ]
+    def test_skips_cluster_ip_services(self):
+        services = {
+            "items": [
+                _service("redis", ip="10.0.0.9", service_type="ClusterIP"),
+                _service(GATEWAY_SERVICE, ip="10.0.0.2"),
+            ]
+        }
 
-        with patch("spi.ingress.kubectl_json", side_effect=responses) as kubectl_json:
-            assert get_ingress_ip() == "10.0.0.4"
-
-        assert kubectl_json.call_args_list == [
-            call(["get", "svc", "-n", ISTIO_INGRESS_NAMESPACE]),
-            call(["get", "svc", "-n", "istio-system"]),
-        ]
+        with patch("spi.ingress.kubectl_json", return_value=services):
+            assert get_ingress_ip() == "10.0.0.2"
 
     def test_returns_empty_when_no_load_balancer_address_is_ready(self):
-        responses = [
-            {"items": [_service(ISTIO_INGRESS_SERVICE)]},
-            {"items": [_service("legacy-ingress")]},
-        ]
+        services = {"items": [_service(GATEWAY_SERVICE)]}
 
-        with patch("spi.ingress.kubectl_json", side_effect=responses):
+        with patch("spi.ingress.kubectl_json", return_value=services):
+            assert get_ingress_ip() == ""
+
+    def test_returns_empty_before_flux_has_applied_the_gateway(self):
+        with patch("spi.ingress.kubectl_json", return_value=None):
             assert get_ingress_ip() == ""
 
 

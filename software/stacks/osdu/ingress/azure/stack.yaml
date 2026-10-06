@@ -2,34 +2,11 @@
 #
 # One host: Azure's auto-assigned <label>.<region>.cloudapp.azure.com FQDN
 # carries the OSDU APIs and the middleware UIs (/kibana, /airflow), with a
-# Let's Encrypt cert issued via HTTP-01 on the same Gateway.
+# Let's Encrypt cert issued via HTTP-01 on the same Gateway. The label rides
+# on the Gateway's infrastructure annotations into its generated Service.
 #
 # Required variables in spi-ingress-config ConfigMap (osdu-flux):
 #   ACME_EMAIL, INGRESS_FQDN, DNS_LABEL
-
----
-# DNS label on the add-on's ingress Service. Only the flux-system
-# controllers may write in aks-istio-ingress, so Flux applies it.
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: spi-ingress-dns-label
-  namespace: osdu-flux
-  labels:
-    spi-stack.layer: "1"
-spec:
-  interval: 10m
-  sourceRef:
-    kind: GitRepository
-    name: osdu-spi-stack-system
-  path: ./software/components/azure-dns-label
-  prune: false
-  wait: true
-  timeout: 5m
-  postBuild:
-    substituteFrom:
-      - kind: ConfigMap
-        name: spi-ingress-config
 
 ---
 # Let's Encrypt issuers (staging + prod).
@@ -91,7 +68,6 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-cert-manager-issuers
-    - name: spi-ingress-dns-label
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system

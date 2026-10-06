@@ -6,7 +6,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/partition/ }
@@ -22,7 +22,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/entitlements/ }
@@ -38,7 +38,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/legal/ }
@@ -54,7 +54,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/schema-service/ }
@@ -70,7 +70,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/storage/ }
@@ -86,7 +86,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/search/ }
@@ -102,7 +102,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/indexer/ }
@@ -118,7 +118,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/indexer-queue/ }
@@ -134,7 +134,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/file/ }
@@ -150,7 +150,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/workflow/ }
@@ -166,7 +166,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/unit/ }
@@ -182,7 +182,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/crs/catalog/ }
@@ -198,7 +198,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   rules:
     - matches:
         - path: { type: PathPrefix, value: /api/crs/converter/ }

@@ -6,7 +6,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   hostnames:
     - "${INGRESS_HOST_KIBANA}"
   rules:
@@ -25,7 +25,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   hostnames:
     - "${INGRESS_HOST_AIRFLOW}"
   rules:

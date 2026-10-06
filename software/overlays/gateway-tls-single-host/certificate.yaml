@@ -1,6 +1,3 @@
-# Certificate lives in platform: the protect-system-namespaces policy denies
-# cert-manager's status writes in aks-istio-ingress, silently stalling
-# issuance. The ReferenceGrant lets the Gateway read the secret.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -15,20 +12,3 @@ spec:
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
----
-apiVersion: gateway.networking.k8s.io/v1beta1
-kind: ReferenceGrant
-metadata:
-  name: gateway-to-osdu-tls
-  namespace: platform
-  labels:
-    app.kubernetes.io/managed-by: osdu-spi-stack
-spec:
-  from:
-    - group: gateway.networking.k8s.io
-      kind: Gateway
-      namespace: aks-istio-ingress
-  to:
-    - group: ""
-      kind: Secret
-      name: osdu-tls

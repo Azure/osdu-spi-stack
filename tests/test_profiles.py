@@ -33,8 +33,9 @@ from spi.bootstrap import ISTIO_REVISION_CONFIGMAP
 from spi.config import IngressMode, Profile
 from spi.ingress import (
     AZURE_DNS_LABEL_ANNOTATION,
-    ISTIO_INGRESS_NAMESPACE,
-    ISTIO_INGRESS_SERVICE,
+    GATEWAY_NAME,
+    GATEWAY_NAMESPACE,
+    GATEWAY_SERVICE,
 )
 from spi.stack_version import STACK_VERSION_CONFIGMAP, STACK_VERSION_NAMESPACE
 
@@ -498,7 +499,7 @@ class TestSingleRenderer:
     @pytest.mark.parametrize("pair", PAIRS, ids=PAIR_IDS)
     def test_gateway_owner_is_the_ingress_tree(self, pair):
         profile, mode = pair
-        key = ("Gateway", "aks-istio-ingress", "spi-gateway")
+        key = ("Gateway", GATEWAY_NAMESPACE, GATEWAY_NAME)
         profile_owners = self._renderings(PROFILES_DIR / profile.value).get(key, {})
         ingress_tree = _ingress_tree(profile, mode)
         ingress_owners = self._renderings(ingress_tree).get(key, {})
@@ -556,7 +557,7 @@ class TestSingleRenderer:
         the outgoing child, and its MirrorPrune deletion takes the Gateway
         with it even once the incoming child has applied the object.
         """
-        key = ("Gateway", "aks-istio-ingress", "spi-gateway")
+        key = ("Gateway", GATEWAY_NAMESPACE, GATEWAY_NAME)
         owners = {
             mode: sorted(self._renderings(_ingress_tree(profile, mode)).get(key, {}))
             for mode in IngressMode
@@ -588,66 +589,118 @@ class TestSingleRenderer:
         assert external_dns["spec"]["deletionPolicy"] == "Orphan"
 
 
-class TestManagedIstioIngressService:
-    def test_service_reference_is_rendered_or_documented_as_addon_provided(self):
-        identity = (ISTIO_INGRESS_NAMESPACE, ISTIO_INGRESS_SERVICE)
-        rendered = set()
-        for path in sorted((REPO_ROOT / "software").rglob("*.yaml")):
-            text = path.read_text(encoding="utf-8")
-            if "{{" in text:
-                continue
-            for doc in yaml.safe_load_all(text):
-                if doc and doc.get("kind") == "Service":
-                    metadata = doc.get("metadata") or {}
-                    rendered.add((metadata.get("namespace") or "default", metadata.get("name")))
+def _software_documents():
+    """Yield every untemplated manifest document under software/."""
+    for path in sorted((REPO_ROOT / "software").rglob("*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        if "{{" in text:
+            continue
+        for doc in yaml.safe_load_all(text):
+            if doc:
+                yield path, doc
 
-        design = (REPO_ROOT / "docs" / "design" / "gateway-ingress.md").read_text(encoding="utf-8")
-        documented_addon_service = (
-            ISTIO_INGRESS_SERVICE in design and "AKS managed Istio add-on" in design
-        )
-        assert identity in rendered or documented_addon_service, (
-            f"{identity} is referenced by the CLI but is neither rendered under software/ "
-            "nor documented as an AKS managed Istio add-on resource"
-        )
 
-    def test_gateway_binds_to_referenced_service(self):
+def _gateway_patch_ops(tree: Path) -> list:
+    """JSON6902 ops the mode's Gateway owner applies to the platform Gateway."""
+    owner = _kustomization(tree, "spi-gateway-tls")
+    directory = REPO_ROOT / owner["spec"]["path"].removeprefix("./")
+    spec = yaml.safe_load((directory / "kustomization.yaml").read_text(encoding="utf-8")) or {}
+    ops = []
+    for patch in spec.get("patches", []):
+        target = patch.get("target") or {}
+        if target.get("kind") != "Gateway":
+            continue
+        # A target without a namespace also matches the legacy tombstone.
+        assert target.get("namespace") == GATEWAY_NAMESPACE, (
+            f"{directory.name}: Gateway patch target must name {GATEWAY_NAMESPACE}"
+        )
+        ops.extend(yaml.safe_load(patch["patch"]))
+    return ops
+
+
+class TestAutomatedGatewayDeployment:
+    """Managed Istio deploys the gateway workload and Service from the Gateway."""
+
+    def test_gateway_lives_in_platform_without_a_bound_address(self):
         gateway = yaml.safe_load(
             (REPO_ROOT / "software" / "components" / "gateway" / "gateway.yaml").read_text(
                 encoding="utf-8"
             )
         )
-        address = f"{ISTIO_INGRESS_SERVICE}.{ISTIO_INGRESS_NAMESPACE}.svc.cluster.local"
-        assert {"type": "Hostname", "value": address} in gateway["spec"]["addresses"]
+        assert gateway["metadata"]["name"] == GATEWAY_NAME
+        assert gateway["metadata"]["namespace"] == GATEWAY_NAMESPACE
+        # A bound address tells Istio to reuse a Service instead of creating one.
+        assert "addresses" not in gateway["spec"]
+
+    def test_generated_service_is_documented_not_rendered(self):
+        rendered = {
+            ((doc.get("metadata") or {}).get("namespace") or "default", doc["metadata"]["name"])
+            for _, doc in _software_documents()
+            if doc.get("kind") == "Service"
+        }
+        assert (GATEWAY_NAMESPACE, GATEWAY_SERVICE) not in rendered, (
+            "the Gateway's Service is Istio's to create; rendering it contests ownership"
+        )
+        design = (REPO_ROOT / "docs" / "design" / "gateway-ingress.md").read_text(encoding="utf-8")
+        assert GATEWAY_SERVICE in design, (
+            f"{GATEWAY_SERVICE} is referenced by the CLI but gateway-ingress.md never names it"
+        )
 
     @pytest.mark.parametrize("mode", ["azure", "azure-minimal"])
-    def test_azure_modes_stamp_dns_label_via_flux(self, mode):
-        label = _kustomization(INGRESS_DIR / mode, "spi-ingress-dns-label")
-        assert label["spec"]["path"] == "./software/components/azure-dns-label"
-        # The add-on owns the Service; Flux must never prune it.
-        assert label["spec"]["prune"] is False
+    def test_azure_modes_carry_the_dns_label_on_the_gateway(self, mode):
+        ops = [
+            op
+            for op in _gateway_patch_ops(INGRESS_DIR / mode)
+            if op["path"] == "/spec/infrastructure"
+        ]
+        assert len(ops) == 1, f"{mode} must add spec.infrastructure exactly once, found {ops}"
+        annotations = ops[0]["value"]["annotations"]
+        assert annotations[AZURE_DNS_LABEL_ANNOTATION] == "${DNS_LABEL}"
 
-        gateway_tls = _kustomization(INGRESS_DIR / mode, "spi-gateway-tls")
-        depends = [dep["name"] for dep in gateway_tls["spec"]["dependsOn"]]
-        assert "spi-ingress-dns-label" in depends
+    @pytest.mark.parametrize("mode", ["dns", "dns-minimal", "ip", "ip-minimal"])
+    def test_other_modes_leave_the_gateway_infrastructure_alone(self, mode):
+        ops = _gateway_patch_ops(INGRESS_DIR / mode)
+        assert not [op for op in ops if op["path"].startswith("/spec/infrastructure")]
+        assert "spi-ingress-dns-label" not in _declared_names(INGRESS_DIR / mode)
 
-    def test_dns_label_manifest_targets_addon_service(self):
-        manifest = yaml.safe_load(
-            (REPO_ROOT / "software" / "components" / "azure-dns-label" / "service.yaml").read_text(
+    def test_every_parent_ref_names_the_platform_gateway(self):
+        expected = {"name": GATEWAY_NAME, "namespace": GATEWAY_NAMESPACE}
+        refs = []
+        for path, doc in _software_documents():
+            if doc.get("kind") == "HTTPRoute":
+                refs.extend((path, ref) for ref in doc["spec"]["parentRefs"])
+            elif doc.get("kind") == "ClusterIssuer":
+                for solver in doc["spec"]["acme"]["solvers"]:
+                    route = (solver.get("http01") or {}).get("gatewayHTTPRoute") or {}
+                    refs.extend((path, ref) for ref in route.get("parentRefs", []))
+        assert refs
+        wrong = [
+            (path.relative_to(REPO_ROOT).as_posix(), ref)
+            for path, ref in refs
+            if {key: ref.get(key) for key in expected} != expected
+        ]
+        assert not wrong, f"parentRefs must attach to {expected}: {wrong}"
+
+    def test_tls_listeners_reference_secrets_in_the_gateway_namespace(self):
+        for mode in ("azure", "dns"):
+            for op in _gateway_patch_ops(INGRESS_DIR / mode):
+                for ref in (op.get("value") or {}).get("tls", {}).get("certificateRefs", []):
+                    assert "namespace" not in ref, f"{mode}: {ref} needs a ReferenceGrant"
+        grants = [doc for _, doc in _software_documents() if doc.get("kind") == "ReferenceGrant"]
+        assert not [g for g in grants if any(f.get("kind") == "Gateway" for f in g["spec"]["from"])]
+
+    def test_legacy_gateway_is_ignored_not_pruned(self):
+        legacy = yaml.safe_load(
+            (REPO_ROOT / "software" / "components" / "gateway" / "legacy-gateway.yaml").read_text(
                 encoding="utf-8"
             )
         )
-        assert manifest["kind"] == "Service"
-        assert manifest["metadata"]["name"] == ISTIO_INGRESS_SERVICE
-        assert manifest["metadata"]["namespace"] == ISTIO_INGRESS_NAMESPACE
-        annotations = manifest["metadata"]["annotations"]
-        assert annotations[AZURE_DNS_LABEL_ANNOTATION] == "${DNS_LABEL}"
-        assert annotations["kustomize.toolkit.fluxcd.io/prune"] == "disabled"
-        # A partial object: server-side apply must not claim spec fields.
-        assert "spec" not in manifest
-
-    @pytest.mark.parametrize("mode", ["dns", "dns-minimal", "ip", "ip-minimal"])
-    def test_other_modes_do_not_mutate_addon_service(self, mode):
-        assert "spi-ingress-dns-label" not in _declared_names(INGRESS_DIR / mode)
+        assert legacy["kind"] == "Gateway"
+        assert legacy["metadata"]["namespace"] == "aks-istio-ingress"
+        assert legacy["metadata"]["name"] == GATEWAY_NAME
+        # Ignore keeps it in the inventory with neither an apply nor a prune,
+        # both of which AKS admission denies in that namespace.
+        assert legacy["metadata"]["annotations"]["kustomize.toolkit.fluxcd.io/ssa"] == "Ignore"
 
 
 class TestBorrowedPodDisruptionSubstitution:

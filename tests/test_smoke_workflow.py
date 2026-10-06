@@ -62,17 +62,17 @@ def test_bare_still_waits_for_flux_but_skips_ingress_probes():
 
 def test_probe_gateway_requires_the_named_service_to_have_ready_endpoints():
     """kubectl exits 0 even when a Service query or a field-selector pod list
-    comes back empty, so probing the whole aks-istio-ingress namespace can
-    pass with no gateway Service and no ready backend. The check must target
-    the named add-on Service and fail when it has zero ready endpoints.
+    comes back empty, so probing the whole platform namespace can pass with
+    no gateway Service and no ready backend. The check must target the named
+    generated Service and fail when it has zero ready endpoints.
     """
     script = PROBE_GATEWAY_SCRIPT.read_text(encoding="utf-8")
     func_match = re.search(r"probe_gateway\(\) \{(.*?)\n\}", script, re.DOTALL)
     assert func_match, "could not find probe_gateway() function body"
     body = func_match.group(1)
 
-    assert "ISTIO_INGRESS_SERVICE" in body, (
-        "probe_gateway must query the named add-on Service, not the whole namespace"
+    assert "GATEWAY_SERVICE" in body, (
+        "probe_gateway must query the named generated Service, not the whole namespace"
     )
     assert "kubectl get endpoints" in body, (
         "probe_gateway must check for ready endpoints, not just that kubectl exits 0"
@@ -96,7 +96,7 @@ if [[ "$1 $2" == "get endpoints" ]]; then
             exit 0
             ;;
         not-found)
-            echo 'Error from server (NotFound): endpoints "aks-istio-ingressgateway-external" not found' >&2
+            echo 'Error from server (NotFound): endpoints "spi-gateway-istio" not found' >&2
             exit 1
             ;;
         *)
