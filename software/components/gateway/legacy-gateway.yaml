@@ -11,3 +11,7 @@ metadata:
     kustomize.toolkit.fluxcd.io/ssa: Ignore
 spec:
   gatewayClassName: istio
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
