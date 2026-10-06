@@ -111,18 +111,16 @@ infrastructure provisioning, rewrites the ingress ConfigMap, and updates the
 Flux ingress path. It is not a dedicated, zero-downtime migration operation.
 
 The selected ingress tree is the Gateway's sole inventory owner. Its
-`spi-gateway-tls` Kustomization keeps the same name across modes, changing
-paths rather than deleting and recreating the owner. The base stack's
-`spi-gateway` is an empty, non-pruning handoff, not another Gateway renderer.
-Do not remove that handoff without the sequence described in
+`spi-ingress-gateway` Kustomization keeps the same name across modes, changing
+paths rather than deleting and recreating the owner. Two retired names are
+empty, non-pruning handoffs, not Gateway renderers: `spi-gateway` in the base
+stack, and `spi-gateway-tls` in every ingress tree. The latter holds, on a
+cluster deployed while the Gateway lived in `aks-istio-ingress`, that old
+Gateway: AKS admission denies Flux the delete, so its inventory is never
+pruned, including when a switch to `bare` deletes the Kustomization itself
+([ADR-026](../decisions/026-automated-gateway-deployment.md)). Do not remove
+either handoff without the sequence described in
 [ADR-025](../decisions/025-single-flux-inventory-owner.md).
-
-A cluster deployed while the Gateway lived in `aks-istio-ingress` keeps that
-object: AKS admission denies Flux the delete. The base gateway component
-renders it under `kustomize.toolkit.fluxcd.io/ssa: Ignore`
-(`software/components/gateway/legacy-gateway.yaml`), which holds it in the
-`spi-gateway-tls` inventory without an apply or a prune
-([ADR-026](../decisions/026-automated-gateway-deployment.md)).
 
 Route and certificate convergence still takes time during a switch.
 Azure resources omitted by an incremental Bicep redeployment are not

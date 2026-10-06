@@ -868,3 +868,12 @@ def test_render_info_shows_the_loads_table(monkeypatch, capsys):
     assert "Loads" in out
     assert "reference-data" in out
     assert "80103" in out
+
+
+def test_gateway_ip_falls_back_to_the_live_address(monkeypatch):
+    """The ConfigMap records no address on a fresh deploy: Flux creates the
+    gateway Service after bootstrap wrote spi-ingress-config."""
+    _wire(monkeypatch)
+    monkeypatch.setattr(info, "get_ingress_ip", lambda: "203.0.113.9")
+
+    assert info.collect_info()["azure"]["gateway_ip"] == "203.0.113.9"

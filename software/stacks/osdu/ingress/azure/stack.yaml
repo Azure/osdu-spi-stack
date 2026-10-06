@@ -55,12 +55,34 @@ spec:
   timeout: 10m
 
 ---
+# Retired Gateway owner: an empty, non-pruning inventory that keeps the
+# objects pre-move clusters still list under this name, including the
+# Gateway in aks-istio-ingress that admission denies Flux the delete of.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-gateway-tls
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/inventory-handoff
+  prune: false
+  deletionPolicy: Orphan
+  wait: true
+  timeout: 5m
+
+---
 # The Gateway: HTTP:80 for ACME HTTP-01 plus HTTPS:443 on the FQDN. The
 # ingress tree is the Gateway's sole Flux owner.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: spi-gateway-tls
+  name: spi-ingress-gateway
   namespace: osdu-flux
   labels:
     spi-stack.layer: "1"
@@ -95,7 +117,7 @@ spec:
   dependsOn:
     - name: spi-airflow
     - name: spi-kibana
-    - name: spi-gateway-tls
+    - name: spi-ingress-gateway
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system
@@ -121,7 +143,7 @@ spec:
   interval: 10m
   dependsOn:
     - name: spi-osdu-services
-    - name: spi-gateway-tls
+    - name: spi-ingress-gateway
   sourceRef:
     kind: GitRepository
     name: osdu-spi-stack-system

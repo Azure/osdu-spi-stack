@@ -2,16 +2,38 @@
 #
 # The base Gateway and nothing else; see kustomization.yaml.
 ---
+# Retired Gateway owner: an empty, non-pruning inventory that keeps the
+# objects pre-move clusters still list under this name, including the
+# Gateway in aks-istio-ingress that admission denies Flux the delete of.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-gateway-tls
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "1"
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/components/inventory-handoff
+  prune: false
+  deletionPolicy: Orphan
+  wait: true
+  timeout: 5m
+
+---
 # The Gateway: HTTP:80 only. Sole Flux owner of the object.
 #
-# Named spi-gateway-tls like every non-bare mode, so switching
+# Named spi-ingress-gateway like every non-bare mode, so switching
 # --ingress-mode only changes this Kustomization's spec.path. A
 # mode-specific name would prune the old child and its MirrorPrune
 # deletion would take the Gateway with it.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: spi-gateway-tls
+  name: spi-ingress-gateway
   namespace: osdu-flux
   labels:
     spi-stack.layer: "1"

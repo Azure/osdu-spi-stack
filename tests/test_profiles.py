@@ -563,7 +563,7 @@ class TestSingleRenderer:
             for mode in IngressMode
         }
 
-        assert set(map(tuple, owners.values())) == {("spi-gateway-tls",)}, (
+        assert set(map(tuple, owners.values())) == {("spi-ingress-gateway",)}, (
             f"the {profile.value} profile renders the Gateway under more than one "
             f"Kustomization name: {owners}"
         )
@@ -602,7 +602,7 @@ def _software_documents():
 
 def _gateway_patch_ops(tree: Path) -> list:
     """JSON6902 ops the mode's Gateway owner applies to the platform Gateway."""
-    owner = _kustomization(tree, "spi-gateway-tls")
+    owner = _kustomization(tree, "spi-ingress-gateway")
     directory = REPO_ROOT / owner["spec"]["path"].removeprefix("./")
     spec = yaml.safe_load((directory / "kustomization.yaml").read_text(encoding="utf-8")) or {}
     ops = []
@@ -610,7 +610,7 @@ def _gateway_patch_ops(tree: Path) -> list:
         target = patch.get("target") or {}
         if target.get("kind") != "Gateway":
             continue
-        # A target without a namespace also matches the legacy tombstone.
+        # The patch must name the namespace so it scopes to the one Gateway.
         assert target.get("namespace") == GATEWAY_NAMESPACE, (
             f"{directory.name}: Gateway patch target must name {GATEWAY_NAMESPACE}"
         )
@@ -689,18 +689,23 @@ class TestAutomatedGatewayDeployment:
         grants = [doc for _, doc in _software_documents() if doc.get("kind") == "ReferenceGrant"]
         assert not [g for g in grants if any(f.get("kind") == "Gateway" for f in g["spec"]["from"])]
 
-    def test_legacy_gateway_is_ignored_not_pruned(self):
-        legacy = yaml.safe_load(
-            (REPO_ROOT / "software" / "components" / "gateway" / "legacy-gateway.yaml").read_text(
-                encoding="utf-8"
-            )
-        )
-        assert legacy["kind"] == "Gateway"
-        assert legacy["metadata"]["namespace"] == "aks-istio-ingress"
-        assert legacy["metadata"]["name"] == GATEWAY_NAME
-        # Ignore keeps it in the inventory with neither an apply nor a prune,
-        # both of which AKS admission denies in that namespace.
-        assert legacy["metadata"]["annotations"]["kustomize.toolkit.fluxcd.io/ssa"] == "Ignore"
+    @pytest.mark.parametrize(
+        "mode", ["azure", "azure-minimal", "dns", "dns-minimal", "ip", "ip-minimal"]
+    )
+    def test_retired_gateway_owner_keeps_its_inventory_without_pruning(self, mode):
+        """Pre-move clusters list a Gateway in aks-istio-ingress under this name.
+
+        Admission denies Flux the delete, so the inventory must never be
+        pruned, on a spec change or on the Kustomization's own deletion.
+        """
+        retired = _kustomization(INGRESS_DIR / mode, "spi-gateway-tls")
+        assert retired["spec"]["path"] == "./software/components/inventory-handoff"
+        assert retired["spec"]["prune"] is False
+        assert retired["spec"]["deletionPolicy"] == "Orphan"
+        owner = _kustomization(INGRESS_DIR / mode, "spi-ingress-gateway")
+        assert owner["spec"]["prune"] is True
+        assert "deletionPolicy" not in owner["spec"]
+        assert "spi-gateway-tls" not in _dependency_names(INGRESS_DIR / mode)
 
 
 class TestBorrowedPodDisruptionSubstitution:

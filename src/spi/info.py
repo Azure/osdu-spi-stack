@@ -507,7 +507,7 @@ def _collect_info() -> dict:
         "azure": {
             "resource_group": rg,
             "region": azure_ext.get("AZURE_REGION", ""),
-            "gateway_ip": cfg.get("GATEWAY_IP", ""),
+            "gateway_ip": cfg.get("GATEWAY_IP", "") or get_ingress_ip(),
             "fqdn": cfg.get("INGRESS_FQDN", ""),
             "keyvault": osdu.get("KEYVAULT_NAME", ""),
             "cosmos_endpoint": osdu.get("PRIMARY_COSMOSDB_ENDPOINT", ""),
