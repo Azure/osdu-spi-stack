@@ -693,10 +693,10 @@ class TestAutomatedGatewayDeployment:
         "mode", ["azure", "azure-minimal", "dns", "dns-minimal", "ip", "ip-minimal"]
     )
     def test_retired_gateway_owner_keeps_its_inventory_without_pruning(self, mode):
-        """Pre-move clusters list a Gateway in aks-istio-ingress under this name.
+        """Pre-move clusters listed a Gateway in aks-istio-ingress under this name.
 
-        Admission denies Flux the delete, so the inventory must never be
-        pruned, on a spec change or on the Kustomization's own deletion.
+        Admission denies Flux the delete, so the retired owner must never
+        prune, on a spec change or on its own deletion; it leaves the object.
         """
         retired = _kustomization(INGRESS_DIR / mode, "spi-gateway-tls")
         assert retired["spec"]["path"] == "./software/components/inventory-handoff"

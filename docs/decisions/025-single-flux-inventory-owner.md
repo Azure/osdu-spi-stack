@@ -21,4 +21,4 @@ Rejected: remove and rename the old Kustomizations in one rollout. `MirrorPrune`
 - One reconciler applies and prunes each object, and existing inventories cannot delete resources during handoff.
 - Each ingress mode still renders the complete desired Gateway.
 - Handoff Kustomizations stay visible until a later rollout removes them.
-- Two retired names, `spi-gateway` in the profile trees and `spi-gateway-tls` in the ingress trees, hold inventories from earlier owners; the latter lists a Gateway in `aks-istio-ingress` that admission denies Flux the delete of (ADR-026), so it stays until the clusters that carry it are gone.
+- Two retired names, `spi-gateway` in the profile trees and `spi-gateway-tls` in the ingress trees, left their earlier objects in place; the latter's included a Gateway in `aks-istio-ingress` that admission denies Flux the delete of (ADR-026), so the name stays until the clusters that carry it are gone.

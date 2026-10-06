@@ -55,8 +55,8 @@ spec:
   timeout: 10m
 
 ---
-# Retired Gateway owner: an empty, non-pruning inventory that keeps the
-# objects pre-move clusters still list under this name, including the
+# Retired Gateway owner: an empty, non-pruning inventory, so the objects a
+# pre-move cluster listed under this name are left in place, including the
 # Gateway in aks-istio-ingress that admission denies Flux the delete of.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization

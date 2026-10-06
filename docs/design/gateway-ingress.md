@@ -114,11 +114,11 @@ The selected ingress tree is the Gateway's sole inventory owner. Its
 `spi-ingress-gateway` Kustomization keeps the same name across modes, changing
 paths rather than deleting and recreating the owner. Two retired names are
 empty, non-pruning handoffs, not Gateway renderers: `spi-gateway` in the base
-stack, and `spi-gateway-tls` in every ingress tree. The latter holds, on a
-cluster deployed while the Gateway lived in `aks-istio-ingress`, that old
-Gateway: AKS admission denies Flux the delete, so its inventory is never
-pruned, including when a switch to `bare` deletes the Kustomization itself
-([ADR-026](../decisions/026-automated-gateway-deployment.md)). Do not remove
+stack, and `spi-gateway-tls` in every ingress tree. On a cluster deployed
+while the Gateway lived in `aks-istio-ingress`, the latter leaves that old
+Gateway in place: AKS admission denies Flux the delete, so the retired owner
+never prunes, including when a switch to `bare` deletes the Kustomization
+itself ([ADR-026](../decisions/026-automated-gateway-deployment.md)). Do not remove
 either handoff without the sequence described in
 [ADR-025](../decisions/025-single-flux-inventory-owner.md).
 
