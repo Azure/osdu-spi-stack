@@ -1,16 +1,14 @@
-# Gateway API Gateway bound to the AKS managed Istio ingress.
+# Gateway API Gateway in platform. The managed Istio control plane deploys
+# its workload and LoadBalancer Service (spi-gateway-istio) from this object.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: spi-gateway
-  namespace: aks-istio-ingress
+  namespace: platform
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack
 spec:
   gatewayClassName: istio
-  addresses:
-    - type: Hostname
-      value: aks-istio-ingressgateway-external.aks-istio-ingress.svc.cluster.local
   listeners:
     - name: http
       protocol: HTTP

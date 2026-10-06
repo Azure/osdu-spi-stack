@@ -1,7 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Azure-mode overlay: the base gateway plus one HTTPS:443 listener on the
-# auto-FQDN with a Let's Encrypt cert.
+# Azure-mode overlay: the base gateway plus the DNS label on its generated
+# Service and one HTTPS:443 listener on the auto-FQDN with a Let's Encrypt cert.
 resources:
   - ../../components/gateway
   - certificate.yaml
@@ -11,7 +11,13 @@ patches:
       version: v1
       kind: Gateway
       name: spi-gateway
+      namespace: platform
     patch: |
+      - op: add
+        path: /spec/infrastructure
+        value:
+          annotations:
+            service.beta.kubernetes.io/azure-dns-label-name: "${DNS_LABEL}"
       - op: add
         path: /spec/listeners/-
         value:
@@ -21,11 +27,8 @@ patches:
           hostname: "${INGRESS_FQDN}"
           tls:
             mode: Terminate
-            # The ReferenceGrant in certificate.yaml authorizes this
-            # cross-namespace read.
             certificateRefs:
               - name: osdu-tls
-                namespace: platform
           allowedRoutes:
             namespaces:
               from: All

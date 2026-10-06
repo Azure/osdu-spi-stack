@@ -22,9 +22,9 @@ Three ingress profiles, each a self-contained Flux Kustomization tree under `sof
 | `dns` | `*.<user-zone>` (osdu, kibana, airflow subdomains) | Let's Encrypt HTTP-01, multi-host overlay | ExternalDNS to Azure DNS Zone | Team environments on an owned zone |
 | `ip` | bare ingress IP | none | none | Smoke tests, skills, debugging |
 
-Shared pieces (the cert-manager install and the Gateway base component) live under `software/components/`. The selected ingress tree is the Gateway's sole Flux owner (ADR-025), and every mode binds the Gateway to the AKS add-on's external ingress Service rather than deploying its own LoadBalancer (ADR-026). The profile owns the variable surface:
+Shared pieces (the cert-manager install and the Gateway base component) live under `software/components/`. The selected ingress tree is the Gateway's sole Flux owner (ADR-025), and every mode renders the one Gateway in `platform` that managed Istio deploys a workload and LoadBalancer Service for (ADR-026). The profile owns the variable surface:
 
-- `azure` applies the `azure-dns-label-name` annotation to the add-on's ingress Service via Flux (ADR-026), pinning an Azure FQDN; cert-manager issues one cert against that FQDN; Kibana is served under `/kibana` via a subpath overlay.
+- `azure` carries the `azure-dns-label-name` annotation in the Gateway's `spec.infrastructure.annotations` (ADR-026), pinning an Azure FQDN on the generated Service; cert-manager issues one cert against that FQDN; Kibana is served under `/kibana` via a subpath overlay.
 - `dns` provisions a second UAMI (`<cluster>-external-dns`, scoped `DNS Zone Contributor` on the target DNS zone, ADR-005). ExternalDNS reads HTTPRoute hostnames and writes A and TXT records. The Gateway has one HTTPS listener per hostname, each with its own certificate. Kibana is its own subdomain (no subpath).
 - `ip` is the minimum surface: HTTPRoutes without hostnames bound to the HTTP:80 listener. No cert-manager issuers, no ExternalDNS, no Kibana routing, no TLS overlay.
 

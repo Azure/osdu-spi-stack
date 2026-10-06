@@ -6,7 +6,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   hostnames:
     - "${INGRESS_FQDN}"
   rules:
@@ -27,7 +27,7 @@ metadata:
 spec:
   parentRefs:
     - name: spi-gateway
-      namespace: aks-istio-ingress
+      namespace: platform
   hostnames:
     - "${INGRESS_FQDN}"
   rules:

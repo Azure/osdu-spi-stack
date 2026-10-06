@@ -79,10 +79,10 @@ upstream rather than assuming the last blocked service is the root cause.
 ## Inventory ownership
 
 Each Kubernetes object has one Flux inventory owner. The selected ingress
-tree owns the Gateway under `spi-gateway-tls` in both HTTP and TLS modes.
-The old `spi-gateway` Kustomization renders an empty handoff directory with
-`prune: false` and `deletionPolicy: Orphan`; its continued presence does not
-mean two owners still render the Gateway.
+tree owns the Gateway under `spi-ingress-gateway` in both HTTP and TLS modes.
+The old `spi-gateway` and `spi-gateway-tls` Kustomizations render an empty
+handoff directory with `prune: false` and `deletionPolicy: Orphan`; their
+continued presence does not mean other owners still render the Gateway.
 
 The `bitnami` HelmRepository has its own `spi-helm-sources` owner, shared by
 Redis and ExternalDNS. Moving or deleting an inventory without a handoff can

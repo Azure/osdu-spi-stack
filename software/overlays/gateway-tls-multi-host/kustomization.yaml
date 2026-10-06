@@ -11,6 +11,7 @@ patches:
       version: v1
       kind: Gateway
       name: spi-gateway
+      namespace: platform
     patch: |
       - op: add
         path: /spec/listeners/-
@@ -23,7 +24,6 @@ patches:
             mode: Terminate
             certificateRefs:
               - name: osdu-tls
-                namespace: platform
           allowedRoutes:
             namespaces:
               from: All
@@ -38,7 +38,6 @@ patches:
             mode: Terminate
             certificateRefs:
               - name: kibana-tls
-                namespace: platform
           allowedRoutes:
             namespaces:
               from: All
@@ -53,7 +52,6 @@ patches:
             mode: Terminate
             certificateRefs:
               - name: airflow-tls
-                namespace: platform
           allowedRoutes:
             namespaces:
               from: All

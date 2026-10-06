@@ -46,7 +46,7 @@ There are three application namespaces, plus namespaces managed by AKS and Flux.
 | `osdu` | OSDU APIs, partition/entitlements initialization, legal-tag seeding Jobs, schema loader |
 | `osdu-flux` | SPI-owned Git source, Kustomizations, HelmReleases, bootstrap input ConfigMaps and credential seed |
 | `flux-system` | AKS extension-owned Flux controllers |
-| `aks-istio-system`, `aks-istio-ingress` | Managed mesh components and ingress; the `spi-gateway` Gateway is in `aks-istio-ingress` |
+| `aks-istio-system`, `aks-istio-ingress` | Managed mesh control plane; the stack owns nothing in either, and the `spi-gateway` Gateway and its generated Service live in `platform` |
 
 OSDU pods receive Istio sidecars. The platform middleware namespace does not.
 The local [service Helm chart](../software/charts/osdu-spi-service/) supplies
@@ -191,10 +191,10 @@ Let's Encrypt certificate. `dns` uses an existing Azure DNS zone and
 environment-prefixed hostnames. `ip` exposes HTTP without TLS and is for
 isolated debugging only.
 
-The Gateway binds to AKS's existing managed ingress Service. Certificates live
-in `platform`, with ReferenceGrants allowing the Gateway in
-`aks-istio-ingress` to read them. The selected ingress tree is the Gateway's
-only Flux inventory owner, including during mode changes.
+The Gateway lives in `platform`, and managed Istio deploys its workload and
+LoadBalancer Service from it. Certificates live in the same namespace, so the
+listeners read them without ReferenceGrants. The selected ingress tree is the
+Gateway's only Flux inventory owner, including during mode changes.
 
 The [ingress guide](design/gateway-ingress.md) describes the routes, certificate
 ownership, and diagnostics. The [design index](design/README.md) links the other

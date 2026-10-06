@@ -115,6 +115,7 @@ def _wire(
     monkeypatch.setattr(info, "read_workload_identity_client_id", lambda: "application-id")
     monkeypatch.setattr("spi.guard.get_suspend_status", lambda: True)
     monkeypatch.setattr(info, "_read_image_lock", lambda: image_lock)
+    monkeypatch.setattr(info, "get_ingress_ip", lambda: "")
 
 
 def _lock(pins: dict | None = None) -> dict:
@@ -860,7 +861,6 @@ def test_collect_info_reads_loads_for_the_environment_partitions_and_lock(monkey
 
 def test_render_info_shows_the_loads_table(monkeypatch, capsys):
     _wire(monkeypatch, loads=_LOADS)
-    monkeypatch.setattr(info, "get_ingress_ip", lambda: "")
 
     info.render_info()
 
@@ -868,3 +868,12 @@ def test_render_info_shows_the_loads_table(monkeypatch, capsys):
     assert "Loads" in out
     assert "reference-data" in out
     assert "80103" in out
+
+
+def test_gateway_ip_falls_back_to_the_live_address(monkeypatch):
+    """The ConfigMap records no address on a fresh deploy: Flux creates the
+    gateway Service after bootstrap wrote spi-ingress-config."""
+    _wire(monkeypatch)
+    monkeypatch.setattr(info, "get_ingress_ip", lambda: "203.0.113.9")
+
+    assert info.collect_info()["azure"]["gateway_ip"] == "203.0.113.9"

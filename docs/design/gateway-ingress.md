@@ -20,12 +20,12 @@ an untrusted network.
 
 ## Shared gateway and configuration
 
-The Gateway is `aks-istio-ingress/spi-gateway`. Its Hostname address binds to
-the AKS add-on's existing `aks-istio-ingressgateway-external` Service in the
-same namespace; this managed configuration does not create a per-Gateway
-`spi-gateway-istio` Service. HTTPRoutes live in `osdu`;
-they reference that Gateway and route to OSDU services or, with ReferenceGrants,
-middleware Services in `platform`.
+The Gateway is `platform/spi-gateway`. The AKS managed Istio control plane
+deploys its workload and LoadBalancer Service, `platform/spi-gateway-istio`,
+from that object; the add-on's own external ingress gateway is disabled in
+`infra/aks.bicep`, so this is the cluster's one ingress LoadBalancer.
+HTTPRoutes live in `osdu`; they reference that Gateway and route to OSDU
+services or, with ReferenceGrants, middleware Services in `platform`.
 
 The CLI writes `osdu-flux/spi-ingress-config`. Mode-specific values include
 `INGRESS_FQDN` and `DNS_LABEL` for `azure`, or `DNS_ZONE` and the
@@ -43,17 +43,15 @@ is `dev1-ingress-ab12c.westus3.cloudapp.azure.com`. The suffix is the one
 persisted in the resource group's `spi-name-suffix` tag; only a legacy
 deployment without a suffix keeps the older `spi-stack-dev1-ingress` label.
 
-The `spi-ingress-dns-label` Kustomization applies a partial Service manifest
-that owns only the DNS-label annotation. The Azure cloud controller assigns the
-public-IP DNS name. The CLI computes the expected hostname; managed-namespace
-policy prevents it from writing the Service directly. The Service manifest
-disables pruning and its Kustomization has `prune: false`, so a mode switch
-does not delete the AKS-owned ingress.
+The azure overlay sets `service.beta.kubernetes.io/azure-dns-label-name` under
+the Gateway's `spec.infrastructure.annotations`; Istio copies it onto the
+generated Service and the Azure cloud controller assigns the public-IP DNS
+name. The CLI computes the expected hostname rather than reading it back,
+because the Service does not exist until Flux has applied the Gateway.
 
 cert-manager issues the certificate through an HTTP-01 challenge. The
-Certificate and TLS Secret live in `platform`, where cert-manager can update
-status. A ReferenceGrant lets the Gateway in `aks-istio-ingress` read that
-Secret; the listener's certificate reference names `platform` explicitly.
+Certificate and TLS Secret live in `platform` beside the Gateway, so the
+listener's certificate reference needs no ReferenceGrant.
 OSDU APIs use service-specific paths under `/api/`. The manifests also declare
 Kibana at `/kibana` and Airflow at `/airflow`; successful UI access still depends
 on the backend's readiness and subpath configuration.
@@ -113,10 +111,15 @@ infrastructure provisioning, rewrites the ingress ConfigMap, and updates the
 Flux ingress path. It is not a dedicated, zero-downtime migration operation.
 
 The selected ingress tree is the Gateway's sole inventory owner. Its
-`spi-gateway-tls` Kustomization keeps the same name across modes, changing
-paths rather than deleting and recreating the owner. The base stack's
-`spi-gateway` is an empty, non-pruning handoff, not another Gateway renderer.
-Do not remove that handoff without the sequence described in
+`spi-ingress-gateway` Kustomization keeps the same name across modes, changing
+paths rather than deleting and recreating the owner. Two retired names are
+empty, non-pruning handoffs, not Gateway renderers: `spi-gateway` in the base
+stack, and `spi-gateway-tls` in every ingress tree. On a cluster deployed
+while the Gateway lived in `aks-istio-ingress`, the latter leaves that old
+Gateway in place: AKS admission denies Flux the delete, so the retired owner
+never prunes, including when a switch to `bare` deletes the Kustomization
+itself ([ADR-026](../decisions/026-automated-gateway-deployment.md)). Do not remove
+either handoff without the sequence described in
 [ADR-025](../decisions/025-single-flux-inventory-owner.md).
 
 Route and certificate convergence still takes time during a switch.
@@ -136,7 +139,7 @@ Then identify which boundary fails:
 
 | Symptom | Inspect | What to establish |
 |---|---|---|
-| DNS lookup fails | `dig <hostname>`; ingress Service annotations; ExternalDNS logs in `dns` mode | The hostname resolves to the intended gateway |
+| DNS lookup fails | `dig <hostname>`; `spi-gateway-istio` Service annotations; ExternalDNS logs in `dns` mode | The hostname resolves to the intended gateway |
 | Connection fails | LoadBalancer address and Gateway conditions | The address and listener are available |
 | TLS handshake fails | Certificate, CertificateRequest, Challenge, and Gateway listener status | Certificate issuance and hostname match |
 | Gateway route does not match | HTTPRoute parent conditions, hostname, path, and listener | `Accepted` and `ResolvedRefs` are true |
@@ -150,8 +153,8 @@ the TLS handshake. Do not treat 404 and 503 as interchangeable, or assume every
 These read-only commands locate the relevant conditions:
 
 ```bash
-kubectl get svc aks-istio-ingressgateway-external -n aks-istio-ingress
-kubectl describe gateway spi-gateway -n aks-istio-ingress
+kubectl get svc spi-gateway-istio -n platform
+kubectl describe gateway spi-gateway -n platform
 kubectl get certificate,certificaterequest,challenge -n platform
 kubectl describe httproute -n osdu
 kubectl get endpointslice -n osdu
@@ -171,7 +174,7 @@ Kubernetes without being accepted by its parent Gateway.
 
 - [ADR-012](../decisions/012-ingress-profiles.md): ingress choices.
 - [ADR-022](../decisions/022-tls-certificates-in-platform.md): certificates outside managed namespaces.
-- [ADR-026](../decisions/026-bind-managed-istio-ingress.md): managed Service binding and Flux-owned DNS annotation.
+- [ADR-026](../decisions/026-automated-gateway-deployment.md): the Gateway in `platform`, Istio's generated Service, and the DNS label on the Gateway's infrastructure annotations.
 - [Ingress resolution](../../src/spi/ingress.py) and [configuration](../../src/spi/config.py): hostname rules and ConfigMap keys.
 - [Gateway](../../software/components/gateway/gateway.yaml): namespace and base listener.
 - [Ingress profiles](../../software/stacks/osdu/ingress/) and [routes](../../software/stacks/osdu/routes/): dependencies and backend references.

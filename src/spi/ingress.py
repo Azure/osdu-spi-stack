@@ -28,9 +28,11 @@ from .config import Config, IngressMode
 from .console import console, display_result, display_yaml
 from .shell import kubectl_apply_yaml, kubectl_json, run_process
 
-ISTIO_INGRESS_NAMESPACE = "aks-istio-ingress"
-ISTIO_INGRESS_SERVICE = "aks-istio-ingressgateway-external"
-_ISTIO_INGRESS_NAMESPACES = (ISTIO_INGRESS_NAMESPACE, "istio-system")
+GATEWAY_NAMESPACE = "platform"
+GATEWAY_NAME = "spi-gateway"
+# Istio's gateway deployment controller names the generated Service
+# <Gateway>-<GatewayClass>; the stack never renders it.
+GATEWAY_SERVICE = f"{GATEWAY_NAME}-istio"
 AZURE_DNS_LABEL_ANNOTATION = "service.beta.kubernetes.io/azure-dns-label-name"
 
 
@@ -93,39 +95,38 @@ def discover_dns_zone() -> tuple:
 
 
 def compute_ingress_fqdn(dns_label: str, location: str) -> str:
-    """Return the Azure-assigned FQDN for the Istio LoadBalancer.
+    """Return the Azure-assigned FQDN for the gateway's LoadBalancer.
 
-    The DNS label annotation on the add-on's Service is applied by Flux
-    (software/components/azure-dns-label) because admission policy denies
-    the write to every other identity, so the FQDN is computed rather than
-    read back.
+    The label reaches the public IP through the Gateway's infrastructure
+    annotations (software/overlays/gateway-tls-single-host), which Flux
+    applies after bootstrap, so the FQDN is computed rather than read back.
     """
     return f"{dns_label}.{location}.cloudapp.azure.com"
 
 
 def get_ingress_ip() -> str:
-    """Return an Istio ingress LB address, preferring the managed AKS Service.
+    """Return the gateway LoadBalancer address, preferring the Gateway's own Service.
 
-    Returns an empty string when no LoadBalancer address is ready.
+    Returns an empty string when no LoadBalancer address is ready, which is
+    the case at bootstrap: Flux has not applied the Gateway yet.
     """
-    for namespace in _ISTIO_INGRESS_NAMESPACES:
-        data = kubectl_json(["get", "svc", "-n", namespace])
-        if not data:
+    data = kubectl_json(["get", "svc", "-n", GATEWAY_NAMESPACE])
+    if not data:
+        return ""
+    services = sorted(
+        data.get("items", []),
+        key=lambda service: (
+            service.get("metadata", {}).get("name") != GATEWAY_SERVICE,
+            service.get("metadata", {}).get("name", ""),
+        ),
+    )
+    for service in services:
+        if service.get("spec", {}).get("type") != "LoadBalancer":
             continue
-        services = sorted(
-            data.get("items", []),
-            key=lambda service: (
-                service.get("metadata", {}).get("name") != ISTIO_INGRESS_SERVICE,
-                service.get("metadata", {}).get("name", ""),
-            ),
-        )
-        for service in services:
-            if service.get("spec", {}).get("type") != "LoadBalancer":
-                continue
-            for ingress in service.get("status", {}).get("loadBalancer", {}).get("ingress", []):
-                address = ingress.get("ip") or ingress.get("hostname")
-                if address:
-                    return address
+        for ingress in service.get("status", {}).get("loadBalancer", {}).get("ingress", []):
+            address = ingress.get("ip") or ingress.get("hostname")
+            if address:
+                return address
     return ""
 
 
