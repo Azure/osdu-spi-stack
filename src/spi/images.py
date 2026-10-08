@@ -39,6 +39,12 @@ IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"
 SCHEMA_SERVICE_NAME = "schema"
 SCHEMA_LOAD_SERVICE_NAME = "schema-load"
+SEISMIC_SERVICE_NAME = "seismic"
+SEISMIC_RESTORE_SERVICE_NAME = "seismic-restore"
+PAIRED_IMAGE_SERVICES = {
+    SCHEMA_SERVICE_NAME: (SCHEMA_LOAD_SERVICE_NAME, "-load"),
+    SEISMIC_SERVICE_NAME: (SEISMIC_RESTORE_SERVICE_NAME, "-restore"),
+}
 
 _SHA_TAG_RE = re.compile(r"^[0-9a-f]{40}$")
 _MANIFEST_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -105,6 +111,12 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
     "indexer": ImageRegistryEntry(25, "indexer-service", "services/indexer.yaml"),
     "indexer-queue": ImageRegistryEntry(73, "indexer-queue", "services/indexer-queue.yaml"),
     "file": ImageRegistryEntry(90, "file", "services/file.yaml"),
+    "seismic": ImageRegistryEntry(395, "seismic-store-service", "services/seismic.yaml"),
+    "seismic-restore": ImageRegistryEntry(
+        395,
+        "seismic-store-service-restore",
+        "services/seismic-restore.yaml",
+    ),
     "workflow": ImageRegistryEntry(146, "ingestion-workflow", "services/workflow.yaml"),
     "crs-conversion": ImageRegistryEntry(
         22,
@@ -126,6 +138,25 @@ def image_lock_names() -> tuple[str, ...]:
     return tuple(name for name, entry in IMAGE_REGISTRY.items() if entry.image_lock)
 
 
+def paired_image_companions() -> frozenset[str]:
+    """Return images managed only through their paired primary service."""
+
+    return frozenset(companion for companion, _ in PAIRED_IMAGE_SERVICES.values())
+
+
+def paired_primary_name(service_name: str) -> str:
+    """Return the primary whose source policy controls ``service_name``."""
+
+    return next(
+        (
+            primary
+            for primary, (companion, _) in PAIRED_IMAGE_SERVICES.items()
+            if companion == service_name
+        ),
+        service_name,
+    )
+
+
 def image_lock_key(service_name: str) -> str:
     """Return the ConfigMap key prefix for one service."""
 
@@ -142,6 +173,18 @@ def do_not_disrupt_key(service_name: str) -> str:
     """Return the lock key the service's HelmRelease reads for its Karpenter annotation."""
 
     return f"{image_lock_key(service_name)}_DO_NOT_DISRUPT"
+
+
+def companion_runtime_patch(service_name: str, repository: str) -> dict[str, str]:
+    """Return runtime controls derived from a companion image's resolved source."""
+
+    if service_name != SEISMIC_RESTORE_SERVICE_NAME:
+        return {}
+    enabled = repository.endswith("-restore")
+    return {
+        "SEISMIC_RESTORE_ENABLED": str(enabled).lower(),
+        "SEISMIC_RESTORE_REPLICA_COUNT": "1" if enabled else "0",
+    }
 
 
 def gitlab_get(url: str, attempts: int = 3):
@@ -349,13 +392,18 @@ def resolve_images(
 
     requested = list(names or IMAGE_REGISTRY.keys())
     forks = dict(sources or {})
-    schema_load_requested = SCHEMA_LOAD_SERVICE_NAME in requested
+    requested_pairs = {
+        primary: (companion, suffix)
+        for primary, (companion, suffix) in PAIRED_IMAGE_SERVICES.items()
+        if companion in requested
+    }
     resolved: dict[str, ResolvedImage] = {}
     errors: list[str] = []
 
     for name in requested:
-        if name == SCHEMA_LOAD_SERVICE_NAME or (
-            name == SCHEMA_SERVICE_NAME and schema_load_requested
+        if (
+            name in {companion for companion, _ in requested_pairs.values()}
+            or name in requested_pairs
         ):
             continue
         try:
@@ -366,30 +414,26 @@ def resolve_images(
         except Exception as exc:
             errors.append(str(exc))
 
-    if schema_load_requested:
-        fork = forks.get(SCHEMA_SERVICE_NAME)
+    for primary, (companion, suffix) in requested_pairs.items():
+        fork = forks.get(primary)
         try:
             if fork:
-                schema_image, commit = resolve_fork_image(SCHEMA_SERVICE_NAME, fork)
+                primary_image, commit = resolve_fork_image(primary, fork)
             else:
-                schema_image = resolve_image(
-                    SCHEMA_SERVICE_NAME, IMAGE_REGISTRY[SCHEMA_SERVICE_NAME], branch
-                )
+                primary_image = resolve_image(primary, IMAGE_REGISTRY[primary], branch)
                 commit = ""
         except Exception as exc:
-            if SCHEMA_SERVICE_NAME in requested:
+            if primary in requested:
                 errors.append(str(exc))
-                errors.append(f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag")
+                errors.append(f"{companion}: unable to resolve matching {primary} tag")
             else:
-                errors.append(
-                    f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag: {exc}"
-                )
+                errors.append(f"{companion}: unable to resolve matching {primary} tag: {exc}")
         else:
-            if SCHEMA_SERVICE_NAME in requested:
-                resolved[SCHEMA_SERVICE_NAME] = schema_image
+            if primary in requested:
+                resolved[primary] = primary_image
             try:
-                resolved[SCHEMA_LOAD_SERVICE_NAME] = _resolve_loader(
-                    branch, schema_image, fork, commit
+                resolved[companion] = _resolve_companion(
+                    branch, primary_image, fork, commit, companion, suffix
                 )
             except Exception as exc:
                 errors.append(str(exc))
@@ -399,29 +443,44 @@ def resolve_images(
     return {name: resolved[name] for name in requested}
 
 
-def _resolve_loader(
-    branch: str, schema_image: ResolvedImage, fork: str | None, commit: str
+def _resolve_companion(
+    branch: str,
+    primary_image: ResolvedImage,
+    fork: str | None,
+    commit: str,
+    companion: str,
+    suffix: str,
 ) -> ResolvedImage:
-    """The loader built from the same commit as ``schema_image``, from the same source."""
+    """Resolve a companion built from the primary image's commit and source."""
 
     if not fork:
+        if companion == SEISMIC_RESTORE_SERVICE_NAME:
+            return ResolvedImage(
+                companion,
+                primary_image.repository,
+                primary_image.tag,
+                primary_image.created_at,
+                primary_image.digest,
+            )
         return resolve_image_tag(
-            SCHEMA_LOAD_SERVICE_NAME,
-            IMAGE_REGISTRY[SCHEMA_LOAD_SERVICE_NAME],
+            companion,
+            IMAGE_REGISTRY[companion],
             branch,
-            schema_image.tag,
+            primary_image.tag,
         )
-    loader = resolve_fork_loader(schema_image.repository, commit)
-    if loader is None:
-        raise ImageResolutionError(
-            f"{SCHEMA_LOAD_SERVICE_NAME}: {fork} published no loader "
-            f"{schema_image.repository}-load:{schema_image.tag}; schema cannot follow the "
-            "fork until it builds one beside the service image"
-        )
-    repository, digest = loader
-    return ResolvedImage(
-        SCHEMA_LOAD_SERVICE_NAME, repository, schema_image.tag, schema_image.created_at, digest
+    paired = (
+        resolve_fork_loader(primary_image.repository, commit)
+        if companion == SCHEMA_LOAD_SERVICE_NAME
+        else resolve_fork_companion(primary_image.repository, commit, suffix)
     )
+    if paired is None:
+        raise ImageResolutionError(
+            f"{companion}: {fork} published no companion "
+            f"{primary_image.repository}{suffix}:{primary_image.tag}; {primary_image.name} "
+            "cannot follow the fork until it builds one beside the service image"
+        )
+    repository, digest = paired
+    return ResolvedImage(companion, repository, primary_image.tag, primary_image.created_at, digest)
 
 
 def resolve_image_lock(
@@ -612,9 +671,15 @@ def resolve_fork_loader(repository: str, source_sha: str) -> tuple[str, str] | N
     the fork published no loader for the commit.
     """
 
-    loader_repository = f"{repository}-load"
-    digest = resolve_ghcr_tag_digest(loader_repository, f"sha-{source_sha[:12]}")
-    return (loader_repository, digest) if digest else None
+    return resolve_fork_companion(repository, source_sha, "-load")
+
+
+def resolve_fork_companion(repository: str, source_sha: str, suffix: str) -> tuple[str, str] | None:
+    """Find a companion package built beside a fork image at ``source_sha``."""
+
+    companion_repository = f"{repository}{suffix}"
+    digest = resolve_ghcr_tag_digest(companion_repository, f"sha-{source_sha[:12]}")
+    return (companion_repository, digest) if digest else None
 
 
 def _github_read(path: str, accept: str) -> bytes:
@@ -864,6 +929,7 @@ def build_lock_data(
         data[f"{key}_IMAGE_DIGEST"] = image.digest
         data[f"{key}_IMAGE_REF"] = image_ref(image.repository, image.tag, image.digest)
         data[do_not_disrupt_key(name)] = str(name in protected).lower()
+        data.update(companion_runtime_patch(name, image.repository))
         if image.acceptance_digest:
             data[acceptance_digest_key(name)] = image.acceptance_digest
     return data

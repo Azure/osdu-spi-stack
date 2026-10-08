@@ -1,0 +1,116 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: seismic
+  namespace: osdu-flux
+spec:
+  targetNamespace: osdu
+  dependsOn:
+    - name: partition
+    - name: entitlements
+    - name: legal
+    - name: storage
+  interval: 30m
+  install:
+    timeout: 15m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 15m
+    remediation:
+      retries: 3
+  chart:
+    spec:
+      chart: ./software/charts/osdu-spi-service
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: osdu-spi-stack-system
+  values:
+    replicaCount: 2
+    hostAntiAffinity: true
+    podDisruptionBudget:
+      enabled: true
+    image:
+      repository: ${SEISMIC_IMAGE_REPOSITORY}
+      tag: "${SEISMIC_IMAGE_TAG}"
+      digest: "${SEISMIC_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${SEISMIC_DO_NOT_DISRUPT:=false}"
+    containerPort: 8080
+    probes:
+      liveness:
+        path: /seistore-svc/api/v3/svcstatus
+        port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readiness:
+        path: /seistore-svc/api/v3/svcstatus/readiness
+        port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 4Gi
+    nodeSelector:
+      spi-pool: osdu
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: "osdu"
+        effect: NoSchedule
+      - key: kubernetes.azure.com/scalesetpriority
+        operator: Equal
+        value: "spot"
+        effect: NoSchedule
+    env:
+      - name: APP_ENVIRONMENT_IDENTIFIER
+        value: cloud
+      - name: CLOUDPROVIDER
+        value: azure
+      - name: PORT
+        value: "8080"
+      - name: KEYVAULT_URL
+        value: ${KEYVAULT_URL}
+      - name: DES_SERVICE_HOST_COMPLIANCE
+        value: http://legal
+      - name: DES_SERVICE_HOST_ENTITLEMENT
+        value: http://entitlements
+      - name: DES_SERVICE_HOST_STORAGE
+        value: http://storage
+      - name: DES_SERVICE_HOST_PARTITION
+        value: http://partition
+      - name: REDIS_INSTANCE_PORT
+        value: "6379"
+      - name: REDIS_SHARED_INSTANCE_PORT
+        value: "6379"
+      - name: REDIS_INSTANCE_TLS_DISABLE
+        value: "false"
+      - name: REDIS_SHARED_INSTANCE_TLS_DISABLE
+        value: "false"
+      - name: AZURE_MSI_ISENABLED
+        value: "false"
+      - name: SDMS_RESTORE_QUEUE
+        value: sdms-queue-restore
+      - name: FEATURE_FLAG_ENABLE_RESTORE
+        value: "${SEISMIC_RESTORE_ENABLED:=false}"
+      - name: AZURE_TOKEN_CREDENTIALS
+        value: prod
+      - name: NODE_EXTRA_CA_CERTS
+        value: /redis-ca/ca.crt
+    volumeMounts:
+      - name: redis-ca
+        mountPath: /redis-ca
+        readOnly: true
+    volumes:
+      - name: redis-ca
+        secret:
+          secretName: redis-ca-cert

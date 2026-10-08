@@ -48,10 +48,10 @@ from .environment import (
 )
 from .images import (
     IMAGE_REGISTRY,
-    SCHEMA_LOAD_SERVICE_NAME,
-    SCHEMA_SERVICE_NAME,
+    PAIRED_IMAGE_SERVICES,
     ImageResolutionError,
     github_get,
+    resolve_fork_companion,
     resolve_fork_image,
     resolve_fork_loader,
 )
@@ -1227,11 +1227,19 @@ def check_promotion(service: str, repo: str) -> str:
 
     try:
         image, commit = resolve_fork_image(service, repo)
-        if service == SCHEMA_SERVICE_NAME and resolve_fork_loader(image.repository, commit) is None:
+        pair = PAIRED_IMAGE_SERVICES.get(service)
+        companion = None
+        if pair:
+            companion = (
+                resolve_fork_loader(image.repository, commit)
+                if service == "schema"
+                else resolve_fork_companion(image.repository, commit, pair[1])
+            )
+        if pair and companion is None:
             raise OnboardError(
-                f"schema cannot follow {repo}: it published no loader "
-                f"{image.repository}-load:{image.tag} beside the service image. Onboard "
-                "without --canonical-source to trust the fork while schema stays on community."
+                f"{service} cannot follow {repo}: it published no {pair[0]} image "
+                f"{image.repository}{pair[1]}:{image.tag} beside the service image. Onboard "
+                "without --canonical-source to trust the fork while the service stays on community."
             )
     except ImageResolutionError as exc:
         raise OnboardError(f"{service} cannot follow {repo}: {exc}") from None
@@ -1239,8 +1247,9 @@ def check_promotion(service: str, repo: str) -> str:
 
 
 def require_known_service(service: str) -> None:
-    if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
-        known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
+    companions = {companion for companion, _ in PAIRED_IMAGE_SERVICES.values()}
+    if service not in IMAGE_REGISTRY or service in companions:
+        known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n not in companions))
         raise OnboardError(f"Unknown service {service!r}. Known services: {known}")
 
 

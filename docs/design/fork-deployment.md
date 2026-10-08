@@ -152,8 +152,13 @@ that public package, the deploy job pins it by digest, and canonical refresh
 resolves its `main` line after promotion. No separate package-path state or
 Azure namespace fallback is involved.
 
-Schema's ephemeral pin pairs the loader. The template builds `<image>-load`
-beside the service image from the same commit (osdu-spi ADR-042), so
+Stack-declared companion images follow their primary image. The package uses
+the primary repository name plus its declared suffix and the same
+`sha-<12>` commit tag. Canonical refresh, ephemeral pin, ownership-checked
+reset, and stale-pin sweep therefore move the pair together.
+
+Schema's companion is `<image>-load`. The template builds it beside the
+service image from the same commit (osdu-spi ADR-042), so
 `spi service pin schema --image ... --ephemeral --source-sha <sha>` first
 requires the schema package's own `sha-<12>` tag to name the pinned digest,
 so the pair cannot straddle two builds of one commit, then looks up
@@ -170,6 +175,17 @@ loader owned by anything else standing. The `schema-load` Job passes
 ConfigMap is mounted as the community image's `scripts/azure` directory and
 serves only that image; it stays while an environment can select community
 as schema's canonical source.
+
+Seismic's companion is `<image>-restore`. Both canonical promotion and an
+ephemeral `seismic` pin require that package at the primary image's commit
+tag. The resolver writes separate `SEISMIC_IMAGE_*` and
+`SEISMIC_RESTORE_IMAGE_*` lock entries, but one Seismic pin owns both.
+Missing RestoreRunner publication refuses the change instead of leaving the
+API able to enqueue restore work with no matching consumer.
+The community source publishes no RestoreRunner package, so its lock disables
+the restore feature and scales the worker to zero. Selecting the fork source,
+or applying its ephemeral pair, sets both runtime controls from the same lock
+mutation that moves the images.
 
 `require_ghcr_repository` in `src/spi/images.py` checks GHCR host, path,
 and digest shape without naming an owner. An ephemeral pin additionally

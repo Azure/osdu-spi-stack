@@ -103,6 +103,8 @@ def _create_osdu_config(config: Config, infra_outputs: dict) -> None:
         primary_cosmosdb_endpoint=infra_outputs.get(f"{partition}_cosmos_endpoint", ""),
         primary_storage_account_name=infra_outputs.get("common_storage_name", ""),
         primary_servicebus_namespace=infra_outputs.get(f"{partition}_sb_namespace", ""),
+        subscription_id=infra_outputs.get("subscription_id", ""),
+        resource_group=config.resource_group,
     )
     display_yaml(yaml_content, "ConfigMap: osdu-config")
     kubectl_apply_yaml(yaml_content, "apply osdu-config ConfigMap")
@@ -305,6 +307,8 @@ def _write_keyvault_bootstrap_secrets(
     storage_account_name: str,
     elastic_password: str,
     redis_password: str,
+    aad_client_id: str,
+    appinsights_connection_string: str,
 ) -> None:
     """Write the secrets OSDU services read at startup.
 
@@ -314,6 +318,7 @@ def _write_keyvault_bootstrap_secrets(
     """
     console.print("\n[bold]Writing OSDU bootstrap secrets to Key Vault...[/bold]")
     tbl_endpoint = f"https://{storage_account_name}.table.core.windows.net/"
+    queue_endpoint = f"https://{storage_account_name}.queue.core.windows.net/"
     # ECK's certificate SANs cover the .svc form only; the .svc.cluster.local
     # form fails hostname verification.
     elastic_endpoint = "https://elasticsearch-es-http.platform.svc:9200"
@@ -321,8 +326,13 @@ def _write_keyvault_bootstrap_secrets(
 
     secrets_to_write: list[tuple[str, str]] = [
         ("tbl-storage-endpoint", tbl_endpoint),
+        ("queue-storage-endpoint", queue_endpoint),
         ("redis-hostname", redis_hostname),
         ("redis-password", redis_password),
+        ("redis-queue-hostname", redis_hostname),
+        ("redis-queue-password", redis_password),
+        ("aad-client-id", aad_client_id),
+        ("appinsights-connection-string", appinsights_connection_string),
     ]
     for p in config.data_partitions:
         secrets_to_write.extend(
@@ -676,6 +686,8 @@ def deploy_azure(
         storage_account_name=infra_outputs.get("common_storage_name", ""),
         elastic_password=seed["elastic_password"],
         redis_password=seed["redis_password"],
+        aad_client_id=_resolve_aad_client_id(infra_outputs.get("identity_client_id", "")),
+        appinsights_connection_string=infra_outputs.get("app_insights_connection_string", ""),
     )
 
     _finalize_gitops_source(config)

@@ -163,6 +163,24 @@ spec:
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
+  name: seismic
+  namespace: osdu
+spec:
+  parentRefs:
+    - name: spi-gateway
+      namespace: platform
+  hostnames:
+    - "${INGRESS_FQDN}"
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /seistore-svc/api/v3 }
+      backendRefs:
+        - name: seismic
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
   name: workflow
   namespace: osdu
 spec:

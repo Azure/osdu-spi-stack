@@ -16,3 +16,6 @@ forks:
     repo: Azure/osdu-spi-schema
   - service: file
     repo: Azure/osdu-spi-file
+  - service: seismic
+    repo: KiranBedre/osdu-spi-seismic-store-service
+    canonicalSource: fork

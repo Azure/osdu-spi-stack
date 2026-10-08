@@ -44,9 +44,9 @@ from .deploy_record import (
 )
 from .images import (
     GHCR_HOST,
-    SCHEMA_LOAD_SERVICE_NAME,
     image_lock_key,
     image_lock_names,
+    paired_primary_name,
     runs_fork_package,
 )
 from .ingress import get_ingress_ip
@@ -630,9 +630,9 @@ def _service_versions_table(versions: dict) -> Table | None:
 
 
 def _policy_service(name: str) -> str:
-    """The service whose source policy governs ``name``; the loader follows schema."""
+    """The primary service whose source policy governs ``name``."""
 
-    return "schema" if name == SCHEMA_LOAD_SERVICE_NAME else name
+    return paired_primary_name(name)
 
 
 def _canonical_source(name: str, image: dict) -> str:

@@ -33,7 +33,7 @@ from typing import Sequence
 import yaml
 
 from .bootstrap import ClusterConfigError, read_cluster_config
-from .images import IMAGE_REGISTRY, SCHEMA_LOAD_SERVICE_NAME
+from .images import IMAGE_REGISTRY, paired_image_companions
 from .shell import run_command, run_process
 
 LOCAL_NAMESPACE = "local"
@@ -339,8 +339,9 @@ def _require_tool(name: str) -> None:
 def require_buildable(service: str, checkout: Path) -> None:
     """Refuse a service the lock does not carry or a checkout of another one."""
 
-    if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
-        known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
+    companions = paired_image_companions()
+    if service not in IMAGE_REGISTRY or service in companions:
+        known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n not in companions))
         raise BuildError(f"Unknown service {service!r}. Known services: {known}")
     if not (checkout / DOCKERFILE_PATH).is_file():
         raise BuildError(f"{checkout} has no {DOCKERFILE_PATH}; is it a synced fork?")

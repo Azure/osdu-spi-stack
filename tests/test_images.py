@@ -183,6 +183,66 @@ def test_schema_load_resolves_from_selected_schema_tag(monkeypatch):
     assert resolved["schema-load"].digest == "sha256:loader-matched"
 
 
+def test_seismic_restore_resolves_from_same_fork_commit(monkeypatch):
+    source_sha = "b" * 40
+    service = ResolvedImage(
+        "seismic",
+        "ghcr.io/kiranbedre/osdu-spi-seismic-store-service",
+        f"sha-{source_sha[:12]}",
+        "2026-10-08T14:13:00Z",
+        "sha256:service",
+    )
+    companion_calls = []
+
+    def fake_fork_image(name, repo):
+        assert name == "seismic"
+        assert repo == "KiranBedre/osdu-spi-seismic-store-service"
+        return service, source_sha
+
+    def fake_companion(repository, commit, suffix):
+        companion_calls.append((repository, commit, suffix))
+        return f"{repository}{suffix}", "sha256:restore"
+
+    monkeypatch.setattr(images, "resolve_fork_image", fake_fork_image)
+    monkeypatch.setattr(images, "resolve_fork_companion", fake_companion)
+
+    resolved = resolve_images(
+        names=("seismic", "seismic-restore"),
+        sources={"seismic": "KiranBedre/osdu-spi-seismic-store-service"},
+    )
+
+    assert resolved["seismic"] == service
+    assert resolved["seismic-restore"].repository.endswith("-restore")
+    assert resolved["seismic-restore"].tag == service.tag
+    assert resolved["seismic-restore"].digest == "sha256:restore"
+    assert companion_calls == [(service.repository, source_sha, "-restore")]
+
+
+def test_community_seismic_disables_restore_worker(monkeypatch):
+    service = ResolvedImage(
+        "seismic",
+        "community.opengroup.org:5555/osdu/seismic-store-service-master",
+        "a" * 40,
+        "2026-10-08T14:13:00Z",
+        "sha256:service",
+    )
+
+    def fake_resolve(name, entry, branch):
+        assert name == "seismic"
+        assert branch == "master"
+        return service
+
+    monkeypatch.setattr(images, "resolve_image", fake_resolve)
+
+    resolved = resolve_images(names=("seismic", "seismic-restore"))
+    data = images.companion_runtime_patch("seismic-restore", resolved["seismic-restore"].repository)
+
+    assert resolved["seismic-restore"].repository == service.repository
+    assert resolved["seismic-restore"].digest == service.digest
+    assert data["SEISMIC_RESTORE_ENABLED"] == "false"
+    assert data["SEISMIC_RESTORE_REPLICA_COUNT"] == "0"
+
+
 def test_schema_load_dependency_error_is_reported_once(monkeypatch):
     def fake_gitlab_get(url: str):
         if "registry/repositories?" in url and "search=schema-service-master" in url:

@@ -44,6 +44,7 @@ from .images import (
     SCHEMA_LOAD_SERVICE_NAME,
     SCHEMA_SERVICE_NAME,
     ImageResolutionError,
+    paired_image_companions,
     resolve_image_lock,
 )
 from .ingress import resolve_acme_email, resolve_ingress_mode
@@ -2672,8 +2673,9 @@ def service_refresh(
             f"  [warning]{name} stays pinned; its canonical is unchanged until "
             f"'spi service reset {name}' and a refresh[/warning]"
         )
+    companions = paired_image_companions()
     for name, ref in refs.items():
-        if name != SCHEMA_LOAD_SERVICE_NAME:
+        if name not in companions:
             console.print(f"  [dim]spi service verify {name} --image {ref}[/dim]")
 
 
