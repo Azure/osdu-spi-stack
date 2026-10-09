@@ -14,6 +14,7 @@
 
 """`spi up` writes the deploy identity into spi-init-values for the members Job."""
 
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from spi import deploy
@@ -50,3 +51,41 @@ def test_osdu_identity_client_id_is_written_as_the_tenant_service_account():
 
     assert "tenantServiceAccount: osdu-client-id\n" in applied
     assert "tenantServiceAccount" not in _applied({})
+
+
+def _written_bootstrap_secrets(appinsights_connection_string: str) -> dict[str, str]:
+    with (
+        patch(
+            "spi.deploy.run_process",
+            return_value=CompletedProcess([], returncode=0, stdout="", stderr=""),
+        ) as run_process,
+        patch("spi.deploy.display_result"),
+    ):
+        deploy._write_keyvault_bootstrap_secrets(
+            Config.from_env("dev1", data_partitions=["opendes"]),
+            "vault",
+            "storage",
+            "elastic-password",
+            "redis-password",
+            "aad-client-id",
+            appinsights_connection_string,
+        )
+
+    return {
+        call.args[0][call.args[0].index("--name") + 1]: call.args[0][
+            call.args[0].index("--value") + 1
+        ]
+        for call in run_process.call_args_list
+    }
+
+
+def test_empty_app_insights_connection_string_is_not_written_to_key_vault():
+    secrets = _written_bootstrap_secrets("")
+
+    assert "appinsights-connection-string" not in secrets
+
+
+def test_app_insights_connection_string_is_written_when_provisioned():
+    secrets = _written_bootstrap_secrets("InstrumentationKey=enabled")
+
+    assert secrets["appinsights-connection-string"] == "InstrumentationKey=enabled"

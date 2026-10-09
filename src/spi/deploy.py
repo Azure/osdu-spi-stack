@@ -332,8 +332,11 @@ def _write_keyvault_bootstrap_secrets(
         ("redis-queue-hostname", redis_hostname),
         ("redis-queue-password", redis_password),
         ("aad-client-id", aad_client_id),
-        ("appinsights-connection-string", appinsights_connection_string),
     ]
+    if appinsights_connection_string:
+        secrets_to_write.append(
+            ("appinsights-connection-string", appinsights_connection_string)
+        )
     for p in config.data_partitions:
         secrets_to_write.extend(
             [
