@@ -116,6 +116,23 @@ def test_environment_value_from_is_preserved():
     ]
 
 
+def test_environment_value_is_always_rendered_as_a_string():
+    deployment = _rendered_deployment(
+        {
+            "env[0].name": "FEATURE_FLAG_ENABLE_RESTORE",
+            "env[0].value": "true",
+        }
+    )
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert container["env"] == [
+        {
+            "name": "FEATURE_FLAG_ENABLE_RESTORE",
+            "value": "true",
+        }
+    ]
+
+
 _ISTIO_PROXY = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["istioProxyPin"]["image"]
 
 

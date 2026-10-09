@@ -174,7 +174,13 @@ spec:
               value: "-Djavax.net.ssl.trustStore=/truststore/cacerts -Djavax.net.ssl.trustStorePassword=changeit"
             {{- end }}
             {{- range .Values.env }}
-            - {{- toYaml . | nindent 14 }}
+            - name: {{ .name }}
+              {{- if hasKey . "valueFrom" }}
+              valueFrom:
+                {{- toYaml .valueFrom | nindent 16 }}
+              {{- else }}
+              value: {{ .value | quote }}
+              {{- end }}
             {{- end }}
           {{- end }}
           {{- if or .Values.elasticTls .Values.redisTls .Values.volumeMounts }}
