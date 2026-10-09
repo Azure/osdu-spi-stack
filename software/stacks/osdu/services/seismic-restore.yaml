@@ -29,6 +29,7 @@ spec:
       repository: ${SEISMIC_RESTORE_IMAGE_REPOSITORY}
       tag: "${SEISMIC_RESTORE_IMAGE_TAG}"
       digest: "${SEISMIC_RESTORE_IMAGE_DIGEST}"
+    runAsUser: 1654
     karpenter:
       doNotDisrupt: "${SEISMIC_RESTORE_DO_NOT_DISRUPT:=false}"
     containerPort: 6000

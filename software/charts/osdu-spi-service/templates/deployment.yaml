@@ -120,7 +120,7 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
-            runAsUser: 1000
+            runAsUser: {{ .Values.runAsUser }}
             capabilities:
               drop:
                 - ALL
@@ -140,7 +140,8 @@ spec:
               protocol: TCP
           securityContext:
             allowPrivilegeEscalation: false
-            runAsUser: 1000
+            runAsNonRoot: true
+            runAsUser: {{ .Values.runAsUser }}
             capabilities:
               drop:
                 - ALL
