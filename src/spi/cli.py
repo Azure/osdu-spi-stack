@@ -1284,7 +1284,7 @@ def spi_test(
 
     By default the suite runs in the acceptance image recorded with the
     service's fork canonical, bound by that commit's own descriptor and
-    resolver. Tokens after -- replace the suite's mavenArguments. Exit 0
+    resolver. Tokens after -- replace the suite's declared arguments. Exit 0
     passed, 3 failed, 2 not run or discarded because the environment or
     service was not in a state to test, 1 not run for any other reason.
     --dry-run exits 0 once the suite is bound and gives no verdict.

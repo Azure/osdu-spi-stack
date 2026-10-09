@@ -205,7 +205,17 @@ class _Binding:
     def timeout_minutes(self) -> int:
         return int(self.contract.get("timeout_minutes") or 0)
 
+    @property
+    def test_entrypoint(self) -> str:
+        return str(self.contract.get("test_entrypoint") or "")
+
+    @property
+    def report_paths(self) -> tuple[str, ...]:
+        return tuple(self.contract.get("report_paths") or ())
+
     def arguments(self, maven_arguments: Sequence[str]) -> list[str]:
+        if self.test_entrypoint:
+            return list(maven_arguments) or list(self.contract.get("test_arguments") or ())
         return list(maven_arguments) or list(self.contract.get("maven_arguments") or [])
 
 
@@ -571,9 +581,15 @@ def _require_tool(name: str) -> None:
 
 
 def _docker_run(
-    image: str, test_dir: str, env_file: str, args: Sequence[str], container: str = ""
+    image: str,
+    test_dir: str,
+    env_file: str,
+    args: Sequence[str],
+    container: str = "",
+    entrypoint: str = "",
 ) -> list[str]:
     name = ["--name", container] if container else []
+    script = ["-e", f"SUITE_ENTRYPOINT={entrypoint}"] if entrypoint else []
     return [
         "docker",
         "run",
@@ -584,9 +600,59 @@ def _docker_run(
         env_file,
         "-e",
         f"SUITE_DIR={test_dir}",
+        *script,
         image,
         *args,
     ]
+
+
+def _report_copy_roots(report_paths: Sequence[str]) -> tuple[str, ...]:
+    """Return the smallest non-glob paths that contain every declared report."""
+
+    roots: list[str] = []
+    for pattern in report_paths:
+        parts = pattern.split("/")
+        prefix = []
+        for part in parts:
+            if any(character in part for character in "*?["):
+                break
+            prefix.append(part)
+        root = "/".join(prefix)
+        if not root:
+            continue
+        if any(root == existing or root.startswith(f"{existing}/") for existing in roots):
+            continue
+        roots = [existing for existing in roots if not existing.startswith(f"{root}/")]
+        roots.append(root)
+    return tuple(roots)
+
+
+def _copy_paired_reports(
+    container: str,
+    test_dir: str,
+    reports: Path,
+    report_paths: Sequence[str],
+) -> tuple[int, str]:
+    """Copy declared script reports, or the full Maven suite, out of a stopped container."""
+
+    roots = _report_copy_roots(report_paths)
+    if not roots:
+        roots = ("",)
+    for root in roots:
+        source = f"{container}:{IMAGE_SUITE_ROOT}/{test_dir}"
+        destination = reports
+        if root:
+            source = f"{source}/{root}"
+            destination = reports / Path(root)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+        copied = run_process(
+            ["docker", "cp", source, str(destination)],
+            capture_output=True,
+            text=True,
+        )
+        if copied.returncode != 0:
+            return copied.returncode, (copied.stderr or "").strip()
+    return 0, ""
 
 
 def run_paired(
@@ -596,6 +662,8 @@ def run_paired(
     args: Sequence[str],
     timeout: int | None,
     reports: Path,
+    entrypoint: str = "",
+    report_paths: Sequence[str] = (),
 ) -> int:
     """Run the suite in the paired image; copy its reports out before the container goes."""
 
@@ -611,21 +679,19 @@ def run_paired(
     container = f"spi-test-{uuid.uuid4().hex[:12]}"
     try:
         ran = run_command(
-            _docker_run(image, test_dir, str(env_file), args, container),
+            _docker_run(image, test_dir, str(env_file), args, container, entrypoint),
             capture_output=False,
             description=f"Run {test_dir}",
             check=False,
             timeout=timeout,
         )
-        copied = run_process(
-            ["docker", "cp", f"{container}:{IMAGE_SUITE_ROOT}/{test_dir}", str(reports)],
-            capture_output=True,
-            text=True,
+        copy_code, copy_error = _copy_paired_reports(
+            container, test_dir, reports, report_paths
         )
-        if copied.returncode != 0:
+        if copy_code != 0:
             # A partial copy could hide the reports that recorded failures.
             shutil.rmtree(reports, ignore_errors=True)
-            detail = (copied.stderr or "").strip() or f"exit {copied.returncode}"
+            detail = copy_error or f"exit {copy_code}"
             raise SuiteNotRun(
                 "reports_unavailable",
                 f"the suite ran (exit {ran.returncode}) but its reports could not be copied "
@@ -704,13 +770,20 @@ def run_checkout(
     return ran.returncode, suite_dir
 
 
-def count_tests(reports: Path) -> dict[str, int]:
+def count_tests(reports: Path, report_paths: Sequence[str] = ()) -> dict[str, int]:
     """Totals across the Surefire and Failsafe reports, for display beside the verdict."""
 
     totals = {"tests": 0, "skipped": 0, "failures": 0, "errors": 0}
-    for path in reports.rglob("TEST-*.xml"):
-        if path.parent.name not in REPORT_DIRS:
-            continue
+    paths = (
+        (path for pattern in report_paths for path in reports.glob(pattern))
+        if report_paths
+        else (
+            path
+            for path in reports.rglob("TEST-*.xml")
+            if path.parent.name in REPORT_DIRS
+        )
+    )
+    for path in paths:
         try:
             root = ET.parse(path).getroot()
         except ET.ParseError:
@@ -723,9 +796,17 @@ def count_tests(reports: Path) -> dict[str, int]:
     return totals
 
 
-def judge(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
+def judge(
+    root: Path,
+    exit_code: int,
+    reports: Path,
+    report_paths: Sequence[str] = (),
+) -> tuple[bool, str]:
     """The commit's own verdict over this run's reports."""
 
+    patterns = (
+        ["--patterns-json", json.dumps(list(report_paths))] if report_paths else []
+    )
     result = run_process(
         [
             sys.executable,
@@ -734,6 +815,7 @@ def judge(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
             str(exit_code),
             "--reports",
             str(reports),
+            *patterns,
         ],
         env=_host_env(("PATH",), WINDOWS_PROCESS_ENV),
         capture_output=True,
@@ -837,7 +919,13 @@ def plan_suite(
         args = bound.arguments(maven_arguments)
         if checkout is None:
             directory = f"{IMAGE_SUITE_ROOT}/{bound.test_dir}"
-            command = _docker_run(bound.image, bound.test_dir, env_file or "suite.env", args)
+            command = _docker_run(
+                bound.image,
+                bound.test_dir,
+                env_file or "suite.env",
+                args,
+                entrypoint=bound.test_entrypoint,
+            )
         else:
             directory = str(_suite_dir(bound.root, bound.test_dir))
             command = _maven(bound.root, args)
@@ -901,13 +989,22 @@ def run_suite(
         try:
             if checkout is None:
                 reports = work / "reports"
-                code = run_paired(bound.image, test_dir, env_file, args, timeout, reports)
+                code = run_paired(
+                    bound.image,
+                    test_dir,
+                    env_file,
+                    args,
+                    timeout,
+                    reports,
+                    bound.test_entrypoint,
+                    bound.report_paths,
+                )
             else:
                 code, reports = run_checkout(root, test_dir, env_file, args, timeout)
         finally:
             env_file.unlink(missing_ok=True)
-        passed, verdict = judge(root, code, reports)
-        tests = count_tests(reports)
+        passed, verdict = judge(root, code, reports, bound.report_paths)
+        tests = count_tests(reports, bound.report_paths)
         # A discarded run leaves nothing with the inspector.
         check_target(service, bound.expected, after=verdict, revision=revision)
         report = inspect(reports, secrets) if inspect else None

@@ -34,7 +34,14 @@ args = parser.parse_args()
 report = {
     "report_schema": behavior.get("schema", 1),
     "service": behavior.get("service", "partition"),
-    "contract": {"test_dir": "suite", "maven_arguments": ["verify"], "timeout_minutes": 5},
+    "contract": {
+        "test_dir": "suite",
+        "test_entrypoint": behavior.get("test_entrypoint", ""),
+        "test_arguments": behavior.get("test_arguments", ["verify"]),
+        "report_paths": behavior.get("report_paths", []),
+        "maven_arguments": behavior.get("maven_arguments", ["verify"]),
+        "timeout_minutes": 5,
+    },
     "seen_env": sorted(os.environ),
     "suite": args.suite,
     "error": None,
@@ -169,7 +176,12 @@ def cluster(monkeypatch, tmp_path):
             return real_run_process(cmd, **kwargs)
         state["commands"].append((cmd, kwargs))
         if cmd[1] == "cp":
-            reports = Path(cmd[3]) / "target" / "surefire-reports"
+            destination = Path(cmd[3])
+            reports = (
+                destination
+                if cmd[2].endswith("/newman")
+                else destination / "target" / "surefire-reports"
+            )
             reports.mkdir(parents=True)
             (reports / "TEST-a.xml").write_text('<testsuite tests="11" skipped="0"/>')
         return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -236,6 +248,34 @@ class TestPairedRun:
         assert rm[-1] == run[run.index("--name") + 1]
         assert result.passed and result.exit_code == 0
         assert (result.mode, result.commit, result.image) == ("paired", SHA, image)
+        assert result.tests["tests"] == 11
+
+    def test_a_script_suite_runs_its_entrypoint_arguments_and_declared_reports(self, cluster):
+        _machinery(
+            cluster["commit_tree"],
+            test_entrypoint="tests/e2e/run.sh",
+            test_arguments=["--url", "${HOST}"],
+            report_paths=["newman/*.xml"],
+        )
+
+        result = testing.run_suite(
+            "partition", maven_arguments=["--hostname", "https://gateway.example"]
+        )
+
+        [(run, _)] = _commands(cluster, ["docker", "run"])
+        image = f"ghcr.io/acme/partition-acceptance@{PAIR}"
+        entrypoint = run.index("SUITE_ENTRYPOINT=tests/e2e/run.sh")
+        assert run[entrypoint - 1] == "-e"
+        assert run[run.index(image) + 1 :] == [
+            "--hostname",
+            "https://gateway.example",
+        ]
+        [(copy, _)] = _commands(cluster, ["docker", "cp"])
+        assert copy[2].endswith("/suite/newman")
+        assert Path(copy[3]).parts[-2:] == ("reports", "newman")
+        verdict = json.loads((cluster["commit_tree"] / "verdict-args.json").read_text())
+        assert verdict[-2:] == ["--patterns-json", '["newman/*.xml"]']
+        assert result.passed
         assert result.tests["tests"] == 11
 
     def test_a_partial_report_copy_gives_no_verdict(self, cluster, monkeypatch):
