@@ -78,8 +78,6 @@ spec:
         value: azure
       - name: PORT
         value: "8080"
-      - name: KEYVAULT_URL
-        value: ${KEYVAULT_URL}
       - name: DES_SERVICE_HOST_COMPLIANCE
         value: http://legal
       - name: DES_SERVICE_HOST_ENTITLEMENT

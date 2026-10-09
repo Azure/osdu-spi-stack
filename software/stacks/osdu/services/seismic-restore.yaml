@@ -71,13 +71,12 @@ spec:
       - name: HOST_PORT
         value: "6000"
       - name: SDMS_KEYVAULT_URL
-        value: ${KEYVAULT_URL}
+        valueFrom:
+          configMapKeyRef:
+            name: osdu-config
+            key: KEYVAULT_URL
       - name: DES_SERVICE_HOST
         value: http://partition
-      - name: AZURE_SUBSCRIPTION_ID
-        value: ${AZURE_SUBSCRIPTION_ID}
-      - name: AZURE_RESOURCE_GROUP
-        value: ${AZURE_RESOURCE_GROUP}
       - name: SDMS_REDIS_QUEUE_PORT
         value: "6379"
       - name: SDMS_REDIS_LOCKS_PORT

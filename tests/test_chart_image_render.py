@@ -93,6 +93,29 @@ def test_requests_the_cpu_admission_will_grant_every_container():
         assert _millicores(requested) >= 100, container["name"]
 
 
+def test_environment_value_from_is_preserved():
+    deployment = _rendered_deployment(
+        {
+            "env[0].name": "SDMS_KEYVAULT_URL",
+            "env[0].valueFrom.configMapKeyRef.name": "osdu-config",
+            "env[0].valueFrom.configMapKeyRef.key": "KEYVAULT_URL",
+        }
+    )
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert container["env"] == [
+        {
+            "name": "SDMS_KEYVAULT_URL",
+            "valueFrom": {
+                "configMapKeyRef": {
+                    "name": "osdu-config",
+                    "key": "KEYVAULT_URL",
+                }
+            },
+        }
+    ]
+
+
 _ISTIO_PROXY = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["istioProxyPin"]["image"]
 
 
