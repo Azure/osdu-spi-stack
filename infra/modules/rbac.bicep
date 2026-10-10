@@ -35,7 +35,7 @@ param acrName string
 @description('Existing shared storage account receiving blob and table role assignments.')
 param commonStorageName string
 
-@description('Existing per-partition storage accounts receiving blob role assignments.')
+@description('Existing per-partition storage accounts receiving blob and restore role assignments.')
 param partitionStorageNames array
 
 @description('Existing Service Bus namespaces receiving sender and receiver role assignments.')
@@ -45,7 +45,9 @@ var roleIds = {
   keyVaultSecretsUser: '4633458b-17de-408a-b874-0445c86b69e6'
   keyVaultSecretsOfficer: 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
   storageBlobDataContributor: 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+  storageAccountContributor: '17d1049b-9a84-46fb-8f53-869881c3d3ab'
   storageTableDataContributor: '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
+  storageQueueDataContributor: '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
   serviceBusDataSender: '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39'
   serviceBusDataReceiver: '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0'
   acrPull: '7f951dda-4ed3-4680-a7ca-43fe172d538d'
@@ -162,11 +164,31 @@ resource commonStorageTableAssignment 'Microsoft.Authorization/roleAssignments@2
   }
 }
 
+resource commonStorageQueueAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: commonStorage
+  name: guid(commonStorage.id, principalId, roleIds.storageQueueDataContributor)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.storageQueueDataContributor)
+    principalId: principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 resource partitionStorageBlobAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (storageName, i) in partitionStorageNames: {
   scope: partitionStorageAccounts[i]
   name: guid(partitionStorageAccounts[i].id, principalId, roleIds.storageBlobDataContributor)
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.storageBlobDataContributor)
+    principalId: principalId
+    principalType: 'ServicePrincipal'
+  }
+}]
+
+resource partitionStorageAccountAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (storageName, i) in partitionStorageNames: {
+  scope: partitionStorageAccounts[i]
+  name: guid(partitionStorageAccounts[i].id, principalId, roleIds.storageAccountContributor)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.storageAccountContributor)
     principalId: principalId
     principalType: 'ServicePrincipal'
   }

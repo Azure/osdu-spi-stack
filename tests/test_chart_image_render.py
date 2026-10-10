@@ -93,6 +93,71 @@ def test_requests_the_cpu_admission_will_grant_every_container():
         assert _millicores(requested) >= 100, container["name"]
 
 
+def test_run_as_user_defaults_to_1000():
+    deployment = _rendered_deployment({})
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert container["securityContext"]["runAsUser"] == 1000
+
+
+def test_run_as_user_override_preserves_safeguards_for_every_container():
+    deployment = _rendered_deployment({"redisTls": "true", "runAsUser": "999"})
+    pod = deployment["spec"]["template"]["spec"]
+    containers = pod["containers"] + pod["initContainers"]
+
+    assert pod["securityContext"] == {
+        "runAsNonRoot": True,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+    for container in containers:
+        assert container["securityContext"] == {
+            "allowPrivilegeEscalation": False,
+            "runAsNonRoot": True,
+            "runAsUser": 999,
+            "capabilities": {"drop": ["ALL"]},
+        }
+
+
+def test_environment_value_from_is_preserved():
+    deployment = _rendered_deployment(
+        {
+            "env[0].name": "SDMS_KEYVAULT_URL",
+            "env[0].valueFrom.configMapKeyRef.name": "osdu-config",
+            "env[0].valueFrom.configMapKeyRef.key": "KEYVAULT_URL",
+        }
+    )
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert container["env"] == [
+        {
+            "name": "SDMS_KEYVAULT_URL",
+            "valueFrom": {
+                "configMapKeyRef": {
+                    "name": "osdu-config",
+                    "key": "KEYVAULT_URL",
+                }
+            },
+        }
+    ]
+
+
+def test_environment_value_is_always_rendered_as_a_string():
+    deployment = _rendered_deployment(
+        {
+            "env[0].name": "FEATURE_FLAG_ENABLE_RESTORE",
+            "env[0].value": "true",
+        }
+    )
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert container["env"] == [
+        {
+            "name": "FEATURE_FLAG_ENABLE_RESTORE",
+            "value": "true",
+        }
+    ]
+
+
 _ISTIO_PROXY = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["istioProxyPin"]["image"]
 
 

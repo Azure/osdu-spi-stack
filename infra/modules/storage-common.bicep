@@ -25,6 +25,10 @@ var tableNames = [
   'partitionInfo'
 ]
 
+var queueNames = [
+  'sdms-queue-restore'
+]
+
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: name
   location: location
@@ -60,6 +64,16 @@ resource tableService 'Microsoft.Storage/storageAccounts/tableServices@2023-01-0
 resource tables 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-01-01' = [for tableName in tableNames: {
   parent: tableService
   name: tableName
+}]
+
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = {
+  parent: storageAccount
+  name: 'default'
+}
+
+resource queues 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = [for queueName in queueNames: {
+  parent: queueService
+  name: queueName
 }]
 
 @description('Azure resource ID of the storage account shared across partitions.')

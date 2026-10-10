@@ -23,8 +23,10 @@ and writes the KV runtime secrets that OSDU services read at startup.
 import json
 import os
 import re
+import tempfile
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import typer
@@ -103,6 +105,8 @@ def _create_osdu_config(config: Config, infra_outputs: dict) -> None:
         primary_cosmosdb_endpoint=infra_outputs.get(f"{partition}_cosmos_endpoint", ""),
         primary_storage_account_name=infra_outputs.get("common_storage_name", ""),
         primary_servicebus_namespace=infra_outputs.get(f"{partition}_sb_namespace", ""),
+        subscription_id=infra_outputs.get("subscription_id", ""),
+        resource_group=config.resource_group,
     )
     display_yaml(yaml_content, "ConfigMap: osdu-config")
     kubectl_apply_yaml(yaml_content, "apply osdu-config ConfigMap")
@@ -305,6 +309,8 @@ def _write_keyvault_bootstrap_secrets(
     storage_account_name: str,
     elastic_password: str,
     redis_password: str,
+    aad_client_id: str,
+    appinsights_connection_string: str,
 ) -> None:
     """Write the secrets OSDU services read at startup.
 
@@ -314,22 +320,47 @@ def _write_keyvault_bootstrap_secrets(
     """
     console.print("\n[bold]Writing OSDU bootstrap secrets to Key Vault...[/bold]")
     tbl_endpoint = f"https://{storage_account_name}.table.core.windows.net/"
+    queue_endpoint = f"https://{storage_account_name}.queue.core.windows.net/"
     # ECK's certificate SANs cover the .svc form only; the .svc.cluster.local
     # form fails hostname verification.
     elastic_endpoint = "https://elasticsearch-es-http.platform.svc:9200"
     redis_hostname = "platform-redis-master.platform.svc.cluster.local"
 
-    secrets_to_write: list[tuple[str, str]] = [
-        ("tbl-storage-endpoint", tbl_endpoint),
-        ("redis-hostname", redis_hostname),
-        ("redis-password", redis_password),
+    secrets_to_write: list[tuple[str, list[str]]] = [
+        ("tbl-storage-endpoint", ["--value", tbl_endpoint]),
+        ("queue-storage-endpoint", ["--value", queue_endpoint]),
+        ("redis-hostname", ["--value", redis_hostname]),
+        ("redis-password", ["--value", redis_password]),
+        ("redis-queue-hostname", ["--value", redis_hostname]),
+        ("redis-queue-password", ["--value", redis_password]),
+        ("aad-client-id", ["--value", aad_client_id]),
     ]
+
+    empty_appinsights_path: Path | None = None
+    if appinsights_connection_string:
+        appinsights_args = ["--value", appinsights_connection_string]
+    else:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix="spi-appinsights-",
+            delete=False,
+        ) as empty_appinsights:
+            empty_appinsights_path = Path(empty_appinsights.name)
+        appinsights_args = [
+            "--file",
+            str(empty_appinsights_path),
+            "--encoding",
+            "utf-8",
+        ]
+    secrets_to_write.append(("appinsights-connection-string", appinsights_args))
+
     for p in config.data_partitions:
         secrets_to_write.extend(
             [
-                (f"{p}-elastic-endpoint", elastic_endpoint),
-                (f"{p}-elastic-username", "elastic"),
-                (f"{p}-elastic-password", elastic_password),
+                (f"{p}-elastic-endpoint", ["--value", elastic_endpoint]),
+                (f"{p}-elastic-username", ["--value", "elastic"]),
+                (f"{p}-elastic-password", ["--value", elastic_password]),
             ]
         )
 
@@ -337,42 +368,46 @@ def _write_keyvault_bootstrap_secrets(
     # the data plane; retry the first write on ForbiddenByRbac.
     deadline = time.time() + 300
     first = True
-    for name, value in secrets_to_write:
-        while True:
-            result = run_process(
-                [
-                    "az",
-                    "keyvault",
-                    "secret",
-                    "set",
-                    "--vault-name",
-                    keyvault_name,
-                    "--name",
-                    name,
-                    "--value",
-                    value,
-                    "--output",
-                    "none",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                break
-            combined = (result.stderr or "") + (result.stdout or "")
-            if "ForbiddenByRbac" in combined and first and time.time() < deadline:
-                console.print(
-                    "  [info]Key Vault role assignment not yet propagated; retrying in 30s...[/info]"
+    try:
+        for name, value_args in secrets_to_write:
+            while True:
+                result = run_process(
+                    [
+                        "az",
+                        "keyvault",
+                        "secret",
+                        "set",
+                        "--vault-name",
+                        keyvault_name,
+                        "--name",
+                        name,
+                        *value_args,
+                        "--output",
+                        "none",
+                    ],
+                    capture_output=True,
+                    text=True,
                 )
-                time.sleep(30)
-                continue
-            if result.stderr.strip():
-                console.print(
-                    f"[error]az keyvault secret set failed for {name}: {result.stderr.strip()}[/error]"
-                )
-            raise typer.Exit(code=1)
-        first = False
-        console.print(f"  [success]{name}[/success]")
+                if result.returncode == 0:
+                    break
+                combined = (result.stderr or "") + (result.stdout or "")
+                if "ForbiddenByRbac" in combined and first and time.time() < deadline:
+                    console.print(
+                        "  [info]Key Vault role assignment not yet propagated; retrying in 30s...[/info]"
+                    )
+                    time.sleep(30)
+                    continue
+                if result.stderr.strip():
+                    console.print(
+                        f"[error]az keyvault secret set failed for {name}: "
+                        f"{result.stderr.strip()}[/error]"
+                    )
+                raise typer.Exit(code=1)
+            first = False
+            console.print(f"  [success]{name}[/success]")
+    finally:
+        if empty_appinsights_path is not None:
+            empty_appinsights_path.unlink(missing_ok=True)
 
     display_result(f"{len(secrets_to_write)} Key Vault secrets written")
 
@@ -676,6 +711,8 @@ def deploy_azure(
         storage_account_name=infra_outputs.get("common_storage_name", ""),
         elastic_password=seed["elastic_password"],
         redis_password=seed["redis_password"],
+        aad_client_id=_resolve_aad_client_id(infra_outputs.get("identity_client_id", "")),
+        appinsights_connection_string=infra_outputs.get("app_insights_connection_string", ""),
     )
 
     _finalize_gitops_source(config)

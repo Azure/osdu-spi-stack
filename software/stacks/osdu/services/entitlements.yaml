@@ -59,6 +59,9 @@ spec:
         value: "true"
       - name: SPRING_CONFIG_NAME
         value: common,application
+      # os-core-common 8.2 requires a PartitionInfo cache that the Azure provider does not register.
+      - name: FEATUREFLAG_STRATEGY
+        value: appProperty
       - name: SERVICE_DOMAIN_NAME
         value: dataservices.energy
       - name: ROOT_DATA_GROUP_QUOTA

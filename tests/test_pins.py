@@ -1351,7 +1351,15 @@ class TestParseImageDigestRef:
 
 
 class TestPinServiceImage:
-    def _wire(self, monkeypatch, lock, conflicts=0, manifest_ok=True, loader=None):
+    def _wire(
+        self,
+        monkeypatch,
+        lock,
+        conflicts=0,
+        manifest_ok=True,
+        loader=None,
+        companion=None,
+    ):
         calls = _wire_lock(monkeypatch, lock, conflicts=conflicts)
         calls["manifest_checks"] = []
         calls["loader_lookups"] = []
@@ -1367,15 +1375,23 @@ class TestPinServiceImage:
                 raise loader
             return loader
 
+        def fake_companion(source_repo, source_sha, suffix):
+            calls["companion_lookups"].append((source_repo, source_sha, suffix))
+            if isinstance(companion, Exception):
+                raise companion
+            return companion
+
         def fake_tag(repository, tag):
             calls["tag_lookups"].append((repository, tag))
             return calls["tagged"]
 
         calls["tag_lookups"] = []
+        calls["companion_lookups"] = []
         # The fork's sha-<12> tag names the pinned digest unless a test moves it.
         calls["tagged"] = _GHCR_DIGEST
         monkeypatch.setattr(pins, "resolve_ghcr_manifest", fake_manifest)
         monkeypatch.setattr(pins, "resolve_fork_loader", fake_loader)
+        monkeypatch.setattr(pins, "resolve_fork_companion", fake_companion)
         monkeypatch.setattr(pins, "resolve_ghcr_tag_digest", fake_tag)
         return calls
 
@@ -1386,6 +1402,10 @@ class TestPinServiceImage:
     def test_schema_load_direct_pin_rejected(self):
         with pytest.raises(PinError, match="cannot be pinned directly"):
             pin_service_image("schema-load", _GHCR_IMAGE)
+
+    def test_seismic_restore_direct_pin_rejected(self):
+        with pytest.raises(PinError, match="cannot be pinned directly"):
+            pin_service_image("seismic-restore", _GHCR_IMAGE)
 
     def test_tag_reference_rejected(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
@@ -1682,6 +1702,57 @@ class TestPinServiceImage:
         assert data["SCHEMA_LOAD_IMAGE_TAG"] == ""
         assert data["SCHEMA_DO_NOT_DISRUPT"] == "true"
         assert calls["reconciled"] is None
+
+    def test_seismic_ephemeral_pin_pairs_restore_runner(self, monkeypatch):
+        restore_digest = "sha256:" + "f" * 64
+        repository = "ghcr.io/kiranbedre/osdu-spi-seismic-store-service"
+        lock = _lock(
+            data=_canonical_data("seismic", "seismic-restore"),
+            trusted={"seismic": "KiranBedre/osdu-spi-seismic-store-service"},
+        )
+        calls = self._wire(
+            monkeypatch,
+            lock,
+            companion=(f"{repository}-restore", restore_digest),
+        )
+
+        applied = pin_service_image(
+            "seismic",
+            f"{repository}@{_GHCR_DIGEST}",
+            ephemeral=True,
+            run_id="1234",
+            source_repo="KiranBedre/osdu-spi-seismic-store-service",
+            source_sha="b" * 40,
+        )
+
+        assert [name for name, _ in applied] == ["seismic", "seismic-restore"]
+        assert applied[1][1].digest == restore_digest
+        assert calls["companion_lookups"] == [(repository, "b" * 40, "-restore")]
+        data, saved = calls["patch"]
+        assert set(saved) == {"seismic", "seismic-restore"}
+        assert data["SEISMIC_RESTORE_IMAGE_REF"] == f"{repository}-restore@{restore_digest}"
+        assert data["SEISMIC_RESTORE_ENABLED"] == "true"
+        assert data["SEISMIC_RESTORE_REPLICA_COUNT"] == "1"
+
+    def test_seismic_ephemeral_pin_requires_restore_runner(self, monkeypatch):
+        repository = "ghcr.io/kiranbedre/osdu-spi-seismic-store-service"
+        lock = _lock(
+            data=_canonical_data("seismic", "seismic-restore"),
+            trusted={"seismic": "KiranBedre/osdu-spi-seismic-store-service"},
+        )
+        calls = self._wire(monkeypatch, lock, companion=None)
+
+        with pytest.raises(PinError, match="must be pinned from the same commit"):
+            pin_service_image(
+                "seismic",
+                f"{repository}@{_GHCR_DIGEST}",
+                ephemeral=True,
+                run_id="1234",
+                source_repo="KiranBedre/osdu-spi-seismic-store-service",
+                source_sha="b" * 40,
+            )
+
+        assert calls["patch"] is None
 
     def test_schema_ephemeral_pin_without_a_fork_loader_keeps_the_canonical(self, monkeypatch):
         lock = _lock(data=_canonical_data("schema", "schema-load"))

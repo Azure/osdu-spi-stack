@@ -288,6 +288,7 @@ def _entry(service: str, repo: str, extra: str = "") -> str:
         ),
         (_with_forks(_entry("nonesuch", "Acme/p")), "unknown service 'nonesuch'"),
         (_with_forks(_entry("schema-load", "Acme/p")), "unknown service 'schema-load'"),
+        (_with_forks(_entry("seismic-restore", "Acme/p")), "unknown service 'seismic-restore'"),
         (_with_forks(_entry("partition", "not-a-repo")), "must be <owner>/<name>"),
         (
             _with_forks(_entry("partition", "Acme/p", "    canonicalSource: gitlab\n")),

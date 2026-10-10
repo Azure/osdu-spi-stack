@@ -44,6 +44,7 @@ from .images import (
     SCHEMA_LOAD_SERVICE_NAME,
     SCHEMA_SERVICE_NAME,
     ImageResolutionError,
+    paired_image_companions,
     resolve_image_lock,
 )
 from .ingress import resolve_acme_email, resolve_ingress_mode
@@ -1283,7 +1284,7 @@ def spi_test(
 
     By default the suite runs in the acceptance image recorded with the
     service's fork canonical, bound by that commit's own descriptor and
-    resolver. Tokens after -- replace the suite's mavenArguments. Exit 0
+    resolver. Tokens after -- replace the suite's declared arguments. Exit 0
     passed, 3 failed, 2 not run or discarded because the environment or
     service was not in a state to test, 1 not run for any other reason.
     --dry-run exits 0 once the suite is bound and gives no verdict.
@@ -2672,8 +2673,9 @@ def service_refresh(
             f"  [warning]{name} stays pinned; its canonical is unchanged until "
             f"'spi service reset {name}' and a refresh[/warning]"
         )
+    companions = paired_image_companions()
     for name, ref in refs.items():
-        if name != SCHEMA_LOAD_SERVICE_NAME:
+        if name not in companions:
             console.print(f"  [dim]spi service verify {name} --image {ref}[/dim]")
 
 

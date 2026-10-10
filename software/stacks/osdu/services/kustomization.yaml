@@ -11,3 +11,5 @@ resources:
   - indexer-queue.yaml
   - file.yaml
   - workflow.yaml
+  - seismic.yaml
+  - seismic-restore.yaml

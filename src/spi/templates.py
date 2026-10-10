@@ -54,6 +54,8 @@ def osdu_config_configmap(
     primary_storage_account_name: str,
     primary_servicebus_namespace: str,
     appinsights_key: str = "",
+    subscription_id: str = "",
+    resource_group: str = "",
 ) -> str:
     """ConfigMap with Azure PaaS endpoints for OSDU services.
 
@@ -85,6 +87,8 @@ data:
   COSMOSDB_DATABASE: "osdu-db"
   PRIMARY_STORAGE_ACCOUNT_NAME: "{primary_storage_account_name}"
   PRIMARY_SERVICEBUS_NAMESPACE: "{primary_servicebus_namespace}"
+  AZURE_SUBSCRIPTION_ID: "{subscription_id}"
+  AZURE_RESOURCE_GROUP: "{resource_group}"
   REDIS_PORT: "6379"
   SERVER_PORT: "8080"
   APPINSIGHTS_KEY: "{appinsights_key}"

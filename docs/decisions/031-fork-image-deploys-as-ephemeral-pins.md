@@ -38,6 +38,16 @@ annotation schema live in `docs/design/fork-deployment.md`.
   refuses while the environment is not deployable (ADR-030), and after
   writing it re-reads `maintenance`, rolling its own write back if the flag
   appeared in the window (ADR-029).
+- **Declared companion images move with their primary.** A service that ships
+  a stack-declared companion package resolves that package at the primary
+  image's `sha-<12>` commit tag. Canonical refresh, ephemeral pin, reset, and
+  stale-pin sweep move both lock entries as one run-owned unit. Seismic
+  requires `seismic-restore` to be present before its fork canonical or
+  ephemeral image can advance, because the API writes restore work that only
+  that companion consumes. Community Seismic has no RestoreRunner package, so
+  its restore feature and worker replicas stay disabled. Schema keeps its
+  existing ephemeral behavior: a commit without `schema-load` pins the API
+  and leaves the canonical loader in place.
 - **A lock write is the whole deploy.** The lock carries the
   `reconcile.fluxcd.io/watch: Enabled` label, so Flux reconciles the
   consuming Kustomizations when the ConfigMap changes; fork CI mutates

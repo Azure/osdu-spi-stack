@@ -55,6 +55,7 @@ from .images import (
     IMAGE_LOCK_CONFIGMAP,
     IMAGE_LOCK_NAMESPACE,
     IMAGE_REGISTRY,
+    PAIRED_IMAGE_SERVICES,
     SCHEMA_LOAD_SERVICE_NAME,
     SCHEMA_SERVICE_NAME,
     ImageNotFoundError,
@@ -63,6 +64,7 @@ from .images import (
     acceptance_digest_key,
     build_lock_annotations,
     build_lock_data,
+    companion_runtime_patch,
     do_not_disrupt_key,
     fork_package_repositories,
     ghcr_index_child_digests,
@@ -73,6 +75,7 @@ from .images import (
     parse_image_digest_ref,
     render_image_lock_configmap,
     require_ghcr_repository,
+    resolve_fork_companion,
     resolve_fork_loader,
     resolve_ghcr_manifest,
     resolve_ghcr_tag_digest,
@@ -82,6 +85,11 @@ from .images import (
     schema_load_lock_patch,
 )
 from .shell import run_command, run_process
+
+PAIRED_COMPANIONS = {companion for companion, _ in PAIRED_IMAGE_SERVICES.values()}
+PRIMARY_BY_COMPANION = {
+    companion: primary for primary, (companion, _) in PAIRED_IMAGE_SERVICES.items()
+}
 
 PINS_ANNOTATION = "spi-stack.osdu.dev/pins"
 # Service to trusted repository, projected from the deploy identity's
@@ -470,7 +478,7 @@ def _lock_entry_patch(
     do_not_disrupt: bool = False,
 ):
     key = image_lock_key(service)
-    return {
+    patch = {
         # A digest pin has no tag; the digest ref avoids a dangling "repository:".
         f"{key}_IMAGE": f"{repository}:{tag}" if tag else image_ref(repository, tag, digest),
         f"{key}_IMAGE_REPOSITORY": repository,
@@ -481,6 +489,8 @@ def _lock_entry_patch(
         # Only a run-owned borrow holds its node; the refresh derives the same value.
         do_not_disrupt_key(service): str(do_not_disrupt).lower(),
     }
+    patch.update(companion_runtime_patch(service, repository))
+    return patch
 
 
 def _ephemeral_names(pins: dict[str, ServicePin]) -> frozenset[str]:
@@ -872,8 +882,9 @@ def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
     if service not in IMAGE_REGISTRY:
         known = ", ".join(sorted(IMAGE_REGISTRY))
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
-    if service == SCHEMA_LOAD_SERVICE_NAME:
-        raise PinError("Pin 'schema' instead; the loader follows the schema pin.")
+    if service in PAIRED_COMPANIONS:
+        primary = PRIMARY_BY_COMPANION[service]
+        raise PinError(f"Pin {primary!r} instead; {service} follows the primary image pin.")
     require_deployable()
 
     targets = [service]
@@ -1030,8 +1041,8 @@ def _borrowed(service: str, pin: ServicePin | None) -> PinError | None:
 def require_local_pinnable(service: str) -> None:
     """Refuse a local pin the environment would not take, before anything is built."""
 
-    if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
-        known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
+    if service not in IMAGE_REGISTRY or service in PAIRED_COMPANIONS:
+        known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n not in PAIRED_COMPANIONS))
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
     require_deployable()
     borrowed = _borrowed(service, live_pins().get(service))
@@ -1073,11 +1084,12 @@ def pin_service_image(
     never placed over a workflow run's borrow, and refused until the cluster
     can pull from the registry.
 
-    The target is the named service. An ephemeral schema pin also pairs the
-    loader the fork built beside the service image at ``source_sha`` (template
-    ADR-042), under the same run; a fork that published no loader for that
-    commit keeps the canonical loader. A loader left pinned by an earlier MR
-    or run is released to its canonical image so no mismatched pair survives.
+    The target is the named service. An ephemeral pin also moves a declared
+    companion the fork built beside the service image at ``source_sha`` under
+    the same run. Schema may keep its canonical loader when a fork published
+    none; Seismic requires its RestoreRunner. A companion left pinned by an
+    earlier MR or run is released to its canonical image so no mismatched pair
+    survives.
     An ephemeral pin returns right after the lock write: reconciliation
     follows the lock's watch label, and ``verify`` is the deploy gate.
     Returns the applied (service, pin) pairs, the named service first, so the
@@ -1088,10 +1100,11 @@ def pin_service_image(
     if service not in IMAGE_REGISTRY:
         known = ", ".join(sorted(IMAGE_REGISTRY))
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
-    if service == SCHEMA_LOAD_SERVICE_NAME:
+    if service in PAIRED_COMPANIONS:
+        primary = PRIMARY_BY_COMPANION[service]
         raise PinError(
-            f"{SCHEMA_LOAD_SERVICE_NAME} cannot be pinned directly; pin schema, and an "
-            "ephemeral pin pairs the fork's loader from the same commit."
+            f"{service} cannot be pinned directly; pin {primary}, and an ephemeral pin "
+            "pairs the fork's companion from the same commit."
         )
 
     try:
@@ -1138,8 +1151,10 @@ def pin_service_image(
     # repeat on every CAS retry. Only a run-owned pin knows the commit to pair
     # on, and the loader is found by that commit's tag, so the service digest
     # must be the build the same tag names or the pair would straddle commits.
-    loader: tuple[str, str] | None = None
-    if service == SCHEMA_SERVICE_NAME and ephemeral:
+    companion_target: tuple[str, str, str] | None = None
+    companion_name = PAIRED_IMAGE_SERVICES.get(service, ("", ""))[0]
+    companion_suffix = PAIRED_IMAGE_SERVICES.get(service, ("", ""))[1]
+    if companion_name and ephemeral:
         commit_tag = f"sha-{source_sha[:12]}"
         try:
             tagged = resolve_ghcr_tag_digest(repository, commit_tag)
@@ -1150,11 +1165,25 @@ def pin_service_image(
                     "image must be the build it names. A rebuild of the same commit moved "
                     "the tag; re-run the lane."
                 )
-            loader = resolve_fork_loader(repository, source_sha)
+            companion = (
+                resolve_fork_loader(repository, source_sha)
+                if service == SCHEMA_SERVICE_NAME
+                else resolve_fork_companion(repository, source_sha, companion_suffix)
+            )
+            if companion is None and service != SCHEMA_SERVICE_NAME:
+                raise PinError(
+                    f"{repository}{companion_suffix}:{commit_tag} was not published; "
+                    f"{service} and {companion_name} must be pinned from the same commit."
+                )
+            if companion is not None:
+                companion_target = (companion_name, companion[0], companion[1])
             # docker-push publishes the service image before the loader, so a
             # rebuild that moved the loader tag between the two reads has moved
             # the service tag too; reading it again closes that window.
-            if loader is not None and resolve_ghcr_tag_digest(repository, commit_tag) != digest:
+            if (
+                companion_target is not None
+                and resolve_ghcr_tag_digest(repository, commit_tag) != digest
+            ):
                 raise PinError(
                     f"{repository}:{commit_tag} moved while the loader was being resolved; "
                     "a rebuild of the same commit is in progress. Re-run the lane."
@@ -1163,8 +1192,8 @@ def pin_service_image(
             raise PinError(str(exc)) from exc
 
     targets = [(service, repository, digest)]
-    if loader is not None:
-        targets.append((SCHEMA_LOAD_SERVICE_NAME, loader[0], loader[1]))
+    if companion_target is not None:
+        targets.append(companion_target)
 
     applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     applied: ServicePin | None = None
@@ -1199,20 +1228,20 @@ def pin_service_image(
             }
 
         released_now: dict[str, ServicePin] = {}
-        if service == SCHEMA_SERVICE_NAME and loader is None:
+        if companion_name and companion_target is None:
             # A loader pinned by an earlier MR or run must not pair with the
             # fork schema image; release it.
-            stale = pins.get(SCHEMA_LOAD_SERVICE_NAME)
+            stale = pins.get(companion_name)
             if stale:
                 if not stale.canonical_repository or not stale.canonical_tag:
                     raise PinError(
-                        f"{SCHEMA_LOAD_SERVICE_NAME} is pinned to MR !{stale.mr} with no "
-                        "canonical image recorded; run 'spi service reset schema' to remove "
+                        f"{companion_name} is pinned to MR !{stale.mr} with no "
+                        f"canonical image recorded; run 'spi service reset {service}' to remove "
                         "the invalid pin, then 'spi reconcile --refresh-images' before re-pinning."
                     )
-                capture(SCHEMA_LOAD_SERVICE_NAME)
-                pins.pop(SCHEMA_LOAD_SERVICE_NAME)
-                released_now[SCHEMA_LOAD_SERVICE_NAME] = stale
+                capture(companion_name)
+                pins.pop(companion_name)
+                released_now[companion_name] = stale
 
         for name, target_repository, target_digest in targets:
             existing = pins.get(name)
@@ -1281,8 +1310,8 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
     only while the live pin still records that owning run, so a crashed
     run's always-run restore job cannot clobber a newer sibling's pin. A
     refusal is a typed ``ResetRefusedError`` and mutates nothing. A run-owned
-    schema pin may have paired the loader under the same run, so ``if_run``
-    releases that loader with it and leaves a loader owned by anything else
+    primary pin may have paired a companion under the same run, so ``if_run``
+    releases that companion with it and leaves one owned by anything else
     standing; the restore converges through the lock's watch label rather
     than an explicit reconciliation.
     """
@@ -1292,8 +1321,8 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
 
     targets_all = [service]
-    if service == SCHEMA_SERVICE_NAME:
-        targets_all.append(SCHEMA_LOAD_SERVICE_NAME)
+    if service in PAIRED_IMAGE_SERVICES:
+        targets_all.append(PAIRED_IMAGE_SERVICES[service][0])
 
     restored: list[str] = []
     refresh_required: list[str] = []
@@ -1373,8 +1402,8 @@ def refresh_services(services: list[str]) -> RefreshResult:
 
     Only the named entries change: every other service, the lock's resolved-at
     stamp, and the projections stay as they are. A pinned service keeps its pin
-    and its captured restore target; schema and its loader refresh, or stay, as
-    one pair so the Job never runs a loader from another commit.
+    and its captured restore target; declared primary and companion images
+    refresh, or stay, as one pair.
     """
 
     names = _refresh_names(services)
@@ -1402,12 +1431,12 @@ def refresh_fork_services() -> RefreshResult:
 def _refresh_names(services: Iterable[str]) -> list[str]:
     names: list[str] = []
     for service in services:
-        if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
-            known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
+        if service not in IMAGE_REGISTRY or service in PAIRED_COMPANIONS:
+            known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n not in PAIRED_COMPANIONS))
             raise PinError(f"Unknown service {service!r}. Known services: {known}")
         names.append(service)
-        if service == SCHEMA_SERVICE_NAME:
-            names.append(SCHEMA_LOAD_SERVICE_NAME)
+        if service in PAIRED_IMAGE_SERVICES:
+            names.append(PAIRED_IMAGE_SERVICES[service][0])
     return list(dict.fromkeys(names))
 
 
@@ -1431,8 +1460,10 @@ def _apply_refresh(names: list[str], lock: dict, sources: dict[str, str]) -> Ref
             )
         pins = decode_pins(lock)
         held = {name for name in names if name in pins}
-        if held & {SCHEMA_SERVICE_NAME, SCHEMA_LOAD_SERVICE_NAME}:
-            held |= {SCHEMA_SERVICE_NAME, SCHEMA_LOAD_SERVICE_NAME} & set(names)
+        for primary, (companion, _) in PAIRED_IMAGE_SERVICES.items():
+            pair = {primary, companion}
+            if held & pair:
+                held |= pair & set(names)
         pinned = tuple(name for name in names if name in held)
         moved.clear()
         data = dict(lock.get("data") or {})
@@ -1460,11 +1491,9 @@ def _apply_refresh(names: list[str], lock: dict, sources: dict[str, str]) -> Ref
 
 
 def refresh_command(services: Iterable[str]) -> str:
-    """The refresh that moves these entries; the loader refreshes as schema's pair."""
+    """Return the refresh command after folding companions into their primaries."""
 
-    names = dict.fromkeys(
-        SCHEMA_SERVICE_NAME if name == SCHEMA_LOAD_SERVICE_NAME else name for name in services
-    )
+    names = dict.fromkeys(PRIMARY_BY_COMPANION.get(name, name) for name in services)
     return f"spi service refresh {' '.join(names)}"
 
 
@@ -1483,7 +1512,8 @@ def refresh_due_services(
     cutoff = now - timedelta(days=FORK_CANONICAL_REFRESH_AGE_DAYS)
     due = []
     for service, repo in sources.items():
-        pair = [service, SCHEMA_LOAD_SERVICE_NAME] if service == SCHEMA_SERVICE_NAME else [service]
+        companion = PAIRED_IMAGE_SERVICES.get(service, ("", ""))[0]
+        pair = [service, companion] if companion else [service]
         if service not in IMAGE_REGISTRY or any(name in pinned for name in pair):
             continue
         for name in pair:
@@ -1507,9 +1537,7 @@ def refresh_due_message(services: Collection[str]) -> str:
 
     if not services:
         return ""
-    names = dict.fromkeys(
-        SCHEMA_SERVICE_NAME if name == SCHEMA_LOAD_SERVICE_NAME else name for name in services
-    )
+    names = dict.fromkeys(PRIMARY_BY_COMPANION.get(name, name) for name in services)
     one = len(names) == 1
     return (
         f"{', '.join(names)} {'runs a fork image' if one else 'run fork images'} built over "

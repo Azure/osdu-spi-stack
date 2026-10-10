@@ -23,6 +23,9 @@ replicaCount: 1
 
 containerPort: 8080
 
+# -- Numeric UID used by the main container and chart-managed init containers.
+runAsUser: 1000
+
 # -- Created by the CLI bootstrap.
 serviceAccountName: workload-identity-sa
 
