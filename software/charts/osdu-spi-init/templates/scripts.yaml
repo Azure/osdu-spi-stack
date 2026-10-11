@@ -1443,7 +1443,7 @@ data:
             except (ValueError, UnicodeDecodeError) as e:
                 name = member.rsplit("/", 1)[-1]
                 raise LoadError("manifest_invalid", f"{name}: {e}")
-        return unique_requests(requests)
+        return ordered_requests(unique_requests(requests))
 
 
     def unique_requests(requests: list[dict]) -> list[dict]:
@@ -1458,6 +1458,55 @@ data:
                 )
             unique.setdefault(schema_id, request)
         return list(unique.values())
+
+
+    def schema_references(value, schema_ids: set[str]) -> set[str]:
+        if isinstance(value, str):
+            return {value} if value in schema_ids else set()
+        if isinstance(value, dict):
+            references = set()
+            for nested in value.values():
+                references.update(schema_references(nested, schema_ids))
+            return references
+        if isinstance(value, list):
+            references = set()
+            for nested in value:
+                references.update(schema_references(nested, schema_ids))
+            return references
+        return set()
+
+
+    def ordered_requests(requests: list[dict]) -> list[dict]:
+        by_id = {
+            request["schemaInfo"]["schemaIdentity"]["id"]: request
+            for request in requests
+        }
+        schema_ids = set(by_id)
+        dependencies = {
+            schema_id: schema_references(request["schema"], schema_ids)
+            - {schema_id}
+            for schema_id, request in by_id.items()
+        }
+        ordered = []
+        resolved = set()
+        remaining = list(by_id)
+        while remaining:
+            ready = [
+                schema_id
+                for schema_id in remaining
+                if dependencies[schema_id] <= resolved
+            ]
+            if not ready:
+                raise LoadError(
+                    "manifest_invalid",
+                    "schema requests contain an internal reference cycle: "
+                    + ", ".join(remaining[:10]),
+                )
+            for schema_id in ready:
+                ordered.append(by_id[schema_id])
+                resolved.add(schema_id)
+                remaining.remove(schema_id)
+        return ordered
 
 
     def read_schema(schema_base: str, schema_id: str, headers: dict) -> dict | None:

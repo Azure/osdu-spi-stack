@@ -1660,6 +1660,35 @@ def test_load_schemas_extracts_postman_put_bodies_and_substitutes_authorities(
     assert getattr(raised.value, "code", "") == "manifest_invalid"
 
 
+def test_load_schemas_orders_internal_references(init_scripts, monkeypatch):
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "test-token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+    namespace: dict[str, object] = {"__name__": "load_schemas_test"}
+    exec(init_scripts["load_schemas.py"], namespace)
+    order = cast(Callable[[list[dict]], list[dict]], namespace["ordered_requests"])
+
+    base_id = "rafsddms:wks:AbstractLegalParentList:1.0.0"
+    dependent_id = "rafsddms:wks:reference-data--Method:1.0.0"
+    base = {
+        "schemaInfo": {"schemaIdentity": {"id": base_id}},
+        "schema": {"type": "object"},
+    }
+    dependent = {
+        "schemaInfo": {"schemaIdentity": {"id": dependent_id}},
+        "schema": {"properties": {"ancestry": {"$ref": base_id}}},
+    }
+
+    ordered = order([dependent, base])
+
+    assert [
+        request["schemaInfo"]["schemaIdentity"]["id"] for request in ordered
+    ] == [base_id, dependent_id]
+
+
 @pytest.mark.parametrize(
     "authority",
     ["rafsddms", "osdu"],
