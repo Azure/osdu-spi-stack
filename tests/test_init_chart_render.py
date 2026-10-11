@@ -1661,21 +1661,14 @@ def test_load_schemas_extracts_postman_put_bodies_and_substitutes_authorities(
 
 
 @pytest.mark.parametrize(
-    ("authority", "stored_schema", "exit_code", "outcome"),
-    [
-        ("rafsddms", {"type": "object"}, 0, "loaded"),
-        ("rafsddms", {"type": "string"}, 1, "schema_conflict"),
-        ("osdu", {"type": "string"}, 0, "loaded"),
-    ],
+    "authority",
+    ["rafsddms", "osdu"],
 )
-def test_load_schemas_verifies_visible_schemas_before_put(
+def test_load_schemas_accepts_visible_schema_ids_before_put(
     init_scripts,
     monkeypatch,
     capsys,
     authority,
-    stored_schema,
-    exit_code,
-    outcome,
 ):
     auth = types.ModuleType("auth")
     setattr(auth, "get_token", lambda: "test-token")
@@ -1702,11 +1695,11 @@ def test_load_schemas_verifies_visible_schemas_before_put(
     namespace["fetch_archive"] = lambda *args: object()
     namespace["source_members"] = lambda *args: ["schemas.json"]
     namespace["load_requests"] = lambda *args: [request]
-    namespace["read_schema"] = lambda *args: stored_schema
+    namespace["read_schema"] = lambda *args: {"service": "normalized"}
     put_calls = []
     namespace["call"] = lambda *args: put_calls.append(args)
 
     main = cast(Callable[[], int], namespace["main"])
-    assert main() == exit_code
-    assert f"load-schemas outcome: {outcome}" in capsys.readouterr().out
+    assert main() == 0
+    assert "load-schemas outcome: loaded" in capsys.readouterr().out
     assert put_calls == []
