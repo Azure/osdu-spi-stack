@@ -768,6 +768,15 @@ class TestReferenceCatalogDownloads:
         }
 
 
+class TestFileRuntime:
+    def test_workload_identity_uses_one_token_resource(self):
+        release = yaml.safe_load((STACKS / "services" / "file.yaml").read_text(encoding="utf-8"))
+        env_names = {item["name"] for item in release["spec"]["values"]["env"]}
+
+        assert "AZURE_PAAS_WORKLOADIDENTITY_ISENABLED" in env_names
+        assert "AZURE_AD_APP_RESOURCE_ID" not in env_names
+
+
 class TestRafsRuntime:
     def test_dataset_and_rafs_are_service_releases(self):
         releases = {
