@@ -278,6 +278,19 @@ class TestPairedRun:
         assert result.passed
         assert result.tests["tests"] == 11
 
+    @pytest.mark.parametrize(
+        "pattern",
+        ["../outside.xml", "/tmp/outside.xml", r"..\outside.xml", "C:/outside.xml"],
+    )
+    def test_a_report_path_cannot_escape_the_suite(self, cluster, pattern):
+        _machinery(cluster["commit_tree"], report_paths=[pattern])
+
+        with pytest.raises(SuiteNotRun, match="must stay relative") as exc:
+            testing.run_suite("partition")
+
+        assert exc.value.code == "descriptor_rejected"
+        assert _commands(cluster, ["docker"]) == []
+
     def test_a_partial_report_copy_gives_no_verdict(self, cluster, monkeypatch):
         fake = testing.run_process
 
@@ -539,6 +552,51 @@ class TestCheckoutRun:
 
         assert result.tests["tests"] == 2
 
+    def test_native_script_runs_with_arguments_and_fresh_reports(
+        self, cluster, monkeypatch, tmp_path
+    ):
+        checkout = _checkout(
+            tmp_path,
+            test_entrypoint="tests/e2e/run.sh",
+            test_arguments=["--default"],
+            report_paths=["newman/*.xml"],
+        )
+        script = checkout / "suite" / "tests" / "e2e" / "run.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/usr/bin/env bash\n")
+        stale = checkout / "suite" / "newman" / "stale.xml"
+        stale.parent.mkdir()
+        stale.write_text('<testsuite tests="40"/>')
+        native = testing.run_command
+        native_calls = []
+
+        def run_command(command, **kwargs):
+            if command[0] == "bash":
+                native_calls.append((command, kwargs))
+                reports = Path(kwargs["cwd"]) / "newman"
+                reports.mkdir(exist_ok=True)
+                (reports / "fresh.xml").write_text('<testsuite tests="3"/>')
+                return subprocess.CompletedProcess(command, 0)
+            return native(command, **kwargs)
+
+        monkeypatch.setattr(testing, "_require_tool", lambda name: None)
+        monkeypatch.setattr(testing, "run_command", run_command)
+
+        result = testing.run_suite(
+            "partition", checkout=checkout, maven_arguments=["--hostname", "https://gateway"]
+        )
+
+        [(command, kwargs)] = native_calls
+        assert command == [
+            "bash",
+            "tests/e2e/run.sh",
+            "--hostname",
+            "https://gateway",
+        ]
+        assert kwargs["env"]["TOKEN"] == "a=b"
+        assert result.tests["tests"] == 3
+        assert not stale.exists()
+
     def test_a_dirty_tree_is_unmatched(self, cluster, tmp_path):
         checkout = _checkout(tmp_path)
         cluster["locks"] = [_lock(tag=f"sha-{_head(checkout)[:12]}")]
@@ -679,6 +737,22 @@ class TestDryRun:
             str(checkout / testing.SETTINGS_PATH),
             "-Dtest=One",
         )
+        assert plan.directory == str(checkout.resolve() / "suite")
+
+    def test_a_checkout_script_plan_names_bash_and_declared_arguments(self, cluster, tmp_path):
+        checkout = _checkout(
+            tmp_path,
+            test_entrypoint="tests/e2e/run.sh",
+            test_arguments=["--default"],
+            report_paths=["newman/*.xml"],
+        )
+        script = checkout / "suite" / "tests" / "e2e" / "run.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/usr/bin/env bash\n")
+
+        plan = testing.plan_suite("partition", checkout=checkout)
+
+        assert plan.command == ("bash", "tests/e2e/run.sh", "--default")
         assert plan.directory == str(checkout.resolve() / "suite")
 
     def test_a_plan_refuses_where_the_run_would(self, cluster, monkeypatch):

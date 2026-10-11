@@ -55,10 +55,11 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   (`report_schema` 1) for `test_dir`, `maven_arguments`, and
   `timeout_minutes`, and refuses any other schema.
 - **Checkout mode, `--source <path>`.** The checkout's own descriptor,
-  resolver, and verdict script bind the suite, and native `mvn` runs in
-  `<path>/<test_dir>` with `--settings
-  <path>/.mvn/community-maven.settings.xml` when that file exists, the same
-  invocation as the image's entrypoint. The run is labelled `matched` when
+  resolver, and verdict script bind the suite. A script suite runs its
+  declared entrypoint through `bash`; a Maven suite runs native `mvn` with
+  `--settings <path>/.mvn/community-maven.settings.xml` when that file exists.
+  Both run in `<path>/<test_dir>`, matching the acceptance image. The run is
+  labelled `matched` when
   the checkout's HEAD equals the deployed commit and the tree is clean,
   `unmatched` otherwise, and `unpaired` when the environment runs a
   community image. In either mode a descriptor whose `service.name` is not
@@ -105,13 +106,14 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   the envelope is that suite's, with the ones that ran under `suites`.
 - **Arguments pass through.** `--suite <name>` selects a declared suite,
   `acceptance` by default, and repeats to run several in turn (ADR-037).
-  Tokens after `--` replace one suite's `mavenArguments` and reach Maven as
-  argv, never as a shell string; with more than one suite they are refused.
+  Tokens after `--` replace one suite's declared arguments and reach Maven or
+  the script as argv, never as a shell string; with more than one suite they
+  are refused.
 - **A dry run binds and stops.** `--dry-run` runs the guards, the fetch,
   the mint, the resolver, and the target check a run performs before the
   suite, then prints the command, its directory, and the resolved variables
-  and exits 0 with no verdict; `--json` reports `planned`. Docker and Maven
-  are not looked for. A value under a credential's name prints as
+  and exits 0 with no verdict; `--json` reports `planned`. Docker, Maven, and
+  Bash are not looked for. A value under a credential's name prints as
   `[redacted]`, as does a bearer inside any other value. `--env-file <path>`
   writes the resolved map in full for one suite, mode `0600` where the
   platform has file modes. A debugger attached through that file runs

@@ -32,7 +32,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Collection, Iterable, Mapping, Sequence
 
 from rich.markup import escape
@@ -611,6 +611,18 @@ def _report_copy_roots(report_paths: Sequence[str]) -> tuple[str, ...]:
 
     roots: list[str] = []
     for pattern in report_paths:
+        path = PurePosixPath(pattern)
+        if (
+            not pattern
+            or "\\" in pattern
+            or path.is_absolute()
+            or re.match(r"^[A-Za-z]:/", pattern)
+            or ".." in path.parts
+        ):
+            raise SuiteNotRun(
+                "descriptor_rejected",
+                f"report path {pattern!r} must stay relative to the suite directory",
+            )
         parts = pattern.split("/")
         prefix = []
         for part in parts:
@@ -667,6 +679,7 @@ def run_paired(
 ) -> int:
     """Run the suite in the paired image; copy its reports out before the container goes."""
 
+    _report_copy_roots(report_paths)
     _require_tool("docker")
     pulled = run_command(
         ["docker", "pull", "--platform", SUITE_PLATFORM, image],
@@ -685,9 +698,7 @@ def run_paired(
             check=False,
             timeout=timeout,
         )
-        copy_code, copy_error = _copy_paired_reports(
-            container, test_dir, reports, report_paths
-        )
+        copy_code, copy_error = _copy_paired_reports(container, test_dir, reports, report_paths)
         if copy_code != 0:
             # A partial copy could hide the reports that recorded failures.
             shutil.rmtree(reports, ignore_errors=True)
@@ -748,18 +759,69 @@ def _maven(checkout: Path, args: Sequence[str]) -> list[str]:
     return [*command, *args]
 
 
-def run_checkout(
-    checkout: Path, test_dir: str, env_file: Path, args: Sequence[str], timeout: int | None
-) -> tuple[int, Path]:
-    """Run the suite with the host's Maven, as the image's entrypoint would."""
+def _script_command(suite_dir: Path, entrypoint: str, args: Sequence[str]) -> list[str]:
+    """Return a native script command after constraining its entrypoint to the suite."""
 
-    _require_tool("mvn")
+    path = PurePosixPath(entrypoint)
+    if (
+        not entrypoint
+        or "\\" in entrypoint
+        or path.is_absolute()
+        or re.match(r"^[A-Za-z]:/", entrypoint)
+        or ".." in path.parts
+    ):
+        raise SuiteNotRun(
+            "descriptor_rejected",
+            f"suite entrypoint {entrypoint!r} must stay relative to the suite directory",
+        )
+    script = (suite_dir / Path(*path.parts)).resolve()
+    if not script.is_relative_to(suite_dir) or not script.is_file():
+        raise SuiteNotRun("descriptor_rejected", f"suite entrypoint {entrypoint!r} does not exist")
+    return ["bash", path.as_posix(), *args]
+
+
+def _clear_declared_reports(suite_dir: Path, report_paths: Sequence[str]) -> None:
+    """Remove reports from an earlier native script run."""
+
+    _report_copy_roots(report_paths)
+    for pattern in report_paths:
+        for path in suite_dir.glob(pattern):
+            resolved = path.resolve()
+            if not resolved.is_relative_to(suite_dir):
+                raise SuiteNotRun(
+                    "descriptor_rejected",
+                    f"report path {pattern!r} escapes the suite directory",
+                )
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+
+
+def run_checkout(
+    checkout: Path,
+    test_dir: str,
+    env_file: Path,
+    args: Sequence[str],
+    timeout: int | None,
+    entrypoint: str = "",
+    report_paths: Sequence[str] = (),
+) -> tuple[int, Path]:
+    """Run a descriptor script or Maven suite natively from its checkout."""
+
     suite_dir = _suite_dir(checkout, test_dir)
-    _clear_reports(suite_dir)
     env = _host_env(MAVEN_BASE_ENV, WINDOWS_PROCESS_ENV + WINDOWS_PROFILE_ENV)
     env.update(read_env_file(env_file))
+    if entrypoint:
+        _require_tool("bash")
+        _clear_declared_reports(suite_dir, report_paths)
+        command = _script_command(suite_dir, entrypoint, args)
+    else:
+        _require_tool("mvn")
+        _clear_reports(suite_dir)
+        command = _maven(checkout, args)
     ran = run_command(
-        _maven(checkout, args),
+        command,
         capture_output=False,
         description=f"Run {test_dir} natively",
         check=False,
@@ -777,11 +839,7 @@ def count_tests(reports: Path, report_paths: Sequence[str] = ()) -> dict[str, in
     paths = (
         (path for pattern in report_paths for path in reports.glob(pattern))
         if report_paths
-        else (
-            path
-            for path in reports.rglob("TEST-*.xml")
-            if path.parent.name in REPORT_DIRS
-        )
+        else (path for path in reports.rglob("TEST-*.xml") if path.parent.name in REPORT_DIRS)
     )
     for path in paths:
         try:
@@ -804,9 +862,7 @@ def judge(
 ) -> tuple[bool, str]:
     """The commit's own verdict over this run's reports."""
 
-    patterns = (
-        ["--patterns-json", json.dumps(list(report_paths))] if report_paths else []
-    )
+    patterns = ["--patterns-json", json.dumps(list(report_paths))] if report_paths else []
     result = run_process(
         [
             sys.executable,
@@ -911,6 +967,7 @@ def plan_suite(
 
     with tempfile.TemporaryDirectory(prefix="spi-test-") as scratch:
         bound = _bind(service, suite, checkout, overrides, Path(scratch))
+        _report_copy_roots(bound.report_paths)
         try:
             variables = read_env_file(bound.env_file)
         except (OSError, ValueError) as exc:
@@ -928,7 +985,11 @@ def plan_suite(
             )
         else:
             directory = str(_suite_dir(bound.root, bound.test_dir))
-            command = _maven(bound.root, args)
+            command = (
+                _script_command(Path(directory), bound.test_entrypoint, args)
+                if bound.test_entrypoint
+                else _maven(bound.root, args)
+            )
 
     secrets = secret_values(bound.bearers, variables)
     redact = redactor(secrets, named=False)
@@ -970,6 +1031,7 @@ def run_suite(
     with tempfile.TemporaryDirectory(prefix="spi-test-") as scratch:
         work = Path(scratch)
         bound = _bind(service, suite, checkout, overrides, work)
+        _report_copy_roots(bound.report_paths)
         root, env_file = bound.root, bound.env_file
         secrets: tuple[str, ...] = ()
         if inspect:
@@ -1000,7 +1062,15 @@ def run_suite(
                     bound.report_paths,
                 )
             else:
-                code, reports = run_checkout(root, test_dir, env_file, args, timeout)
+                code, reports = run_checkout(
+                    root,
+                    test_dir,
+                    env_file,
+                    args,
+                    timeout,
+                    bound.test_entrypoint,
+                    bound.report_paths,
+                )
         finally:
             env_file.unlink(missing_ok=True)
         passed, verdict = judge(root, code, reports, bound.report_paths)
