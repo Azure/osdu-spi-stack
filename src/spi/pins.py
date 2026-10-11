@@ -58,6 +58,7 @@ from .images import (
     PAIRED_IMAGE_SERVICES,
     SCHEMA_LOAD_SERVICE_NAME,
     SCHEMA_SERVICE_NAME,
+    SEISMIC_SERVICE_NAME,
     ImageNotFoundError,
     ImageResolutionError,
     ResolvedImage,
@@ -69,8 +70,11 @@ from .images import (
     fork_package_repositories,
     ghcr_index_child_digests,
     gitlab_get,
+    image_lock_entry_data,
     image_lock_key,
+    image_lock_missing_names,
     image_lock_missing_schema_load,
+    image_lock_names,
     image_ref,
     parse_image_digest_ref,
     render_image_lock_configmap,
@@ -1106,6 +1110,11 @@ def pin_service_image(
             f"{service} cannot be pinned directly; pin {primary}, and an ephemeral pin "
             "pairs the fork's companion from the same commit."
         )
+    if service == SEISMIC_SERVICE_NAME and not ephemeral:
+        raise PinError(
+            "seismic accepts ephemeral pins only, so its API and RestoreRunner come from "
+            "the same commit."
+        )
 
     try:
         repository, digest = parse_image_digest_ref(image)
@@ -1319,6 +1328,9 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
     if service not in IMAGE_REGISTRY:
         known = ", ".join(sorted(IMAGE_REGISTRY))
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
+    if service in PAIRED_COMPANIONS:
+        primary = PRIMARY_BY_COMPANION[service]
+        raise PinError(f"{service} cannot be reset directly; reset {primary}.")
 
     targets_all = [service]
     if service in PAIRED_IMAGE_SERVICES:
@@ -2014,6 +2026,53 @@ def apply_image_lock(
 
 class _NoBackfillNeeded(Exception):
     """Internal sentinel: the lock is absent or already carries schema-load."""
+
+
+def apply_image_lock_backfill(
+    resolved: dict[str, ResolvedImage],
+    description: str = "Backfill services into the osdu-image-lock ConfigMap",
+    max_attempts: int = LOCK_MUTATION_MAX_ATTEMPTS,
+) -> tuple[str, ...]:
+    """Add missing service entries without replacing existing images or pins."""
+
+    backfilled: tuple[str, ...] = ()
+
+    def compute(lock: dict | None) -> dict:
+        if lock is None:
+            raise _NoBackfillNeeded
+        nonlocal backfilled
+        lock_data = lock.get("data") or {}
+        backfilled = image_lock_missing_names(lock_data, resolved)
+        if not backfilled:
+            raise _NoBackfillNeeded
+        pins = decode_pins(lock)
+        protected = _ephemeral_names(pins)
+        data = dict(lock_data)
+        for name in backfilled:
+            canonical = resolved[name]
+            pin = pins.get(name)
+            target = (
+                ResolvedImage(name, pin.repository, pin.tag, pin.created_at, pin.digest)
+                if pin
+                else canonical
+            )
+            data.update(image_lock_entry_data(name, target, name in protected))
+            if canonical.acceptance_digest:
+                data[acceptance_digest_key(name)] = canonical.acceptance_digest
+        data["IMAGE_COUNT"] = str(
+            sum(
+                bool(data.get(f"{image_lock_key(name)}_IMAGE_REPOSITORY"))
+                for name in image_lock_names()
+            )
+        )
+        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    try:
+        mutate_lock(compute, description, max_attempts=max_attempts)
+    except _NoBackfillNeeded:
+        return ()
+    return backfilled
 
 
 def apply_schema_load_backfill(

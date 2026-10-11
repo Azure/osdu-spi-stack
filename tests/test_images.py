@@ -523,6 +523,18 @@ def test_image_lock_missing_schema_load_detects_legacy_lock():
     assert images.image_lock_missing_schema_load(current) is False
 
 
+def test_image_lock_missing_names_detects_absent_and_partial_entries():
+    data = {
+        "SEISMIC_IMAGE_REPOSITORY": "repo/seismic",
+        "SEISMIC_IMAGE_REF": "repo/seismic@sha256:api",
+        "SEISMIC_RESTORE_IMAGE_REPOSITORY": "repo/restore",
+    }
+
+    assert images.image_lock_missing_names(data, ("seismic", "seismic-restore")) == (
+        "seismic-restore",
+    )
+
+
 def test_schema_load_lock_patch_resolves_from_recorded_schema_tag(monkeypatch):
     """Backfilling a legacy lock has to reuse the schema tag it already pins,
     so the loader matches the running service instead of jumping to master."""

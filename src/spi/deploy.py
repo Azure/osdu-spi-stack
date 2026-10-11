@@ -47,9 +47,13 @@ from .deploy_record import upsert_deploy_record
 from .environment import Declared
 from .images import (
     DEFAULT_IMAGE_BRANCH,
+    SEISMIC_RESTORE_SERVICE_NAME,
+    SEISMIC_SERVICE_NAME,
     ImageResolutionError,
     ResolvedImage,
+    image_lock_missing_names,
     resolve_image_lock,
+    resolve_images,
 )
 from .ingress import (
     create_ingress_config,
@@ -58,7 +62,14 @@ from .ingress import (
     resolve_post_deploy_inputs,
 )
 from .paths import INFRA_ROOT
-from .pins import ServicePin, apply_image_lock, apply_schema_load_backfill, describe_pin, read_lock
+from .pins import (
+    ServicePin,
+    apply_image_lock,
+    apply_image_lock_backfill,
+    apply_schema_load_backfill,
+    describe_pin,
+    read_lock,
+)
 from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, run_command, run_process
 from .templates import (
@@ -282,6 +293,19 @@ def _ensure_image_lock(
     if refresh_images is not True:
         existing_lock = read_lock(required=False)
         if existing_lock is not None:
+            seismic_names = (SEISMIC_SERVICE_NAME, SEISMIC_RESTORE_SERVICE_NAME)
+            missing = image_lock_missing_names(existing_lock.get("data") or {}, seismic_names)
+            if missing:
+                try:
+                    resolved_missing = resolve_images(
+                        branch=image_branch,
+                        names=seismic_names,
+                        sources=sources,
+                    )
+                except ImageResolutionError as exc:
+                    console.print(f"[error]Unable to resolve missing Seismic images: {exc}[/error]")
+                    raise
+                apply_image_lock_backfill(resolved_missing)
             apply_schema_load_backfill(branch=image_branch)
             return {}
         if refresh_images is False:

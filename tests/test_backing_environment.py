@@ -332,10 +332,21 @@ def _resolved_images() -> dict[str, ResolvedImage]:
     }
 
 
+def _existing_seismic_lock() -> dict[str, str]:
+    return {
+        "SEISMIC_IMAGE_REPOSITORY": "registry/seismic",
+        "SEISMIC_IMAGE_REF": "registry/seismic@sha256:api",
+        "SEISMIC_RESTORE_IMAGE_REPOSITORY": "registry/seismic-restore",
+        "SEISMIC_RESTORE_IMAGE_REF": "registry/seismic-restore@sha256:restore",
+    }
+
+
 def test_omitted_image_refresh_preserves_existing_lock(monkeypatch):
     config = Config.from_env("shared", profile=Profile.CORE)
     backfills = []
-    monkeypatch.setattr(deploy, "read_lock", lambda required=False: {"data": {"existing": "lock"}})
+    monkeypatch.setattr(
+        deploy, "read_lock", lambda required=False: {"data": _existing_seismic_lock()}
+    )
     monkeypatch.setattr(
         deploy,
         "apply_schema_load_backfill",
@@ -355,6 +366,50 @@ def test_omitted_image_refresh_preserves_existing_lock(monkeypatch):
 
     assert deploy._ensure_image_lock(config, None, "master", {}) == {}
     assert backfills == ["master"]
+
+
+def test_omitted_refresh_backfills_seismic_under_the_source_policy(monkeypatch):
+    config = Config.from_env("shared", profile=Profile.CORE)
+    existing = {"data": {"IMAGE_COUNT": "14"}}
+    resolved = {
+        "seismic": ResolvedImage("seismic", "ghcr.io/acme/seismic", "sha-a", "now", "sha256:api"),
+        "seismic-restore": ResolvedImage(
+            "seismic-restore",
+            "ghcr.io/acme/seismic-restore",
+            "sha-a",
+            "now",
+            "sha256:restore",
+        ),
+    }
+    resolutions, writes, schema = [], [], []
+    monkeypatch.setattr(deploy, "read_lock", lambda required=False: existing)
+    monkeypatch.setattr(
+        deploy,
+        "resolve_images",
+        lambda **kwargs: resolutions.append(kwargs) or resolved,
+    )
+    monkeypatch.setattr(
+        deploy,
+        "apply_image_lock_backfill",
+        lambda images: writes.append(images),
+    )
+    monkeypatch.setattr(
+        deploy,
+        "apply_schema_load_backfill",
+        lambda branch: schema.append(branch),
+    )
+
+    sources = {"seismic": "Acme/seismic"}
+    assert deploy._ensure_image_lock(config, None, "master", {}, sources) == {}
+    assert resolutions == [
+        {
+            "branch": "master",
+            "names": ("seismic", "seismic-restore"),
+            "sources": sources,
+        }
+    ]
+    assert writes == [resolved]
+    assert schema == ["master"]
 
 
 def test_omitted_image_refresh_creates_missing_lock_under_the_source_policy(monkeypatch):
@@ -430,7 +485,9 @@ def test_explicit_no_refresh_fails_when_core_lock_is_missing(monkeypatch):
 def test_explicit_no_refresh_preserves_existing_core_lock(monkeypatch):
     config = Config.from_env("shared", profile=Profile.CORE)
     backfills = []
-    monkeypatch.setattr(deploy, "read_lock", lambda required=False: {"data": {}})
+    monkeypatch.setattr(
+        deploy, "read_lock", lambda required=False: {"data": _existing_seismic_lock()}
+    )
     monkeypatch.setattr(
         deploy,
         "apply_schema_load_backfill",

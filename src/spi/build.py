@@ -33,7 +33,7 @@ from typing import Sequence
 import yaml
 
 from .bootstrap import ClusterConfigError, read_cluster_config
-from .images import IMAGE_REGISTRY, paired_image_companions
+from .images import IMAGE_REGISTRY, SEISMIC_SERVICE_NAME, paired_image_companions
 from .shell import run_command, run_process
 
 LOCAL_NAMESPACE = "local"
@@ -343,6 +343,11 @@ def require_buildable(service: str, checkout: Path) -> None:
     if service not in IMAGE_REGISTRY or service in companions:
         known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n not in companions))
         raise BuildError(f"Unknown service {service!r}. Known services: {known}")
+    if service == SEISMIC_SERVICE_NAME:
+        raise BuildError(
+            "seismic declares the node-typescript-azure archetype; local builds support "
+            "Maven service checkouts only."
+        )
     if not (checkout / DOCKERFILE_PATH).is_file():
         raise BuildError(f"{checkout} has no {DOCKERFILE_PATH}; is it a synced fork?")
     declared = descriptor_service(checkout)

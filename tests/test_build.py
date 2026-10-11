@@ -92,6 +92,10 @@ class TestRequireBuildable:
         with pytest.raises(BuildError, match="Unknown service"):
             require_buildable("schema-load", _checkout(tmp_path))
 
+    def test_node_seismic_is_refused_before_maven(self, tmp_path):
+        with pytest.raises(BuildError, match="node-typescript-azure"):
+            require_buildable("seismic", _checkout(tmp_path, service="seismic"))
+
     def test_a_checkout_of_another_service_is_refused(self, tmp_path):
         with pytest.raises(BuildError, match="builds 'legal', not 'partition'"):
             require_buildable("partition", _checkout(tmp_path, service="legal"))

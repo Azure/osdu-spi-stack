@@ -918,21 +918,42 @@ def build_lock_data(
     }
     for name in image_lock_names():
         image = resolved[name]
-        key = image_lock_key(name)
-        # A digest pin has no tag; the digest ref avoids a dangling "repository:".
-        data[f"{key}_IMAGE"] = (
-            image.image if image.tag else image_ref(image.repository, image.tag, image.digest)
-        )
-        data[f"{key}_IMAGE_REPOSITORY"] = image.repository
-        data[f"{key}_IMAGE_TAG"] = image.tag
-        data[f"{key}_IMAGE_CREATED_AT"] = image.created_at
-        data[f"{key}_IMAGE_DIGEST"] = image.digest
-        data[f"{key}_IMAGE_REF"] = image_ref(image.repository, image.tag, image.digest)
-        data[do_not_disrupt_key(name)] = str(name in protected).lower()
-        data.update(companion_runtime_patch(name, image.repository))
-        if image.acceptance_digest:
-            data[acceptance_digest_key(name)] = image.acceptance_digest
+        data.update(image_lock_entry_data(name, image, name in protected))
     return data
+
+
+def image_lock_entry_data(
+    name: str, image: ResolvedImage, do_not_disrupt: bool = False
+) -> dict[str, str]:
+    """Return one service's image-lock keys."""
+
+    key = image_lock_key(name)
+    data = {
+        f"{key}_IMAGE": (
+            image.image if image.tag else image_ref(image.repository, image.tag, image.digest)
+        ),
+        f"{key}_IMAGE_REPOSITORY": image.repository,
+        f"{key}_IMAGE_TAG": image.tag,
+        f"{key}_IMAGE_CREATED_AT": image.created_at,
+        f"{key}_IMAGE_DIGEST": image.digest,
+        f"{key}_IMAGE_REF": image_ref(image.repository, image.tag, image.digest),
+        do_not_disrupt_key(name): str(do_not_disrupt).lower(),
+    }
+    data.update(companion_runtime_patch(name, image.repository))
+    if image.acceptance_digest:
+        data[acceptance_digest_key(name)] = image.acceptance_digest
+    return data
+
+
+def image_lock_missing_names(lock_data: Mapping[str, str], names: Iterable[str]) -> tuple[str, ...]:
+    """Return requested services whose lock entry is absent or incomplete."""
+
+    missing = []
+    for name in names:
+        key = image_lock_key(name)
+        if not (lock_data.get(f"{key}_IMAGE_REPOSITORY") and lock_data.get(f"{key}_IMAGE_REF")):
+            missing.append(name)
+    return tuple(missing)
 
 
 def build_lock_annotations(branch: str, timestamp: str) -> dict[str, str]:

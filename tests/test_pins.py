@@ -925,14 +925,9 @@ class TestResetService:
         assert data == {"STORAGE_DO_NOT_DISRUPT": "false"}
         assert saved == {}
 
-    def test_schema_load_reset_does_not_duplicate_target(self, monkeypatch):
-        lock = _lock(pins_annotation=encode_pins({"schema-load": _pin()}))
-        calls = _wire_lock(monkeypatch, lock)
-
-        result = reset_service("schema-load")
-        assert result == ResetResult(restored=("schema-load",), refresh_required=())
-        _data, saved = calls["patch"]
-        assert saved == {}
+    def test_companion_reset_names_its_primary(self):
+        with pytest.raises(PinError, match="reset schema"):
+            reset_service("schema-load")
 
     def test_unpinned_service_errors(self, monkeypatch):
         monkeypatch.setattr(pins, "read_lock", lambda required=True: _lock())
@@ -1199,6 +1194,89 @@ class TestApplySchemaLoadBackfill:
         assert data["SCHEMA_LOAD_IMAGE_TAG"] == "c" * 40
 
 
+class TestApplyImageLockBackfill:
+    def test_adds_missing_pair_and_preserves_an_active_pin(self, monkeypatch):
+        pin = _image_pin(
+            repository="ghcr.io/acme/seismic",
+            digest="sha256:pinned",
+            canonical_repository="ghcr.io/acme/seismic",
+            canonical_tag="sha-canonical",
+            canonical_digest="sha256:canonical",
+        )
+        lock = _lock(
+            data={**_canonical_data("storage"), "IMAGE_COUNT": "1"},
+            pins_annotation=encode_pins({"seismic": pin}),
+        )
+        calls = _wire_lock(monkeypatch, lock)
+        resolved = {
+            "seismic": ResolvedImage(
+                "seismic",
+                "ghcr.io/acme/seismic",
+                "sha-canonical",
+                "now",
+                "sha256:canonical",
+                "sha256:acceptance",
+            ),
+            "seismic-restore": ResolvedImage(
+                "seismic-restore",
+                "ghcr.io/acme/seismic-restore",
+                "sha-canonical",
+                "now",
+                "sha256:restore",
+            ),
+        }
+
+        assert pins.apply_image_lock_backfill(resolved) == ("seismic", "seismic-restore")
+
+        data, saved = calls["patch"]
+        assert saved["seismic"] == pin
+        assert data["SEISMIC_IMAGE_REF"] == "ghcr.io/acme/seismic@sha256:pinned"
+        assert data["SEISMIC_ACCEPTANCE_DIGEST"] == "sha256:acceptance"
+        assert data["SEISMIC_RESTORE_IMAGE_REF"].endswith("@sha256:restore")
+        assert data["SEISMIC_RESTORE_ENABLED"] == "true"
+        assert data["IMAGE_COUNT"] == "3"
+
+    def test_returns_empty_when_entries_are_complete(self, monkeypatch):
+        data = {
+            **pins.image_lock_entry_data(
+                "seismic",
+                ResolvedImage(
+                    "seismic",
+                    "repo/seismic",
+                    "tag",
+                    "",
+                    "sha256:api",
+                    "sha256:acceptance",
+                ),
+                False,
+            ),
+            **pins.image_lock_entry_data(
+                "seismic-restore",
+                ResolvedImage(
+                    "seismic-restore",
+                    "repo/seismic-restore",
+                    "tag",
+                    "",
+                    "sha256:restore",
+                ),
+                False,
+            ),
+        }
+        monkeypatch.setattr(pins, "read_lock", lambda required=True: _lock(data=data))
+
+        assert (
+            pins.apply_image_lock_backfill(
+                {
+                    "seismic": ResolvedImage("seismic", "new/api", "tag", "", "sha256:new"),
+                    "seismic-restore": ResolvedImage(
+                        "seismic-restore", "new/restore", "tag", "", "sha256:new"
+                    ),
+                }
+            )
+            == ()
+        )
+
+
 class TestLockMutationConflicts:
     """Bounded resourceVersion compare-and-retry under concurrent writers."""
 
@@ -1406,6 +1484,10 @@ class TestPinServiceImage:
     def test_seismic_restore_direct_pin_rejected(self):
         with pytest.raises(PinError, match="cannot be pinned directly"):
             pin_service_image("seismic-restore", _GHCR_IMAGE)
+
+    def test_seismic_operator_pin_is_rejected(self):
+        with pytest.raises(PinError, match="ephemeral pins only"):
+            pin_service_image("seismic", _GHCR_IMAGE)
 
     def test_tag_reference_rejected(self, monkeypatch):
         calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")))
