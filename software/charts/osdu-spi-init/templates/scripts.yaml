@@ -1443,7 +1443,9 @@ data:
             except (ValueError, UnicodeDecodeError) as e:
                 name = member.rsplit("/", 1)[-1]
                 raise LoadError("manifest_invalid", f"{name}: {e}")
-        return ordered_requests(unique_requests(requests))
+        unique = unique_requests(requests)
+        normalize_external_references(unique)
+        return ordered_requests(unique)
 
 
     def unique_requests(requests: list[dict]) -> list[dict]:
@@ -1474,6 +1476,35 @@ data:
                 references.update(schema_references(nested, schema_ids))
             return references
         return set()
+
+
+    def normalize_external_references(requests: list[dict]) -> None:
+        schema_ids = {
+            request["schemaInfo"]["schemaIdentity"]["id"] for request in requests
+        }
+        shared_prefix = os.environ.get("SCHEMA_AUTHORITY", "osdu") + ":wks:"
+        custom_prefix = (
+            os.environ.get("CUSTOM_SCHEMA_AUTHORITY", "rafsddms") + ":wks:"
+        )
+
+        def normalize(value) -> None:
+            if isinstance(value, dict):
+                for key, nested in value.items():
+                    if (
+                        key == "$ref"
+                        and isinstance(nested, str)
+                        and nested.startswith(custom_prefix)
+                        and nested not in schema_ids
+                    ):
+                        value[key] = shared_prefix + nested[len(custom_prefix) :]
+                    else:
+                        normalize(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    normalize(nested)
+
+        for request in requests:
+            normalize(request["schema"])
 
 
     def ordered_requests(requests: list[dict]) -> list[dict]:

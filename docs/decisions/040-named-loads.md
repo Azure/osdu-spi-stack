@@ -57,9 +57,11 @@ runs it, and `spi info --json` publishes its state in a `loads` block.
   API's returned schema is a normalized representation, so it is not compared
   with the submitted document. Identical duplicate IDs in the source collapse
   to one request; differing source requests for one ID fail before writes.
-  Internal schema ID references determine write order, and reference cycles
-  fail before writes. This also handles shared schemas that Schema Service
-  owns in another tenant.
+  Internal schema ID references determine write order. An unresolved custom
+  authority `$ref` maps to the shared authority because the RAFS collection
+  uses custom placeholders for core abstract schemas. Reference cycles fail
+  before writes. This also handles shared schemas that Schema Service owns in
+  another tenant.
   `rafs-reference-data` reads the service's complete-record array through the
   records loader. The registry orders `schemas -> rafs-schemas ->
   rafs-reference-data`.

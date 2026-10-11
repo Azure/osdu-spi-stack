@@ -1689,6 +1689,43 @@ def test_load_schemas_orders_internal_references(init_scripts, monkeypatch):
     ] == [base_id, dependent_id]
 
 
+def test_load_schemas_maps_unresolved_custom_refs_to_shared_authority(
+    init_scripts, monkeypatch
+):
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "test-token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+    namespace: dict[str, object] = {"__name__": "load_schemas_test"}
+    exec(init_scripts["load_schemas.py"], namespace)
+    normalize = cast(
+        Callable[[list[dict]], None],
+        namespace["normalize_external_references"],
+    )
+    request = {
+        "schemaInfo": {
+            "schemaIdentity": {
+                "id": "rafsddms:wks:reference-data--Method:1.0.0"
+            }
+        },
+        "schema": {
+            "properties": {
+                "ancestry": {
+                    "$ref": "rafsddms:wks:AbstractLegalParentList:1.0.0"
+                }
+            }
+        },
+    }
+
+    normalize([request])
+
+    assert request["schema"]["properties"]["ancestry"]["$ref"] == (
+        "osdu:wks:AbstractLegalParentList:1.0.0"
+    )
+
+
 @pytest.mark.parametrize(
     "authority",
     ["rafsddms", "osdu"],
