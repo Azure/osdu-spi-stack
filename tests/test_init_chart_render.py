@@ -1369,6 +1369,23 @@ def test_load_records_loads_every_record_once_in_sequence_order(init_scripts, mo
     )
 
 
+def test_load_records_accepts_an_array_of_complete_records(init_scripts, monkeypatch, capsys):
+    records = [_reference_record("rafs-a"), _reference_record("rafs-b")]
+    result = _run_load(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        files={"rafs.json": json.dumps(records).encode()},
+        sequence=[],
+    )
+
+    assert result.exit_code == 0
+    assert [record["data"]["Name"] for record in _put_records(result)] == [
+        "rafs-a",
+        "rafs-b",
+    ]
+
+
 def test_load_records_substitutes_tokens_and_replaces_acl_and_legal(
     init_scripts, monkeypatch, capsys
 ):
@@ -1593,3 +1610,51 @@ def test_load_records_carries_no_helm_action():
     template = (CHART_DIR / "templates" / "scripts.yaml").read_text(encoding="utf-8")
     start = template.index("  load_records.py: |")
     assert _BRACES[0] not in template[start : template.rindex(_BRACES[0])]
+
+
+def test_load_schemas_extracts_postman_put_bodies_and_substitutes_authorities(
+    init_scripts, monkeypatch
+):
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "test-token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+    monkeypatch.setenv("SCHEMA_AUTHORITY", "osdu")
+    monkeypatch.setenv("CUSTOM_SCHEMA_AUTHORITY", "rafsddms")
+    namespace: dict[str, object] = {"__name__": "load_schemas_test"}
+    exec(init_scripts["load_schemas.py"], namespace)
+    parse = cast(Callable[[object], list[dict]], namespace["schema_requests"])
+    body = {
+        "schemaInfo": {
+            "schemaIdentity": {
+                "id": _token("rafsddms-schema-authority") + ":wks:reference-data--SampleType:1.0.0"
+            }
+        },
+        "schema": {"$id": _token("schema-authority") + ":wks:AbstractObject:1.0.0"},
+    }
+    collection = {
+        "item": [
+            {
+                "request": {
+                    "method": "PUT",
+                    "body": {"mode": "raw", "raw": json.dumps(body)},
+                }
+            },
+            {"request": {"method": "GET"}},
+        ]
+    }
+
+    requests = parse(collection)
+
+    assert requests[0]["schemaInfo"]["schemaIdentity"]["id"].startswith("rafsddms:")
+    assert requests[0]["schema"]["$id"].startswith("osdu:")
+
+    unique = cast(Callable[[list[dict]], list[dict]], namespace["unique_requests"])
+    conflicting = json.loads(json.dumps(requests[0]))
+    conflicting["schema"]["$id"] = "osdu:wks:AnotherObject:1.0.0"
+    load_error = cast(type[Exception], namespace["LoadError"])
+    with pytest.raises(load_error) as raised:
+        unique([requests[0], conflicting])
+    assert getattr(raised.value, "code", "") == "manifest_invalid"

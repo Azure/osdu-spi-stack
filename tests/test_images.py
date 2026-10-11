@@ -81,6 +81,90 @@ def test_resolve_image_selects_newest_immutable_sha(monkeypatch):
     assert resolved.digest == "sha256:new"
 
 
+def test_resolve_image_uses_a_service_branch_override(monkeypatch):
+    seen = []
+
+    def fake_repository(project_id: int, image_name: str):
+        seen.append((project_id, image_name))
+        return {
+            "id": 123,
+            "location": "community.opengroup.org:5555/osdu/rafs-ddms-services-main",
+        }
+
+    monkeypatch.setattr(images, "_registry_repository", fake_repository)
+    monkeypatch.setattr(
+        images,
+        "gitlab_get",
+        lambda url: {"commit": {"id": "a" * 40}},
+    )
+    monkeypatch.setattr(
+        images,
+        "_tag_detail",
+        lambda project_id, repo_id, tag: {
+            "name": "a" * 40,
+            "created_at": "2026-05-01T00:00:00+00:00",
+            "digest": "sha256:rafs",
+        },
+    )
+    monkeypatch.setattr(
+        images,
+        "_registry_tags",
+        lambda project_id, repo_id: pytest.fail("branch head should resolve directly"),
+    )
+
+    resolve_image(
+        "rafs",
+        ImageRegistryEntry(
+            1415,
+            "rafs-ddms-services",
+            "services/rafs.yaml",
+            branch="main",
+        ),
+        "master",
+    )
+
+    assert seen == [(1415, "rafs-ddms-services-main")]
+
+
+def test_newest_image_skips_registry_tags_whose_detail_was_deleted(monkeypatch):
+    def detail(project_id: int, repo_id: int, tag: str):
+        if tag == "deleted":
+            raise urllib.error.HTTPError("url", 404, "Not Found", Message(), None)
+        return {
+            "name": tag,
+            "created_at": "2026-05-01T00:00:00+00:00",
+            "digest": "sha256:present",
+        }
+
+    monkeypatch.setattr(images, "_tag_detail", detail)
+
+    result = images._newest_immutable_tag(
+        1415,
+        18193,
+        [{"name": "deleted"}, {"name": "a" * 40}],
+    )
+
+    assert result and result["name"] == "a" * 40
+
+
+def test_newest_image_preserves_non_missing_registry_errors(monkeypatch):
+    def detail(project_id: int, repo_id: int, tag: str):
+        raise urllib.error.HTTPError("url", 500, "Unavailable", Message(), None)
+
+    monkeypatch.setattr(images, "_tag_detail", detail)
+
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        images._newest_immutable_tag(1415, 18193, [{"name": "a" * 40}])
+
+    assert raised.value.code == 500
+
+
+def test_rafs_and_dataset_are_image_locked():
+    assert images.IMAGE_REGISTRY["dataset"].file == "services/dataset.yaml"
+    assert images.IMAGE_REGISTRY["rafs"].branch == "main"
+    assert {"dataset", "rafs"} <= set(image_lock_names())
+
+
 def test_render_image_lock_contains_schema_load_service_keys():
     resolved = {
         name: ResolvedImage(

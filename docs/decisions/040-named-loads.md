@@ -29,11 +29,11 @@ runs it, and `spi info --json` publishes its state in a `loads` block.
   reports the `schema-load` Job against the image lock and never creates it.
   `spi load --dataset schemas --force` deletes the Job and reconciles
   `spi-osdu-schema-load`.
-- **`reference-data` is a Job the CLI creates.** `templates.load_job` renders
-  one Job per partition, named `load-<dataset>-<partition>-<first 8 of the
-  source commit>`, running `load_records.py` from the init chart's scripts
-  ConfigMap as `workload-identity-sa`. The Job carries no TTL, as the
-  bootstrap Jobs do not: it is the record.
+- **Archive loads are Jobs the CLI creates.** `templates.load_job` renders one
+  Job per partition, named `load-<dataset>-<partition>-<first 8 of the source
+  commit>`, running the registry entry's `records` or `schemas` loader from
+  the init chart's scripts ConfigMap as `workload-identity-sa`. The Job
+  carries no TTL, as the bootstrap Jobs do not: it is the record.
 - **The source is pinned by commit.** The registry names a data-definitions
   release and the commit its tag points to. The Job fetches the archive from
   community GitLab by commit and refuses one whose zip comment names another.
@@ -45,9 +45,17 @@ runs it, and `spi info --json` publishes its state in a `loads` block.
   `complete` or `stale`.
 - **The loader owns ACL and legal.** Each record gets the partition's
   `data.default.owners` and `data.default.viewers` groups and its seeded legal
-  tag in place of what the manifest carries. Records are written in batches of
-  500 with `skipdupes`; 200, 201, and 409 are success, and the Job fails when
-  more than 1% of the records failed or a manifest does not parse.
+  tag in place of what the manifest carries. A manifest may wrap records in
+  `ReferenceData` or `MasterData`, or be an array of complete records. Records
+  are written in batches of 500 with `skipdupes`; 200, 201, and 409 are
+  success, and the Job fails when more than 1% of the records failed or a
+  manifest does not parse.
+- **RAFS adds two ordered loads.** `rafs-schemas` extracts PUT request bodies
+  from the service's pinned Postman collection, substitutes the `osdu` and
+  `rafsddms` schema authorities, and registers each unique schema. A 409 is an
+  existing schema and succeeds. `rafs-reference-data` reads the service's
+  complete-record array through the records loader. The registry orders
+  `schemas -> rafs-schemas -> rafs-reference-data`.
 - **A second run is decided by the newest Job** for the dataset and partition:
   none creates one, a running Job is waited on, a complete Job for the same
   source changes nothing, a complete Job for another source is replaced once
@@ -86,6 +94,8 @@ of every rebuild.
 
 - A fork's suite can require seeded data by reading `loads` instead of
   finding zero records.
+- An archive schema collection becomes another loader input, so its source
+  format and placeholder names are part of the stack contract.
 - The archive is fetched from community GitLab on every Job run. An outage
   there fails the load and leaves the environment deployable. The commit
   pins the content but no digest verifies the bytes; a mirror is unbuilt.

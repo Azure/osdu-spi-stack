@@ -1030,11 +1030,17 @@ data:
         for token, value in tokens.items():
             text = text.replace(token, value)
         manifest = json.loads(text)
-        if not isinstance(manifest, dict):
-            raise ValueError("not a JSON object")
+        if isinstance(manifest, list):
+            collections = (("records", manifest),)
+        elif isinstance(manifest, dict):
+            collections = tuple((key, manifest.get(key) or []) for key in RECORD_KEYS)
+        else:
+            raise ValueError("not a JSON object or array")
         records = []
-        for key in RECORD_KEYS:
-            for record in manifest.get(key) or []:
+        for key, collection in collections:
+            if not isinstance(collection, list):
+                raise ValueError(f"{key} is not an array")
+            for record in collection:
                 if not isinstance(record, dict):
                     raise ValueError(f"{key} holds a value that is not a record")
                 if not isinstance(record.get("id"), str) or not isinstance(record.get("kind"), str):
@@ -1233,6 +1239,288 @@ data:
             outcome("threshold_exceeded", f"{counts}; first failure: {first_failure}")
             return 1
         outcome("loaded", counts)
+        return 0
+
+
+    if __name__ == "__main__":
+        try:
+            rc = main()
+        except SystemExit as e:
+            outcome("auth_failed", str(e))
+            rc = 1
+        except Exception as e:
+            outcome("unexpected_error", f"{type(e).__name__}: {e}")
+            rc = 1
+        sys.exit(rc)
+  load_schemas.py: |
+    """Register schemas from a pinned archive.
+
+    The source can be a JSON schema request, an array of schema requests, or a
+    Postman collection whose PUT requests carry schema request bodies. Archive
+    sources are pinned by commit, and the Job authenticates with its workload
+    identity.
+    """
+    import io
+    import json
+    import os
+    import sys
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    import zipfile
+
+    sys.path.insert(0, "/scripts")
+    from auth import get_token
+    from wait import wait_for_status
+
+    REQUIRED_ENV = ("PARTITION", "SOURCE_PROJECT", "SOURCE_COMMIT", "SOURCE_PATH")
+    GITLAB_HOST = "https://community.opengroup.org"
+    OPEN, CLOSE = "{" * 2, "}" * 2
+    ATTEMPTS = 3
+    RETRY_DELAY = 5.0
+    REQUEST_TIMEOUT = 120
+    ARCHIVE_TIMEOUT = 300
+    INFO_ATTEMPTS = 30
+    WAIT_DELAY = 2.0
+    WAIT_SOCKET_TIMEOUT = 5.0
+    MESSAGE_LIMIT = 2000
+    TERMINATION_MESSAGE_PATH = os.environ.get(
+        "TERMINATION_MESSAGE_PATH", "/dev/termination-log"
+    )
+
+
+    class LoadError(Exception):
+        def __init__(self, code: str, detail: str):
+            super().__init__(detail)
+            self.code = code
+            self.detail = detail
+
+
+    def outcome(code: str, detail: str = "") -> None:
+        line = f"load-schemas outcome: {code}"
+        if detail:
+            line = f"{line}: {detail}"[:MESSAGE_LIMIT]
+        print(line)
+        try:
+            with open(TERMINATION_MESSAGE_PATH, "w") as handle:
+                handle.write(line)
+        except OSError:
+            pass
+
+
+    def call(url: str, headers: dict, body: bytes):
+        code, payload = 0, ""
+        for attempt in range(1, ATTEMPTS + 1):
+            req = urllib.request.Request(url, data=body, method="PUT", headers=headers)
+            try:
+                resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT)
+                return resp.getcode(), resp.read().decode(errors="replace")
+            except urllib.error.HTTPError as e:
+                code, payload = e.code, e.read().decode(errors="replace")
+                if code < 500 and code != 429:
+                    return code, payload
+            except Exception as e:
+                code, payload = 0, f"{type(e).__name__}: {e}"
+            if attempt < ATTEMPTS:
+                time.sleep(RETRY_DELAY * attempt)
+        return code, payload
+
+
+    def fetch_archive(project: str, commit: str, path: str) -> zipfile.ZipFile:
+        name = project.rsplit("/", 1)[-1]
+        url = os.environ.get("ARCHIVE_URL") or (
+            f"{GITLAB_HOST}/{project}/-/archive/{commit}/{name}-{commit}.zip"
+            f"?path={urllib.parse.quote(path)}"
+        )
+        print(f"  Fetching {url}")
+        detail = ""
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                resp = urllib.request.urlopen(
+                    urllib.request.Request(url), timeout=ARCHIVE_TIMEOUT
+                )
+                archive = zipfile.ZipFile(io.BytesIO(resp.read()))
+                break
+            except urllib.error.HTTPError as e:
+                detail = f"{url} returned {e.code}"
+                if e.code < 500 and e.code != 429:
+                    raise LoadError("source_unavailable", detail)
+            except Exception as e:
+                detail = f"{url}: {type(e).__name__}: {e}"
+            if attempt < ATTEMPTS:
+                time.sleep(RETRY_DELAY * attempt)
+        else:
+            raise LoadError("source_unavailable", detail)
+        stamped = archive.comment.decode(errors="replace").strip()
+        if stamped and stamped != commit:
+            raise LoadError(
+                "source_unavailable", f"the archive is for commit {stamped}, not {commit}"
+            )
+        return archive
+
+
+    def source_members(archive: zipfile.ZipFile, path: str) -> list[str]:
+        target = path.strip("/")
+        members = []
+        for member in archive.namelist():
+            relative = member.split("/", 1)[-1]
+            if relative == target or (
+                relative.startswith(target + "/") and relative.endswith(".json")
+            ):
+                members.append(member)
+        if not members:
+            raise LoadError("manifest_invalid", f"the archive holds no JSON under {path}")
+        return sorted(members)
+
+
+    def postman_bodies(items: list) -> list[str]:
+        bodies = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            request = item.get("request")
+            if isinstance(request, dict) and request.get("method") == "PUT":
+                body = request.get("body") or {}
+                if isinstance(body, dict) and isinstance(body.get("raw"), str):
+                    bodies.append(body["raw"])
+            nested = item.get("item")
+            if isinstance(nested, list):
+                bodies.extend(postman_bodies(nested))
+        return bodies
+
+
+    def schema_requests(document) -> list[dict]:
+        if isinstance(document, list):
+            requests = document
+        elif isinstance(document, dict) and "schemaInfo" in document:
+            requests = [document]
+        elif isinstance(document, dict) and isinstance(document.get("item"), list):
+            requests = postman_bodies(document["item"])
+        else:
+            raise ValueError("not a schema request, schema array, or Postman collection")
+
+        parsed = []
+        tokens = {
+            OPEN + "schema-authority" + CLOSE: os.environ.get(
+                "SCHEMA_AUTHORITY", "osdu"
+            ),
+            OPEN + "rafsddms-schema-authority" + CLOSE: os.environ.get(
+                "CUSTOM_SCHEMA_AUTHORITY", "rafsddms"
+            ),
+        }
+        for request in requests:
+            if isinstance(request, str):
+                for token, value in tokens.items():
+                    request = request.replace(token, value)
+                request = json.loads(request)
+            if not isinstance(request, dict):
+                raise ValueError("schema collection holds a value that is not an object")
+            info = request.get("schemaInfo")
+            identity = info.get("schemaIdentity") if isinstance(info, dict) else None
+            schema_id = identity.get("id") if isinstance(identity, dict) else None
+            if not isinstance(schema_id, str) or not schema_id:
+                raise ValueError("schema request has no schemaInfo.schemaIdentity.id")
+            if not isinstance(request.get("schema"), dict):
+                raise ValueError(f"{schema_id} has no schema object")
+            parsed.append(request)
+        if not parsed:
+            raise ValueError("schema source holds no PUT schema requests")
+        return parsed
+
+
+    def load_requests(archive: zipfile.ZipFile, members: list[str]) -> list[dict]:
+        requests = []
+        for member in members:
+            try:
+                document = json.loads(archive.read(member).decode("utf-8"))
+                requests.extend(schema_requests(document))
+            except (ValueError, UnicodeDecodeError) as e:
+                name = member.rsplit("/", 1)[-1]
+                raise LoadError("manifest_invalid", f"{name}: {e}")
+        return unique_requests(requests)
+
+
+    def unique_requests(requests: list[dict]) -> list[dict]:
+        unique = {}
+        for request in requests:
+            schema_id = request["schemaInfo"]["schemaIdentity"]["id"]
+            existing = unique.get(schema_id)
+            if existing is not None and existing != request:
+                raise LoadError(
+                    "manifest_invalid",
+                    f"{schema_id} has conflicting schema requests",
+                )
+            unique.setdefault(schema_id, request)
+        return list(unique.values())
+
+
+    def main() -> int:
+        missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
+        if missing:
+            outcome("config_missing", f"missing environment: {', '.join(missing)}")
+            return 1
+        partition = os.environ["PARTITION"]
+        project = os.environ["SOURCE_PROJECT"]
+        commit = os.environ["SOURCE_COMMIT"]
+        path = os.environ["SOURCE_PATH"]
+        schema = os.environ.get("SCHEMA_HOST", "http://schema.osdu.svc.cluster.local")
+        schema_base = f"{schema}/api/schema-service/v1"
+        source = f"source={project}@{commit[:12]}"
+        print(f"Loading schemas from {project}@{commit} {path} into '{partition}'")
+
+        try:
+            archive = fetch_archive(project, commit, path)
+            requests = load_requests(archive, source_members(archive, path))
+        except LoadError as e:
+            outcome(e.code, f"{source} {e.detail}")
+            return 1
+        print(f"  {len(requests)} unique schemas")
+
+        if not wait_for_status(
+            f"{schema_base}/info",
+            {200},
+            attempts=INFO_ATTEMPTS,
+            delay=WAIT_DELAY,
+            timeout=WAIT_SOCKET_TIMEOUT,
+        ):
+            outcome("service_timeout", f"{source} {schema_base}/info did not answer 200")
+            return 1
+
+        print("  Acquiring bearer token via Workload Identity...")
+        token = get_token()
+        headers = {
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "data-partition-id": partition,
+        }
+        created = existing = 0
+        for index, request in enumerate(requests, start=1):
+            schema_id = request["schemaInfo"]["schemaIdentity"]["id"]
+            code, payload = call(
+                f"{schema_base}/schema", headers, json.dumps(request).encode()
+            )
+            if code in (200, 201):
+                created += 1
+            elif code == 409:
+                existing += 1
+            else:
+                outcome(
+                    "schema_rejected",
+                    f"{source} {schema_id} returned {code}: {payload[:500]}",
+                )
+                return 1
+            if index % 10 == 0 or index == len(requests):
+                print(
+                    f"  PROGRESS: [{index}/{len(requests)}] "
+                    f"created={created} existing={existing}"
+                )
+
+        outcome(
+            "loaded",
+            f"{source} total={len(requests)} created={created} existing={existing}",
+        )
         return 0
 
 

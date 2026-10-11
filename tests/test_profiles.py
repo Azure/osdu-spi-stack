@@ -722,7 +722,6 @@ class TestAutomatedGatewayDeployment:
         assert "deletionPolicy" not in owner["spec"]
         assert "spi-gateway-tls" not in _dependency_names(INGRESS_DIR / mode)
 
-
 class TestReferenceCatalogDownloads:
     """Reference catalogs are immutable, verified, and fetched without root."""
 
@@ -767,6 +766,86 @@ class TestReferenceCatalogDownloads:
             "allowPrivilegeEscalation": False,
             "capabilities": {"drop": ["ALL"]},
         }
+
+
+class TestRafsRuntime:
+    def test_dataset_and_rafs_are_service_releases(self):
+        releases = {
+            doc["metadata"]["name"]: doc
+            for _, doc in _built_resources(STACKS / "services")
+            if doc.get("kind") == "HelmRelease"
+        }
+
+        assert {"dataset", "rafs"} <= set(releases)
+        rafs_values = releases["rafs"]["spec"]["values"]
+        assert rafs_values["probes"]["readiness"]["path"] == "/api/rafs-ddms/readiness"
+        assert rafs_values["resources"]["requests"] == {"cpu": "1", "memory": "8Gi"}
+        env = {item["name"]: item["value"] for item in rafs_values["env"]}
+        assert env["SERVICE_HOST_DATASET"] == "http://dataset/api/dataset/v1"
+        assert env["CACHE_ENABLE"] == "true"
+        assert env["REDIS_INDEX_ENABLE"] == "true"
+
+    def test_rafs_redis_is_ephemeral_hardened_and_digest_pinned(self):
+        resources = list(_built_resources(STACKS / "services"))
+        deployment = next(
+            doc
+            for _, doc in resources
+            if doc.get("kind") == "Deployment"
+            and doc.get("metadata", {}).get("name") == "rafs-redis"
+        )
+        pod = deployment["spec"]["template"]["spec"]
+        container = pod["containers"][0]
+
+        assert pod["automountServiceAccountToken"] is False
+        assert pod["securityContext"]["runAsNonRoot"] is True
+        assert container["image"].endswith(
+            "@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a"
+        )
+        assert container["securityContext"] == {
+            "allowPrivilegeEscalation": False,
+            "capabilities": {"drop": ["ALL"]},
+        }
+        assert pod["volumes"] == [{"name": "data", "emptyDir": {}}]
+
+    def test_rafs_indexer_uses_workload_identity_and_the_rafs_lock(self):
+        resources = list(_built_resources(STACKS / "services"))
+        cronjob = next(
+            doc
+            for _, doc in resources
+            if doc.get("kind") == "CronJob"
+            and doc.get("metadata", {}).get("name") == "rafs-indexer"
+        )
+        pod = cronjob["spec"]["jobTemplate"]["spec"]["template"]
+        container = pod["spec"]["containers"][0]
+
+        assert pod["metadata"]["labels"]["azure.workload.identity/use"] == "true"
+        assert pod["spec"]["serviceAccountName"] == "workload-identity-sa"
+        assert container["image"] == "${RAFS_IMAGE_REPOSITORY}@${RAFS_IMAGE_DIGEST}"
+        assert "secretRef" not in yaml.safe_dump(cronjob)
+        assert "CLIENT_SECRET" not in yaml.safe_dump(cronjob)
+
+    @pytest.mark.parametrize(
+        ("mode", "hostname"),
+        [
+            ("single-host", "${INGRESS_FQDN}"),
+            ("multi-host", "${INGRESS_HOST_OSDU}"),
+        ],
+    )
+    def test_dataset_and_rafs_routes_exist_in_each_ingress_mode(self, mode, hostname):
+        path = STACKS / "routes" / mode / "osdu" / "routes.yaml"
+        routes = {
+            doc["metadata"]["name"]: doc
+            for doc in yaml.safe_load_all(path.read_text(encoding="utf-8"))
+        }
+
+        assert routes["dataset"]["spec"]["hostnames"] == [hostname]
+        assert routes["dataset"]["spec"]["rules"][0]["matches"][0]["path"]["value"] == (
+            "/api/dataset/"
+        )
+        assert routes["rafs"]["spec"]["hostnames"] == [hostname]
+        assert routes["rafs"]["spec"]["rules"][0]["matches"][0]["path"]["value"] == (
+            "/api/rafs-ddms/"
+        )
 
 
 class TestBorrowedPodDisruptionSubstitution:

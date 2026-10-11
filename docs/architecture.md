@@ -85,6 +85,8 @@ different reasons. Azure AI Search is not compatible with the Elasticsearch APIs
 used by OSDU. Managed Redis and PostgreSQL do exist; this dev/test stack chooses
 co-location to limit latency and cost. Those trade-offs are recorded in
 [ADR-003](decisions/003-in-cluster-middleware-scope.md).
+RAFS owns a separate ephemeral Redis Stack Deployment in `osdu` because its
+RedisJSON and RediSearch APIs are absent from the shared Redis deployment.
 
 A client request reaches the Istio gateway and is routed to an OSDU service.
 The receiving sidecar validates the bearer token and projects the identity
@@ -98,9 +100,10 @@ Workload-Identity-capable replacement image
 ([ADR-005](decisions/005-workload-identity.md)).
 
 The core service set is partition, entitlements, legal, schema, storage, search,
-indexer, indexer-queue, file, and workflow. The reference APIs are unit,
-crs-conversion, and crs-catalog. Their configuration lives in
-[`services/`](../software/stacks/osdu/services/) and
+indexer, indexer-queue, file, workflow, dataset, and RAFS DDMS. The reference
+APIs are unit, crs-conversion, and crs-catalog. Their configuration lives in
+[`services/`](../software/stacks/osdu/services/),
+[`ddms/`](../software/stacks/osdu/ddms/), and
 [`services-reference/`](../software/stacks/osdu/services-reference/).
 
 ![Partition and entitlements sit upstream of legal, schema, and storage; search, indexer, file, and workflow depend on storage; reference services stand alone](diagrams/service-dependencies.png)
@@ -171,10 +174,10 @@ deploy identity and namespace Roles are provisioned. `spi onboard` plans and
 applies repository protection, federation, per-service canonical-source policy,
 and both lock projections. `spi test` runs a service's suite from the
 acceptance image paired with its deployed commit, or from a checkout
-(ADR-036), and reports what the suites prove (ADR-037). `spi load` loads
-reference data from the release the environment's registry pins and publishes
-each load's state in `spi info --json` (ADR-040). Declaration enforcement and the reset and teardown workflows remain
-unbuilt. See
+(ADR-036), and reports what the suites prove (ADR-037). `spi load` runs the
+environment's named, commit-pinned schema and record loads and publishes each
+load's state in `spi info --json` (ADR-040). Declaration enforcement and the
+reset and teardown workflows remain unbuilt. See
 [environment lifecycle](design/environment-lifecycle.md) and
 [fork deployment](design/fork-deployment.md) for the implemented contract and
 marked future work.

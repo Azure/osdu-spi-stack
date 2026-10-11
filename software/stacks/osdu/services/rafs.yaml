@@ -1,0 +1,115 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: rafs
+  namespace: osdu-flux
+spec:
+  targetNamespace: osdu
+  dependsOn:
+    - name: dataset
+    - name: entitlements
+    - name: partition
+    - name: schema
+    - name: search
+    - name: storage
+  interval: 30m
+  install:
+    timeout: 20m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 20m
+    remediation:
+      retries: 3
+  chart:
+    spec:
+      chart: ./software/charts/osdu-spi-service
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: osdu-spi-stack-system
+  values:
+    image:
+      repository: ${RAFS_IMAGE_REPOSITORY}
+      tag: "${RAFS_IMAGE_TAG}"
+      digest: "${RAFS_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${RAFS_DO_NOT_DISRUPT:=false}"
+    probes:
+      liveness:
+        path: /api/rafs-ddms/healthz
+        port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 6
+      readiness:
+        path: /api/rafs-ddms/readiness
+        port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 12
+    resources:
+      requests:
+        cpu: "1"
+        memory: 8Gi
+      limits:
+        cpu: "2"
+        memory: 10Gi
+    nodeSelector:
+      spi-pool: osdu
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: "osdu"
+        effect: NoSchedule
+      - key: kubernetes.azure.com/scalesetpriority
+        operator: Equal
+        value: "spot"
+        effect: NoSchedule
+    env:
+      - name: APP_ENV
+        value: prod
+      - name: CLOUD_PROVIDER
+        value: azure
+      - name: OPENAPI_PREFIX
+        value: /api/rafs-ddms
+      - name: SCHEMA_AUTHORITY
+        value: osdu
+      - name: CUSTOM_SCHEMA_AUTHORITY
+        value: rafsddms
+      - name: SERVICE_HOST_STORAGE
+        value: http://storage/api/storage/v2
+      - name: SERVICE_HOST_SEARCH
+        value: http://search/api/search/v2
+      - name: SERVICE_HOST_ENTITLEMENTS
+        value: http://entitlements/api/entitlements/v2
+      - name: SERVICE_HOST_DATASET
+        value: http://dataset/api/dataset/v1
+      - name: SERVICE_HOST_SCHEMA
+        value: http://schema/api/schema-service/v1
+      - name: SERVICE_HOST_PARTITION
+        value: http://partition/api/partition/v1
+      - name: SERVICE_READINESS_URLS
+        value: "http://storage/api/storage/v2/info,http://dataset/api/dataset/v1/info,http://schema/api/schema-service/v1/info,http://search/api/search/v2/info"
+      - name: CACHE_ENABLE
+        value: "true"
+      - name: CACHE_BACKEND
+        value: app.core.helpers.cache.backends.redis_cache.RedisCacheBackend
+      - name: REDIS_INDEX_ENABLE
+        value: "true"
+      - name: REDIS_HOSTNAME
+        value: rafs-redis
+      - name: REDIS_PORT
+        value: "6379"
+      - name: REDIS_SSL
+        value: "false"
+      - name: REDIS_USE_PASSWORDLESS_AUTH
+        value: "false"
+      - name: USE_BLOB_STORAGE
+        value: "false"
+      - name: ALLOW_INDEXING_BY_END_USER
+        value: "false"
+      - name: AZ_USE_PARTITION_SERVICE
+        value: "true"

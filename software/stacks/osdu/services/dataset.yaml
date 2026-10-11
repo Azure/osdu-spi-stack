@@ -1,0 +1,76 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: dataset
+  namespace: osdu-flux
+spec:
+  targetNamespace: osdu
+  dependsOn:
+    - name: entitlements
+    - name: file
+    - name: partition
+    - name: schema
+    - name: storage
+  interval: 30m
+  install:
+    timeout: 15m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 15m
+    remediation:
+      retries: 3
+  chart:
+    spec:
+      chart: ./software/charts/osdu-spi-service
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: osdu-spi-stack-system
+  values:
+    image:
+      repository: ${DATASET_IMAGE_REPOSITORY}
+      tag: "${DATASET_IMAGE_TAG}"
+      digest: "${DATASET_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${DATASET_DO_NOT_DISRUPT:=false}"
+    nodeSelector:
+      spi-pool: osdu
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: "osdu"
+        effect: NoSchedule
+      - key: kubernetes.azure.com/scalesetpriority
+        operator: Equal
+        value: "spot"
+        effect: NoSchedule
+    env:
+      - name: spring.application.name
+        value: dataset
+      - name: server.servlet.contextPath
+        value: /api/dataset/v1/
+      - name: server_port
+        value: "8080"
+      - name: ACCEPT_HTTP
+        value: "true"
+      - name: azure_istioauth_enabled
+        value: "true"
+      - name: azure_paas_workloadidentity_isEnabled
+        value: "true"
+      - name: entitlements_service_endpoint
+        value: http://entitlements/api/entitlements/v2
+      - name: entitlements_app_key
+        value: OBSOLETE
+      - name: storage_service_endpoint
+        value: http://storage/api/storage/v2
+      - name: partition_service_endpoint
+        value: http://partition/api/partition/v1
+      - name: schema_service_endpoint
+        value: http://schema/api/schema-service/v1
+      - name: file_service_endpoint
+        value: http://file/api/file/v2/files
+      - name: file_collection_service_endpoint
+        value: http://file/api/file/v2/file-collections
+      - name: external_dataset_service_endpoint
+        value: http://eds-dms/api/eds/v1
