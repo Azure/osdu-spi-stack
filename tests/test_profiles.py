@@ -768,6 +768,14 @@ class TestReferenceCatalogDownloads:
         }
 
 
+class TestStorageRuntime:
+    def test_collaboration_context_is_enabled(self):
+        release = yaml.safe_load((STACKS / "services" / "storage.yaml").read_text(encoding="utf-8"))
+        env = {item["name"]: item["value"] for item in release["spec"]["values"]["env"]}
+
+        assert env["COLLABORATIONS_ENABLED"] == "true"
+
+
 class TestFileRuntime:
     def test_workload_identity_uses_one_token_resource(self):
         release = yaml.safe_load((STACKS / "services" / "file.yaml").read_text(encoding="utf-8"))
