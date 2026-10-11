@@ -1661,14 +1661,21 @@ def test_load_schemas_extracts_postman_put_bodies_and_substitutes_authorities(
 
 
 @pytest.mark.parametrize(
-    ("stored_schema", "exit_code", "outcome"),
+    ("authority", "stored_schema", "exit_code", "outcome"),
     [
-        ({"type": "object"}, 0, "loaded"),
-        ({"type": "string"}, 1, "schema_conflict"),
+        ("rafsddms", {"type": "object"}, 0, "loaded"),
+        ("rafsddms", {"type": "string"}, 1, "schema_conflict"),
+        ("osdu", {"type": "string"}, 0, "loaded"),
     ],
 )
 def test_load_schemas_verifies_visible_schemas_before_put(
-    init_scripts, monkeypatch, capsys, stored_schema, exit_code, outcome
+    init_scripts,
+    monkeypatch,
+    capsys,
+    authority,
+    stored_schema,
+    exit_code,
+    outcome,
 ):
     auth = types.ModuleType("auth")
     setattr(auth, "get_token", lambda: "test-token")
@@ -1685,7 +1692,10 @@ def test_load_schemas_verifies_visible_schemas_before_put(
     exec(init_scripts["load_schemas.py"], namespace)
     request = {
         "schemaInfo": {
-            "schemaIdentity": {"id": "rafsddms:wks:Sample:1.0.0"}
+            "schemaIdentity": {
+                "authority": authority,
+                "id": f"{authority}:wks:Sample:1.0.0",
+            }
         },
         "schema": {"type": "object"},
     }

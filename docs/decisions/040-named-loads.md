@@ -53,9 +53,10 @@ runs it, and `spi info --json` publishes its state in a `loads` block.
 - **RAFS adds two ordered loads.** `rafs-schemas` extracts PUT request bodies
   from the service's pinned Postman collection, substitutes the `osdu` and
   `rafsddms` schema authorities, and registers each unique schema. The loader
-  reads a visible schema before PUT and accepts it only when its content
-  matches; a differing schema fails as `schema_conflict`. This also handles
-  shared schemas that Schema Service owns in another tenant.
+  reads a visible schema before PUT. A visible `osdu` schema satisfies the
+  core-schema prerequisite; a visible `rafsddms` schema succeeds only when its
+  content matches, and a differing one fails as `schema_conflict`. This also
+  handles shared schemas that Schema Service owns in another tenant.
   `rafs-reference-data` reads the service's complete-record array through the
   records loader. The registry orders `schemas -> rafs-schemas ->
   rafs-reference-data`.

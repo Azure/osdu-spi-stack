@@ -1527,7 +1527,9 @@ data:
         }
         created = existing = 0
         for index, request in enumerate(requests, start=1):
-            schema_id = request["schemaInfo"]["schemaIdentity"]["id"]
+            identity = request["schemaInfo"]["schemaIdentity"]
+            schema_id = identity["id"]
+            shared_authority = os.environ.get("SCHEMA_AUTHORITY", "osdu")
             expected_schema = request["schema"]
             try:
                 stored_schema = read_schema(schema_base, schema_id, headers)
@@ -1535,7 +1537,10 @@ data:
                 outcome(e.code, f"{source} {e.detail}")
                 return 1
 
-            if stored_schema == expected_schema:
+            if stored_schema == expected_schema or (
+                stored_schema is not None
+                and identity.get("authority") == shared_authority
+            ):
                 existing += 1
             elif stored_schema is not None:
                 outcome(
@@ -1558,7 +1563,10 @@ data:
                     except LoadError as e:
                         outcome(e.code, f"{source} {e.detail}")
                         return 1
-                    if stored_schema == expected_schema:
+                    if stored_schema == expected_schema or (
+                        stored_schema is not None
+                        and identity.get("authority") == shared_authority
+                    ):
                         existing += 1
                     elif stored_schema is not None:
                         outcome(
