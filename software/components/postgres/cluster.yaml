@@ -19,6 +19,8 @@ spec:
       max_connections: "200"
       shared_buffers: "256MB"
       work_mem: "16MB"
+      # Below walStorage, so a stranded replica's slot cannot fill the primary's WAL volume.
+      max_slot_wal_keep_size: "2GB"
 
   superuserSecret:
     name: postgresql-superuser-credentials
