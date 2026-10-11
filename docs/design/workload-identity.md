@@ -39,9 +39,11 @@ create ServiceAccounts in all of those namespaces. The module's
 ## Access and isolation
 
 The shared UAMI receives Key Vault Secrets User, Storage Blob Data Contributor,
-Service Bus Data Sender/Receiver, and AcrPull assignments. The current RBAC
-module grants Storage Table Data Contributor on common Storage; its
-per-partition Storage assignments are for blobs.
+Storage Queue Data Contributor, Service Bus Data Sender/Receiver, and AcrPull
+assignments. The RBAC module grants Storage Table Data Contributor on common
+Storage and the custom SPI Storage Blob Restore Operator on partition Storage.
+The custom role permits account reads and `restoreBlobRanges/action`; it does
+not permit account writes or `listKeys`.
 
 Cosmos SQL and Gremlin Data Contributor grants are Cosmos-native assignments,
 declared in the partition and Gremlin modules. They do not appear in

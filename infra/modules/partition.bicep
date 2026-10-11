@@ -348,6 +348,15 @@ resource storageAccountBlobEndpointSecret 'Microsoft.KeyVault/vaults/secrets@202
   }
 }
 
+// partition-init maps the sensitive storage-account-name property to this suffix.
+resource storageAccountNameSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName)) {
+  name: '${partition}-storage'
+  parent: keyVault
+  properties: {
+    value: storageAccount.name
+  }
+}
+
 // The key and connection secrets hold the literal "DISABLED" only to satisfy
 // the partition-record schema; a service that reads one fails.
 resource cosmosConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(keyVaultName)) {

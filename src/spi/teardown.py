@@ -180,6 +180,7 @@ DELETION_PLAN: Sequence[Wave] = (
         "Microsoft.Insights/components",
         "Microsoft.OperationalInsights/workspaces",
     ),
+    _wave("Microsoft.Authorization/roleDefinitions"),
     _wave("Microsoft.Network/natGateways", before=_detach_nat_gateways),
     _wave("Microsoft.Network/publicIPAddresses"),
     _wave("Microsoft.Network/virtualNetworks"),

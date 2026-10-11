@@ -45,7 +45,7 @@ var roleIds = {
   keyVaultSecretsUser: '4633458b-17de-408a-b874-0445c86b69e6'
   keyVaultSecretsOfficer: 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
   storageBlobDataContributor: 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
-  storageAccountContributor: '17d1049b-9a84-46fb-8f53-869881c3d3ab'
+  storageBlobRestoreOperator: '87c19873-092d-433c-9d1f-4d281d5740cf'
   storageTableDataContributor: '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
   storageQueueDataContributor: '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
   serviceBusDataSender: '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39'
@@ -74,6 +74,30 @@ resource commonStorage 'Microsoft.Storage/storageAccounts@2023-01-01' existing =
 resource partitionStorageAccounts 'Microsoft.Storage/storageAccounts@2023-01-01' existing = [for storageName in partitionStorageNames: {
   name: storageName
 }]
+
+resource storageBlobRestoreOperatorRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
+  name: roleIds.storageBlobRestoreOperator
+  properties: {
+    roleName: 'SPI Storage Blob Restore Operator'
+    description: 'Read storage account restore status and start blob point-in-time restore.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: [
+          'Microsoft.Storage/storageAccounts/read'
+          'Microsoft.Storage/storageAccounts/blobServices/read'
+          'Microsoft.Storage/storageAccounts/blobServices/restoreBlobRanges/action'
+        ]
+        notActions: []
+        dataActions: []
+        notDataActions: []
+      }
+    ]
+    assignableScopes: [
+      resourceGroup().id
+    ]
+  }
+}
 
 resource serviceBusNamespaces 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' existing = [for sbName in serviceBusNames: {
   name: sbName
@@ -186,9 +210,9 @@ resource partitionStorageBlobAssignments 'Microsoft.Authorization/roleAssignment
 
 resource partitionStorageAccountAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (storageName, i) in partitionStorageNames: {
   scope: partitionStorageAccounts[i]
-  name: guid(partitionStorageAccounts[i].id, principalId, roleIds.storageAccountContributor)
+  name: guid(partitionStorageAccounts[i].id, principalId, roleIds.storageBlobRestoreOperator)
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.storageAccountContributor)
+    roleDefinitionId: storageBlobRestoreOperatorRole.id
     principalId: principalId
     principalType: 'ServicePrincipal'
   }

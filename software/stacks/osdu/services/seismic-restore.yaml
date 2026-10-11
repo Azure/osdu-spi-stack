@@ -90,6 +90,8 @@ spec:
         value: prod
       - name: SSL_CERT_FILE
         value: /redis-ca/ca.crt
+      - name: SSL_CERT_DIR
+        value: /etc/ssl/certs
     volumeMounts:
       - name: redis-ca
         mountPath: /redis-ca

@@ -55,7 +55,7 @@ Copy the wheel URL for another version from its
 
 - **Contributor**, to create the resource group and every resource in it.
 - **Role Based Access Control Administrator** with a condition that allows
-  creating and deleting assignments only for the eleven roles the stack uses.
+  creating and deleting assignments only for the thirteen roles the stack uses.
   Contributor cannot create role assignments, and `spi up` assigns these roles
   to the identities it creates and to the deployer.
 
@@ -87,7 +87,7 @@ az role assignment create \
   --assignee-principal-type User \
   --scope /subscriptions/<subscription-id> \
   --condition-version 2.0 \
-  --condition '((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/write'\''})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {4d97b98b-1d4f-4787-a291-c67834d212e7, b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b, 4abbcc35-e782-43d8-92c5-2d3f1bd2253f, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, ba92f5b4-2d11-453d-a403-e96b0029c9fe, 0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3, 69a216fc-b8fb-44d8-bc22-1f3c2cd27a39, 4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0, 7f951dda-4ed3-4680-a7ca-43fe172d538d, befefa01-2a29-4197-83a8-272ff33ce314})) AND ((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/delete'\''})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {4d97b98b-1d4f-4787-a291-c67834d212e7, b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b, 4abbcc35-e782-43d8-92c5-2d3f1bd2253f, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, ba92f5b4-2d11-453d-a403-e96b0029c9fe, 0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3, 69a216fc-b8fb-44d8-bc22-1f3c2cd27a39, 4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0, 7f951dda-4ed3-4680-a7ca-43fe172d538d, befefa01-2a29-4197-83a8-272ff33ce314}))'
+  --condition '((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/write'\''})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {4d97b98b-1d4f-4787-a291-c67834d212e7, b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b, 4abbcc35-e782-43d8-92c5-2d3f1bd2253f, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, ba92f5b4-2d11-453d-a403-e96b0029c9fe, 0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3, 974c5e8b-45b9-4653-ba55-5f855dd0fb88, 87c19873-092d-433c-9d1f-4d281d5740cf, 69a216fc-b8fb-44d8-bc22-1f3c2cd27a39, 4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0, 7f951dda-4ed3-4680-a7ca-43fe172d538d, befefa01-2a29-4197-83a8-272ff33ce314})) AND ((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/delete'\''})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {4d97b98b-1d4f-4787-a291-c67834d212e7, b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b, 4abbcc35-e782-43d8-92c5-2d3f1bd2253f, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, ba92f5b4-2d11-453d-a403-e96b0029c9fe, 0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3, 974c5e8b-45b9-4653-ba55-5f855dd0fb88, 87c19873-092d-433c-9d1f-4d281d5740cf, 69a216fc-b8fb-44d8-bc22-1f3c2cd27a39, 4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0, 7f951dda-4ed3-4680-a7ca-43fe172d538d, befefa01-2a29-4197-83a8-272ff33ce314}))'
 ```
 
 The condition lists these role definitions:
@@ -101,6 +101,8 @@ The condition lists these role definitions:
 | Key Vault Secrets User | `4633458b-17de-408a-b874-0445c86b69e6` |
 | Storage Blob Data Contributor | `ba92f5b4-2d11-453d-a403-e96b0029c9fe` |
 | Storage Table Data Contributor | `0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3` |
+| Storage Queue Data Contributor | `974c5e8b-45b9-4653-ba55-5f855dd0fb88` |
+| SPI Storage Blob Restore Operator | `87c19873-092d-433c-9d1f-4d281d5740cf` |
 | Azure Service Bus Data Sender | `69a216fc-b8fb-44d8-bc22-1f3c2cd27a39` |
 | Azure Service Bus Data Receiver | `4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0` |
 | AcrPull | `7f951dda-4ed3-4680-a7ca-43fe172d538d` |

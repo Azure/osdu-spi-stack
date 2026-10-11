@@ -27,6 +27,7 @@ var tableNames = [
 
 var queueNames = [
   'sdms-queue-restore'
+  'sdms-queue-restore-poison'
 ]
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
