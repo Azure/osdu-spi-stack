@@ -1309,10 +1309,15 @@ data:
             pass
 
 
-    def call(url: str, headers: dict, body: bytes):
+    def call(
+        url: str,
+        headers: dict,
+        body: bytes | None = None,
+        method: str = "GET",
+    ):
         code, payload = 0, ""
         for attempt in range(1, ATTEMPTS + 1):
-            req = urllib.request.Request(url, data=body, method="PUT", headers=headers)
+            req = urllib.request.Request(url, data=body, method=method, headers=headers)
             try:
                 resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT)
                 return resp.getcode(), resp.read().decode(errors="replace")
@@ -1455,6 +1460,31 @@ data:
         return list(unique.values())
 
 
+    def read_schema(schema_base: str, schema_id: str, headers: dict) -> dict | None:
+        encoded_id = urllib.parse.quote(schema_id, safe="")
+        code, payload = call(f"{schema_base}/schema/{encoded_id}", headers)
+        if code == 404:
+            return None
+        if code != 200:
+            raise LoadError(
+                "schema_lookup_failed",
+                f"{schema_id} returned {code}: {payload[:500]}",
+            )
+        try:
+            schema = json.loads(payload)
+        except json.JSONDecodeError as e:
+            raise LoadError(
+                "schema_lookup_failed",
+                f"{schema_id} returned invalid JSON: {e}",
+            )
+        if not isinstance(schema, dict):
+            raise LoadError(
+                "schema_lookup_failed",
+                f"{schema_id} returned a value that is not an object",
+            )
+        return schema
+
+
     def main() -> int:
         missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
         if missing:
@@ -1498,19 +1528,56 @@ data:
         created = existing = 0
         for index, request in enumerate(requests, start=1):
             schema_id = request["schemaInfo"]["schemaIdentity"]["id"]
-            code, payload = call(
-                f"{schema_base}/schema", headers, json.dumps(request).encode()
-            )
-            if code in (200, 201):
-                created += 1
-            elif code == 409:
+            expected_schema = request["schema"]
+            try:
+                stored_schema = read_schema(schema_base, schema_id, headers)
+            except LoadError as e:
+                outcome(e.code, f"{source} {e.detail}")
+                return 1
+
+            if stored_schema == expected_schema:
                 existing += 1
-            else:
+            elif stored_schema is not None:
                 outcome(
-                    "schema_rejected",
-                    f"{source} {schema_id} returned {code}: {payload[:500]}",
+                    "schema_conflict",
+                    f"{source} {schema_id} differs from the visible schema",
                 )
                 return 1
+            else:
+                code, payload = call(
+                    f"{schema_base}/schema",
+                    headers,
+                    json.dumps(request).encode(),
+                    "PUT",
+                )
+                if code in (200, 201):
+                    created += 1
+                elif code in (400, 409):
+                    try:
+                        stored_schema = read_schema(schema_base, schema_id, headers)
+                    except LoadError as e:
+                        outcome(e.code, f"{source} {e.detail}")
+                        return 1
+                    if stored_schema == expected_schema:
+                        existing += 1
+                    elif stored_schema is not None:
+                        outcome(
+                            "schema_conflict",
+                            f"{source} {schema_id} differs from the visible schema",
+                        )
+                        return 1
+                    else:
+                        outcome(
+                            "schema_rejected",
+                            f"{source} {schema_id} returned {code}: {payload[:500]}",
+                        )
+                        return 1
+                else:
+                    outcome(
+                        "schema_rejected",
+                        f"{source} {schema_id} returned {code}: {payload[:500]}",
+                    )
+                    return 1
             if index % 10 == 0 or index == len(requests):
                 print(
                     f"  PROGRESS: [{index}/{len(requests)}] "

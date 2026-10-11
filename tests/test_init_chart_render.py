@@ -1658,3 +1658,45 @@ def test_load_schemas_extracts_postman_put_bodies_and_substitutes_authorities(
     with pytest.raises(load_error) as raised:
         unique([requests[0], conflicting])
     assert getattr(raised.value, "code", "") == "manifest_invalid"
+
+
+@pytest.mark.parametrize(
+    ("stored_schema", "exit_code", "outcome"),
+    [
+        ({"type": "object"}, 0, "loaded"),
+        ({"type": "string"}, 1, "schema_conflict"),
+    ],
+)
+def test_load_schemas_verifies_visible_schemas_before_put(
+    init_scripts, monkeypatch, capsys, stored_schema, exit_code, outcome
+):
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "test-token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+    monkeypatch.setenv("PARTITION", "opendes")
+    monkeypatch.setenv("SOURCE_PROJECT", "osdu/rafs")
+    monkeypatch.setenv("SOURCE_COMMIT", "a" * 40)
+    monkeypatch.setenv("SOURCE_PATH", "schemas.json")
+
+    namespace: dict[str, object] = {"__name__": "load_schemas_test"}
+    exec(init_scripts["load_schemas.py"], namespace)
+    request = {
+        "schemaInfo": {
+            "schemaIdentity": {"id": "rafsddms:wks:Sample:1.0.0"}
+        },
+        "schema": {"type": "object"},
+    }
+    namespace["fetch_archive"] = lambda *args: object()
+    namespace["source_members"] = lambda *args: ["schemas.json"]
+    namespace["load_requests"] = lambda *args: [request]
+    namespace["read_schema"] = lambda *args: stored_schema
+    put_calls = []
+    namespace["call"] = lambda *args: put_calls.append(args)
+
+    main = cast(Callable[[], int], namespace["main"])
+    assert main() == exit_code
+    assert f"load-schemas outcome: {outcome}" in capsys.readouterr().out
+    assert put_calls == []

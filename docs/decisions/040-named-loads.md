@@ -52,10 +52,13 @@ runs it, and `spi info --json` publishes its state in a `loads` block.
   manifest does not parse.
 - **RAFS adds two ordered loads.** `rafs-schemas` extracts PUT request bodies
   from the service's pinned Postman collection, substitutes the `osdu` and
-  `rafsddms` schema authorities, and registers each unique schema. A 409 is an
-  existing schema and succeeds. `rafs-reference-data` reads the service's
-  complete-record array through the records loader. The registry orders
-  `schemas -> rafs-schemas -> rafs-reference-data`.
+  `rafsddms` schema authorities, and registers each unique schema. The loader
+  reads a visible schema before PUT and accepts it only when its content
+  matches; a differing schema fails as `schema_conflict`. This also handles
+  shared schemas that Schema Service owns in another tenant.
+  `rafs-reference-data` reads the service's complete-record array through the
+  records loader. The registry orders `schemas -> rafs-schemas ->
+  rafs-reference-data`.
 - **A second run is decided by the newest Job** for the dataset and partition:
   none creates one, a running Job is waited on, a complete Job for the same
   source changes nothing, a complete Job for another source is replaced once
