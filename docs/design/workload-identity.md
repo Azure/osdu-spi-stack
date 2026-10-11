@@ -28,11 +28,10 @@ The exchange works as follows:
    access configuration.
 
 Java services request one token resource through the shared Workload Identity
-configuration. A service manifest must not also set the legacy
-`AZURE_AD_APP_RESOURCE_ID`: `core-lib-azure` adds that value as a second
-`/.default` scope, and Entra rejects the multi-resource request with
-`AADSTS70011`. The File Service manifest relies on the shared token audience
-instead of adding a service-specific resource.
+configuration. File requires the legacy `AZURE_AD_APP_RESOURCE_ID` property at
+startup, so its manifest sets that property to the same management resource.
+A client ID there makes `core-lib-azure` add a second `/.default` scope, and
+Entra rejects the multi-resource request with `AADSTS70011`.
 
 The projected token is a file mounted in the pod, not a stored client secret.
 Its audience, `api://AzureADTokenExchange`, is distinct from the audience of the
