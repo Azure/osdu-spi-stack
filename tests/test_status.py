@@ -6,6 +6,8 @@
 
 import json
 import re
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -15,6 +17,7 @@ from typer.testing import CliRunner
 
 from spi import cli, status
 from spi.deploy_record import DeployRecord, DeployRecordError
+from spi.shell import _MAX_PARALLEL_READS
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -915,6 +918,33 @@ def test_status_json_environment_is_empty_without_a_record(monkeypatch):
     assert payload["environment"]["stackVersion"] == ""
 
 
+def test_status_human_keeps_every_read_under_the_parallel_cap(monkeypatch):
+    _wire(monkeypatch, suspended=False)
+    lock = threading.Lock()
+    live = peak = 0
+
+    def probed(read):
+        def probe(*args, **kwargs):
+            nonlocal live, peak
+            with lock:
+                live += 1
+                peak = max(peak, live)
+            time.sleep(0.05)
+            with lock:
+                live -= 1
+            return read(*args, **kwargs)
+
+        return probe
+
+    for name in ("_required_kubectl_json", "_optional_configmap"):
+        monkeypatch.setattr(status, name, probed(getattr(status, name)))
+    monkeypatch.setattr(status, "kubectl_json", probed(lambda _args: None))
+
+    status.render_status()
+
+    assert peak <= _MAX_PARALLEL_READS
+
+
 def test_status_human_ends_with_the_summary_and_names_the_environment(monkeypatch):
     """A terminal shows the tail. The verdict and the environment identity are
     the lines the command exists to answer, so they print last."""
@@ -1093,24 +1123,45 @@ def test_summary_counts_failed_kustomizations_apart_from_progressing():
     assert "1 ready / 2 progressing / 1 failed  (1/4 complete)" in text
 
 
-def test_status_reads_the_stamp_after_the_flux_snapshot(monkeypatch):
+def test_status_reads_the_stamp_after_the_kustomizations(monkeypatch):
     _wire_running(monkeypatch, applied="main@sha1:" + "f" * 40)
     events = []
-    real_gather = status.gather_reads
+    real_required = status._required_kubectl_json
     real_optional = status._optional_configmap
 
-    def gather(calls):
-        results = real_gather(calls)
-        events.append("snapshot-end")
-        return results
+    def required(args, description):
+        result = real_required(args, description)
+        if "kustomizations" in args:
+            time.sleep(0.05)
+            events.append("kustomizations")
+        return result
 
     def optional(name, namespace):
         events.append(name)
         return real_optional(name, namespace)
 
-    monkeypatch.setattr(status, "gather_reads", gather)
+    monkeypatch.setattr(status, "_required_kubectl_json", required)
     monkeypatch.setattr(status, "_optional_configmap", optional)
 
     status.collect_status()
 
-    assert events.index("snapshot-end") < events.index("spi-stack-version")
+    assert events.index("kustomizations") < events.index("spi-stack-version")
+
+
+def test_stamp_read_failure_does_not_outrank_a_later_read_failure(monkeypatch):
+    """The stamp shares the Kustomization worker but keeps its last-place rank."""
+    _wire(monkeypatch)
+
+    def failing_record(required=False):
+        raise DeployRecordError("deploy record is corrupt")
+
+    def failing_stamp(name, namespace):
+        if name == "spi-stack-version":
+            raise status.StatusError("Could not read ConfigMap spi-stack-version: refused")
+        return None
+
+    monkeypatch.setattr(status, "read_deploy_record", failing_record)
+    monkeypatch.setattr(status, "_optional_configmap", failing_stamp)
+
+    with pytest.raises(status.StatusError, match="deploy record is corrupt"):
+        status.collect_status()
