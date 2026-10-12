@@ -141,6 +141,23 @@ def test_paired_script_entrypoint_is_forwarded_without_changing_maven_images():
     assert all(not item.startswith("SUITE_ENTRYPOINT=") for item in maven)
 
 
+def test_script_arguments_come_from_the_resolver_contract(tmp_path):
+    arguments = ["--bearer-token", "${TOKEN}", "--partition", "${PARTITION}"]
+    binding = testing._Binding(
+        "paired",
+        "",
+        "repo/script",
+        "a" * 40,
+        tmp_path,
+        {"test_type": "script", "test_arguments": arguments},
+        tmp_path / "suite.env",
+        {},
+        {},
+    )
+
+    assert binding.arguments(()) == arguments
+
+
 @pytest.fixture
 def cluster(monkeypatch, tmp_path):
     """Everything past the process boundary: lock, cluster, GitHub, GHCR, docker, and mvn."""
