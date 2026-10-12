@@ -822,7 +822,13 @@ class TestRafsRuntime:
         container = pod["containers"][0]
         env = {item["name"]: item for item in container["env"]}
 
-        assert deployment["spec"]["strategy"] == {"type": "Recreate"}
+        assert deployment["spec"]["strategy"] == {
+            "type": "RollingUpdate",
+            "rollingUpdate": {
+                "maxSurge": 0,
+                "maxUnavailable": 1,
+            },
+        }
         assert pod["automountServiceAccountToken"] is False
         assert pod["securityContext"]["runAsNonRoot"] is True
         assert container["image"].endswith(
