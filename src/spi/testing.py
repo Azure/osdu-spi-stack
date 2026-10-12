@@ -205,6 +205,10 @@ class _Binding:
     def timeout_minutes(self) -> int:
         return int(self.contract.get("timeout_minutes") or 0)
 
+    @property
+    def test_entrypoint(self) -> str:
+        return str(self.contract.get("test_entrypoint") or "")
+
     def arguments(self, maven_arguments: Sequence[str]) -> list[str]:
         return list(maven_arguments) or list(self.contract.get("maven_arguments") or [])
 
@@ -571,9 +575,15 @@ def _require_tool(name: str) -> None:
 
 
 def _docker_run(
-    image: str, test_dir: str, env_file: str, args: Sequence[str], container: str = ""
+    image: str,
+    test_dir: str,
+    env_file: str,
+    args: Sequence[str],
+    container: str = "",
+    entrypoint: str = "",
 ) -> list[str]:
     name = ["--name", container] if container else []
+    script = ["-e", f"SUITE_ENTRYPOINT={entrypoint}"] if entrypoint else []
     return [
         "docker",
         "run",
@@ -584,6 +594,7 @@ def _docker_run(
         env_file,
         "-e",
         f"SUITE_DIR={test_dir}",
+        *script,
         image,
         *args,
     ]
@@ -596,6 +607,7 @@ def run_paired(
     args: Sequence[str],
     timeout: int | None,
     reports: Path,
+    entrypoint: str = "",
 ) -> int:
     """Run the suite in the paired image; copy its reports out before the container goes."""
 
@@ -611,7 +623,7 @@ def run_paired(
     container = f"spi-test-{uuid.uuid4().hex[:12]}"
     try:
         ran = run_command(
-            _docker_run(image, test_dir, str(env_file), args, container),
+            _docker_run(image, test_dir, str(env_file), args, container, entrypoint),
             capture_output=False,
             description=f"Run {test_dir}",
             check=False,
@@ -836,7 +848,13 @@ def plan_suite(
         args = bound.arguments(maven_arguments)
         if checkout is None:
             directory = f"{IMAGE_SUITE_ROOT}/{bound.test_dir}"
-            command = _docker_run(bound.image, bound.test_dir, env_file or "suite.env", args)
+            command = _docker_run(
+                bound.image,
+                bound.test_dir,
+                env_file or "suite.env",
+                args,
+                entrypoint=bound.test_entrypoint,
+            )
         else:
             directory = str(_suite_dir(bound.root, bound.test_dir))
             command = _maven(bound.root, args)
@@ -900,7 +918,15 @@ def run_suite(
         try:
             if checkout is None:
                 reports = work / "reports"
-                code = run_paired(bound.image, test_dir, env_file, args, timeout, reports)
+                code = run_paired(
+                    bound.image,
+                    test_dir,
+                    env_file,
+                    args,
+                    timeout,
+                    reports,
+                    bound.test_entrypoint,
+                )
             else:
                 code, reports = run_checkout(root, test_dir, env_file, args, timeout)
         finally:
