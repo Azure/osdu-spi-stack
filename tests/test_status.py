@@ -682,12 +682,15 @@ def test_status_human_renders_absent_kustomization_crd_as_empty(monkeypatch):
     assert "No kustomizations found" in _plain(result.output)
 
 
-def test_status_json_keeps_other_kustomization_read_failures_fatal(monkeypatch):
+@pytest.mark.parametrize("args", [["status", "--json"], ["status"]])
+def test_status_keeps_other_kustomization_read_failures_fatal(monkeypatch, args):
     _wire_kustomization_error(monkeypatch, "error: connection refused")
+    monkeypatch.setattr(status, "kubectl_json", lambda _args: None)
 
-    result = CliRunner().invoke(cli.app, ["status", "--json"])
+    result = CliRunner().invoke(cli.app, args)
 
     assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
     assert "connection refused" in result.output
 
 

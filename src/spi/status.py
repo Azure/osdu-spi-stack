@@ -1095,8 +1095,18 @@ def get_summary(snapshot: StatusSnapshot) -> Panel:
     return Panel(body, title="Summary", border_style="cyan")
 
 
-def render_status(snapshot: StatusSnapshot | None = None):
-    snapshot = snapshot or collect_status()
+def render_status():
+    # Every section beyond the summary and Kustomization tables is an independent
+    # cluster read, so they go out in the same wave as the snapshot's own reads.
+    snapshot, helmreleases, custom_resources, jobs, *pod_tables = gather_reads(
+        [
+            collect_status,
+            get_helmrelease_table,
+            lambda: get_custom_resources(platform_ns="platform"),
+            lambda: _fetch_jobs(_STACK_NAMESPACES),
+            *[partial(get_pod_table, ns, title) for ns, title in _STACK_POD_SECTIONS],
+        ]
+    )
     console.print(Panel("[bold]SPI Stack Status[/bold]", border_style="cyan"))
 
     if snapshot.maintenance:
@@ -1120,17 +1130,6 @@ def render_status(snapshot: StatusSnapshot | None = None):
                 border_style="yellow",
             )
         )
-
-    # The summary and Kustomization tables render from the snapshot; every
-    # other section is an independent cluster read, so they go out in one wave.
-    helmreleases, custom_resources, jobs, *pod_tables = gather_reads(
-        [
-            get_helmrelease_table,
-            lambda: get_custom_resources(platform_ns="platform"),
-            lambda: _fetch_jobs(_STACK_NAMESPACES),
-            *[partial(get_pod_table, ns, title) for ns, title in _STACK_POD_SECTIONS],
-        ]
-    )
 
     sections = [
         get_kustomization_table(snapshot.kustomization_items),
