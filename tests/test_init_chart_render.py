@@ -130,6 +130,14 @@ def test_partition_record_carries_the_tenant_service_account():
     assert "serviceAccount" not in props
 
 
+def test_partition_record_carries_the_reservoir_connection_secret():
+    props = _partition_records(_render(["opendes"]))["opendes.json"]["properties"]
+    assert props["reservoir-connection"] == {
+        "sensitive": True,
+        "value": "reservoir-conn",
+    }
+
+
 def test_partition_init_job_name_follows_the_record():
     """The Job is immutable once created and only ever POSTs or PATCHes the
     record it mounts, so a changed record has to rename the Job for Helm to
@@ -366,7 +374,7 @@ def test_members_deadline_covers_its_wait_budget(init_scripts):
     calls = (
         1
         + len(const["CREATED_GROUPS"])
-        + 2 * len(const["ROOT_GROUPS"])
+        + 2 * len(const["ADMIN_GROUPS"])
         + 1
         + 2 * const["MAX_USER_GROUPS"]
         + 2 * len(const["MEMBER_USER_GROUPS"])
@@ -568,18 +576,26 @@ _GROUPS = {
 _CREATED_GROUPS = {
     "users.datalake.delegation": _GROUPS["users.datalake.delegation"],
     "users.datalake.impersonation": "users.datalake.impersonation@opendes.dataservices.energy",
+    "service.reservoir-dms.owners": ("service.reservoir-dms.owners@opendes.dataservices.energy"),
+    "service.reservoir-dms.viewers": ("service.reservoir-dms.viewers@opendes.dataservices.energy"),
 }
-_BOOTSTRAP_GROUPS = tuple(n for n in _GROUPS if n not in _CREATED_GROUPS)
+_ADMIN_GROUPS = {
+    **_GROUPS,
+    "service.reservoir-dms.owners": _CREATED_GROUPS["service.reservoir-dms.owners"],
+}
 
 
-# Groups only member users join: users, every service.<name>.user, and storage admin.
+# Groups only member users join: users, every service.<name>.user, storage admin,
+# and Reservoir viewers.
 _USER_GROUPS = {
     "users": _GROUPS["users"],
     "service.entitlements.user": "service.entitlements.user@opendes.dataservices.energy",
     "service.legal.user": "service.legal.user@opendes.dataservices.energy",
     "service.storage.admin": "service.storage.admin@opendes.dataservices.energy",
+    "service.reservoir-dms.viewers": _CREATED_GROUPS["service.reservoir-dms.viewers"],
 }
 _ALL_GROUPS = {**_GROUPS, **_CREATED_GROUPS, **_USER_GROUPS}
+_BOOTSTRAP_GROUPS = tuple(n for n in _GROUPS if n not in _CREATED_GROUPS)
 
 
 def _groups_listing(names=tuple(_ALL_GROUPS)) -> bytes:
@@ -658,14 +674,14 @@ def test_members_seeds_every_root_group_and_verifies(init_scripts, monkeypatch, 
     assert "entitlements-members outcome: seeded" in result.stdout
     assert result.routed("create") == []
     posts = result.routed("post")
-    assert len(posts) == 10
+    assert len(posts) == 12
     assert {json.loads(p.body)["email"] for p in posts} == {"a-id", "b-id"}
     assert {json.loads(p.body)["role"] for p in posts} == {"MEMBER"}
     assert {p.url.rsplit("/groups/", 1)[1].removesuffix("/members") for p in posts} == set(
-        _GROUPS.values()
+        _ADMIN_GROUPS.values()
     )
     assert all(p.headers["Data-partition-id"] == "opendes" for p in posts)
-    assert len(result.routed("get")) == 5
+    assert len(result.routed("get")) == 6
 
 
 def test_members_seeds_member_users_into_the_user_groups_and_storage_admin_only(
@@ -681,7 +697,7 @@ def test_members_seeds_member_users_into_the_user_groups_and_storage_admin_only(
     member_posts = {g for m, g in posts if m == "member-client-id"}
     assert member_posts == set(_USER_GROUPS.values())
     admin_posts = {g for m, g in posts if m == "deployer-client-id"}
-    assert admin_posts == set(_GROUPS.values())
+    assert admin_posts == set(_ADMIN_GROUPS.values())
 
 
 def test_members_fails_closed_when_the_listing_exceeds_max_user_groups(
@@ -732,6 +748,8 @@ def test_members_creates_the_impersonation_groups_the_bootstrap_lacks(
     assert [json.loads(c.body)["name"] for c in creates] == [
         "users.datalake.delegation",
         "users.datalake.impersonation",
+        "service.reservoir-dms.owners",
+        "service.reservoir-dms.viewers",
     ]
     assert all(json.loads(c.body)["description"] for c in creates)
     posted_to = {
@@ -739,6 +757,8 @@ def test_members_creates_the_impersonation_groups_the_bootstrap_lacks(
     }
     assert _CREATED_GROUPS["users.datalake.delegation"] in posted_to
     assert _CREATED_GROUPS["users.datalake.impersonation"] not in posted_to
+    assert _CREATED_GROUPS["service.reservoir-dms.owners"] in posted_to
+    assert _CREATED_GROUPS["service.reservoir-dms.viewers"] not in posted_to
 
 
 def test_members_derives_the_created_group_email_when_the_service_omits_it(

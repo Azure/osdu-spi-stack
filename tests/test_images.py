@@ -80,6 +80,46 @@ def test_resolve_image_selects_newest_immutable_sha(monkeypatch):
     assert resolved.digest == "sha256:new"
 
 
+def test_resolve_image_uses_the_registry_entry_branch(monkeypatch):
+    sha = "c" * 40
+
+    def fake_gitlab_get(url: str):
+        if "registry/repositories?" in url:
+            assert "search=open-etp-server-main" in url
+            return [
+                {
+                    "id": 828,
+                    "name": "open-etp-server-main",
+                    "location": ("community.opengroup.org:5555/osdu/open-etp-server-main"),
+                }
+            ]
+        if url.endswith("/tags?per_page=100&page=1"):
+            return [{"name": sha}]
+        if url.endswith(f"/tags/{sha}"):
+            return {
+                "name": sha,
+                "created_at": "2026-05-21T00:00:00+00:00",
+                "digest": "sha256:open-etp",
+            }
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+
+    resolved = resolve_image(
+        "open-etp",
+        ImageRegistryEntry(
+            828,
+            "open-etp-server",
+            "services/open-etp.yaml",
+            branch="main",
+        ),
+        "master",
+    )
+
+    assert resolved.repository.endswith("/open-etp-server-main")
+    assert resolved.tag == sha
+
+
 def test_render_image_lock_contains_schema_load_service_keys():
     resolved = {
         name: ResolvedImage(
@@ -102,6 +142,7 @@ def test_render_image_lock_contains_schema_load_service_keys():
     assert 'IMAGE_BRANCH: "master"' in yaml
     assert "PARTITION_IMAGE_REPOSITORY" in yaml
     assert "INDEXER_QUEUE_IMAGE_TAG" in yaml
+    assert "OPEN_ETP_IMAGE_REPOSITORY" in yaml
     assert "SCHEMA_LOAD_IMAGE_REPOSITORY" in yaml
     assert "SCHEMA_LOAD_IMAGE_TAG" in yaml
 

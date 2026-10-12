@@ -60,6 +60,12 @@ param serviceBusNames array
 @description('Ordered storage account names, with one entry per dataPartitions item.')
 param partitionStorageNames array
 
+@description('Ordered PostgreSQL Flexible Server names, with one entry per dataPartitions item.')
+param reservoirPostgresNames array
+
+@description('Fixed AKS NAT egress IP allowed through the Reservoir PostgreSQL firewalls.')
+param aksNatPublicIpAddress string
+
 @description('OIDC issuer URL of the AKS cluster; use an empty string only to omit federated credentials.')
 param oidcIssuerUrl string = ''
 
@@ -150,6 +156,22 @@ module partitionModules 'modules/partition.bicep' = [for (p, i) in dataPartition
     isPrimaryPartition: p == primaryPartition
     keyVaultName: keyVaultName
     principalId: identityModule.outputs.principalId
+  }
+  dependsOn: [
+    keyvaultModule
+  ]
+}]
+
+module reservoirPostgresModules 'modules/reservoir-postgres.bicep' = [for (p, i) in dataPartitions: {
+  name: 'spi-reservoir-postgres-${p}'
+  params: {
+    name: reservoirPostgresNames[i]
+    partition: p
+    location: location
+    identityName: identityName
+    identityPrincipalId: identityModule.outputs.principalId
+    aksNatPublicIpAddress: aksNatPublicIpAddress
+    keyVaultName: keyVaultName
   }
   dependsOn: [
     keyvaultModule
@@ -416,6 +438,15 @@ output partitionStorageIds array = [for i in range(0, length(dataPartitions)): p
 
 @description('Storage account names ordered to match partitionNames.')
 output partitionStorageNamesOut array = partitionStorageNames
+
+@description('PostgreSQL Flexible Server resource IDs ordered to match partitionNames.')
+output reservoirPostgresIds array = [for i in range(0, length(dataPartitions)): reservoirPostgresModules[i].outputs.resourceId]
+
+@description('PostgreSQL server FQDNs ordered to match partitionNames.')
+output reservoirPostgresFqdns array = [for i in range(0, length(dataPartitions)): reservoirPostgresModules[i].outputs.fullyQualifiedDomainName]
+
+@description('PostgreSQL database names ordered to match partitionNames.')
+output reservoirPostgresDatabaseNames array = [for i in range(0, length(dataPartitions)): reservoirPostgresModules[i].outputs.databaseName]
 
 @description('Application Insights connection string, or an empty string when telemetry is disabled.')
 #disable-next-line BCP318

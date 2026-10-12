@@ -69,6 +69,7 @@ class ImageRegistryEntry:
     image: str
     file: str
     image_lock: bool = True
+    branch: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,12 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
     "indexer-queue": ImageRegistryEntry(73, "indexer-queue", "services/indexer-queue.yaml"),
     "file": ImageRegistryEntry(90, "file", "services/file.yaml"),
     "workflow": ImageRegistryEntry(146, "ingestion-workflow", "services/workflow.yaml"),
+    "open-etp": ImageRegistryEntry(
+        828,
+        "open-etp-server",
+        "services/open-etp.yaml",
+        branch="main",
+    ),
     "crs-conversion": ImageRegistryEntry(
         22,
         "crs-conversion-service",
@@ -241,6 +248,7 @@ def _newest_immutable_tag(project_id: int, repo_id: int, tags: Iterable[dict]) -
 def resolve_image(service_name: str, entry: ImageRegistryEntry, branch: str) -> ResolvedImage:
     """Resolve the newest immutable image tag for a service."""
 
+    branch = entry.branch or branch
     image_name = f"{entry.image}-{branch}"
     repo = _registry_repository(entry.project_id, image_name)
     if not repo:
