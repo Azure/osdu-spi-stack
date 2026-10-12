@@ -272,6 +272,21 @@ class TestSchemaLoadImageSubstitution:
 
         assert image == "${SCHEMA_LOAD_IMAGE_REF}"
 
+    def test_schema_load_job_uses_restricted_security_contexts(self):
+        job = yaml.safe_load((STACKS / "schema-load" / "job.yaml").read_text(encoding="utf-8"))
+        pod = job["spec"]["template"]["spec"]
+        container = pod["containers"][0]
+
+        assert pod["securityContext"] == {
+            "runAsNonRoot": True,
+            "seccompProfile": {"type": "RuntimeDefault"},
+        }
+        assert container["securityContext"] == {
+            "allowPrivilegeEscalation": False,
+            "runAsUser": 1000,
+            "capabilities": {"drop": ["ALL"]},
+        }
+
     def test_schema_load_script_keeps_its_shell_references(self):
         doc = yaml.safe_load((STACKS / "schema-load" / "script.yaml").read_text(encoding="utf-8"))
         script = doc["data"]["bootstrap.sh"]
