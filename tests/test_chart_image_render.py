@@ -104,6 +104,29 @@ def test_pod_security_context_grants_non_root_containers_shared_volume_access():
     }
 
 
+def test_renders_environment_secret_reference():
+    deployment = _rendered_deployment(
+        {
+            "env[0].name": "REDIS_PASSWORD",
+            "env[0].valueFrom.secretKeyRef.name": "rafs-redis-secret",
+            "env[0].valueFrom.secretKeyRef.key": "REDIS_PASSWORD",
+        }
+    )
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert container["env"] == [
+        {
+            "name": "REDIS_PASSWORD",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "rafs-redis-secret",
+                    "key": "REDIS_PASSWORD",
+                }
+            },
+        }
+    ]
+
+
 _ISTIO_PROXY = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["istioProxyPin"]["image"]
 
 
