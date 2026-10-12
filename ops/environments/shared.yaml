@@ -1,5 +1,5 @@
 env: shared
-stackVersion: v0.28.1
+stackVersion: v0.28.2
 profile: core
 location: westus3
 ingressMode: azure
@@ -8,11 +8,16 @@ nameSuffix: a43c7
 forks:
   - service: partition
     repo: Azure/osdu-spi-partition
+    canonicalSource: fork
   - service: entitlements
     repo: Azure/osdu-spi-entitlements
+    canonicalSource: fork
   - service: legal
     repo: Azure/osdu-spi-legal
+    canonicalSource: fork
   - service: schema
     repo: Azure/osdu-spi-schema
+    canonicalSource: fork
   - service: file
     repo: Azure/osdu-spi-file
+    canonicalSource: fork
