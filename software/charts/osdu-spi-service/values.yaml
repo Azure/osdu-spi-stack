@@ -65,6 +65,7 @@ resources:
     cpu: "1"
     memory: 1536Mi
 
+# -- Additional environment entries. Each entry supports either value or valueFrom.
 env: []
 
 initContainers: []
