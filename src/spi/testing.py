@@ -209,6 +209,10 @@ class _Binding:
     def test_entrypoint(self) -> str:
         return str(self.contract.get("test_entrypoint") or "")
 
+    @property
+    def report_paths(self) -> tuple[str, ...]:
+        return tuple(self.contract.get("report_paths") or ())
+
     def arguments(self, maven_arguments: Sequence[str]) -> list[str]:
         if self.contract.get("test_type") == "script":
             return list(self.contract.get("test_arguments") or [])
@@ -718,12 +722,17 @@ def run_checkout(
     return ran.returncode, suite_dir
 
 
-def count_tests(reports: Path) -> dict[str, int]:
-    """Totals across the Surefire and Failsafe reports, for display beside the verdict."""
+def count_tests(reports: Path, report_paths: Sequence[str] = ()) -> dict[str, int]:
+    """Totals across the suite's declared JUnit reports, or Maven's standard reports."""
 
     totals = {"tests": 0, "skipped": 0, "failures": 0, "errors": 0}
-    for path in reports.rglob("TEST-*.xml"):
-        if path.parent.name not in REPORT_DIRS:
+    paths = (
+        sorted({path for pattern in report_paths for path in reports.glob(pattern)})
+        if report_paths
+        else [path for path in reports.rglob("TEST-*.xml") if path.parent.name in REPORT_DIRS]
+    )
+    for path in paths:
+        if not path.is_file():
             continue
         try:
             root = ET.parse(path).getroot()
@@ -934,7 +943,7 @@ def run_suite(
         finally:
             env_file.unlink(missing_ok=True)
         passed, verdict = judge(root, code, reports)
-        tests = count_tests(reports)
+        tests = count_tests(reports, bound.report_paths)
         # A discarded run leaves nothing with the inspector.
         check_target(service, bound.expected, after=verdict, revision=revision)
         report = inspect(reports, secrets) if inspect else None
