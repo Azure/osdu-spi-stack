@@ -210,6 +210,8 @@ class _Binding:
         return str(self.contract.get("test_entrypoint") or "")
 
     def arguments(self, maven_arguments: Sequence[str]) -> list[str]:
+        if self.contract.get("test_type") == "script":
+            return list(self.contract.get("test_arguments") or [])
         return list(maven_arguments) or list(self.contract.get("maven_arguments") or [])
 
 
