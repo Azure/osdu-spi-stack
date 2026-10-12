@@ -140,6 +140,29 @@ def test_service_run_as_user_is_configurable():
     assert container["securityContext"]["runAsUser"] == 999
 
 
+def test_renders_environment_secret_reference():
+    deployment = _rendered_deployment(
+        {
+            "env[0].name": "REDIS_PASSWORD",
+            "env[0].valueFrom.secretKeyRef.name": "rafs-redis-secret",
+            "env[0].valueFrom.secretKeyRef.key": "REDIS_PASSWORD",
+        }
+    )
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert container["env"] == [
+        {
+            "name": "REDIS_PASSWORD",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "rafs-redis-secret",
+                    "key": "REDIS_PASSWORD",
+                }
+            },
+        }
+    ]
+
+
 _ISTIO_PROXY = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["istioProxyPin"]["image"]
 
 
