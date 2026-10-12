@@ -3,7 +3,7 @@ stackVersion: v0.28.2
 profile: core
 location: westus3
 ingressMode: azure
-imageBranch: master
+imageBranch: release-0-30
 nameSuffix: a43c7
 forks:
   - service: partition
