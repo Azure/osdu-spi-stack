@@ -330,7 +330,7 @@ class TestReconcileRefreshesClusterConfig:
             # Reads the live lock through pins.run_process, which the
             # spi.cli.run_command patch above does not intercept; without
             # this the default reconcile path shells out to real kubectl.
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_image_lock_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
@@ -559,7 +559,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_image_lock_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
@@ -588,7 +588,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_image_lock_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=stalled),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
@@ -634,7 +634,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", return_value=SimpleNamespace(returncode=0, stdout="")),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_image_lock_backfill", return_value=False),
             patch(
                 "spi.status.resettable_helmreleases",
                 side_effect=StatusError("Could not read Flux HelmReleases: connection refused"),
@@ -663,7 +663,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_image_lock_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[("osdu-flux", "partition")]),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
@@ -697,7 +697,7 @@ class TestSchemaLoadImageLockBackfill:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
-            patch("spi.cli.apply_schema_load_backfill", side_effect=_backfill) as backfill,
+            patch("spi.cli.apply_image_lock_backfill", side_effect=_backfill) as backfill,
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
             patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
@@ -710,14 +710,14 @@ class TestSchemaLoadImageLockBackfill:
 
         assert result.exit_code == 0, result.output
         backfill.assert_called_once_with(branch="master")
-        assert "updated with schema-load" in result.output
+        assert "updated with missing services" in result.output
 
     def test_current_lock_is_left_alone(self):
         result, backfill, _, _ = self._invoke(False)
 
         assert result.exit_code == 0, result.output
         backfill.assert_called_once_with(branch="master")
-        assert "updated with schema-load" not in result.output
+        assert "updated with missing services" not in result.output
 
     def test_absent_lock_is_skipped(self):
         """minimal/bare profiles never create the lock."""

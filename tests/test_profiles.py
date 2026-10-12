@@ -25,6 +25,7 @@ import itertools
 import json
 import re
 from pathlib import Path
+from typing import Callable, cast
 
 import pytest
 import yaml
@@ -795,13 +796,19 @@ class TestRafsRuntime:
         }
 
         assert {"dataset", "rafs"} <= set(releases)
+        dataset_env = {item["name"]: item for item in releases["dataset"]["spec"]["values"]["env"]}
+        assert dataset_env["server.servlet.contextPath"]["value"] == "/api/dataset/v1"
         rafs_values = releases["rafs"]["spec"]["values"]
         assert rafs_values["probes"]["readiness"]["path"] == "/api/rafs-ddms/readiness"
         assert rafs_values["resources"]["requests"] == {"cpu": "1", "memory": "8Gi"}
-        env = {item["name"]: item["value"] for item in rafs_values["env"]}
-        assert env["SERVICE_HOST_DATASET"] == "http://dataset/api/dataset/v1"
-        assert env["CACHE_ENABLE"] == "true"
-        assert env["REDIS_INDEX_ENABLE"] == "true"
+        env = {item["name"]: item for item in rafs_values["env"]}
+        assert env["SERVICE_HOST_DATASET"]["value"] == "http://dataset/api/dataset/v1"
+        assert env["CACHE_ENABLE"]["value"] == "true"
+        assert env["REDIS_INDEX_ENABLE"]["value"] == "true"
+        assert env["REDIS_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+            "name": "rafs-redis-secret",
+            "key": "REDIS_PASSWORD",
+        }
 
     def test_rafs_redis_is_ephemeral_hardened_and_digest_pinned(self):
         resources = list(_built_resources(STACKS / "services"))
@@ -813,7 +820,9 @@ class TestRafsRuntime:
         )
         pod = deployment["spec"]["template"]["spec"]
         container = pod["containers"][0]
+        env = {item["name"]: item for item in container["env"]}
 
+        assert deployment["spec"]["strategy"] == {"type": "Recreate"}
         assert pod["automountServiceAccountToken"] is False
         assert pod["securityContext"]["runAsNonRoot"] is True
         assert container["image"].endswith(
@@ -823,6 +832,11 @@ class TestRafsRuntime:
             "allowPrivilegeEscalation": False,
             "capabilities": {"drop": ["ALL"]},
         }
+        assert env["REDIS_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+            "name": "rafs-redis-secret",
+            "key": "REDIS_PASSWORD",
+        }
+        assert env["REDIS_ARGS"]["value"] == "--requirepass $(REDIS_PASSWORD)"
         assert pod["volumes"] == [{"name": "data", "emptyDir": {}}]
 
     def test_rafs_indexer_uses_workload_identity_and_the_rafs_lock(self):
@@ -838,15 +852,39 @@ class TestRafsRuntime:
 
         assert pod["metadata"]["labels"]["azure.workload.identity/use"] == "true"
         assert pod["spec"]["serviceAccountName"] == "workload-identity-sa"
-        assert container["image"] == "${RAFS_IMAGE_REPOSITORY}@${RAFS_IMAGE_DIGEST}"
+        assert container["image"] == "${RAFS_IMAGE_REF}"
+        assert cronjob["spec"]["jobTemplate"]["spec"]["backoffLimit"] == 0
+        assert cronjob["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"] == 2400
         assert "secretRef" not in yaml.safe_dump(cronjob)
         assert "CLIENT_SECRET" not in yaml.safe_dump(cronjob)
+
+    def test_rafs_indexer_triggers_every_configured_partition(self, monkeypatch):
+        resources = list(_built_resources(STACKS / "services"))
+        configmap = next(
+            doc
+            for _, doc in resources
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "rafs-indexer-trigger"
+        )
+        namespace = {"__name__": "rafs_indexer_trigger_test"}
+        exec(configmap["data"]["trigger.py"], namespace)
+        calls = []
+        namespace["token"] = lambda: "token"
+        namespace["trigger"] = lambda partition, access_token: (
+            calls.append((partition, access_token)) or True
+        )
+        monkeypatch.setenv("PARTITIONS", "opendes,second")
+
+        main = cast(Callable[[], int], namespace["main"])
+        assert main() == 0
+        assert sorted(calls) == [("opendes", "token"), ("second", "token")]
 
     @pytest.mark.parametrize(
         ("mode", "hostname"),
         [
             ("single-host", "${INGRESS_FQDN}"),
             ("multi-host", "${INGRESS_HOST_OSDU}"),
+            ("ip-only", None),
         ],
     )
     def test_dataset_and_rafs_routes_exist_in_each_ingress_mode(self, mode, hostname):
@@ -856,11 +894,15 @@ class TestRafsRuntime:
             for doc in yaml.safe_load_all(path.read_text(encoding="utf-8"))
         }
 
-        assert routes["dataset"]["spec"]["hostnames"] == [hostname]
+        if hostname is None:
+            assert "hostnames" not in routes["dataset"]["spec"]
+            assert "hostnames" not in routes["rafs"]["spec"]
+        else:
+            assert routes["dataset"]["spec"]["hostnames"] == [hostname]
+            assert routes["rafs"]["spec"]["hostnames"] == [hostname]
         assert routes["dataset"]["spec"]["rules"][0]["matches"][0]["path"]["value"] == (
             "/api/dataset/"
         )
-        assert routes["rafs"]["spec"]["hostnames"] == [hostname]
         assert routes["rafs"]["spec"]["rules"][0]["matches"][0]["path"]["value"] == (
             "/api/rafs-ddms/"
         )
@@ -883,10 +925,10 @@ class TestBorrowedPodDisruptionSubstitution:
             for path in (STACKS / directory).glob("*.yaml")
             if path.name != "kustomization.yaml"
         )
-        assert {str(path.relative_to(STACKS)) for path in manifests} == set(releases)
+        assert {path.relative_to(STACKS).as_posix() for path in manifests} == set(releases)
         for path in manifests:
             doc = yaml.safe_load(path.read_text())
-            service = releases[str(path.relative_to(STACKS))]
+            service = releases[path.relative_to(STACKS).as_posix()]
             value = doc["spec"]["values"]["karpenter"]["doNotDisrupt"]
             assert value == f"${{{do_not_disrupt_key(service)}:=false}}", path.name
 

@@ -24,6 +24,8 @@ metadata:
     app.kubernetes.io/part-of: rafs
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: rafs-redis
@@ -80,6 +82,14 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rafs-redis-secret
+                  key: REDIS_PASSWORD
+            - name: REDIS_ARGS
+              value: --requirepass $(REDIS_PASSWORD)
           volumeMounts:
             - name: data
               mountPath: /data
@@ -96,6 +106,7 @@ metadata:
     app.kubernetes.io/part-of: rafs
 data:
   trigger.py: |
+    import concurrent.futures
     import json
     import os
     import sys
@@ -137,29 +148,60 @@ data:
         return json.loads(response.read())["access_token"]
 
 
-    def main() -> int:
-        partition = os.environ["PRIMARY_PARTITION"]
+    def trigger(partition: str, access_token: str) -> bool:
         url = "http://rafs/api/rafs-ddms/dev/trigger-sa-indexer"
         headers = {
-            "Authorization": "Bearer " + token(),
+            "Authorization": "Bearer " + access_token,
             "data-partition-id": partition,
         }
         for attempt in range(1, ATTEMPTS + 1):
             try:
                 request = urllib.request.Request(url, headers=headers)
                 response = urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT)
-                print(f"GET {url} -> {response.getcode()}")
-                return 0
+                print(f"GET {url} [{partition}] -> {response.getcode()}")
+                return True
             except urllib.error.HTTPError as error:
                 detail = error.read().decode(errors="replace")
-                print(f"GET {url} -> {error.code}: {detail[:500]}")
+                print(f"GET {url} [{partition}] -> {error.code}: {detail[:500]}")
                 if error.code < 500 and error.code != 429:
-                    return 1
+                    return False
             except Exception as error:
-                print(f"GET {url} -> {type(error).__name__}: {error}")
+                print(
+                    f"GET {url} [{partition}] -> "
+                    f"{type(error).__name__}: {error}"
+                )
             if attempt < ATTEMPTS:
                 time.sleep(30)
-        return 1
+        return False
+
+
+    def main() -> int:
+        partitions = [
+            partition.strip()
+            for partition in os.environ["PARTITIONS"].split(",")
+            if partition.strip()
+        ]
+        if not partitions:
+            print("PARTITIONS contains no data partitions")
+            return 1
+        access_token = token()
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(partitions)
+        ) as executor:
+            results = dict(
+                zip(
+                    partitions,
+                    executor.map(
+                        lambda partition: trigger(partition, access_token),
+                        partitions,
+                    ),
+                )
+            )
+        failed = [partition for partition, succeeded in results.items() if not succeeded]
+        if failed:
+            print("Indexer trigger failed for: " + ", ".join(failed))
+            return 1
+        return 0
 
 
     if __name__ == "__main__":
@@ -179,8 +221,8 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      backoffLimit: 1
-      activeDeadlineSeconds: 900
+      backoffLimit: 0
+      activeDeadlineSeconds: 2400
       template:
         metadata:
           labels:
@@ -209,7 +251,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: trigger
-              image: ${RAFS_IMAGE_REPOSITORY}@${RAFS_IMAGE_DIGEST}
+              image: ${RAFS_IMAGE_REF}
               imagePullPolicy: IfNotPresent
               command: [python, /scripts/trigger.py]
               envFrom:

@@ -107,6 +107,11 @@ spec:
         value: "false"
       - name: REDIS_USE_PASSWORDLESS_AUTH
         value: "false"
+      - name: REDIS_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: rafs-redis-secret
+            key: REDIS_PASSWORD
       - name: USE_BLOB_STORAGE
         value: "false"
       - name: ALLOW_INDEXING_BY_END_USER

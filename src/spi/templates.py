@@ -45,6 +45,7 @@ allowVolumeExpansion: {str(allow_volume_expansion).lower()}"""
 def osdu_config_configmap(
     domain: str,
     primary_partition: str,
+    partitions: list[str],
     tenant_id: str,
     identity_client_id: str,
     aad_client_id: str,
@@ -76,6 +77,7 @@ metadata:
 data:
   DOMAIN: "{domain}"
   PRIMARY_PARTITION: "{primary_partition}"
+  PARTITIONS: "{",".join(partitions)}"
   AZURE_TENANT_ID: "{tenant_id}"
   AAD_CLIENT_ID: "{aad_client_id}"
   KEYVAULT_URI: "{keyvault_uri}"

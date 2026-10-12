@@ -49,7 +49,7 @@ spec:
       - name: spring.application.name
         value: dataset
       - name: server.servlet.contextPath
-        value: /api/dataset/v1/
+        value: /api/dataset/v1
       - name: server_port
         value: "8080"
       - name: ACCEPT_HTTP

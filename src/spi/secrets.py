@@ -182,6 +182,11 @@ def _create_osdu_secrets(s: dict):
 
     The CA certificates arrive separately through trust-manager Bundles.
     """
+    _kubectl_apply_secret(
+        "osdu",
+        "rafs-redis-secret",
+        {"REDIS_PASSWORD": s["redis_password"]},
+    )
     for svc in ["indexer", "search"]:
         _kubectl_apply_secret(
             "osdu",

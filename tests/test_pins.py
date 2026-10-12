@@ -1199,6 +1199,77 @@ class TestApplySchemaLoadBackfill:
         assert data["SCHEMA_LOAD_IMAGE_TAG"] == "c" * 40
 
 
+class TestApplyImageLockBackfill:
+    def test_adds_new_services_without_moving_existing_entries(self, monkeypatch):
+        existing = [name for name in pins.IMAGE_REGISTRY if name not in {"dataset", "rafs"}]
+        data = _canonical_data(*existing)
+        lock = _lock(data=data)
+        calls = _wire_lock(monkeypatch, lock)
+        resolved = {
+            name: ResolvedImage(
+                name,
+                f"repo/{name}-main",
+                "d" * 40,
+                "now",
+                f"sha256:{name}",
+            )
+            for name in ("dataset", "rafs")
+        }
+        resolutions = []
+        monkeypatch.setattr(
+            pins,
+            "resolve_images",
+            lambda branch, names, sources: (
+                resolutions.append((branch, tuple(names), sources)) or resolved
+            ),
+        )
+
+        assert pins.apply_image_lock_backfill(
+            "master",
+            sources={"rafs": "Azure/osdu-spi-rafs-ddms"},
+        )
+
+        patched, _saved = calls["patch"]
+        assert resolutions == [
+            (
+                "master",
+                ("dataset", "rafs"),
+                {"rafs": "Azure/osdu-spi-rafs-ddms"},
+            )
+        ]
+        assert patched["STORAGE_IMAGE_DIGEST"] == "sha256:old"
+        assert patched["DATASET_IMAGE_REF"] == "repo/dataset-main@sha256:dataset"
+        assert patched["RAFS_IMAGE_REF"] == "repo/rafs-main@sha256:rafs"
+        assert patched["IMAGE_COUNT"] == str(len(pins.IMAGE_REGISTRY))
+
+    def test_leaves_a_complete_current_lock_unchanged(self, monkeypatch):
+        data = {}
+        for name in pins.IMAGE_REGISTRY:
+            data.update(
+                pins._lock_entry_patch(
+                    name,
+                    f"repo/{name}",
+                    "c" * 40,
+                    "then",
+                    "sha256:old",
+                )
+            )
+        data["IMAGE_COUNT"] = str(len(pins.IMAGE_REGISTRY))
+        monkeypatch.setattr(pins, "read_lock", lambda required=False: _lock(data=data))
+        monkeypatch.setattr(
+            pins,
+            "resolve_images",
+            lambda *_args, **_kwargs: pytest.fail("a current lock needs no registry lookup"),
+        )
+        monkeypatch.setattr(
+            pins,
+            "run_command",
+            lambda *_args, **_kwargs: pytest.fail("a current lock must not be patched"),
+        )
+
+        assert pins.apply_image_lock_backfill("master", sources={}) is False
+
+
 class TestLockMutationConflicts:
     """Bounded resourceVersion compare-and-retry under concurrent writers."""
 

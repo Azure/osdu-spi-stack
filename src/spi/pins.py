@@ -1988,6 +1988,96 @@ class _NoBackfillNeeded(Exception):
     """Internal sentinel: the lock is absent or already carries schema-load."""
 
 
+def apply_image_lock_backfill(
+    branch: str = DEFAULT_IMAGE_BRANCH,
+    sources: Mapping[str, str] | None = None,
+    description: str = "Backfill missing services into the osdu-image-lock ConfigMap",
+    max_attempts: int = LOCK_MUTATION_MAX_ATTEMPTS,
+) -> bool:
+    """Add newly registered services and derived keys to an existing image lock."""
+
+    lock = read_lock(required=False)
+    if lock is None:
+        return False
+    source_policy = dict(sources) if sources is not None else trusted_canonical_sources(lock)
+    lock_data = lock.get("data") or {}
+    missing = []
+    for name in IMAGE_REGISTRY:
+        key = image_lock_key(name)
+        repository = lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
+        tag = lock_data.get(f"{key}_IMAGE_TAG", "")
+        digest = lock_data.get(f"{key}_IMAGE_DIGEST", "")
+        if not repository or not (tag or digest):
+            missing.append(name)
+    try:
+        resolved = resolve_images(branch, missing, source_policy) if missing else {}
+    except ImageResolutionError as exc:
+        raise PinError(str(exc)) from exc
+
+    changed = False
+
+    def compute(fresh_lock: dict | None) -> dict:
+        if fresh_lock is None:
+            raise _NoBackfillNeeded
+        nonlocal changed
+        data = dict(fresh_lock.get("data") or {})
+        pins = decode_pins(fresh_lock)
+        changed = False
+        for name in IMAGE_REGISTRY:
+            key = image_lock_key(name)
+            repository = data.get(f"{key}_IMAGE_REPOSITORY", "")
+            tag = data.get(f"{key}_IMAGE_TAG", "")
+            digest = data.get(f"{key}_IMAGE_DIGEST", "")
+            created_at = data.get(f"{key}_IMAGE_CREATED_AT", "")
+            if not repository or not (tag or digest):
+                image = resolved.get(name)
+                if image is None:
+                    continue
+                repository = image.repository
+                tag = image.tag
+                digest = image.digest
+                created_at = image.created_at
+            patch = _lock_entry_patch(
+                name,
+                repository,
+                tag,
+                created_at,
+                digest,
+                do_not_disrupt=bool(pins.get(name) and pins[name].ephemeral),
+            )
+            for field, value in patch.items():
+                if field not in data:
+                    data[field] = value
+                    changed = True
+            image = resolved.get(name)
+            if image is not None and image.acceptance_digest:
+                acceptance_key = acceptance_digest_key(name)
+                if acceptance_key not in data:
+                    data[acceptance_key] = image.acceptance_digest
+                    changed = True
+
+        complete = 0
+        for name in IMAGE_REGISTRY:
+            key = image_lock_key(name)
+            if data.get(f"{key}_IMAGE_REPOSITORY") and (
+                data.get(f"{key}_IMAGE_TAG") or data.get(f"{key}_IMAGE_DIGEST")
+            ):
+                complete += 1
+        if data.get("IMAGE_COUNT") != str(complete):
+            data["IMAGE_COUNT"] = str(complete)
+            changed = True
+        if not changed:
+            raise _NoBackfillNeeded
+        annotations = dict((fresh_lock.get("metadata") or {}).get("annotations") or {})
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    try:
+        mutate_lock(compute, description, max_attempts=max_attempts)
+    except _NoBackfillNeeded:
+        return False
+    return changed
+
+
 def apply_schema_load_backfill(
     branch: str = DEFAULT_IMAGE_BRANCH,
     description: str = "Backfill schema-load into the osdu-image-lock ConfigMap",
