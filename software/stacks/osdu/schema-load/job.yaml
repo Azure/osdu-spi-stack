@@ -34,6 +34,12 @@ spec:
     spec:
       serviceAccountName: workload-identity-sa
       restartPolicy: Never
+      # AKS Deployment Safeguards compliance. The loader only needs to read
+      # its image and ConfigMap scripts and write the existing /tmp/load.log.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
         spi-pool: osdu
       tolerations:
@@ -53,6 +59,12 @@ spec:
           # `spi reconcile` backfills a lock that predates this key.
           image: ${SCHEMA_LOAD_IMAGE_REF}
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
           envFrom:
             - configMapRef:
                 name: osdu-config
