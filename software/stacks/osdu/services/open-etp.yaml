@@ -1,0 +1,104 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: open-etp
+  namespace: osdu-flux
+spec:
+  targetNamespace: osdu
+  interval: 30m
+  install:
+    timeout: 15m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 15m
+    remediation:
+      retries: 3
+  chart:
+    spec:
+      chart: ./software/charts/osdu-spi-service
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: osdu-spi-stack-system
+  values:
+    image:
+      repository: ${OPEN_ETP_IMAGE_REPOSITORY}
+      tag: "${OPEN_ETP_IMAGE_TAG}"
+      digest: "${OPEN_ETP_IMAGE_DIGEST}"
+    karpenter:
+      doNotDisrupt: "${OPEN_ETP_DO_NOT_DISRUPT:=false}"
+    containerPort: 9002
+    command:
+      - openETPServer
+    args:
+      - server
+      - --start
+      - --log_level
+      - info
+      - -M
+      - 2GB
+      - -Q
+      - "1000"
+      - --authN
+      - none
+      - --authZ
+      - delegate=
+    service:
+      port: 80
+    probes:
+      liveness:
+        path: /health
+        port: 9002
+        initialDelaySeconds: 15
+        periodSeconds: 20
+        timeoutSeconds: 3
+        failureThreshold: 3
+      readiness:
+        path: /health
+        port: 9002
+        initialDelaySeconds: 20
+        periodSeconds: 20
+        timeoutSeconds: 10
+        failureThreshold: 3
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 3Gi
+    nodeSelector:
+      spi-pool: osdu
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: "osdu"
+        effect: NoSchedule
+      - key: kubernetes.azure.com/scalesetpriority
+        operator: Equal
+        value: "spot"
+        effect: NoSchedule
+    env:
+      - name: CLOUD_PROVIDER
+        value: az
+      - name: AZURE_ENABLE_MSI
+        value: "true"
+      - name: AZURE_ENABLE_POSTGRES_MSI
+        value: "true"
+      - name: AZURE_KEYVAULT_ACCESS_TOKEN_SCOPE
+        value: https://vault.azure.com/.default
+      - name: AZURE_POSTGRES_ACCESS_TOKEN_SCOPE
+        value: https://ossrdbms-aad.database.windows.net/.default
+      - name: RDMS_DATA_PARTITION_MODE
+        value: multiple
+      - name: RDMS_DATA_CONNECTIVITY_MODE
+        value: osdu
+      - name: PARTITION_URL
+        value: http://partition.osdu.svc.cluster.local/api/partition/v1
+      - name: ENTITLEMENTS_URL
+        value: http://entitlements.osdu.svc.cluster.local/api/entitlements/v2
+      - name: STORAGE_URL
+        value: http://storage.osdu.svc.cluster.local/api/storage/v2
+      - name: DOMAIN_NAME
+        value: dataservices.energy

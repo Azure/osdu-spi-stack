@@ -45,5 +45,10 @@ param partitionStorageNames = [
   'osdudev1opendes'
   'osdudev1tenant1'
 ]
+param reservoirPostgresNames = [
+  'osdu-dev1-opendes-reservoir-pg'
+  'osdu-dev1-tenant1-reservoir-pg'
+]
+param aksNatPublicIpAddress = '192.0.2.1'
 
 param oidcIssuerUrl = ''

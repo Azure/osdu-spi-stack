@@ -696,6 +696,44 @@ class TestAutomatedGatewayDeployment:
         ]
         assert not wrong, f"parentRefs must attach to {expected}: {wrong}"
 
+    @pytest.mark.parametrize(
+        ("mode", "hostname"),
+        [
+            ("ip-only", None),
+            ("single-host", "${INGRESS_FQDN}"),
+            ("multi-host", "${INGRESS_HOST_OSDU}"),
+        ],
+    )
+    def test_open_etp_route_rewrites_the_public_prefix(self, mode, hostname):
+        path = STACKS / "routes" / mode / "osdu" / "routes.yaml"
+        route = next(
+            doc
+            for doc in yaml.safe_load_all(path.read_text(encoding="utf-8"))
+            if doc and doc.get("kind") == "HTTPRoute" and doc["metadata"]["name"] == "open-etp"
+        )
+        assert route["spec"].get("hostnames") == ([hostname] if hostname else None)
+        rule = route["spec"]["rules"][0]
+        assert rule["matches"] == [
+            {
+                "path": {
+                    "type": "PathPrefix",
+                    "value": "/api/reservoir-ddms-etp/v2/",
+                }
+            }
+        ]
+        assert rule["filters"] == [
+            {
+                "type": "URLRewrite",
+                "urlRewrite": {
+                    "path": {
+                        "type": "ReplacePrefixMatch",
+                        "replacePrefixMatch": "/",
+                    }
+                },
+            }
+        ]
+        assert rule["backendRefs"] == [{"name": "open-etp", "port": 80}]
+
     def test_tls_listeners_reference_secrets_in_the_gateway_namespace(self):
         for mode in ("azure", "dns"):
             for op in _gateway_patch_ops(INGRESS_DIR / mode):
