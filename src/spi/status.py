@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional, Sequence
 
 from rich.panel import Panel
 from rich.table import Table
@@ -461,35 +461,55 @@ def _read_deploy_record() -> DeployRecord | None:
         raise StatusError(str(exc)) from exc
 
 
-def collect_status() -> StatusSnapshot:
+def _read_readiness_then_stamp() -> tuple[KustomizationReadiness, dict | None, StatusError | None]:
+    """Kustomizations, then the stack-version stamp; a stamp failure is returned, not raised."""
+    readiness = collect_kustomization_readiness()
+    # After the Kustomizations, so a converged snapshot cannot carry the previous release.
+    try:
+        stamp = _optional_configmap(STACK_VERSION_CONFIGMAP, STACK_VERSION_NAMESPACE)
+    except StatusError as exc:
+        return readiness, None, exc
+    return readiness, stamp, None
+
+
+def _snapshot_reads() -> list[Callable[[], Any]]:
+    """The snapshot's independent reads, in the order their failures take precedence.
+
+    A Kustomization error outranks a GitRepository one, and so on down the list.
+    """
     from .info import collect_base_url
 
-    # Seven independent reads. Ordered results keep the failure a caller sees
-    # deterministic: a Kustomization error still outranks a GitRepository one.
+    return [
+        _read_readiness_then_stamp,
+        lambda: _required_kubectl_json(
+            ["get", "gitrepository", "osdu-spi-stack-system", "-n", "osdu-flux"],
+            "read the Flux GitRepository",
+        ),
+        _read_deploy_record,
+        _read_members_jobs,
+        _read_expected_members_jobs,
+        lambda: _optional_configmap("osdu-image-lock", "osdu-flux"),
+        collect_base_url,
+    ]
+
+
+def collect_status() -> StatusSnapshot:
+    return _build_snapshot(gather_reads(_snapshot_reads()))
+
+
+def _build_snapshot(results: Sequence[Any]) -> StatusSnapshot:
     (
-        kustomization_readiness,
+        (kustomization_readiness, stack_version, stack_version_error),
         git_repository,
         record,
         members_jobs,
         expected_jobs,
         image_lock,
         base_url,
-    ) = gather_reads(
-        [
-            collect_kustomization_readiness,
-            lambda: _required_kubectl_json(
-                ["get", "gitrepository", "osdu-spi-stack-system", "-n", "osdu-flux"],
-                "read the Flux GitRepository",
-            ),
-            _read_deploy_record,
-            _read_members_jobs,
-            _read_expected_members_jobs,
-            lambda: _optional_configmap("osdu-image-lock", "osdu-flux"),
-            collect_base_url,
-        ]
-    )
-    # After the Flux reads, so a converged snapshot cannot carry the previous release.
-    stack_version = _optional_configmap(STACK_VERSION_CONFIGMAP, STACK_VERSION_NAMESPACE)
+    ) = results
+    # Raised only once every other read has succeeded, so it keeps its last-place rank.
+    if stack_version_error is not None:
+        raise stack_version_error
 
     items = kustomization_readiness.items
     states = kustomization_readiness.states
@@ -792,21 +812,12 @@ def get_helmrelease_table() -> Table:
     return table
 
 
-def get_custom_resources(platform_ns: str = "platform") -> Table:
+def get_custom_resources(cnpg: dict | None, es: dict | None, platform_ns: str) -> Table:
     table = Table(title="Key Resources", border_style="cyan", expand=True)
     table.add_column("Resource", style="bold")
     table.add_column("Namespace")
     table.add_column("Status")
     table.add_column("Details")
-
-    cnpg, es = gather_reads(
-        [
-            lambda: kubectl_json(["get", "clusters.postgresql.cnpg.io", "-n", platform_ns]),
-            lambda: kubectl_json(
-                ["get", "elasticsearches.elasticsearch.k8s.elastic.co", "-n", platform_ns]
-            ),
-        ]
-    )
 
     if cnpg and cnpg.get("items"):
         for item in cnpg["items"]:
@@ -1095,8 +1106,25 @@ def get_summary(snapshot: StatusSnapshot) -> Panel:
     return Panel(body, title="Summary", border_style="cyan")
 
 
-def render_status(snapshot: StatusSnapshot | None = None):
-    snapshot = snapshot or collect_status()
+def render_status():
+    # The table reads join the snapshot's reads in one bounded wave; nesting
+    # gather_reads would multiply the concurrency cap.
+    snapshot_reads = _snapshot_reads()
+    results = gather_reads(
+        [
+            *snapshot_reads,
+            get_helmrelease_table,
+            lambda: kubectl_json(["get", "clusters.postgresql.cnpg.io", "-n", "platform"]),
+            lambda: kubectl_json(
+                ["get", "elasticsearches.elasticsearch.k8s.elastic.co", "-n", "platform"]
+            ),
+            lambda: _fetch_jobs(_STACK_NAMESPACES),
+            *[partial(get_pod_table, ns, title) for ns, title in _STACK_POD_SECTIONS],
+        ]
+    )
+    snapshot = _build_snapshot(results[: len(snapshot_reads)])
+    helmreleases, cnpg, es, jobs, *pod_tables = results[len(snapshot_reads) :]
+    custom_resources = get_custom_resources(cnpg, es, platform_ns="platform")
     console.print(Panel("[bold]SPI Stack Status[/bold]", border_style="cyan"))
 
     if snapshot.maintenance:
@@ -1120,17 +1148,6 @@ def render_status(snapshot: StatusSnapshot | None = None):
                 border_style="yellow",
             )
         )
-
-    # The summary and Kustomization tables render from the snapshot; every
-    # other section is an independent cluster read, so they go out in one wave.
-    helmreleases, custom_resources, jobs, *pod_tables = gather_reads(
-        [
-            get_helmrelease_table,
-            lambda: get_custom_resources(platform_ns="platform"),
-            lambda: _fetch_jobs(_STACK_NAMESPACES),
-            *[partial(get_pod_table, ns, title) for ns, title in _STACK_POD_SECTIONS],
-        ]
-    )
 
     sections = [
         get_kustomization_table(snapshot.kustomization_items),

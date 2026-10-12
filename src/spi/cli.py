@@ -1711,21 +1711,21 @@ def status(
         watch_status()
         return
 
-    try:
-        snapshot = collect_status()
-    except StatusError as exc:
-        if output_json:
-            typer.echo(str(exc), err=True)
-        else:
-            console.print(f"[error]{exc}[/error]")
-        raise typer.Exit(code=1)
-
     if output_json:
+        try:
+            snapshot = collect_status()
+        except StatusError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1)
         print(json.dumps(snapshot.to_dict(), indent=2))
         raise typer.Exit(code=status_exit_code(snapshot))
 
     console.print(f"  [dim]Cluster context: {ctx}[/dim]")
-    render_status(snapshot)
+    try:
+        render_status()
+    except StatusError as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1)
 
 
 @maintenance_app.command("set")
