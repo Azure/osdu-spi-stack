@@ -34,7 +34,15 @@ args = parser.parse_args()
 report = {
     "report_schema": behavior.get("schema", 1),
     "service": behavior.get("service", "partition"),
-    "contract": {"test_dir": "suite", "maven_arguments": ["verify"], "timeout_minutes": 5},
+    "contract": {
+        "test_type": behavior.get("test_type", "maven"),
+        "test_dir": "suite",
+        "test_entrypoint": behavior.get("test_entrypoint", ""),
+        "test_arguments": behavior.get("test_arguments", []),
+        "report_paths": behavior.get("report_paths", []),
+        "maven_arguments": ["verify"],
+        "timeout_minutes": 5,
+    },
     "seen_env": sorted(os.environ),
     "suite": args.suite,
     "error": None,
@@ -156,6 +164,22 @@ def test_script_arguments_come_from_the_resolver_contract(tmp_path):
     )
 
     assert binding.arguments(()) == arguments
+
+
+def test_declared_script_report_is_counted(tmp_path):
+    report = tmp_path / "tests" / "results" / "rafs.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        '<testsuites tests="2472" failures="34" errors="85" skipped="0"/>',
+        encoding="utf-8",
+    )
+
+    assert testing.count_tests(tmp_path, ("tests/results/rafs.xml",)) == {
+        "tests": 2472,
+        "skipped": 0,
+        "failures": 34,
+        "errors": 85,
+    }
 
 
 @pytest.fixture
