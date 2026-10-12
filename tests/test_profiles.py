@@ -774,6 +774,7 @@ class TestStorageRuntime:
         env = {item["name"]: item["value"] for item in release["spec"]["values"]["env"]}
 
         assert env["COLLABORATIONS_ENABLED"] == "true"
+        assert env["FEATUREFLAG_STRATEGY"] == "appProperty"
 
 
 class TestFileRuntime:
