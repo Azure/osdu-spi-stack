@@ -127,6 +127,20 @@ def _pin(**overrides) -> ServicePin:
     return ServicePin(**fields)
 
 
+def test_paired_script_entrypoint_is_forwarded_without_changing_maven_images():
+    script = testing._docker_run(
+        "repo/script",
+        ".",
+        "suite.env",
+        ["--flag"],
+        entrypoint="tests/integration/run_spi.sh",
+    )
+    maven = testing._docker_run("repo/maven", "testing", "suite.env", ["verify"])
+
+    assert script[script.index("SUITE_ENTRYPOINT=tests/integration/run_spi.sh") - 1] == "-e"
+    assert all(not item.startswith("SUITE_ENTRYPOINT=") for item in maven)
+
+
 @pytest.fixture
 def cluster(monkeypatch, tmp_path):
     """Everything past the process boundary: lock, cluster, GitHub, GHCR, docker, and mvn."""
