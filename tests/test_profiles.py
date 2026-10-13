@@ -723,6 +723,52 @@ class TestAutomatedGatewayDeployment:
         assert "spi-gateway-tls" not in _dependency_names(INGRESS_DIR / mode)
 
 
+class TestReferenceCatalogDownloads:
+    """Reference catalogs are immutable, verified, and fetched without root."""
+
+    @pytest.mark.parametrize(
+        ("manifest", "source_revision", "payload_sha256"),
+        [
+            (
+                "unit.yaml",
+                "9b9364977352ec22f358ec592934c3a60e679b4e",
+                "f703457c42de2f61b17adb3b1626f9d8c3416763aef8d7c9df221219cf91938d",
+            ),
+            (
+                "crs-catalog.yaml",
+                "1520fcfe1126ac5b28e6f4ccf9ec268b526ddedc",
+                "0166cf95dc237152ba688d59cd7f921f00812704a464987df48fbf1813fb6ab1",
+            ),
+        ],
+    )
+    def test_catalog_init_container_is_immutable_verified_and_non_root(
+        self, manifest, source_revision, payload_sha256
+    ):
+        release = yaml.safe_load(
+            (STACKS / "services-reference" / manifest).read_text(encoding="utf-8")
+        )
+        container = release["spec"]["values"]["initContainers"][0]
+        script = container["command"][-1]
+
+        assert (
+            container["image"]
+            == "docker.io/library/alpine:3.22"
+            "@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8"
+        )
+        assert source_revision in script
+        assert payload_sha256 in script
+        assert "sha256sum -c -" in script
+        assert "/raw/master/" not in script
+        assert " install " not in script
+        assert container["securityContext"] == {
+            "runAsUser": 1000,
+            "runAsNonRoot": True,
+            "readOnlyRootFilesystem": True,
+            "allowPrivilegeEscalation": False,
+            "capabilities": {"drop": ["ALL"]},
+        }
+
+
 class TestBorrowedPodDisruptionSubstitution:
     """Every service HelmRelease reads its own do-not-disrupt key from the image lock."""
 
