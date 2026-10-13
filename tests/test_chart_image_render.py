@@ -104,6 +104,13 @@ def test_pod_security_context_grants_non_root_containers_shared_volume_access():
     }
 
 
+def test_service_run_as_user_is_configurable():
+    deployment = _rendered_deployment({"runAsUser": "999"})
+
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    assert container["securityContext"]["runAsUser"] == 999
+
+
 _ISTIO_PROXY = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["istioProxyPin"]["image"]
 
 

@@ -1177,6 +1177,48 @@ class TestApplyImageLock:
         assert set(saved) == {"storage", "_concurrent"}
 
 
+class TestApplyImageLockBackfill:
+    def test_adds_only_missing_services(self, monkeypatch):
+        lock = _lock(data={**_canonical_data("storage"), "IMAGE_COUNT": "1"})
+        calls = _wire_lock(monkeypatch, lock)
+        resolved = {
+            "seismic": ResolvedImage(
+                "seismic",
+                "ghcr.io/acme/seismic",
+                "sha-canonical",
+                "2026-08-20T00:00:00Z",
+                "sha256:seismic",
+            ),
+            "seismic-restore": ResolvedImage(
+                "seismic-restore",
+                "ghcr.io/acme/seismic-restore",
+                "sha-canonical",
+                "2026-08-20T00:00:00Z",
+                "sha256:restore",
+            ),
+        }
+
+        assert pins.apply_image_lock_backfill(resolved) is True
+        data, _saved = calls["patch"]
+        assert data["STORAGE_IMAGE_REPOSITORY"] == "repo/storage-master"
+        assert data["SEISMIC_IMAGE_REPOSITORY"] == "ghcr.io/acme/seismic"
+        assert data["SEISMIC_RESTORE_IMAGE_REPOSITORY"] == "ghcr.io/acme/seismic-restore"
+        assert data["IMAGE_COUNT"] == "3"
+
+    def test_returns_false_when_services_exist(self, monkeypatch):
+        lock = _lock(data=_canonical_data("seismic"))
+        monkeypatch.setattr(pins, "read_lock", lambda required=True: lock)
+
+        image = ResolvedImage(
+            "seismic",
+            "ghcr.io/acme/seismic",
+            "sha-canonical",
+            "",
+            "sha256:seismic",
+        )
+        assert pins.apply_image_lock_backfill({"seismic": image}) is False
+
+
 class TestApplyCompanionBackfills:
     def test_returns_false_when_lock_absent(self, monkeypatch):
         monkeypatch.setattr(pins, "read_lock", lambda required=True: None)
@@ -1385,11 +1427,12 @@ class TestLockMutationConflicts:
             reconciled.append(command[3])
 
         monkeypatch.setattr(pins, "run_command", fake_run)
-        pins.reconcile_consumers(["unit", "schema-load", "storage"])
+        pins.reconcile_consumers(["unit", "schema-load", "storage", "seismic"])
         assert reconciled == [
             "spi-osdu-services",
             "spi-osdu-schema-load",
             "spi-osdu-reference",
+            "spi-osdu-ddms",
         ]
 
     def test_failed_stage_stops_the_sequence(self, monkeypatch):
@@ -1414,6 +1457,10 @@ class TestLockMutationConflicts:
         )
         pins.reconcile_consumers(["storage"])
         assert reconciled == ["spi-osdu-services"]
+
+        reconciled.clear()
+        pins.reconcile_consumers(["seismic"])
+        assert reconciled == ["spi-osdu-ddms"]
 
 
 class TestParseImageDigestRef:

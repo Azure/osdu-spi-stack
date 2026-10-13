@@ -481,6 +481,7 @@ class TestReconcileRefreshesClusterConfig:
             "spi-osdu-services",
             "spi-osdu-schema-load",
             "spi-osdu-reference",
+            "spi-osdu-ddms",
         ]
 
     def test_refresh_images_skips_missing_kustomizations(self):

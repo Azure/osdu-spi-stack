@@ -778,26 +778,63 @@ class TestBorrowedPodDisruptionSubstitution:
         releases = {
             entry.file: name
             for name, entry in IMAGE_REGISTRY.items()
-            if entry.file.startswith(("services/", "services-reference/"))
+            if entry.file.startswith(("services/", "services-reference/", "services-ddms/"))
         }
         manifests = sorted(
             path
-            for directory in ("services", "services-reference")
+            for directory in ("services", "services-reference", "services-ddms")
             for path in (STACKS / directory).glob("*.yaml")
             if path.name != "kustomization.yaml"
         )
-        assert {str(path.relative_to(STACKS)) for path in manifests} == set(releases)
+        assert {path.relative_to(STACKS).as_posix() for path in manifests} == set(releases)
         for path in manifests:
             doc = yaml.safe_load(path.read_text())
-            service = releases[str(path.relative_to(STACKS))]
+            service = releases[path.relative_to(STACKS).as_posix()]
             value = doc["spec"]["values"]["karpenter"]["doNotDisrupt"]
             assert value == f"${{{do_not_disrupt_key(service)}:=false}}", path.name
 
-    @pytest.mark.parametrize("name", ["spi-osdu-services", "spi-osdu-reference"])
+    @pytest.mark.parametrize("name", ["spi-osdu-services", "spi-osdu-reference", "spi-osdu-ddms"])
     def test_service_kustomizations_substitute_from_the_image_lock(self, name):
         item = _kustomization(PROFILES_DIR / "core", name)
         sources = item["spec"]["postBuild"]["substituteFrom"]
         assert {"kind": "ConfigMap", "name": "osdu-image-lock"} in sources
+
+
+class TestDdmsLayer:
+    def test_only_core_delivers_ddms(self):
+        delivering = {
+            profile.value
+            for profile in Profile
+            if "./software/stacks/osdu/services-ddms"
+            in _referenced_paths(PROFILES_DIR / profile.value)
+        }
+        assert delivering == {"core"}
+
+    def test_ddms_waits_for_osdu_initialization(self):
+        item = _kustomization(PROFILES_DIR / "core", "spi-osdu-ddms")
+        assert item["metadata"]["labels"]["spi-stack.layer"] == "7"
+        assert item["spec"]["dependsOn"] == [{"name": "spi-osdu-init"}]
+        assert item["spec"]["path"] == "./software/stacks/osdu/services-ddms"
+
+    @pytest.mark.parametrize(
+        ("mode", "route_path", "extra_dependency"),
+        [
+            ("azure", "single-host", None),
+            ("dns", "multi-host", "spi-external-dns-release"),
+            ("ip", "ip-only", None),
+        ],
+    )
+    def test_ddms_routes_wait_for_workload_and_gateway(self, mode, route_path, extra_dependency):
+        item = _kustomization(INGRESS_DIR / mode, "spi-osdu-ddms-routes")
+        dependencies = {dependency["name"] for dependency in item["spec"]["dependsOn"]}
+        assert {"spi-osdu-ddms", "spi-ingress-gateway"} <= dependencies
+        if extra_dependency:
+            assert extra_dependency in dependencies
+        assert item["spec"]["path"] == f"./software/stacks/osdu/routes/{route_path}/ddms"
+
+    @pytest.mark.parametrize("mode", ["azure-minimal", "dns-minimal", "ip-minimal", "bare"])
+    def test_non_core_ingress_omits_ddms_routes(self, mode):
+        assert "spi-osdu-ddms-routes" not in _declared_names(INGRESS_DIR / mode)
 
 
 class TestForkRbac:
