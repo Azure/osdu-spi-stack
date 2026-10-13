@@ -719,6 +719,12 @@ class TestAutomatedGatewayDeployment:
         ]
         assert rule["backendRefs"] == [{"name": "open-etp", "port": 80}]
 
+    def test_open_etp_uses_the_key_vault_data_plane_scope(self):
+        release = yaml.safe_load((STACKS / "services" / "open-etp.yaml").read_text(encoding="utf-8"))
+        env = {item["name"]: item["value"] for item in release["spec"]["values"]["env"]}
+
+        assert env["AZURE_KEYVAULT_ACCESS_TOKEN_SCOPE"] == "https://vault.azure.net/.default"
+
     def test_tls_listeners_reference_secrets_in_the_gateway_namespace(self):
         for mode in ("azure", "dns"):
             for op in _gateway_patch_ops(INGRESS_DIR / mode):
