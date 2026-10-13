@@ -760,6 +760,7 @@ class TestReferenceCatalogDownloads:
         assert "sha256sum -c -" in script
         assert "/raw/master/" not in script
         assert " install " not in script
+        assert "wget -q" not in script
         assert container["securityContext"] == {
             "runAsUser": 1000,
             "runAsNonRoot": True,

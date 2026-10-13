@@ -63,8 +63,8 @@ spec:
         value: http://partition/api/partition/v1
       - name: ENTITLEMENT_URL
         value: http://entitlements/api/entitlements/v2
-    # Downloads the catalog from the same immutable source revision on every
-    # reconcile and verifies it before making it visible to the service.
+    # Downloads the catalog from the same immutable source revision when the
+    # pod starts and verifies it before making it visible to the service.
     initContainers:
       - name: download-catalog
         image: docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
@@ -74,7 +74,7 @@ spec:
           - |
             set -eu
             file=/data/unit_catalog_v2.json.download
-            wget -q -O "$file" https://community.opengroup.org/osdu/platform/system/reference/unit-service/-/raw/9b9364977352ec22f358ec592934c3a60e679b4e/data/unit_catalog_v2.json
+            wget -O "$file" https://community.opengroup.org/osdu/platform/system/reference/unit-service/-/raw/9b9364977352ec22f358ec592934c3a60e679b4e/data/unit_catalog_v2.json
             echo "f703457c42de2f61b17adb3b1626f9d8c3416763aef8d7c9df221219cf91938d  $file" | sha256sum -c -
             mv "$file" /data/unit_catalog_v2.json
         volumeMounts:
