@@ -42,6 +42,19 @@ annotation schema live in `docs/design/fork-deployment.md`.
   `reconcile.fluxcd.io/watch: Enabled` label, so Flux reconciles the
   consuming Kustomizations when the ConfigMap changes; fork CI mutates
   nothing in Flux and holds no Flux write permission (ADR-032).
+- **Companions are one lock contract.** An image registry entry can declare a
+  companion name, fork package suffix, runtime enablement keys, and whether
+  canonical refreshes and pins require it. The primary service owns the pair:
+  direct pin and refresh commands exclude the companion, while reset folds a
+  companion name into its primary. Canonical resolution uses one source and
+  commit for both images.
+  An ephemeral pin resolves the companion from the primary package and commit;
+  a required missing companion refuses the pin, while an optional missing
+  companion stays canonical and any older companion pin is released. The
+  compare-and-set writer rejects a required primary-only change and rejects a
+  companion-only change after the companion exists. A lock that predates a
+  declared companion gains it from the primary's recorded canonical, including
+  the restore target captured under an active pin.
 - **Verified deploys.** The CLI verifies the running image digest after the
   pin, before the lane mints callers and runs suites. The shipped lane does
   not re-assert the digest immediately before each suite; a replacement
@@ -115,6 +128,10 @@ services under the same owner, the mechanism ADR-017 already declined.
 - The lock's digest keys become load-bearing; `render_lock_with_pins()` must
   carry the pin's digest and created-at through the overlay instead of
   blanking them (ADR-017).
+- Companion metadata couples the stack registry to the fork package naming
+  contract. Adding a companion requires its lock entry and consumer to land
+  with the metadata that drives resolution, migration, pinning, reset, and
+  source reporting.
 - Chart-contract changes do not ride this seam: a service PR that needs a new
   env var or chart behavior lands a stack PR first, the environment picks it
   up on upgrade, and the fork PR deploys against it.

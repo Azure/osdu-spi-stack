@@ -1059,7 +1059,11 @@ class TestPromotionCheck:
             service, f"ghcr.io/acme/osdu-spi-{service}", "sha-bbbbbbbbbbbb", "", "sha256:d"
         )
         monkeypatch.setattr(onboard, "resolve_fork_image", lambda svc, repo: (image, "b" * 40))
-        monkeypatch.setattr(onboard, "resolve_fork_loader", lambda repository, commit: loader)
+        monkeypatch.setattr(
+            onboard,
+            "resolve_fork_companion",
+            lambda repository, commit, companion: loader,
+        )
 
     def test_a_promotion_names_the_image_the_next_refresh_resolves(self, monkeypatch):
         self._fork_image(monkeypatch, "partition")
