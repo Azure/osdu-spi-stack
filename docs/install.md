@@ -63,14 +63,13 @@ Owner and User Access Administrator are not needed. Both assignments sit at
 subscription scope, which also covers the DNS zone's resource group in `dns`
 ingress mode and remains after `spi down`.
 
-Seismic restore is the exception. `spi up --enable-seismic-restore` creates
-one resource-group-scoped custom role and also preflights
-`Microsoft.Authorization/roleDefinitions/write` and `delete`. If either is
-missing, the CLI prints a User Access Administrator grant. That broader grant
-is needed only for the restore deployment and should be removed afterward.
-Disabling restore later scales the worker to zero and disables recovery
-policies, but incremental deployment retains the dormant restore identity,
-roles, queue, and Cosmos containers until `spi reset`.
+`spi up --enable-seismic-restore` assigns Storage Account Backup Contributor
+to the RestoreRunner identity on each partition storage account. That built-in
+role is included in the constrained role-assignment condition below, so no
+custom-role definition permission is needed. Disabling restore later scales
+the worker to zero and disables recovery policies, but incremental deployment
+retains the dormant restore identity, role assignments, queue, and Cosmos
+containers until `spi reset`.
 
 `spi check` reads the signed-in identity's permissions and, when one is
 missing, prints the exact commands with the object id filled in. `spi up` runs
@@ -96,7 +95,7 @@ az role assignment create \
   --assignee-principal-type User \
   --scope /subscriptions/<subscription-id> \
   --condition-version 2.0 \
-  --condition '((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/write'\''})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {4d97b98b-1d4f-4787-a291-c67834d212e7, b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b, 4abbcc35-e782-43d8-92c5-2d3f1bd2253f, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, ba92f5b4-2d11-453d-a403-e96b0029c9fe, b66df1f4-588e-4a1f-abce-d26fa97b6668, 0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3, 974c5e8b-45b9-4653-ba55-5f855dd0fb88, 69a216fc-b8fb-44d8-bc22-1f3c2cd27a39, 4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0, 7f951dda-4ed3-4680-a7ca-43fe172d538d, befefa01-2a29-4197-83a8-272ff33ce314})) AND ((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/delete'\''})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {4d97b98b-1d4f-4787-a291-c67834d212e7, b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b, 4abbcc35-e782-43d8-92c5-2d3f1bd2253f, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, ba92f5b4-2d11-453d-a403-e96b0029c9fe, b66df1f4-588e-4a1f-abce-d26fa97b6668, 0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3, 974c5e8b-45b9-4653-ba55-5f855dd0fb88, 69a216fc-b8fb-44d8-bc22-1f3c2cd27a39, 4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0, 7f951dda-4ed3-4680-a7ca-43fe172d538d, befefa01-2a29-4197-83a8-272ff33ce314}))'
+  --condition '((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/write'\''})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {4d97b98b-1d4f-4787-a291-c67834d212e7, b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b, 4abbcc35-e782-43d8-92c5-2d3f1bd2253f, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, ba92f5b4-2d11-453d-a403-e96b0029c9fe, e5e2a7ff-d759-4cd2-bb51-3152d37e2eb1, 0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3, 974c5e8b-45b9-4653-ba55-5f855dd0fb88, 69a216fc-b8fb-44d8-bc22-1f3c2cd27a39, 4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0, 7f951dda-4ed3-4680-a7ca-43fe172d538d, befefa01-2a29-4197-83a8-272ff33ce314})) AND ((!(ActionMatches{'\''Microsoft.Authorization/roleAssignments/delete'\''})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {4d97b98b-1d4f-4787-a291-c67834d212e7, b1ff04bb-8a4e-4dc4-8eb5-8693973ce19b, 4abbcc35-e782-43d8-92c5-2d3f1bd2253f, b86a8fe4-44ce-4948-aee5-eccb2c155cd7, 4633458b-17de-408a-b874-0445c86b69e6, ba92f5b4-2d11-453d-a403-e96b0029c9fe, e5e2a7ff-d759-4cd2-bb51-3152d37e2eb1, 0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3, 974c5e8b-45b9-4653-ba55-5f855dd0fb88, 69a216fc-b8fb-44d8-bc22-1f3c2cd27a39, 4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0, 7f951dda-4ed3-4680-a7ca-43fe172d538d, befefa01-2a29-4197-83a8-272ff33ce314}))'
 ```
 
 The condition lists these role definitions:
@@ -109,7 +108,7 @@ The condition lists these role definitions:
 | Key Vault Secrets Officer | `b86a8fe4-44ce-4948-aee5-eccb2c155cd7` |
 | Key Vault Secrets User | `4633458b-17de-408a-b874-0445c86b69e6` |
 | Storage Blob Data Contributor | `ba92f5b4-2d11-453d-a403-e96b0029c9fe` |
-| Seismic Blob Restore Operator | `b66df1f4-588e-4a1f-abce-d26fa97b6668` |
+| Storage Account Backup Contributor | `e5e2a7ff-d759-4cd2-bb51-3152d37e2eb1` |
 | Storage Table Data Contributor | `0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3` |
 | Storage Queue Data Contributor | `974c5e8b-45b9-4653-ba55-5f855dd0fb88` |
 | Azure Service Bus Data Sender | `69a216fc-b8fb-44d8-bc22-1f3c2cd27a39` |

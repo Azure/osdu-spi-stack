@@ -107,8 +107,9 @@ def test_restore_infrastructure_is_conditioned_on_one_gate():
     assert "isVersioningEnabled: false" in partition
     assert "restorePolicy:" in partition
     assert "resource restoreQueue " in common_storage
-    assert "storageBlobRestoreOperatorRole" in rbac
-    assert "Microsoft.Storage/storageAccounts/restoreBlobRanges/action" in rbac
+    assert "storageAccountBackupContributor" in rbac
+    assert "e5e2a7ff-d759-4cd2-bb51-3152d37e2eb1" in rbac
+    assert "resource storageBlobRestoreOperatorRole" not in rbac
     assert "restoreCommonStorageQueueAssignment" in rbac
     assert "restorePartitionStorageBlobAssignments" in rbac
 

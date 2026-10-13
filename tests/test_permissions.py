@@ -30,12 +30,9 @@ from spi.permissions import (
     CREATE_CLUSTER,
     CREATE_GROUP,
     DELETE_ASSIGNMENT,
-    DELETE_ROLE_DEFINITION,
     DEPLOY_ACTIONS,
-    RESTORE_DEPLOY_ACTIONS,
     STACK_ROLES,
     WRITE_ASSIGNMENT,
-    WRITE_ROLE_DEFINITION,
     action_allowed,
     grant_commands,
     stack_condition,
@@ -104,13 +101,6 @@ class TestEvaluator:
     def test_matching_ignores_case(self):
         entries = [{"actions": ["microsoft.authorization/ROLEASSIGNMENTS/*"], "notActions": []}]
         assert action_allowed(WRITE_ASSIGNMENT, entries)
-
-    def test_restore_preflight_adds_custom_role_definition_actions(self):
-        assert RESTORE_DEPLOY_ACTIONS == (
-            *DEPLOY_ACTIONS,
-            WRITE_ROLE_DEFINITION,
-            DELETE_ROLE_DEFINITION,
-        )
 
 
 def _az(permissions_by_scope, group_exists=False):
@@ -184,20 +174,6 @@ class TestEvaluate:
         assert CREATE_GROUP not in result.actions
         assert result.denied == []
 
-    def test_restore_actions_are_preflighted_at_the_existing_group(self):
-        run, _ = _az({RG_SCOPE: [OWNER]}, group_exists=True)
-        with patch("spi.permissions.run_command", side_effect=run):
-            result = permissions.resolve_scope(
-                SUB_ID,
-                "spi-stack-dev1",
-                RESTORE_DEPLOY_ACTIONS,
-            )
-
-        assert WRITE_ROLE_DEFINITION in result.actions
-        assert DELETE_ROLE_DEFINITION in result.actions
-        assert CREATE_GROUP not in result.actions
-        assert result.denied == []
-
 
 class TestGrantText:
     def test_the_condition_names_every_stack_role_in_both_halves(self):
@@ -221,19 +197,6 @@ class TestGrantText:
             '--role "Role Based Access Control Administrator" \\',
         ]
         assert grant_commands(OID, "User", SUB_ID, []) == []
-
-    def test_custom_role_definition_gap_prints_a_temporary_admin_grant(self):
-        commands = grant_commands(
-            OID,
-            "User",
-            SUB_ID,
-            [WRITE_ROLE_DEFINITION, DELETE_ROLE_DEFINITION],
-            powershell=False,
-        )
-
-        assert len(commands) == 1
-        assert '--role "User Access Administrator"' in commands[0]
-        assert "--condition" not in commands[0]
 
     def test_the_bash_form_single_quotes_the_condition(self):
         command = grant_commands(OID, "User", SUB_ID, [WRITE_ASSIGNMENT], powershell=False)[0]
