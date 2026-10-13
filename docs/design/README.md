@@ -14,6 +14,7 @@ change a particular part of the stack.
 | [Secret lifecycle](secret-lifecycle.md) | Find credential writers and consumers, or understand rotation limitations |
 | [Environment lifecycle](environment-lifecycle.md) | Operate the version-pinned shared environment, its maintenance gate, and its implemented and planned workflows |
 | [Fork deployment](fork-deployment.md) | Pin and verify a fork image, restore it by run ownership, or inspect the onboarding roadmap |
+| [DDMS services](ddms-services.md) | Trace the planned DDMS workload and route layers, image pairing, identity boundary, and domain-data loading |
 | [CI smoke pipeline](ci-smoke.md) | Run the Azure smoke workflow or investigate cleanup failures |
 
 Commands use the installed `spi` executable. From a source checkout, replace
