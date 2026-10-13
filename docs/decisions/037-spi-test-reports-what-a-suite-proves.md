@@ -8,7 +8,7 @@ override that drops its parent's assertion keeps a green count. Which suite
 guards a service is a second question the count cannot answer: it turns on
 which rows of the service's contract each test asserts on, and how strongly,
 and that is read from the suite's sources. Three conditions shape the answer.
-The run's directory already holds the Surefire reports and the suite's
+The run's directory already holds its selected JUnit reports and the suite's
 sources, and both are discarded when the run ends. The reports carry the
 suite's captured output, where suites log the bearers the CLI minted. Reading
 a test for what it proves is a judgment, and the CLI stores no credential a
@@ -22,9 +22,10 @@ in a verdict or an exit code. The facts live in `src/spi/suite_report.py`, the
 contract in `src/spi/suite_contract.py`, the reviewer in
 `src/spi/suite_review.py`, and the pages in `src/spi/suite_page.py`.
 
-- **Facts are computed.** Status and duration come from the Surefire and
-  Failsafe XML the verdict reads. A passing test is `empty` when the body
-  that runs for it holds no statement. That body is the method of the
+- **Facts are computed.** Status and duration come from the JUnit XML the
+  verdict reads: Surefire and Failsafe for Maven, or the descriptor's
+  `reportPaths` for a script suite. A passing Java test is `empty` when the
+  body that runs for it holds no statement. That body is the method of the
   reported name and parameter count in the reported class's own scope, or
   the one it inherits by following `extends` through the suite's Java
   sources to a parent the child's package or imports can see. A test the
@@ -63,9 +64,11 @@ contract in `src/spi/suite_contract.py`, the reviewer in
   service's endpoint over https, without a token. A row is one operation and
   one response it documents below 500, named `METHOD /path :: code`.
 - **The reviewer maps and grades.** The reviewer reads a bundle of the
-  contract rows, each suite's facts, and each suite's `.java` and `.feature`
-  sources. It sees the Surefire reports only as the facts carry them: the
-  statuses, the durations, and the redacted excerpts of failures. It names
+  contract rows, each suite's facts, and its Java, feature, JavaScript,
+  TypeScript, shell, and JSON sources. Dependency, generated output, coverage,
+  and report directories are excluded. It sees JUnit reports only as the
+  facts carry them: the statuses, the durations, and the redacted excerpts of
+  failures. It names
   the row each test protects and grades what the test proves about it: 0
   nothing, 1 the status code, 2 the body or headers, 3 state read back after
   a write, or no grade for a body outside the sources. It adds the rows the

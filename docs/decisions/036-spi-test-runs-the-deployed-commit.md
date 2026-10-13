@@ -52,28 +52,29 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   canonical resolution applies (ADR-033). The resolver runs under the CLI's
   own interpreter, since it is standard library only, in `run` mode with the
   facts from `spi info`. The CLI reads the resolver's report
-  (`report_schema` 1) for `test_dir`, `maven_arguments`, and
-  `timeout_minutes`, and refuses any other schema.
+  (`report_schema` 1) for the suite type, directory, entrypoint, arguments,
+  report paths, and timeout, and refuses any other schema.
 - **Checkout mode, `--source <path>`.** The checkout's own descriptor,
-  resolver, and verdict script bind the suite, and native `mvn` runs in
-  `<path>/<test_dir>` with `--settings
-  <path>/.mvn/community-maven.settings.xml` when that file exists, the same
-  invocation as the image's entrypoint. The run is labelled `matched` when
-  the checkout's HEAD equals the deployed commit and the tree is clean,
-  `unmatched` otherwise, and `unpaired` when the environment runs a
-  community image. In either mode a descriptor whose `service.name` is not
-  the named service refuses the run. Checkout mode is the only mode for a community-sourced
-  service and the native-speed loop on arm64.
+  resolver, and verdict script bind the suite. A Maven suite runs native
+  `mvn` in `<path>/<test_dir>` with `--settings
+  <path>/.mvn/community-maven.settings.xml` when that file exists. A script
+  suite runs its declared entrypoint in that directory, through `bash` for a
+  `.sh` entrypoint. The run is labelled `matched` when the checkout's HEAD
+  equals the deployed commit and the tree is clean, `unmatched` otherwise,
+  and `unpaired` when the environment runs a community image. In either mode
+  a descriptor whose `service.name` is not the named service refuses the run.
+  Checkout mode is the only mode for a community-sourced service and the
+  native-speed loop on arm64.
 - **Allowlisted environment.** The resolver process receives `PATH`, the
   three `RESOLVER_*` bearers, and each `--set NAME=VALUE` override, nothing
   else, so a variable exported for another environment never wins over a
-  fact. Native `mvn` receives the resolved map over a fixed base (`PATH`,
+  fact. A native suite receives the resolved map over a fixed base (`PATH`,
   `HOME`, `JAVA_HOME`, `MAVEN_OPTS`, `LANG`, `TMPDIR`). On Windows both also
-  receive the system variables a process needs to start, and `mvn` the user
+  receive the system variables a process needs to start, and the suite the user
   profile variables; the env file is
   parsed as `NAME=VALUE` data and never sourced. The container receives the
-  env file and `SUITE_DIR`, set to the report's `test_dir`, which is how the
-  image's entrypoint selects a baked suite; nothing else.
+  env file, `SUITE_DIR`, and a script suite's `SUITE_ENTRYPOINT`. Those values
+  select the baked suite and its executable; nothing else.
 - **The lane's callers.** The CLI mints the deploy, member, and no-access
   bearers through the path `spi token` uses, for `azure.token_audience`. An
   identity the environment does not provision leaves its variable unset, and
@@ -88,9 +89,11 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   changed or a pod was not running the lock's digest. A borrow and its
   restore leave the entry as it was, but each advances the revision. The
   suite runs under the descriptor's `timeoutMinutes`. The verdict is the
-  commit's `suite-verdict.py` over the Surefire and Failsafe reports: a zero
-  exit, at least one test not skipped, and no failures or errors. A
-  selection that runs no test fails.
+  commit's `suite-verdict.py` over Surefire and Failsafe reports for Maven, or
+  the descriptor's `reportPaths` for a script suite: a zero exit, at least
+  one test not skipped, and no failures or errors. Counts, reports, and
+  reviews read the same selected JUnit XML. A selection that runs no test
+  fails.
 - **Exit codes and envelope.** 0 passed; 3 the suite ran and failed; 2 not
   run or discarded because the environment is not deployable, a binding is
   not published yet, the service is borrowed, or the target changed during
@@ -107,6 +110,10 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   `acceptance` by default, and repeats to run several in turn (ADR-037).
   Tokens after `--` replace one suite's `mavenArguments` and reach Maven as
   argv, never as a shell string; with more than one suite they are refused.
+  A script suite receives its declared `arguments`. A token equal to
+  `${NAME}` is replaced by that binding's resolved value before either a run
+  or a dry run; partial placeholders are refused. Each value remains one argv
+  token and is never evaluated as a shell string.
 - **A dry run binds and stops.** `--dry-run` runs the guards, the fetch,
   the mint, the resolver, and the target check a run performs before the
   suite, then prints the command, its directory, and the resolved variables
@@ -188,5 +195,6 @@ needs its own log and cleanup handling.
   and in paired mode. The lane knows its image by the digest it pushed in
   that run; paired mode knows it by the digest resolution recorded, so both
   rest on what the registry reported at one moment for that commit's tag.
-- Paired mode needs Docker and checkout mode needs a JDK 17 and Maven on the
-  host; neither is part of `spi check`.
+- Paired mode needs Docker. Checkout mode needs a JDK 17 and Maven for a
+  Maven suite, or the declared script runtime and `bash` for a `.sh`
+  entrypoint. None is part of `spi check`.

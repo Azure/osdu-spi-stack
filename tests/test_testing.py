@@ -39,12 +39,13 @@ report = {
     "suite": args.suite,
     "error": None,
 }
+report["contract"].update(behavior.get("contract", {}))
 if behavior.get("exit"):
     said = os.environ.get(behavior.get("quote", ""), "")
     report["error"] = {"code": "WHY", "detail": f"because {said}".strip()}
     pathlib.Path(args.report).write_text(json.dumps(report))
     sys.exit(behavior["exit"])
-pathlib.Path(args.env_file).write_text("HOST=https://gw\\nTOKEN=a=b\\n")
+pathlib.Path(args.env_file).write_text(behavior.get("env", "HOST=https://gw\\nTOKEN=a=b\\n"))
 pathlib.Path(args.report).write_text(json.dumps(report))
 """
 FAKE_VERDICT = """
@@ -499,6 +500,30 @@ class TestCheckoutRun:
 
         assert result.tests["tests"] == 2
 
+    def test_native_script_receives_resolved_arguments_as_separate_argv(self, cluster, tmp_path):
+        checkout = _checkout(
+            tmp_path,
+            env="HOST=https://gw\nTOKEN=hunter2hunter2\n",
+            contract={
+                "test_type": "script",
+                "test_entrypoint": "run.sh",
+                "test_arguments": ["--host", "${HOST}", "--token", "${TOKEN}"],
+                "report_paths": ["newman/*.xml"],
+                "maven_arguments": [],
+            },
+        )
+        script = checkout / "suite" / "run.sh"
+        script.write_text("#!/usr/bin/env bash\n")
+        script.chmod(0o755)
+
+        testing.run_suite("partition", checkout=checkout)
+
+        [(command, kwargs)] = [
+            item for item in cluster["commands"] if item[0] and item[0][-1] == "hunter2hunter2"
+        ]
+        assert command[-4:] == ["--host", "https://gw", "--token", "hunter2hunter2"]
+        assert kwargs["cwd"] == str(checkout.resolve() / "suite")
+
     def test_a_dirty_tree_is_unmatched(self, cluster, tmp_path):
         checkout = _checkout(tmp_path)
         cluster["locks"] = [_lock(tag=f"sha-{_head(checkout)[:12]}")]
@@ -687,6 +712,43 @@ class TestDryRun:
 
         assert plan.command[-3:] == ("-Dclient_secret=[redacted]", "-Dtest=One", "test")
 
+    def test_script_placeholders_are_resolved_before_the_command_is_shown(self, cluster, tmp_path):
+        checkout = _checkout(
+            tmp_path,
+            env="HOST=https://gw\nTOKEN=hunter2hunter2\n",
+            contract={
+                "test_type": "script",
+                "test_entrypoint": "run.sh",
+                "test_arguments": ["--host", "${HOST}", "--token", "${TOKEN}"],
+                "report_paths": ["newman/*.xml"],
+                "maven_arguments": [],
+            },
+        )
+        (checkout / "suite" / "run.sh").write_text("#!/usr/bin/env bash\n")
+
+        plan = testing.plan_suite("partition", checkout=checkout)
+
+        assert plan.command[-4:] == ("--host", "https://gw", "--token", "[redacted]")
+        assert "${HOST}" not in plan.command and "${TOKEN}" not in plan.command
+
+    def test_paired_script_plan_passes_the_entrypoint_and_resolved_argv(self, cluster):
+        _machinery(
+            cluster["commit_tree"],
+            env="HOST=https://gw\n",
+            contract={
+                "test_type": "script",
+                "test_entrypoint": "run.sh",
+                "test_arguments": ["--host", "${HOST}"],
+                "report_paths": ["newman/*.xml"],
+                "maven_arguments": [],
+            },
+        )
+
+        plan = testing.plan_suite("partition")
+
+        assert "SUITE_ENTRYPOINT=run.sh" in plan.command
+        assert plan.command[-2:] == ("--host", "https://gw")
+
     @pytest.mark.parametrize("quoted", ["RESOLVER_TOKEN", "CLIENT_SECRET"])
     def test_a_resolver_that_quotes_a_credential_in_its_refusal_is_not_repeated(
         self, cluster, monkeypatch, quoted
@@ -803,20 +865,66 @@ class TestReport:
     def test_the_inspector_reads_the_run_before_it_is_discarded(self, cluster):
         seen = {}
 
-        def inspect(reports, secrets):
+        def inspect(reports, secrets, patterns):
             seen["reports"] = sorted(p.name for p in reports.rglob("TEST-*.xml"))
             seen["secrets"] = set(secrets)
+            seen["patterns"] = patterns
             seen["where"] = reports
             return {"totals": {"tests": 11}}
 
         result = testing.run_suite("partition", inspect=inspect)
 
         assert seen["reports"] == ["TEST-a.xml"]
+        assert seen["patterns"] == ()
         # The bearers and what the env file holds under a credential's name; never HOST.
         assert seen["secrets"] == {"t", "m", "a=b"}
         assert not seen["where"].exists()
         assert result.report == {"totals": {"tests": 11}}
         assert testing.run_suite("partition").report is None
+
+    def test_declared_report_paths_drive_verdict_counts_and_inspection(self, cluster, monkeypatch):
+        real = testing.resolve_suite
+
+        def resolve_suite(*args, **kwargs):
+            contract, env_file = real(*args, **kwargs)
+            return {
+                **contract,
+                "report_paths": ["newman/*.xml"],
+                "test_type": "script",
+                "test_entrypoint": "run.sh",
+                "test_arguments": [],
+                "maven_arguments": [],
+            }, env_file
+
+        def copy_reports(cmd, **kwargs):
+            if cmd[0] == "docker" and cmd[1] == "cp":
+                report = Path(cmd[3]) / "newman" / "results.xml"
+                report.parent.mkdir(parents=True)
+                report.write_text('<testsuite tests="3" skipped="1"/>')
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        seen = {}
+        real_run_process = testing.run_process
+        monkeypatch.setattr(testing, "resolve_suite", resolve_suite)
+
+        def run_process(cmd, **kwargs):
+            if cmd[:2] == ["docker", "cp"]:
+                return copy_reports(cmd, **kwargs)
+            return real_run_process(cmd, **kwargs)
+
+        monkeypatch.setattr(testing, "run_process", run_process)
+
+        result = testing.run_suite(
+            "partition",
+            inspect=lambda reports, secrets, patterns: seen.update(patterns=patterns) or {},
+        )
+
+        verdict_args = json.loads(
+            (cluster["commit_tree"] / "verdict-args.json").read_text(encoding="utf-8")
+        )
+        assert verdict_args[-2:] == ["--patterns-json", '["newman/*.xml"]']
+        assert result.tests == {"tests": 3, "skipped": 1, "failures": 0, "errors": 0}
+        assert seen["patterns"] == ("newman/*.xml",)
 
     def test_a_discarded_run_is_not_inspected(self, cluster):
         cluster["revisions"] = ["7", "9"]

@@ -419,15 +419,21 @@ def _case(case: ET.Element, classname: str, sources: Sources, redact: Callable[[
     return test
 
 
-def collect(reports: Path, secrets: Iterable[str] = ()) -> dict:
+def collect(reports: Path, secrets: Iterable[str] = (), patterns: Iterable[str] = ()) -> dict:
     """The facts of a run: every reported test, and the passes whose body holds no statement."""
 
     sources = Sources(reports)
     redact = redactor(secrets)
     classes: dict[str, dict] = {}
-    for path in suite_files(reports, "TEST-*.xml"):
-        if path.parent.name not in REPORT_DIRS:
-            continue
+    declared = tuple(patterns)
+    paths = (
+        sorted({path for pattern in declared for path in suite_files(reports, pattern)})
+        if declared
+        else [
+            path for path in suite_files(reports, "TEST-*.xml") if path.parent.name in REPORT_DIRS
+        ]
+    )
+    for path in paths:
         try:
             root = ET.parse(path).getroot()
         except ET.ParseError:

@@ -140,6 +140,20 @@ class TestCollect:
 
         assert set(_statuses(collect(suite))) == {"should_return200", "kept"}
 
+    def test_declared_junit_reports_are_read_outside_maven_report_directories(self, suite):
+        _reports(
+            suite,
+            "<testsuites><testsuite name='newman'>"
+            + _case("creates a dataset", classname="")
+            + "</testsuite></testsuites>",
+            "newman",
+        )
+
+        facts = collect(suite, patterns=["newman/*.xml"])
+
+        assert facts["totals"]["tests"] == 1
+        assert facts["classes"][0]["name"] == "newman"
+
     def test_what_a_failure_carried_is_kept_without_the_runs_credentials(self, suite):
         jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJzcGkifQ.c2lnbmF0dXJl"
         cut = "cut-by-the-line-width-secret"
