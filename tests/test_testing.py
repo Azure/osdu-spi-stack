@@ -163,7 +163,12 @@ def test_script_arguments_come_from_the_resolver_contract(tmp_path):
         {},
     )
 
-    assert binding.arguments(()) == arguments
+    assert binding.arguments((), {"TOKEN": "bearer", "PARTITION": "opendes"}) == [
+        "--bearer-token",
+        "bearer",
+        "--partition",
+        "opendes",
+    ]
 
 
 def test_declared_script_report_is_counted(tmp_path):

@@ -801,6 +801,8 @@ def count_tests(reports: Path, patterns: Sequence[str] = ()) -> dict[str, int]:
         except ET.ParseError:
             continue
         suites = [root] if root.tag == "testsuite" else root.findall(".//testsuite")
+        if root.tag == "testsuites" and not suites:
+            suites = [root]
         for suite in suites:
             for key in totals:
                 try:
