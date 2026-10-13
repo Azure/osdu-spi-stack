@@ -44,7 +44,7 @@ from .deploy_record import (
 )
 from .images import (
     GHCR_HOST,
-    SCHEMA_LOAD_SERVICE_NAME,
+    companion_primary,
     image_lock_key,
     image_lock_names,
     runs_fork_package,
@@ -630,9 +630,9 @@ def _service_versions_table(versions: dict) -> Table | None:
 
 
 def _policy_service(name: str) -> str:
-    """The service whose source policy governs ``name``; the loader follows schema."""
+    """The primary service whose source policy governs ``name``."""
 
-    return "schema" if name == SCHEMA_LOAD_SERVICE_NAME else name
+    return companion_primary(name)
 
 
 def _canonical_source(name: str, image: dict) -> str:

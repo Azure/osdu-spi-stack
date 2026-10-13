@@ -41,9 +41,9 @@ from .environment import Declared
 from .guard import get_suspend_status, verify_spi_cluster
 from .images import (
     DEFAULT_IMAGE_BRANCH,
-    SCHEMA_LOAD_SERVICE_NAME,
-    SCHEMA_SERVICE_NAME,
     ImageResolutionError,
+    companion_image,
+    is_companion_image,
     resolve_image_lock,
 )
 from .ingress import resolve_acme_email, resolve_ingress_mode
@@ -52,8 +52,8 @@ from .pins import (
     PinError,
     ResetRefusedError,
     VerifyError,
+    apply_companion_backfills,
     apply_image_lock,
-    apply_schema_load_backfill,
     await_service_image,
     describe_pin,
     live_pins,
@@ -363,15 +363,15 @@ def _reconcile_kustomization(name: str) -> None:
     )
 
 
-def _backfill_schema_load_lock(image_branch: str) -> None:
-    """Backfill schema-load through the shared image-lock CAS primitive."""
+def _backfill_companion_locks(image_branch: str) -> None:
+    """Backfill companion entries through the shared image-lock CAS primitive."""
     try:
-        changed = apply_schema_load_backfill(branch=image_branch)
+        changed = apply_companion_backfills(branch=image_branch)
     except (ImageResolutionError, PinError) as exc:
-        console.print(f"[error]Unable to backfill the schema-load image: {exc}[/error]")
+        console.print(f"[error]Unable to backfill companion images: {exc}[/error]")
         raise typer.Exit(code=1)
     if changed:
-        display_result("osdu-image-lock ConfigMap updated with schema-load")
+        display_result("osdu-image-lock ConfigMap updated with companion images")
 
 
 def _build_config(
@@ -2126,7 +2126,7 @@ def reconcile(
     refresh_spi_init_values()
 
     if not refresh_images:
-        _backfill_schema_load_lock(image_branch)
+        _backfill_companion_locks(image_branch)
 
     if resume:
         console.print("\n[bold]Resuming GitRepository...[/bold]")
@@ -2353,10 +2353,11 @@ def service_pin(
                     f"  [success]{name}[/success] paired to {paired.digest[:19]} "
                     "from the same commit"
                 )
-        if pin.ephemeral and service == SCHEMA_SERVICE_NAME and len(applied) == 1:
+        companion = companion_image(service)
+        if pin.ephemeral and companion and not companion.pin_required and len(applied) == 1:
             console.print(
-                f"  [dim]{SCHEMA_LOAD_SERVICE_NAME} stays canonical: the fork published "
-                "no loader image for this commit[/dim]"
+                f"  [dim]{companion.name} stays canonical: the fork published "
+                "no companion image for this commit[/dim]"
             )
         if pin.ephemeral:
             console.print(
@@ -2673,7 +2674,7 @@ def service_refresh(
             f"'spi service reset {name}' and a refresh[/warning]"
         )
     for name, ref in refs.items():
-        if name != SCHEMA_LOAD_SERVICE_NAME:
+        if not is_companion_image(name):
             console.print(f"  [dim]spi service verify {name} --image {ref}[/dim]")
 
 
