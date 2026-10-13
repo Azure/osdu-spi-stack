@@ -71,6 +71,8 @@ def test_restore_release_uses_its_dedicated_identity_and_is_inert_by_default():
     assert env["AZURE_SUBSCRIPTION_ID"] == "${AZURE_SUBSCRIPTION_ID}"
     assert env["AZURE_RESOURCE_GROUP"] == "${AZURE_RESOURCE_GROUP}"
     assert env["SDMS_RESTORE_QUEUE"] == "sdms-queue-restore"
+    assert env["SDMS_REDIS_QUEUE_PORT"] == "6379"
+    assert env["SDMS_REDIS_LOCKS_PORT"] == "6379"
     assert env["SDMS_RESTORE_LOCK_TTL_SECONDS"] == "7200"
     assert env["SDMS_RESTORE_MAX_DEQUEUE_COUNT"] == "3"
 
