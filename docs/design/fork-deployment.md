@@ -465,6 +465,7 @@ shipped it (ADR-036):
 spi test partition                                # the paired acceptance image, amd64
 spi test partition --suite integration -- -Dtest=GetInfoApiTest test
 spi test partition --source ../partition          # native mvn from a checkout
+spi test seismic --source ../seismic               # declared script and JUnit report paths
 spi test partition --report                       # one page of what ran, opened in the browser
 spi test partition --source ../partition --dry-run --env-file ~/partition.env
 spi test partition --suite all --review           # every declared suite, mapped to the contract
@@ -474,8 +475,10 @@ Paired mode needs a fork canonical with a recorded `<SERVICE>_ACCEPTANCE_DIGEST`
 and pulls that digest; the descriptor, resolver, and verdict script come from
 the fork at the full commit. Checkout mode uses the checkout's own and labels
 the run `matched`, `unmatched`, or `unpaired` against the deployed commit; it
-removes the suite's earlier Surefire and Failsafe reports before Maven runs.
-A descriptor that names another service is refused in either mode.
+removes the suite's selected reports before the native suite runs. Maven
+suites run Maven. Script suites run the declared entrypoint and expand a
+whole-token `${NAME}` argument from the resolver's map without shell
+evaluation. A descriptor that names another service is refused in either mode.
 The resolver sees `PATH`, the deploy bearer, the member and no-access bearers
 when the environment provisions those identities, and `--set NAME=VALUE`
 overrides, and on Windows the system variables a process needs to start;
@@ -496,7 +499,10 @@ which labels the next `--source` run `unmatched`.
 `--report` writes one page per run to `spi-reports/` under the system
 temporary directory and prints its path (ADR-037). The page lists each test
 with its status and duration, the failures with their redacted output, and
-the passing tests whose body holds no statement. `--review` reads the
+the passing Java tests whose body holds no statement. Maven suites read
+Surefire and Failsafe reports; script suites read the descriptor's
+`reportPaths`. The verdict, counts, page, and review consume that same JUnit
+selection. `--review` reads the
 service's `api-docs` and has `copilot -p` place each test on a contract row
 and grade what it proves; the page then opens with which suite proves each
 row and which rows no suite proves. `--suite all` runs every suite the

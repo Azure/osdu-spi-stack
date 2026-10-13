@@ -23,7 +23,7 @@ import sys
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Any, Collection, Dict, List, NoReturn, Optional, Tuple
+from typing import Any, Collection, Dict, List, NoReturn, Optional, Sequence, Tuple
 
 import shellingham
 import typer
@@ -1100,6 +1100,7 @@ ALL_SUITES = "all"
 def _inspect_suite(
     reports: Path,
     secrets: Collection[str],
+    patterns: Sequence[str] = (),
     *,
     suite: str,
     bundle: Optional[Path],
@@ -1117,7 +1118,7 @@ def _inspect_suite(
 
     kept.update(secrets)
     try:
-        facts = collect(reports, secrets)
+        facts = collect(reports, secrets, patterns) if patterns else collect(reports, secrets)
     except Exception as exc:  # noqa: BLE001
         _report_warning(f"No report for {suite}", exc)
         return None

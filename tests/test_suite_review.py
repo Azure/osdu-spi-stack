@@ -97,6 +97,31 @@ class TestBundle:
         }
         assert json.loads((bundle / "suites/integration/facts.json").read_text()) == INTEGRATION
 
+    def test_script_sources_are_bundled_without_dependencies_or_generated_reports(self, tmp_path):
+        suite = tmp_path / "suite"
+        for relative in (
+            "tests/e2e/run.sh",
+            "tests/e2e/collection.json",
+            "tests/e2e/check.ts",
+            "node_modules/pkg/index.js",
+            "newman/results.json",
+        ):
+            path = suite / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}")
+
+        add_suite(tmp_path / "bundle", "acceptance", suite, INTEGRATION)
+
+        source = tmp_path / "bundle" / "suites" / "acceptance" / "src"
+        files = {
+            path.relative_to(source).as_posix() for path in source.rglob("*") if path.is_file()
+        }
+        assert files == {
+            "tests/e2e/check.ts",
+            "tests/e2e/collection.json",
+            "tests/e2e/run.sh",
+        }
+
     @pytest.mark.parametrize("name", ["../escape", "..", "deep/er", "/rooted", ""])
     def test_a_suite_name_that_is_a_path_writes_nothing(self, tmp_path, name):
         suite = tmp_path / "suite"
