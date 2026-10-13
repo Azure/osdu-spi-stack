@@ -107,13 +107,14 @@ restore option is supplied.
 
 `spi up --disable-seismic-restore` turns the API flag and recovery policies
 off and scales RestoreRunner to zero. Because ARM deployments are incremental,
-the restore queue, Cosmos containers, identity, custom role, and assignments
+the restore queue, Cosmos containers, identity, and assignments
 remain dormant. `spi reset` removes them with the environment.
 
 RestoreRunner uses `seismic-restore-sa` rather than
 `workload-identity-sa`. Its UAMI can read the environment vault, consume the
 common-storage restore queue, update Seismic Cosmos and blob state, and call
-the exact blob-service restore action on partition storage accounts. The API
+the blob restore action through Storage Account Backup Contributor on
+partition storage accounts. The API
 identity receives common queue access only while restore is enabled.
 
 ## Source files

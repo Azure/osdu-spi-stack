@@ -764,16 +764,6 @@ def up(
         env,
         requested_suffix=name_suffix,
     )
-    if enable_seismic_restore:
-        from .permissions import ROLE_DEFINITION_ACTIONS, require_deploy_permissions
-
-        require_deploy_permissions(
-            azure_account,
-            deployer_principal,
-            Config.from_env(env).resource_group,
-            ROLE_DEFINITION_ACTIONS,
-        )
-
     config = _build_config(
         profile=profile,
         env=env,

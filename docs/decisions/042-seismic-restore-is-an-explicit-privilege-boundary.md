@@ -35,14 +35,14 @@ one unit.
   API identity receives Storage Queue Data Contributor on common storage so it
   can enqueue restore work; it receives no restore
   management-plane action.
-- **One custom role grants the management operation.** The resource-group-level
-  role definition `Seismic Blob Restore Operator`, id
-  `b66df1f4-588e-4a1f-abce-d26fa97b6668`, contains only
-  `Microsoft.Storage/storageAccounts/read` and
-  `Microsoft.Storage/storageAccounts/blobServices/read`, and
-  `Microsoft.Storage/storageAccounts/restoreBlobRanges/action`.
-  Its assignment to the RestoreRunner identity is scoped to each partition
-  storage account.
+- **One built-in role grants the management operation.** Storage Account
+  Backup Contributor, id `e5e2a7ff-d759-4cd2-bb51-3152d37e2eb1`, contains
+  `Microsoft.Storage/storageAccounts/restoreBlobRanges/action`. Its assignment
+  to the RestoreRunner identity is scoped to each partition storage account.
+  The role also grants storage service configuration, container, replication,
+  and resource-lock operations at that scope. Azure exposes no narrower
+  built-in role with the restore action, and subscription custom-role limits
+  can make an exact custom role undeployable.
 - **Storage recovery settings are gated together.** When restore is enabled,
   each partition storage account enables blob versioning, change feed with
   30-day retention, blob soft delete with 31-day retention, container soft
@@ -55,13 +55,10 @@ one unit.
   `FEATURE_FLAG_ENABLE_RESTORE=true`, supplies the restore lock and dequeue
   limits, and runs one RestoreRunner replica. Disabling it keeps the API flag
   false and the worker at zero replicas.
-- **The CLI checks the permission expansion before Azure changes.** ADR-035's
-  deployer preflight includes custom role definition write and delete, the
-  fixed custom role id is part of `STACK_ROLES`, and the documented
-  role-assignment condition admits that id. Creating the role requires a
-  temporary User Access Administrator grant in addition to the ordinary
-  constrained assignment grant. A deployer without it is refused before Bicep
-  starts.
+- **The CLI admits the role assignment.** ADR-035's documented
+  role-assignment condition includes Storage Account Backup Contributor. The
+  ordinary constrained Role Based Access Control Administrator grant can
+  assign it, with no custom-role definition permission.
 - **Deployment validates the whole gate.** Tests require the identity,
   federation, roles, queues, Cosmos containers, policies, API feature flag, and
   worker replica to agree for both flag values. No individual restore
@@ -72,9 +69,13 @@ identity. This requires fewer identities and federations, but every service
 could initiate account-level blob recovery and rewrite Seismic metadata.
 
 Rejected: grant Contributor on partition storage accounts to RestoreRunner.
-It includes the required restore action, but also permits storage account
-configuration, key, networking, and deletion operations the worker does not
-call.
+It includes the required restore action, but also permits all resource
+configuration and deletion operations at that scope.
+
+Rejected: define an exact custom role with only the restore action and reads.
+It is narrower than Storage Account Backup Contributor, but consumes a
+subscription custom-role slot and fails deployment when that tenant-level
+quota is exhausted.
 
 Rejected: enable storage recovery policies by default while leaving the API
 and worker disabled. A later enablement is faster, but every environment pays
@@ -94,14 +95,14 @@ without a consumer.
   Storage Queue Data Contributor is required instead of the narrower Storage
   Queue Data Message Sender role.
 - Blob restore is account-scoped in Azure even though the request carries one
-  blob range. The custom role cannot narrow the action to a container or
+  blob range. The role assignment cannot narrow the action to a container or
   prefix.
 - The 30-day recovery window costs change-feed, version, and soft-deleted data
   retention. Turning the flag off on a later deployment removes the policies;
   Azure controls expiry of data retained under the earlier policy.
 - Incremental ARM deployment does not delete restore resources that the
   disabled template omits. The queue, Cosmos containers, RestoreRunner
-  identity, custom role, and assignments remain dormant after
+  identity, and assignments remain dormant after
   `--disable-seismic-restore`. The API flag is false, the worker has zero
   replicas, and storage recovery policies are disabled. `spi reset` is the
   cleanup boundary for the retained Azure resources.

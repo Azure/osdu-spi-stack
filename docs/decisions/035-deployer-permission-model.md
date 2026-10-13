@@ -20,7 +20,7 @@ definition is one of the stack's twelve. The condition does not restrict
 recipients or resources. Subscription scope covers the DNS zone's group in
 `dns` ingress mode and survives `spi down`.
 
-- `STACK_ROLES` in `src/spi/permissions.py` is the one list of the twelve role
+- `STACK_ROLES` in `src/spi/permissions.py` is the one list of the thirteen role
   ids. The CLI builds the condition from it, and
   `tests/test_permissions.py` fails when a template under `infra/` assigns a
   role the list omits.
@@ -28,8 +28,7 @@ recipients or resources. Subscription scope covers the DNS zone's group in
   which Reader can call and which avoids Microsoft Graph. It evaluates four
   actions against each entry's `actions` and `notActions`: resource group
   write, managed cluster write, role assignment write, and role assignment
-  delete. When `enableSeismicRestore` is true it also checks role definition
-  write and delete for the fixed custom role in ADR-042.
+  delete.
 - `spi check` runs it at subscription scope whenever `az` is signed in. `spi up`
   runs it after resolving the deployer and before the first change to Azure: at
   the environment group when it exists, where inherited grants are included,
