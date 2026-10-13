@@ -836,6 +836,192 @@ data:
             outcome("unexpected_error", f"{type(e).__name__}: {e}")
             rc = 1
         sys.exit(rc)
+  load_seismic.py: |
+    """Create the stable Seismic tenant, subproject, and sample dataset."""
+    import json
+    import os
+    import sys
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    sys.path.insert(0, "/scripts")
+    from auth import get_token
+    from wait import wait_for_status
+
+    REQUIRED_ENV = ("PARTITION", "LEGAL_TAG", "ENTITLEMENTS_DOMAIN")
+    API_HOST = os.environ.get(
+        "SEISMIC_HOST", "http://seismic:8080/seistore-svc/api/v3"
+    ).rstrip("/")
+    ATTEMPTS = 3
+    RETRY_DELAY = 2.0
+    REQUEST_TIMEOUT = 30
+    INFO_ATTEMPTS = 60
+    WAIT_DELAY = 2.0
+    WAIT_SOCKET_TIMEOUT = 5.0
+    MESSAGE_LIMIT = 2000
+    TERMINATION_MESSAGE_PATH = os.environ.get(
+        "TERMINATION_MESSAGE_PATH", "/dev/termination-log"
+    )
+
+
+    class LoadError(Exception):
+        def __init__(self, code: str, detail: str):
+            super().__init__(detail)
+            self.code = code
+            self.detail = detail
+
+
+    def outcome(code: str, detail: str = "") -> None:
+        line = f"load-seismic outcome: {code}"
+        if detail:
+            line = f"{line}: {detail}"[:MESSAGE_LIMIT]
+        print(line)
+        try:
+            with open(TERMINATION_MESSAGE_PATH, "w") as handle:
+                handle.write(line)
+        except OSError:
+            pass
+
+
+    def call(url: str, headers: dict, method: str = "GET", body: dict | None = None):
+        payload = json.dumps(body).encode() if body is not None else None
+        code, response = 0, ""
+        for attempt in range(1, ATTEMPTS + 1):
+            request = urllib.request.Request(
+                url, data=payload, method=method, headers=headers
+            )
+            try:
+                result = urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT)
+                return result.getcode(), result.read().decode(errors="replace")
+            except urllib.error.HTTPError as error:
+                code = error.code
+                response = error.read().decode(errors="replace")
+                if code < 500 and code != 429:
+                    return code, response
+            except Exception as error:
+                code = 0
+                response = f"{type(error).__name__}: {error}"
+            if attempt < ATTEMPTS:
+                time.sleep(RETRY_DELAY * attempt)
+        return code, response
+
+
+    def ensure(
+        kind: str,
+        url: str,
+        headers: dict,
+        body: dict,
+    ) -> bool:
+        code, detail = call(url, headers)
+        if code == 200:
+            print(f"  {kind} exists")
+            return False
+        if code in (401, 403):
+            raise LoadError("auth_failed", f"{kind} read returned {code}")
+        if code != 404:
+            raise LoadError("request_failed", f"{kind} read returned {code}: {detail}")
+
+        code, detail = call(url, headers, "POST", body)
+        if code in (200, 201):
+            print(f"  {kind} created")
+            return True
+        if code == 409:
+            code, detail = call(url, headers)
+            if code == 200:
+                print(f"  {kind} exists")
+                return False
+        if code in (401, 403):
+            raise LoadError("auth_failed", f"{kind} create returned {code}")
+        raise LoadError("request_failed", f"{kind} create returned {code}: {detail}")
+
+
+    def main() -> int:
+        missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
+        if missing:
+            outcome("config_missing", f"missing environment: {', '.join(missing)}")
+            return 1
+
+        if not wait_for_status(
+            f"{API_HOST}/svcstatus/readiness",
+            {200},
+            attempts=INFO_ATTEMPTS,
+            delay=WAIT_DELAY,
+            timeout=WAIT_SOCKET_TIMEOUT,
+        ):
+            outcome("service_timeout", "Seismic readiness did not answer 200")
+            return 1
+
+        partition = os.environ["PARTITION"]
+        domain = os.environ["ENTITLEMENTS_DOMAIN"]
+        tenant = os.environ.get("SEISMIC_TENANT", partition)
+        subproject = os.environ.get("SEISMIC_SUBPROJECT", "spi-bootstrap")
+        dataset = os.environ.get("SEISMIC_DATASET", "sample")
+        quote = lambda value: urllib.parse.quote(value, safe="")
+        tenant_url = f"{API_HOST}/tenant/{quote(tenant)}"
+        subproject_url = (
+            f"{API_HOST}/subproject/tenant/{quote(tenant)}"
+            f"/subproject/{quote(subproject)}"
+        )
+        dataset_url = (
+            f"{API_HOST}/dataset/tenant/{quote(tenant)}"
+            f"/subproject/{quote(subproject)}/dataset/{quote(dataset)}"
+        )
+
+        print("Acquiring bearer token via Workload Identity...")
+        headers = {
+            "Authorization": "Bearer " + get_token(),
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "data-partition-id": partition,
+            "appkey": "unused",
+            "x-api-key": "unused",
+        }
+        created = 0
+        try:
+            created += ensure(
+                "tenant",
+                tenant_url,
+                headers,
+                {
+                    "gcpid": partition,
+                    "esd": f"{partition}.{domain}",
+                    "default_acls": f"users.datalake.admins@{partition}.{domain}",
+                },
+            )
+            subproject_headers = dict(headers)
+            subproject_headers["ltag"] = os.environ["LEGAL_TAG"]
+            created += ensure(
+                "subproject",
+                subproject_url,
+                subproject_headers,
+                {"storage_class": "REGIONAL", "storage_location": "US-CENTRAL1"},
+            )
+            created += ensure(
+                "dataset",
+                dataset_url,
+                headers,
+                {"gtags": ["spi-bootstrap"]},
+            )
+        except LoadError as error:
+            outcome(error.code, error.detail)
+            return 1
+        except Exception as error:
+            outcome("unexpected_error", f"{type(error).__name__}: {error}")
+            return 1
+
+        outcome(
+            "loaded",
+            f"tenant={tenant} subproject={subproject} dataset={dataset} "
+            f"total=3 loaded={created} skipped={3 - created} failed=0",
+        )
+        return 0
+
+
+    if __name__ == "__main__":
+        sys.exit(main())
+
   load_records.py: |
     """Load storage records from a pinned archive of OSDU manifests.
 

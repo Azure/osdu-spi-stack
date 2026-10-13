@@ -77,12 +77,14 @@ def _refused(code: str, message: str) -> LoadError:
 
 
 class Source(BaseModel):
-    type: Literal["paired-image", "gitlab-archive"]
+    type: Literal["paired-image", "gitlab-archive", "stack-script"]
     service: str = ""
     project: str = ""
     ref: str = ""
     commit: str = ""
     path: str = ""
+    script: str = ""
+    revision: str = ""
 
     @model_validator(mode="after")
     def _complete(self) -> "Source":
@@ -93,13 +95,30 @@ class Source(BaseModel):
                 raise ValueError("a gitlab-archive source names a project and a path")
             if not re.fullmatch(r"[0-9a-f]{40}", self.commit):
                 raise ValueError("a gitlab-archive source is pinned by a 40-character commit")
+        if self.type == "stack-script":
+            if not re.fullmatch(r"[a-z][a-z0-9_]*\.py", self.script):
+                raise ValueError("a stack-script source names a Python script")
+            if not re.fullmatch(r"[1-9][0-9]*", self.revision):
+                raise ValueError("a stack-script source has a positive numeric revision")
         return self
 
     @property
     def identity(self) -> str:
         """What a Job records as its source and a later run compares. The path
         selects the records, so a changed path is a different source."""
+        if self.type == "stack-script":
+            return f"stack:{self.script}@{self.revision}"
         return f"{self.project}@{self.commit}:{self.path.strip('/')}"
+
+    @property
+    def display(self) -> str:
+        if self.type == "stack-script":
+            return f"stack:{self.script}"
+        return f"{self.project}@{self.commit[:12]}"
+
+    @property
+    def version(self) -> str:
+        return self.revision if self.type == "stack-script" else self.ref
 
 
 class Load(BaseModel):
@@ -108,13 +127,16 @@ class Load(BaseModel):
     runner: Literal["flux", "job"]
     requires: list[str] = []
     source: Source
-    loader: Optional[Literal["records"]] = None
+    loader: Optional[Literal["records", "seismic"]] = None
     scope: Literal["primary-partition", "each-partition"]
 
     @model_validator(mode="after")
     def _runner_matches_source(self) -> "Load":
-        if self.runner == "job" and (self.source.type != "gitlab-archive" or not self.loader):
-            raise ValueError(f"{self.name}: a job load needs a gitlab-archive source and a loader")
+        expected_source = {"records": "gitlab-archive", "seismic": "stack-script"}
+        if self.runner == "job" and (
+            not self.loader or self.source.type != expected_source.get(self.loader)
+        ):
+            raise ValueError(f"{self.name}: loader and source type do not match")
         if self.runner == "flux" and self.source.type != "paired-image":
             raise ValueError(f"{self.name}: a flux load needs a paired-image source")
         return self
@@ -183,7 +205,8 @@ def read_schema_job() -> Optional[dict]:
 
 
 def job_name(load: Load, partition: str) -> str:
-    name = f"load-{load.name}-{partition}-{load.source.commit[:8]}"
+    revision = load.source.commit[:8] or f"r{load.source.revision}"
+    name = f"load-{load.name}-{partition}-{revision}"
     if len(name) > 63:
         raise _refused("name_too_long", f"The Job name {name} exceeds 63 characters.")
     return name
@@ -293,8 +316,8 @@ def _job_load_facts(
         per_partition[partition] = _partition_facts(state, job, outcome)
     return {
         "state": weakest([facts["state"] for facts in per_partition.values()]),
-        "source": f"{load.source.project}@{load.source.commit[:12]}",
-        "version": load.source.ref,
+        "source": load.source.display,
+        "version": load.source.version,
         "partitions": per_partition,
     }
 
@@ -443,19 +466,24 @@ def _legal_tag_seeded(partition: str) -> bool:
 
 def _create_job(load: Load, partition: str, target: Target) -> str:
     name = job_name(load, partition)
+    env = {
+        "PARTITION": partition,
+        "LEGAL_TAG": f"{partition}-{target.legal_tag_base}",
+        "ENTITLEMENTS_DOMAIN": target.entitlements_domain,
+    }
+    if load.source.type == "gitlab-archive":
+        env.update(
+            SOURCE_PROJECT=load.source.project,
+            SOURCE_COMMIT=load.source.commit,
+            SOURCE_PATH=load.source.path,
+        )
     manifest = load_job(
         name=name,
         dataset=load.name,
         partition=partition,
         source=load.source.identity,
-        env={
-            "PARTITION": partition,
-            "LEGAL_TAG": f"{partition}-{target.legal_tag_base}",
-            "ENTITLEMENTS_DOMAIN": target.entitlements_domain,
-            "SOURCE_PROJECT": load.source.project,
-            "SOURCE_COMMIT": load.source.commit,
-            "SOURCE_PATH": load.source.path,
-        },
+        script=load.source.script or "load_records.py",
+        env=env,
     )
     display_yaml(manifest, title=f"Load Job ({name})")
     kubectl_apply_yaml(manifest, f"create load Job {name}")

@@ -29,15 +29,22 @@ runs it, and `spi info --json` publishes its state in a `loads` block.
   reports the `schema-load` Job against the image lock and never creates it.
   `spi load --dataset schemas --force` deletes the Job and reconciles
   `spi-osdu-schema-load`.
-- **`reference-data` is a Job the CLI creates.** `templates.load_job` renders
-  one Job per partition, named `load-<dataset>-<partition>-<first 8 of the
-  source commit>`, running `load_records.py` from the init chart's scripts
-  ConfigMap as `workload-identity-sa`. The Job carries no TTL, as the
-  bootstrap Jobs do not: it is the record.
+- **Job loads execute a declared stack script.** `templates.load_job` renders
+  one Job per partition, named `load-<dataset>-<partition>-<source revision>`,
+  running the registry entry's script from the init chart's scripts ConfigMap
+  as `workload-identity-sa`. The registry pairs `loader: records` with a
+  `gitlab-archive` source and `loader: seismic` with a revisioned
+  `stack-script` source. No registry value becomes a shell command. The Job
+  carries no TTL, as the bootstrap Jobs do not: it is the record.
 - **The source is pinned by commit.** The registry names a data-definitions
   release and the commit its tag points to. The Job fetches the archive from
   community GitLab by commit and refuses one whose zip comment names another.
   Moving the pin is a reviewed change that ships in a stack release.
+- **Stack scripts are pinned by registry revision.** A stack-script source
+  records `stack:<script>@<revision>` on the Job. A behavior change to the
+  script increments the positive integer revision in the same reviewed
+  change. The revision makes state stale after the contract changes; it does
+  not authenticate the ConfigMap.
 - **Reference data never runs ahead of the schemas.** Before any write the
   loader asks the schema service for each kind in the payload and fails with
   `schema_behind`, naming up to 20 kinds, when one is missing. `requires:
@@ -48,6 +55,11 @@ runs it, and `spi info --json` publishes its state in a `loads` block.
   tag in place of what the manifest carries. Records are written in batches of
   500 with `skipdupes`; 200, 201, and 409 are success, and the Job fails when
   more than 1% of the records failed or a manifest does not parse.
+- **The Seismic load creates service-owned setup data.** `load_seismic.py`
+  reads before writing the partition-named tenant, the `spi-bootstrap`
+  subproject, and its `sample` dataset. It treats only a successful read as
+  already loaded and re-reads after a create conflict. The subproject carries
+  the partition's seeded legal tag.
 - **A second run is decided by the newest Job** for the dataset and partition:
   none creates one, a running Job is waited on, a complete Job for the same
   source changes nothing, a complete Job for another source is replaced once
@@ -99,6 +111,9 @@ of every rebuild.
   the finished Job.
 - The fork deploy identity cannot create Jobs (ADR-032), so fork CI reads
   `loads` and cannot start a load.
+- A stack-script revision is maintained by review, not derived from its
+  bytes. Forgetting to increment it leaves a completed Job looking current
+  after the script changes.
 - The loader holds one manifest in memory at a time and the largest is 76 MB
   of JSON, which is why the Job's memory limit is 2Gi where the bootstrap
   Jobs have 512Mi.
