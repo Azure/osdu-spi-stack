@@ -10,6 +10,9 @@ param name string
 @description('Azure region where the shared storage account is deployed.')
 param location string
 
+@description('Whether to create the Seismic restore work queue.')
+param enableSeismicRestore bool = false
+
 var containerNames = [
   'system'
   'azure-webjobs-hosts'
@@ -61,6 +64,16 @@ resource tables 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-01-
   parent: tableService
   name: tableName
 }]
+
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = if (enableSeismicRestore) {
+  parent: storageAccount
+  name: 'default'
+}
+
+resource restoreQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = if (enableSeismicRestore) {
+  parent: queueService
+  name: 'sdms-queue-restore'
+}
 
 @description('Azure resource ID of the storage account shared across partitions.')
 output resourceId string = storageAccount.id

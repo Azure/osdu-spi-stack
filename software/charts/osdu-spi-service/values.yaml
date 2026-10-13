@@ -28,6 +28,11 @@ runAsUser: 1000
 
 # -- Created by the CLI bootstrap.
 serviceAccountName: workload-identity-sa
+serviceAccount:
+  # -- Create a service-specific account instead of using the bootstrap account.
+  create: false
+  # -- Annotations applied to the service-specific account.
+  annotations: {}
 
 # -- Mounted as envFrom; created by the CLI bootstrap.
 configMapRef: osdu-config

@@ -24,7 +24,14 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
-    replicaCount: 0
+    replicaCount: ${SEISMIC_RESTORE_REPLICAS:=0}
+    workloadIdentity: true
+    serviceAccountName: seismic-restore-sa
+    serviceAccount:
+      create: true
+      annotations:
+        azure.workload.identity/client-id: "${SEISMIC_RESTORE_IDENTITY_CLIENT_ID}"
+        azure.workload.identity/tenant-id: "${AZURE_TENANT_ID}"
     image:
       repository: ${SEISMIC_RESTORE_IMAGE_REPOSITORY}
       tag: "${SEISMIC_RESTORE_IMAGE_TAG}"
@@ -75,6 +82,15 @@ spec:
         value: "false"
       - name: SDMS_RESTORE_QUEUE
         value: sdms-queue-restore
+      - name: SDMS_RESTORE_LOCK_TTL_SECONDS
+        value: "7200"
+      - name: SDMS_RESTORE_MAX_DEQUEUE_COUNT
+        value: "3"
+      - name: SDMS_KEYVAULT_URL
+        valueFrom:
+          configMapKeyRef:
+            name: osdu-config
+            key: KEYVAULT_URL
       - name: AZURE_TOKEN_CREDENTIALS
         value: prod
       - name: SSL_CERT_FILE

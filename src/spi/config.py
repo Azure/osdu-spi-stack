@@ -78,6 +78,7 @@ class Config(BaseModel):
     declaration_locator: str = ""
     data_partitions: List[str] = ["opendes"]
     identity_name: str = ""
+    restore_identity_name: str = ""
     deploy_identity_name: str = ""
     member_identity_name: str = ""
     no_access_identity_name: str = ""
@@ -90,6 +91,7 @@ class Config(BaseModel):
     ingress_prefix: str = ""  # defaults to env
     acme_email: str = ""  # defaults to admin@<fqdn>|<zone>
     ingress_fqdn: str = ""  # azure mode: resolved LB FQDN
+    enable_seismic_restore: bool = False
 
     @staticmethod
     def from_env(env: str, name_suffix: str = "", **kwargs) -> "Config":
@@ -108,6 +110,7 @@ class Config(BaseModel):
         keyvault_name = f"osdu{safe_env}{name_suffix}"[:24] if env else "osduspistack"
         acr_name = f"osdu{safe_env}{name_suffix}"[:50] if env else "osduspistack"
         identity_name = f"{cluster_name}-osdu-identity"
+        restore_identity_name = f"{cluster_name}-seismic-restore"
         deploy_identity_name = f"{cluster_name}-deployer"
         member_identity_name = f"{cluster_name}-member"
         no_access_identity_name = f"{cluster_name}-noaccess"
@@ -119,6 +122,7 @@ class Config(BaseModel):
             cluster_name=cluster_name,
             resource_group=resource_group,
             identity_name=identity_name,
+            restore_identity_name=restore_identity_name,
             deploy_identity_name=deploy_identity_name,
             member_identity_name=member_identity_name,
             no_access_identity_name=no_access_identity_name,

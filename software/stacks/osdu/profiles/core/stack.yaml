@@ -536,6 +536,8 @@ spec:
     substituteFrom:
       - kind: ConfigMap
         name: osdu-image-lock
+      - kind: ConfigMap
+        name: spi-cluster-config
   prune: true
   wait: true
   timeout: 30m

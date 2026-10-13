@@ -554,6 +554,9 @@ def _collect_info() -> dict:
         # Observed from the running Deployment; empty until entitlements is deployed.
         "entitlements_domain": entitlements_domain,
         "suspended": suspended,
+        "features": {
+            "seismic_restore": cluster_cfg.get("ENABLE_SEISMIC_RESTORE", "false").lower() == "true",
+        },
         "osdu_versions": versions,
         # Every load the environment's registry names, read from its Jobs
         # (ADR-040); empty when the stack version delivers no registry.

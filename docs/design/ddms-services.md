@@ -1,8 +1,6 @@
 # DDMS service layer
 
-Status: implemented for the Seismic API. The RestoreRunner workload is present
-at zero replicas; its identity, permissions, queues, and restore storage
-settings remain unimplemented.
+Status: implemented for the Seismic API and its opt-in RestoreRunner.
 
 DDMS workloads are OSDU product services with a lifecycle after core
 initialization. [ADR-041](../decisions/041-ddms-workloads-reconcile-in-their-own-layer.md)
@@ -32,10 +30,11 @@ part of that environment, not an optional overlay.
 | `spi-osdu-ddms` | `spi-osdu-init` | Partition and entitlements initialization precede DDMS workloads |
 | `spi-osdu-ddms-routes` | `spi-osdu-ddms`, selected gateway Kustomization | Routes appear only after their DDMS backends and gateway are Ready |
 
-`spi-osdu-ddms` uses `wait: true`, consumes `osdu-image-lock` through
-`postBuild.substituteFrom`, and carries a timeout sized for service rollouts.
-Its HelmReleases use the local `osdu-spi-service` chart. The API, a worker, and
-another DDMS are separate releases even when the same repository builds them.
+`spi-osdu-ddms` uses `wait: true`, consumes `osdu-image-lock` and
+`spi-cluster-config` through `postBuild.substituteFrom`, and carries a timeout
+sized for service rollouts. Its HelmReleases use the local
+`osdu-spi-service` chart. The API, a worker, and another DDMS are separate
+releases even when the same repository builds them.
 
 The layer is gating. `spi status` therefore reports the environment as not
 deployable when a declared DDMS is unhealthy, while the independent
@@ -54,8 +53,11 @@ An auxiliary worker is not an extra container in the API pod. It has its own
 HelmRelease and replica control, which permits the image pair to exist while
 the process is disabled. A worker that needs permissions outside the shared
 OSDU envelope remains at zero replicas until a separate identity and permission
-decision is implemented. API onboarding cannot broaden the shared UAMI to make
-that worker start.
+decision is implemented. RestoreRunner follows this model under
+[ADR-042](../decisions/042-seismic-restore-is-an-explicit-privilege-boundary.md):
+its dedicated ServiceAccount federates to a dedicated UAMI with scoped restore
+access. API onboarding cannot broaden the shared UAMI to make that worker
+start.
 
 Container pulls still use the kubelet identity. Runtime Azure calls use
 Workload Identity. DDMS-specific Cosmos, Storage, Service Bus, and Key Vault resources stay in
@@ -95,21 +97,29 @@ Cosmos, Storage Queue, Key Vault, and partition-resolved Storage access. Its
 password-protected in-cluster Redis connection remains separate from that
 Azure identity and reads bootstrap aliases from Key Vault.
 
-Each partition contains `sdms-db/data`. The bulk-delete, change-tier,
-analytics, and restore flags are false, so their queues, status containers,
-archive container, and Storage restore settings are absent. The paired
-RestoreRunner image remains in `osdu-image-lock`, while
-the RestoreRunner HelmRelease declares zero replicas.
+Each partition always contains `sdms-db/data`. The bulk-delete, change-tier,
+and analytics flags remain false. Restore defaults to false, with the API flag
+off and RestoreRunner at zero replicas. `spi up --enable-seismic-restore`
+enables the API flag, one worker replica, the common-storage restore queue,
+the two restore Cosmos containers, and the partition storage recovery
+policies. The CLI preserves that setting on later `spi up` calls when neither
+restore option is supplied.
 
-Restore execution follows only after its dedicated identity, role-definition
-ownership, and PITR feature gate have an accepted decision.
+RestoreRunner uses `seismic-restore-sa` rather than
+`workload-identity-sa`. Its UAMI can read the environment vault, consume the
+common-storage restore queue, update Seismic Cosmos and blob state, and call
+the exact blob-service restore action on partition storage accounts. The API
+identity receives common queue access only while restore is enabled.
 
 ## Source files
 
 - [`software/stacks/osdu/profiles/core/stack.yaml`](../../software/stacks/osdu/profiles/core/stack.yaml)
 - [`software/stacks/osdu/ingress/azure/stack.yaml`](../../software/stacks/osdu/ingress/azure/stack.yaml)
 - [`software/stacks/osdu/services-ddms/seismic.yaml`](../../software/stacks/osdu/services-ddms/seismic.yaml)
+- [`software/stacks/osdu/services-ddms/seismic-restore.yaml`](../../software/stacks/osdu/services-ddms/seismic-restore.yaml)
+- [`infra/modules/identity.bicep`](../../infra/modules/identity.bicep)
 - [`infra/modules/partition.bicep`](../../infra/modules/partition.bicep)
+- [`infra/modules/rbac.bicep`](../../infra/modules/rbac.bicep)
 - [`src/spi/images.py`](../../src/spi/images.py)
 - [`src/spi/pins.py`](../../src/spi/pins.py)
 - [`src/spi/loads.py`](../../src/spi/loads.py)

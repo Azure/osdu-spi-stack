@@ -7,6 +7,12 @@
 @description('Principal ID of the OSDU workload identity receiving data-plane access.')
 param principalId string
 
+@description('Principal ID of the dedicated RestoreRunner identity.')
+param restorePrincipalId string = ''
+
+@description('Whether to create Seismic restore role definitions and assignments.')
+param enableSeismicRestore bool = false
+
 @description('Principal ID granted permission to write runtime secrets; an empty string omits the grant.')
 param deployerPrincipalId string = ''
 
@@ -45,7 +51,9 @@ var roleIds = {
   keyVaultSecretsUser: '4633458b-17de-408a-b874-0445c86b69e6'
   keyVaultSecretsOfficer: 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
   storageBlobDataContributor: 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+  storageBlobRestoreOperator: 'b66df1f4-588e-4a1f-abce-d26fa97b6668'
   storageTableDataContributor: '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
+  storageQueueDataContributor: '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
   serviceBusDataSender: '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39'
   serviceBusDataReceiver: '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0'
   acrPull: '7f951dda-4ed3-4680-a7ca-43fe172d538d'
@@ -77,12 +85,46 @@ resource serviceBusNamespaces 'Microsoft.ServiceBus/namespaces@2022-10-01-previe
   name: sbName
 }]
 
+resource storageBlobRestoreOperatorRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = if (enableSeismicRestore) {
+  name: roleIds.storageBlobRestoreOperator
+  properties: {
+    roleName: 'Seismic Blob Restore Operator'
+    description: 'Read storage account restore status and start blob point-in-time restore.'
+    type: 'CustomRole'
+    permissions: [
+      {
+        actions: [
+          'Microsoft.Storage/storageAccounts/read'
+          'Microsoft.Storage/storageAccounts/blobServices/read'
+          'Microsoft.Storage/storageAccounts/blobServices/restoreBlobRanges/action'
+        ]
+        notActions: []
+        dataActions: []
+        notDataActions: []
+      }
+    ]
+    assignableScopes: [
+      resourceGroup().id
+    ]
+  }
+}
+
 resource keyVaultSecretsUserAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: keyVault
   name: guid(keyVault.id, principalId, roleIds.keyVaultSecretsUser)
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.keyVaultSecretsUser)
     principalId: principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource restoreKeyVaultSecretsUserAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableSeismicRestore) {
+  scope: keyVault
+  name: guid(keyVault.id, restorePrincipalId, roleIds.keyVaultSecretsUser)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.keyVaultSecretsUser)
+    principalId: restorePrincipalId
     principalType: 'ServicePrincipal'
   }
 }
@@ -162,12 +204,52 @@ resource commonStorageTableAssignment 'Microsoft.Authorization/roleAssignments@2
   }
 }
 
+resource commonStorageQueueAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableSeismicRestore) {
+  scope: commonStorage
+  name: guid(commonStorage.id, principalId, roleIds.storageQueueDataContributor)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.storageQueueDataContributor)
+    principalId: principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource restoreCommonStorageQueueAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableSeismicRestore) {
+  scope: commonStorage
+  name: guid(commonStorage.id, restorePrincipalId, roleIds.storageQueueDataContributor)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.storageQueueDataContributor)
+    principalId: restorePrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 resource partitionStorageBlobAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (storageName, i) in partitionStorageNames: {
   scope: partitionStorageAccounts[i]
   name: guid(partitionStorageAccounts[i].id, principalId, roleIds.storageBlobDataContributor)
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.storageBlobDataContributor)
     principalId: principalId
+    principalType: 'ServicePrincipal'
+  }
+}]
+
+resource restorePartitionStorageBlobAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (storageName, i) in partitionStorageNames: if (enableSeismicRestore) {
+  scope: partitionStorageAccounts[i]
+  name: guid(partitionStorageAccounts[i].id, restorePrincipalId, roleIds.storageBlobDataContributor)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleIds.storageBlobDataContributor)
+    principalId: restorePrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}]
+
+resource restorePartitionStorageAccountAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (storageName, i) in partitionStorageNames: if (enableSeismicRestore) {
+  scope: partitionStorageAccounts[i]
+  name: guid(partitionStorageAccounts[i].id, restorePrincipalId, roleIds.storageBlobRestoreOperator)
+  properties: {
+    roleDefinitionId: storageBlobRestoreOperatorRole.id
+    principalId: restorePrincipalId
     principalType: 'ServicePrincipal'
   }
 }]

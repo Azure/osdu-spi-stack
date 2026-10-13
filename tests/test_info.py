@@ -96,6 +96,7 @@ def _wire(
             "AZURE_SUBSCRIPTION_ID": "subscription-id",
             "AZURE_RESOURCE_GROUP": "spi-stack-shared",
             "AKS_CLUSTER_NAME": "spi-stack-shared",
+            "ENABLE_SEISMIC_RESTORE": "true",
         },
     )
     names = partitions or ["opendes"]
@@ -142,6 +143,7 @@ def test_collect_info_includes_versioned_identity_fields(monkeypatch):
     assert result["azure"]["tenant_id"] == "tenant-id"
     assert result["azure"]["data_plane_application_id"] == "application-id"
     assert result["suspended"] is True
+    assert result["features"]["seismic_restore"] is True
 
 
 def test_render_info_json_never_reads_or_emits_live_credentials(monkeypatch, capsys):

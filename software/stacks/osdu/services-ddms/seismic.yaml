@@ -105,7 +105,7 @@ spec:
       - name: FEATURE_FLAG_ENABLE_ANALYTICS
         value: "false"
       - name: FEATURE_FLAG_ENABLE_RESTORE
-        value: "false"
+        value: "${ENABLE_SEISMIC_RESTORE:=false}"
       - name: AZURE_TOKEN_CREDENTIALS
         value: prod
       - name: NODE_EXTRA_CA_CERTS

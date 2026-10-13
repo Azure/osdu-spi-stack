@@ -29,23 +29,26 @@ one unit.
   `workload-identity-sa`.
 - **The runner receives scoped data-plane roles.** Key Vault Secrets User is
   scoped to the environment vault, Storage Blob Data Contributor and Storage
-  Queue Data Contributor are scoped to each partition storage account, and
-  Cosmos DB Built-in Data Contributor is scoped to each partition Cosmos
-  account. The API identity receives Storage Queue Data Contributor on the
-  same accounts so it can enqueue restore work; it receives no restore
+  Data Contributor are scoped to each partition storage account, Storage Queue
+  Data Contributor is scoped to the common storage account, and Cosmos DB
+  Built-in Data Contributor is scoped to each partition Cosmos account. The
+  API identity receives Storage Queue Data Contributor on common storage so it
+  can enqueue restore work; it receives no restore
   management-plane action.
-- **One custom role grants the management operation.** The subscription-level
+- **One custom role grants the management operation.** The resource-group-level
   role definition `Seismic Blob Restore Operator`, id
   `b66df1f4-588e-4a1f-abce-d26fa97b6668`, contains only
   `Microsoft.Storage/storageAccounts/read` and
-  `Microsoft.Storage/storageAccounts/restoreBlobRanges/action`. Its assignment
-  to the RestoreRunner identity is scoped to each partition storage account.
+  `Microsoft.Storage/storageAccounts/blobServices/read`, and
+  `Microsoft.Storage/storageAccounts/blobServices/restoreBlobRanges/action`.
+  Its assignment to the RestoreRunner identity is scoped to each partition
+  storage account.
 - **Storage recovery settings are gated together.** When restore is enabled,
   each partition storage account enables blob versioning, change feed with
   30-day retention, blob soft delete with 31-day retention, container soft
   delete with 31-day retention, and point-in-time restore with 30-day
-  retention. When disabled, the template omits those policies rather than
-  writing disabled policy objects.
+  retention. When disabled, the template writes disabled policy objects so a
+  later deployment also turns off previously enabled retention policies.
 - **Restore state is gated with the worker.** Enabling restore creates
   `sdms-queue-restore`, plus the `RestoreOperationStatus` and
   `ArchiveDatasetMetadata` containers in `sdms-db`. It sets
@@ -55,8 +58,10 @@ one unit.
 - **The CLI checks the permission expansion before Azure changes.** ADR-035's
   deployer preflight includes custom role definition write and delete, the
   fixed custom role id is part of `STACK_ROLES`, and the documented
-  role-assignment condition admits that id. A deployer with the old condition
-  is refused before Bicep starts.
+  role-assignment condition admits that id. Creating the role requires a
+  temporary User Access Administrator grant in addition to the ordinary
+  constrained assignment grant. A deployer without it is refused before Bicep
+  starts.
 - **Deployment validates the whole gate.** Tests require the identity,
   federation, roles, queues, Cosmos containers, policies, API feature flag, and
   worker replica to agree for both flag values. No individual restore

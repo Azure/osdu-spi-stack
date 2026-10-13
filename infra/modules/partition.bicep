@@ -28,6 +28,12 @@ param keyVaultName string = ''
 @description('Principal ID of the OSDU workload identity granted Cosmos SQL data-plane access.')
 param principalId string
 
+@description('Principal ID of the dedicated RestoreRunner identity.')
+param restorePrincipalId string = ''
+
+@description('Whether to provision Seismic restore state and recovery policies.')
+param enableSeismicRestore bool = false
+
 var osduDbContainers = [
   { name: 'Authority', partitionKey: '/id' }
   { name: 'EntityType', partitionKey: '/id' }
@@ -65,6 +71,11 @@ var osduSystemDbContainers = [
 
 var sdmsDbContainers = [
   { name: 'data', partitionKey: '/id' }
+]
+
+var sdmsRestoreContainers = [
+  { name: 'RestoreOperationStatus', partitionKey: '/operationId', defaultTtl: -1 }
+  { name: 'ArchiveDatasetMetadata', partitionKey: '/sdPath', defaultTtl: 2592000 }
 ]
 
 var serviceBusTopicDefs = [
@@ -224,6 +235,23 @@ resource sdmsDbContainerResources 'Microsoft.DocumentDB/databaseAccounts/sqlData
   }
 }]
 
+resource sdmsRestoreContainerResources 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2023-11-15' = [for container in sdmsRestoreContainers: if (enableSeismicRestore) {
+  parent: sdmsDb
+  name: container.name
+  properties: {
+    resource: {
+      id: container.name
+      partitionKey: {
+        paths: [
+          container.partitionKey
+        ]
+        kind: 'Hash'
+      }
+      defaultTtl: container.defaultTtl
+    }
+  }
+}]
+
 // Cosmos SQL data-plane RBAC is separate from Azure RBAC and invisible to
 // `az role assignment`; without it OSDU data calls fail with 403.
 var sqlDataContributorRoleId = '00000000-0000-0000-0000-000000000002'
@@ -234,6 +262,16 @@ resource osduIdentitySqlDataContributor 'Microsoft.DocumentDB/databaseAccounts/s
   properties: {
     roleDefinitionId: '${cosmosAccount.id}/sqlRoleDefinitions/${sqlDataContributorRoleId}'
     principalId: principalId
+    scope: cosmosAccount.id
+  }
+}
+
+resource restoreIdentitySqlDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2023-11-15' = if (enableSeismicRestore) {
+  parent: cosmosAccount
+  name: guid(cosmosAccount.id, restorePrincipalId, sqlDataContributorRoleId)
+  properties: {
+    roleDefinitionId: '${cosmosAccount.id}/sqlRoleDefinitions/${sqlDataContributorRoleId}'
+    principalId: restorePrincipalId
     scope: cosmosAccount.id
   }
 }
@@ -292,6 +330,39 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
   parent: storageAccount
   name: 'default'
+  properties: enableSeismicRestore ? {
+    changeFeed: {
+      enabled: true
+      retentionInDays: 30
+    }
+    containerDeleteRetentionPolicy: {
+      enabled: true
+      days: 31
+    }
+    deleteRetentionPolicy: {
+      enabled: true
+      days: 31
+    }
+    isVersioningEnabled: true
+    restorePolicy: {
+      enabled: true
+      days: 30
+    }
+  } : {
+    changeFeed: {
+      enabled: false
+    }
+    containerDeleteRetentionPolicy: {
+      enabled: false
+    }
+    deleteRetentionPolicy: {
+      enabled: false
+    }
+    isVersioningEnabled: false
+    restorePolicy: {
+      enabled: false
+    }
+  }
 }
 
 // Record ingestion writes to a container named after the partition and returns
