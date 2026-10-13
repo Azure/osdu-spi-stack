@@ -98,8 +98,9 @@ Workload-Identity-capable replacement image
 ([ADR-005](decisions/005-workload-identity.md)).
 
 The core service set is partition, entitlements, legal, schema, storage, search,
-indexer, indexer-queue, file, and workflow. The reference APIs are unit,
-crs-conversion, and crs-catalog. Their configuration lives in
+indexer, indexer-queue, file, and workflow. The reference APIs are unit and
+crs-catalog; crs-conversion is defined but not deployed. Their configuration
+lives in
 [`services/`](../software/stacks/osdu/services/) and
 [`services-reference/`](../software/stacks/osdu/services-reference/).
 
