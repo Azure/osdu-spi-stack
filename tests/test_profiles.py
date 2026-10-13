@@ -724,6 +724,7 @@ class TestAutomatedGatewayDeployment:
         env = {item["name"]: item["value"] for item in release["spec"]["values"]["env"]}
 
         assert env["AZURE_KEYVAULT_ACCESS_TOKEN_SCOPE"] == "https://vault.azure.net/.default"
+        assert env["AZURE_OSDU_ACCESS_TOKEN_SCOPE_OVERRIDE"] == "$(AAD_CLIENT_ID)/.default"
 
     def test_tls_listeners_reference_secrets_in_the_gateway_namespace(self):
         for mode in ("azure", "dns"):
