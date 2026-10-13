@@ -40,7 +40,7 @@ one unit.
   `b66df1f4-588e-4a1f-abce-d26fa97b6668`, contains only
   `Microsoft.Storage/storageAccounts/read` and
   `Microsoft.Storage/storageAccounts/blobServices/read`, and
-  `Microsoft.Storage/storageAccounts/blobServices/restoreBlobRanges/action`.
+  `Microsoft.Storage/storageAccounts/restoreBlobRanges/action`.
   Its assignment to the RestoreRunner identity is scoped to each partition
   storage account.
 - **Storage recovery settings are gated together.** When restore is enabled,

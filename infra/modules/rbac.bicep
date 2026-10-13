@@ -96,7 +96,7 @@ resource storageBlobRestoreOperatorRole 'Microsoft.Authorization/roleDefinitions
         actions: [
           'Microsoft.Storage/storageAccounts/read'
           'Microsoft.Storage/storageAccounts/blobServices/read'
-          'Microsoft.Storage/storageAccounts/blobServices/restoreBlobRanges/action'
+          'Microsoft.Storage/storageAccounts/restoreBlobRanges/action'
         ]
         notActions: []
         dataActions: []
