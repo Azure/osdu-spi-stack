@@ -56,6 +56,7 @@ def test_render_cluster_config_carries_deploy_identity_facts():
             "deploy_identity_client_id": "client",
             "deploy_identity_principal_id": "principal",
             "no_access_identity_client_id": "noaccess",
+            "restore_identity_client_id": "restore",
             "tenant_id": "tenant",
             "subscription_id": "sub",
         },
@@ -69,6 +70,9 @@ def test_render_cluster_config_carries_deploy_identity_facts():
     assert 'DEPLOY_IDENTITY_CLIENT_ID: "client"' in yaml
     assert 'DEPLOY_IDENTITY_PRINCIPAL_ID: "principal"' in yaml
     assert 'NO_ACCESS_IDENTITY_CLIENT_ID: "noaccess"' in yaml
+    assert 'SEISMIC_RESTORE_IDENTITY_CLIENT_ID: "restore"' in yaml
+    assert 'ENABLE_SEISMIC_RESTORE: "true"' in yaml
+    assert 'SEISMIC_RESTORE_REPLICAS: "1"' in yaml
     assert 'AZURE_TENANT_ID: "tenant"' in yaml
     assert 'AZURE_SUBSCRIPTION_ID: "sub"' in yaml
     assert 'AKS_CLUSTER_NAME: "spi-stack-dks"' in yaml
