@@ -689,8 +689,9 @@ def up(
     enable_seismic_restore: Optional[bool] = typer.Option(
         None,
         "--enable-seismic-restore/--disable-seismic-restore",
-        help="Enable or disable Seismic point-in-time restore and its privileged worker. "
-        "Omit to preserve the deployed setting.",
+        help="Enable Seismic point-in-time restore, or disable its runtime and recovery "
+        "policies while retaining dormant Azure resources. Omit to preserve the deployed "
+        "setting.",
     ),
 ):
     """Provision Azure infrastructure and deploy the OSDU SPI stack."""
