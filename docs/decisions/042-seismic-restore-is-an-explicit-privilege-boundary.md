@@ -99,6 +99,12 @@ without a consumer.
 - The 30-day recovery window costs change-feed, version, and soft-deleted data
   retention. Turning the flag off on a later deployment removes the policies;
   Azure controls expiry of data retained under the earlier policy.
+- Incremental ARM deployment does not delete restore resources that the
+  disabled template omits. The queue, Cosmos containers, RestoreRunner
+  identity, custom role, and assignments remain dormant after
+  `--disable-seismic-restore`. The API flag is false, the worker has zero
+  replicas, and storage recovery policies are disabled. `spi reset` is the
+  cleanup boundary for the retained Azure resources.
 - A change to a retention value or required restore resource is one
   deployment-model change under this record, not a service-manifest-only
   change.

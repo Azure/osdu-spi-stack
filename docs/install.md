@@ -68,6 +68,9 @@ one resource-group-scoped custom role and also preflights
 `Microsoft.Authorization/roleDefinitions/write` and `delete`. If either is
 missing, the CLI prints a User Access Administrator grant. That broader grant
 is needed only for the restore deployment and should be removed afterward.
+Disabling restore later scales the worker to zero and disables recovery
+policies, but incremental deployment retains the dormant restore identity,
+roles, queue, and Cosmos containers until `spi reset`.
 
 `spi check` reads the signed-in identity's permissions and, when one is
 missing, prints the exact commands with the object id filled in. `spi up` runs
