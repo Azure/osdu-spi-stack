@@ -62,6 +62,46 @@ def _rendered_image(extra_set: dict[str, str]) -> str:
     return deployment["spec"]["template"]["spec"]["containers"][0]["image"]
 
 
+def _rendered_service_account(extra_set: dict[str, str]) -> dict | None:
+    set_args = []
+    for key, value in extra_set.items():
+        set_args += ["--set-string", f"{key}={value}"]
+    result = run_process(
+        ["helm", "template", "chart-service-account-test", str(CHART_DIR), *set_args],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return next(
+        (
+            doc
+            for doc in yaml.safe_load_all(result.stdout)
+            if doc and doc.get("kind") == "ServiceAccount"
+        ),
+        None,
+    )
+
+
+def test_service_account_is_absent_by_default():
+    assert _rendered_service_account({}) is None
+
+
+def test_service_specific_workload_identity_account_is_rendered():
+    account = _rendered_service_account(
+        {
+            "serviceAccount.create": "true",
+            "serviceAccountName": "seismic-restore-sa",
+            "serviceAccount.annotations.azure\\.workload\\.identity/client-id": "restore-client",
+        }
+    )
+
+    assert account is not None
+    assert account["metadata"]["name"] == "seismic-restore-sa"
+    assert account["metadata"]["annotations"]["azure.workload.identity/client-id"] == (
+        "restore-client"
+    )
+
+
 def test_renders_repository_at_digest_when_digest_set():
     image = _rendered_image(
         {

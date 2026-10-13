@@ -52,6 +52,11 @@ def deploy_identity_facts(
         "DEPLOY_IDENTITY_PRINCIPAL_ID": infra_outputs.get("deploy_identity_principal_id", ""),
         "MEMBER_IDENTITY_CLIENT_ID": infra_outputs.get("member_identity_client_id", ""),
         "NO_ACCESS_IDENTITY_CLIENT_ID": infra_outputs.get("no_access_identity_client_id", ""),
+        "SEISMIC_RESTORE_IDENTITY_CLIENT_ID": infra_outputs.get("restore_identity_client_id", ""),
+        "ENABLE_SEISMIC_RESTORE": "true"
+        if infra_outputs.get("restore_identity_client_id")
+        else "false",
+        "SEISMIC_RESTORE_REPLICAS": "1" if infra_outputs.get("restore_identity_client_id") else "0",
         "AZURE_TENANT_ID": infra_outputs.get("tenant_id", ""),
         "AZURE_SUBSCRIPTION_ID": infra_outputs.get("subscription_id", ""),
         "AZURE_RESOURCE_GROUP": resource_group,

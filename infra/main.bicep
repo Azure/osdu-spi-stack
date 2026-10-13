@@ -19,6 +19,12 @@ param location string = 'westus3'
 @description('Resource name for the OSDU workload identity.')
 param identityName string
 
+@description('Resource name for the dedicated Seismic RestoreRunner identity.')
+param restoreIdentityName string
+
+@description('Enable Seismic point-in-time restore prerequisites and worker identity.')
+param enableSeismicRestore bool = false
+
 @description('Resource name for the deploy identity fork CI federates to.')
 param deployIdentityName string
 
@@ -114,6 +120,8 @@ module identityModule 'modules/identity.bicep' = {
   name: 'spi-identity'
   params: {
     name: identityName
+    restoreIdentityName: restoreIdentityName
+    enableSeismicRestore: enableSeismicRestore
     deployIdentityName: deployIdentityName
     memberIdentityName: memberIdentityName
     noAccessIdentityName: noAccessIdentityName
@@ -136,6 +144,7 @@ module storageCommonModule 'modules/storage-common.bicep' = {
   params: {
     name: commonStorageName
     location: location
+    enableSeismicRestore: enableSeismicRestore
   }
 }
 
@@ -150,6 +159,8 @@ module partitionModules 'modules/partition.bicep' = [for (p, i) in dataPartition
     isPrimaryPartition: p == primaryPartition
     keyVaultName: keyVaultName
     principalId: identityModule.outputs.principalId
+    restorePrincipalId: identityModule.outputs.restorePrincipalId
+    enableSeismicRestore: enableSeismicRestore
   }
   dependsOn: [
     keyvaultModule
@@ -160,6 +171,8 @@ module rbacModule 'modules/rbac.bicep' = {
   name: 'spi-rbac'
   params: {
     principalId: identityModule.outputs.principalId
+    restorePrincipalId: identityModule.outputs.restorePrincipalId
+    enableSeismicRestore: enableSeismicRestore
     deployerPrincipalId: deployerPrincipalId
     deployerPrincipalType: deployerPrincipalType
     kubeletIdentityObjectId: kubeletIdentityObjectId
@@ -347,6 +360,9 @@ output identityClientId string = identityModule.outputs.clientId
 
 @description('Principal ID used for OSDU workload identity role assignments.')
 output identityPrincipalId string = identityModule.outputs.principalId
+
+@description('Client ID of the dedicated RestoreRunner identity, or empty when disabled.')
+output restoreIdentityClientId string = identityModule.outputs.restoreClientId
 
 @description('Azure resource ID of the OSDU workload identity.')
 output identityResourceId string = identityModule.outputs.resourceId

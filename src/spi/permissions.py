@@ -44,7 +44,9 @@ STACK_ROLES: Dict[str, str] = {
     "Key Vault Secrets Officer": "b86a8fe4-44ce-4948-aee5-eccb2c155cd7",
     "Key Vault Secrets User": "4633458b-17de-408a-b874-0445c86b69e6",
     "Storage Blob Data Contributor": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+    "Seismic Blob Restore Operator": "b66df1f4-588e-4a1f-abce-d26fa97b6668",
     "Storage Table Data Contributor": "0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3",
+    "Storage Queue Data Contributor": "974c5e8b-45b9-4653-ba55-5f855dd0fb88",
     "Azure Service Bus Data Sender": "69a216fc-b8fb-44d8-bc22-1f3c2cd27a39",
     "Azure Service Bus Data Receiver": "4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0",
     "AcrPull": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
@@ -56,16 +58,31 @@ CREATE_GROUP = "Microsoft.Resources/subscriptions/resourceGroups/write"
 CREATE_CLUSTER = "Microsoft.ContainerService/managedClusters/write"
 WRITE_ASSIGNMENT = "Microsoft.Authorization/roleAssignments/write"
 DELETE_ASSIGNMENT = "Microsoft.Authorization/roleAssignments/delete"
+WRITE_ROLE_DEFINITION = "Microsoft.Authorization/roleDefinitions/write"
+DELETE_ROLE_DEFINITION = "Microsoft.Authorization/roleDefinitions/delete"
 
 ACTION_LABELS: Dict[str, str] = {
     CREATE_GROUP: "Create resource groups",
     CREATE_CLUSTER: "Create AKS clusters",
     WRITE_ASSIGNMENT: "Create role assignments",
     DELETE_ASSIGNMENT: "Remove role assignments",
+    WRITE_ROLE_DEFINITION: "Create custom role definitions",
+    DELETE_ROLE_DEFINITION: "Remove custom role definitions",
 }
-DEPLOY_ACTIONS: Tuple[str, ...] = tuple(ACTION_LABELS)
+DEPLOY_ACTIONS: Tuple[str, ...] = (
+    CREATE_GROUP,
+    CREATE_CLUSTER,
+    WRITE_ASSIGNMENT,
+    DELETE_ASSIGNMENT,
+)
+RESTORE_DEPLOY_ACTIONS = (
+    *DEPLOY_ACTIONS,
+    WRITE_ROLE_DEFINITION,
+    DELETE_ROLE_DEFINITION,
+)
 CONTRIBUTOR_ACTIONS = (CREATE_GROUP, CREATE_CLUSTER)
 GRANT_ACTIONS = (WRITE_ASSIGNMENT, DELETE_ASSIGNMENT)
+ROLE_DEFINITION_ACTIONS = (WRITE_ROLE_DEFINITION, DELETE_ROLE_DEFINITION)
 
 DOCS_POINTER = "docs/install.md#permissions"
 PERMISSIONS_API_VERSION = "2022-04-01"
@@ -195,16 +212,24 @@ def grant_commands(
         f"--scope {subscription_scope(subscription_id)}",
     ]
     commands = []
+    needs_role_definition_grant = any(a in denied for a in ROLE_DEFINITION_ACTIONS)
     if any(a in denied for a in CONTRIBUTOR_ACTIONS):
         parts = ["az role assignment create", '--role "Contributor"', *assignee]
         commands.append(cont.join(parts))
-    if any(a in denied for a in GRANT_ACTIONS):
+    if any(a in denied for a in GRANT_ACTIONS) and not needs_role_definition_grant:
         parts = [
             "az role assignment create",
             '--role "Role Based Access Control Administrator"',
             *assignee,
             "--condition-version 2.0",
             f"--condition {condition}",
+        ]
+        commands.append(cont.join(parts))
+    if needs_role_definition_grant:
+        parts = [
+            "az role assignment create",
+            '--role "User Access Administrator"',
+            *assignee,
         ]
         commands.append(cont.join(parts))
     return commands
@@ -233,12 +258,24 @@ def report_denial(results: Sequence[ScopeResult], commands: Sequence[str], comma
             f"{command} assigns {len(STACK_ROLES)} Azure roles to the identities it creates "
             "and to you.\nContributor cannot create role assignments."
         )
+    if denied & set(ROLE_DEFINITION_ACTIONS):
+        lines.append(
+            f"{command} with Seismic restore enabled creates its narrowly scoped custom "
+            "blob restore role.\nRemove the temporary User Access Administrator grant "
+            "after deployment."
+        )
     noun = "command" if len(commands) == 1 else "commands"
     lines.append(f"Ask a subscription admin to run the {noun} below.")
-    lines.append(
-        "The grant only allows assigning the roles the stack uses. Owner or\n"
-        "User Access Administrator is not needed."
-    )
+    if denied & set(ROLE_DEFINITION_ACTIONS):
+        lines.append(
+            "The custom-role grant is broader than the ordinary constrained grant and is "
+            "needed only while deploying the restore feature."
+        )
+    else:
+        lines.append(
+            "The grant only allows assigning the roles the stack uses. Owner or\n"
+            "User Access Administrator is not needed."
+        )
     lines.append(f"Full requirement and admin steps: {DOCS_POINTER}.")
     console.print()
     console.print(
@@ -249,7 +286,11 @@ def report_denial(results: Sequence[ScopeResult], commands: Sequence[str], comma
         console.print(text, markup=False, highlight=False, soft_wrap=True)
 
 
-def resolve_scope(subscription_id: str, resource_group: str) -> ScopeResult:
+def resolve_scope(
+    subscription_id: str,
+    resource_group: str,
+    actions: Sequence[str] = DEPLOY_ACTIONS,
+) -> ScopeResult:
     """Evaluate at the group when it exists, otherwise at the subscription."""
     exists = run_command(
         ["az", "group", "exists", "--name", resource_group],
@@ -259,18 +300,21 @@ def resolve_scope(subscription_id: str, resource_group: str) -> ScopeResult:
     )
     if exists.returncode == 0 and exists.stdout.strip().lower() == "true":
         scope = group_scope(subscription_id, resource_group)
-        actions = (CREATE_CLUSTER, WRITE_ASSIGNMENT, DELETE_ASSIGNMENT)
-        return evaluate(scope, "resource group", actions)
-    return evaluate(subscription_scope(subscription_id), "subscription scope", DEPLOY_ACTIONS)
+        group_actions = tuple(action for action in actions if action != CREATE_GROUP)
+        return evaluate(scope, "resource group", group_actions)
+    return evaluate(subscription_scope(subscription_id), "subscription scope", actions)
 
 
 def require_deploy_permissions(
-    account: Dict[str, Any], principal: Tuple[str, str], resource_group: str
+    account: Dict[str, Any],
+    principal: Tuple[str, str],
+    resource_group: str,
+    actions: Sequence[str] = DEPLOY_ACTIONS,
 ) -> None:
     """Stop `spi up` before its first mutation when the deployer lacks a required permission."""
     subscription_id = account.get("id", "")
     console.print("\n[bold]Checking Azure permissions...[/bold]")
-    result = resolve_scope(subscription_id, resource_group)
+    result = resolve_scope(subscription_id, resource_group, actions)
     if result.error:
         console.print(
             f"  [warning]Permissions not checked at {result.scope}: {result.error}. "

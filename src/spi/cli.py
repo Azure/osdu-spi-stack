@@ -387,6 +387,7 @@ def _build_config(
     ingress_prefix: str = "",
     acme_email: str = "",
     name_suffix: str = "",
+    enable_seismic_restore: bool = False,
 ) -> Config:
     return Config.from_env(
         env=env,
@@ -401,6 +402,7 @@ def _build_config(
         dns_zone=dns_zone,
         ingress_prefix=ingress_prefix,
         acme_email=acme_email,
+        enable_seismic_restore=enable_seismic_restore,
     )
 
 
@@ -684,6 +686,12 @@ def up(
         help="Reviewed environment declaration as <owner>/<repo>:<path>, read from main. "
         "It supplies the provisioning options and the trusted forks; later runs reuse it.",
     ),
+    enable_seismic_restore: Optional[bool] = typer.Option(
+        None,
+        "--enable-seismic-restore/--disable-seismic-restore",
+        help="Enable or disable Seismic point-in-time restore and its privileged worker. "
+        "Omit to preserve the deployed setting.",
+    ),
 ):
     """Provision Azure infrastructure and deploy the OSDU SPI stack."""
     # Argument errors surface before the first Azure read.
@@ -691,6 +699,11 @@ def up(
     declared = _up_declaration(env, declaration)
     if declared is not None:
         intent = declared.declaration
+        if enable_seismic_restore is not None:
+            raise typer.BadParameter(
+                "is not supported by environment declarations yet",
+                param_hint="--enable-seismic-restore",
+            )
         if branch is not None:
             raise typer.BadParameter(
                 f"conflicts with the declaration, which pins {intent.stack_version}",
@@ -736,12 +749,29 @@ def up(
     console.print(Panel(title, border_style="cyan"))
     check_prerequisites(PREREQ_TOOLS)
 
+    from .azure_infra import read_deployed_seismic_restore
+
+    if enable_seismic_restore is None:
+        enable_seismic_restore = read_deployed_seismic_restore(
+            Config.from_env(env).resource_group,
+            env,
+        )
+
     # Resolve the deployer before suffix persistence so an identity failure
     # cannot mutate an existing untagged resource group.
     name_suffix, azure_account, deployer_principal = _resolve_up_context(
         env,
         requested_suffix=name_suffix,
     )
+    if enable_seismic_restore:
+        from .permissions import ROLE_DEFINITION_ACTIONS, require_deploy_permissions
+
+        require_deploy_permissions(
+            azure_account,
+            deployer_principal,
+            Config.from_env(env).resource_group,
+            ROLE_DEFINITION_ACTIONS,
+        )
 
     config = _build_config(
         profile=profile,
@@ -756,6 +786,7 @@ def up(
         ingress_prefix=ingress_prefix,
         acme_email=resolve_acme_email(acme_email),
         name_suffix=name_suffix,
+        enable_seismic_restore=enable_seismic_restore,
     )
     # A preview provisions nothing, so it does not hand the environment to the declaration.
     if declared is not None and not dry_run:

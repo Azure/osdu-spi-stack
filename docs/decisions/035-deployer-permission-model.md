@@ -2,7 +2,7 @@
 
 ## Context
 
-`spi up` creates resources and assigns eleven built-in roles plus one custom
+`spi up` creates resources and assigns twelve built-in roles plus one custom
 role to its identities: the environment roles and DNS Zone Contributor in the DNS
 zone's group, which is often a different group. Contributor creates every
 resource but excludes `Microsoft.Authorization/*/Write` and
@@ -58,7 +58,7 @@ caveat for a small population.
 
 - The check evaluates role-based permissions only. Assignment conditions and
   deny assignments are not evaluated, so a grant conditioned to fewer than the
-  twelve roles passes and fails at the first template outside its list. The
+  thirteen roles passes and fails at the first template outside its list. The
   permissions API does not return assignment conditions, so an administrator
   compares an existing grant with the role table in `docs/install.md`.
 - A new role in a template requires the same id in `STACK_ROLES` and a condition

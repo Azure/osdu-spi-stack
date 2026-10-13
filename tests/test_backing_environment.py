@@ -631,6 +631,13 @@ class TestUpDeclaration:
 
         assert result.exit_code == 0, result.output
 
+    def test_restore_is_refused_until_the_declaration_schema_owns_it(self, up):
+        result, seen = up("--enable-seismic-restore")
+
+        assert result.exit_code == 2
+        assert "not supported by environment declarations yet" in _flat(result.output)
+        assert seen == {}
+
     @pytest.mark.parametrize(
         ("option", "value", "declared"),
         [
