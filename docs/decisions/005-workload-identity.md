@@ -16,7 +16,11 @@ Use a single UAMI (`<cluster>-osdu-identity`) federated with the `workload-ident
 
 Ingress mode `dns` provisions a second UAMI (`<cluster>-external-dns`) scoped `DNS Zone Contributor` on the target DNS zone (ADR-012).
 
-Rejected: per-service UAMIs with least-privilege scoping. The role surface (the same role set across every service) does not differentiate enough to justify the federation and RBAC volume at the SPI Stack's current scope.
+Rejected: per-service UAMIs for ordinary OSDU data-plane access. The role
+surface (the same role set across every service) does not differentiate enough
+to justify the federation and RBAC volume at the SPI Stack's current scope.
+ADR-042 defines the exception for Seismic RestoreRunner, whose account-level
+restore action is outside that shared role surface.
 
 ## Consequences
 
@@ -24,4 +28,7 @@ Rejected: per-service UAMIs with least-privilege scoping. The role surface (the 
 - One identity, one set of RBAC bindings. Provisioning is deterministic and re-runs are idempotent.
 - All OSDU services share the same access envelope; there is no per-service blast-radius containment at the Azure layer. Containment is at the Kubernetes RBAC and mesh layer instead.
 - The schema-load Job (ADR-013) and any future workloads in the `osdu` namespace reuse this ServiceAccount without any new Azure-side provisioning.
+- A workload that receives management-plane recovery permission does not reuse
+  this ServiceAccount. ADR-042 gives RestoreRunner a dedicated identity and
+  federation.
 - One per-partition gap remains: indexer-queue's subscription client builds a Service Bus connection string regardless of the Workload Identity flag, but `${partition}-sb-connection` holds the literal `DISABLED` (ADR-023) rather than a real key, so the community image cannot authenticate until a Workload-Identity-capable image replaces it. See [secret lifecycle](../design/secret-lifecycle.md) for the full mechanics.

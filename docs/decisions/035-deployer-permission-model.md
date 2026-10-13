@@ -2,8 +2,8 @@
 
 ## Context
 
-`spi up` creates resources and assigns eleven built-in roles to seven
-identities: ten in the environment group and DNS Zone Contributor in the DNS
+`spi up` creates resources and assigns eleven built-in roles plus one custom
+role to its identities: the environment roles and DNS Zone Contributor in the DNS
 zone's group, which is often a different group. Contributor creates every
 resource but excludes `Microsoft.Authorization/*/Write` and
 `Microsoft.Authorization/*/Delete`, so a Contributor-only deployer fails at the
@@ -16,11 +16,11 @@ do not exist when an administrator grants access.
 The deployer holds two assignments at subscription scope: Contributor, and Role
 Based Access Control Administrator with an ABAC condition that allows
 `roleAssignments/write` and `roleAssignments/delete` only when the role
-definition is one of the stack's eleven. The condition does not restrict
+definition is one of the stack's twelve. The condition does not restrict
 recipients or resources. Subscription scope covers the DNS zone's group in
 `dns` ingress mode and survives `spi down`.
 
-- `STACK_ROLES` in `src/spi/permissions.py` is the one list of the eleven role
+- `STACK_ROLES` in `src/spi/permissions.py` is the one list of the twelve role
   ids. The CLI builds the condition from it, and
   `tests/test_permissions.py` fails when a template under `infra/` assigns a
   role the list omits.
@@ -28,7 +28,8 @@ recipients or resources. Subscription scope covers the DNS zone's group in
   which Reader can call and which avoids Microsoft Graph. It evaluates four
   actions against each entry's `actions` and `notActions`: resource group
   write, managed cluster write, role assignment write, and role assignment
-  delete.
+  delete. When `enableSeismicRestore` is true it also checks role definition
+  write and delete for the fixed custom role in ADR-042.
 - `spi check` runs it at subscription scope whenever `az` is signed in. `spi up`
   runs it after resolving the deployer and before the first change to Azure: at
   the environment group when it exists, where inherited grants are included,
@@ -57,7 +58,7 @@ caveat for a small population.
 
 - The check evaluates role-based permissions only. Assignment conditions and
   deny assignments are not evaluated, so a grant conditioned to fewer than the
-  eleven roles passes and fails at the first template outside its list. The
+  twelve roles passes and fails at the first template outside its list. The
   permissions API does not return assignment conditions, so an administrator
   compares an existing grant with the role table in `docs/install.md`.
 - A new role in a template requires the same id in `STACK_ROLES` and a condition
