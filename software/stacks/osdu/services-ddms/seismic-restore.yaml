@@ -86,6 +86,10 @@ spec:
         value: "${AZURE_RESOURCE_GROUP}"
       - name: SDMS_RESTORE_QUEUE
         value: sdms-queue-restore
+      - name: SDMS_REDIS_QUEUE_PORT
+        value: "6379"
+      - name: SDMS_REDIS_LOCKS_PORT
+        value: "6379"
       - name: SDMS_RESTORE_LOCK_TTL_SECONDS
         value: "7200"
       - name: SDMS_RESTORE_MAX_DEQUEUE_COUNT
