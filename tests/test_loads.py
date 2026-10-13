@@ -130,8 +130,8 @@ def test_the_shipped_registry_parses(registry):
     assert reference.requires == ["schemas"]
     assert loads.job_name(reference, "opendes") == "load-reference-data-opendes-99f8fc88"
     seismic = registry.get("seismic")
-    assert seismic.source.identity == "stack:load_seismic.py@1"
-    assert loads.job_name(seismic, "opendes") == "load-seismic-opendes-r1"
+    assert seismic.source.identity == "stack:load_seismic.py@2"
+    assert loads.job_name(seismic, "opendes") == "load-seismic-opendes-r2"
 
 
 def _registry_with(**overrides) -> str:
@@ -252,7 +252,7 @@ def test_facts_name_every_registry_entry_before_anything_ran(registry):
         "seismic": {
             "state": "absent",
             "source": "stack:load_seismic.py",
-            "version": "1",
+            "version": "2",
             "partitions": {"opendes": {"state": "absent"}},
         },
     }
@@ -372,10 +372,10 @@ def _rendered_job() -> dict:
 def _rendered_seismic_job() -> dict:
     return yaml.safe_load(
         templates.load_job(
-            name="load-seismic-opendes-r1",
+            name="load-seismic-opendes-r2",
             dataset="seismic",
             partition="opendes",
-            source="stack:load_seismic.py@1",
+            source="stack:load_seismic.py@2",
             script="load_seismic.py",
             env={
                 "PARTITION": "opendes",
@@ -475,6 +475,12 @@ def _seismic_loader(monkeypatch) -> dict:
     namespace: dict[str, object] = {"__name__": "load_seismic_test"}
     exec(compile(source, "load_seismic.py", "exec"), namespace)
     return namespace
+
+
+def test_seismic_loader_uses_the_cluster_service_port(monkeypatch):
+    monkeypatch.delenv("SEISMIC_HOST", raising=False)
+
+    assert _seismic_loader(monkeypatch)["API_HOST"] == "http://seismic/seistore-svc/api/v3"
 
 
 @pytest.mark.parametrize(

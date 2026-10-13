@@ -31,6 +31,6 @@ loads:
     source:
       type: stack-script
       script: load_seismic.py
-      revision: "1"
+      revision: "2"
     loader: seismic
     scope: each-partition
