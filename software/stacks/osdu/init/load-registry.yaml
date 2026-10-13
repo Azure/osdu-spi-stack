@@ -24,3 +24,13 @@ loads:
       path: ReferenceValues/Manifests/reference-data
     loader: records
     scope: each-partition
+
+  - name: seismic
+    default: false
+    runner: job
+    source:
+      type: stack-script
+      script: load_seismic.py
+      revision: "1"
+    loader: seismic
+    scope: each-partition

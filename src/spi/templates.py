@@ -385,7 +385,14 @@ LOAD_JOB_SCRIPTS = "osdu-spi-init-scripts"
 LOAD_JOB_DEADLINE_SECONDS = 7200
 
 
-def load_job(name: str, dataset: str, partition: str, source: str, env: Mapping[str, str]) -> str:
+def load_job(
+    name: str,
+    dataset: str,
+    partition: str,
+    source: str,
+    env: Mapping[str, str],
+    script: str = "load_records.py",
+) -> str:
     """The Job `spi load` creates for one dataset and partition (ADR-040).
 
     It mirrors the init chart's pod spec so admission treats it the same. No
@@ -447,7 +454,7 @@ spec:
           imagePullPolicy: IfNotPresent
           command:
             - python
-            - /scripts/load_records.py
+            - /scripts/{script}
           env:
             # Unbuffered, so `spi load` can show progress while the Job runs.
             - name: PYTHONUNBUFFERED
