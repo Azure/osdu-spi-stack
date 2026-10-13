@@ -852,7 +852,7 @@ data:
 
     REQUIRED_ENV = ("PARTITION", "LEGAL_TAG", "ENTITLEMENTS_DOMAIN")
     API_HOST = os.environ.get(
-        "SEISMIC_HOST", "http://seismic:8080/seistore-svc/api/v3"
+        "SEISMIC_HOST", "http://seismic/seistore-svc/api/v3"
     ).rstrip("/")
     ATTEMPTS = 3
     RETRY_DELAY = 2.0
