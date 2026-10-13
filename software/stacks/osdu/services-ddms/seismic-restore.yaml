@@ -80,6 +80,10 @@ spec:
         value: "6000"
       - name: AZURE_MSI_ISENABLED
         value: "false"
+      - name: AZURE_SUBSCRIPTION_ID
+        value: "${AZURE_SUBSCRIPTION_ID}"
+      - name: AZURE_RESOURCE_GROUP
+        value: "${AZURE_RESOURCE_GROUP}"
       - name: SDMS_RESTORE_QUEUE
         value: sdms-queue-restore
       - name: SDMS_RESTORE_LOCK_TTL_SECONDS
