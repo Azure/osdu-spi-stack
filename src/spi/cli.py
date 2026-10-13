@@ -2231,6 +2231,7 @@ def reconcile(
         "spi-osdu-services",
         "spi-osdu-schema-load",
         "spi-osdu-reference",
+        "spi-osdu-ddms",
     ]
 
     if refresh_images:

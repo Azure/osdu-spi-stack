@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from spi import azure_infra, cli, deploy
 from spi.config import Config, Profile
-from spi.images import ResolvedImage
+from spi.images import ResolvedImage, image_lock_key, service_image_names
 
 
 def _git_repository(ref_field: str, ref: str, revision: str) -> dict:
@@ -332,10 +332,22 @@ def _resolved_images() -> dict[str, ResolvedImage]:
     }
 
 
+def _primary_image_lock_data() -> dict[str, str]:
+    data: dict[str, str] = {}
+    for name in service_image_names():
+        key = image_lock_key(name)
+        data[f"{key}_IMAGE_REPOSITORY"] = f"repo/{name}"
+        data[f"{key}_IMAGE_TAG"] = "a" * 40
+        data[f"{key}_IMAGE_DIGEST"] = f"sha256:{name}"
+    return data
+
+
 def test_omitted_image_refresh_preserves_existing_lock(monkeypatch):
     config = Config.from_env("shared", profile=Profile.CORE)
     backfills = []
-    monkeypatch.setattr(deploy, "read_lock", lambda required=False: {"data": {"existing": "lock"}})
+    monkeypatch.setattr(
+        deploy, "read_lock", lambda required=False: {"data": _primary_image_lock_data()}
+    )
     monkeypatch.setattr(
         deploy,
         "apply_companion_backfills",
@@ -346,6 +358,11 @@ def test_omitted_image_refresh_preserves_existing_lock(monkeypatch):
         deploy,
         "_resolve_image_lock",
         lambda _branch: resolve("registry lookup must not run"),
+    )
+    monkeypatch.setattr(
+        deploy,
+        "resolve_images",
+        lambda **_kwargs: resolve("registry lookup must not run"),
     )
     monkeypatch.setattr(
         deploy,
@@ -430,7 +447,9 @@ def test_explicit_no_refresh_fails_when_core_lock_is_missing(monkeypatch):
 def test_explicit_no_refresh_preserves_existing_core_lock(monkeypatch):
     config = Config.from_env("shared", profile=Profile.CORE)
     backfills = []
-    monkeypatch.setattr(deploy, "read_lock", lambda required=False: {"data": {}})
+    monkeypatch.setattr(
+        deploy, "read_lock", lambda required=False: {"data": _primary_image_lock_data()}
+    )
     monkeypatch.setattr(
         deploy,
         "apply_companion_backfills",
@@ -444,6 +463,53 @@ def test_explicit_no_refresh_preserves_existing_core_lock(monkeypatch):
 
     assert deploy._ensure_image_lock(config, False, "master", {}) == {}
     assert backfills == ["master"]
+
+
+def test_existing_lock_backfills_new_service_pair(monkeypatch):
+    config = Config.from_env("shared", profile=Profile.CORE)
+    data = _primary_image_lock_data()
+    for name in ("seismic", "seismic-restore"):
+        key = image_lock_key(name)
+        for suffix in ("REPOSITORY", "TAG", "DIGEST"):
+            data.pop(f"{key}_IMAGE_{suffix}", None)
+    pair = {
+        "seismic": ResolvedImage("seismic", "repo/seismic", "a" * 40, "", "sha256:api"),
+        "seismic-restore": ResolvedImage(
+            "seismic-restore", "repo/seismic", "a" * 40, "", "sha256:api"
+        ),
+    }
+    resolved, applied = [], []
+    monkeypatch.setattr(deploy, "read_lock", lambda required=False: {"data": data})
+    monkeypatch.setattr(
+        deploy,
+        "resolve_images",
+        lambda **kwargs: resolved.append(kwargs) or pair,
+    )
+    monkeypatch.setattr(
+        deploy,
+        "apply_image_lock_backfill",
+        lambda images: applied.append(images) or True,
+    )
+    monkeypatch.setattr(deploy, "apply_companion_backfills", lambda **_kwargs: False)
+
+    assert (
+        deploy._ensure_image_lock(
+            config,
+            False,
+            "master",
+            {},
+            {"seismic": "Acme/osdu-spi-seismic-store-service"},
+        )
+        == {}
+    )
+    assert resolved == [
+        {
+            "branch": "master",
+            "names": ("seismic", "seismic-restore"),
+            "sources": {"seismic": "Acme/osdu-spi-seismic-store-service"},
+        }
+    ]
+    assert applied == [pair]
 
 
 def test_explicit_refresh_uses_pre_resolved_images(monkeypatch):

@@ -93,6 +93,13 @@ def test_requests_the_cpu_admission_will_grant_every_container():
         assert _millicores(requested) >= 100, container["name"]
 
 
+def test_service_run_as_user_is_configurable():
+    deployment = _rendered_deployment({"runAsUser": "999"})
+
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    assert container["securityContext"]["runAsUser"] == 999
+
+
 _ISTIO_PROXY = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["istioProxyPin"]["image"]
 
 

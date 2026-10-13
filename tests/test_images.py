@@ -121,6 +121,55 @@ def test_registry_declares_companion_ownership_and_pin_policy():
     assert "schema-load" not in images.service_image_names()
 
 
+def test_registry_declares_seismic_restore_companion():
+    companion = images.companion_image("seismic")
+
+    assert companion == images.CompanionImage(
+        name="seismic-restore",
+        package_suffix="-restore",
+        canonical_required=False,
+        pin_required=True,
+    )
+    assert images.companion_primary("seismic-restore") == "seismic"
+    assert images.paired_image_names("seismic") == ("seismic", "seismic-restore")
+    assert images.companion_runtime_patch("seismic-restore", False) == {}
+    assert "seismic-restore" not in images.service_image_names()
+
+
+def test_optional_community_companion_uses_disabled_primary_placeholder(monkeypatch):
+    primary = ResolvedImage(
+        "seismic",
+        "community.opengroup.org:5555/osdu/seismic-store-service-master",
+        "a" * 40,
+        "2026-05-22T00:00:00+00:00",
+        "sha256:api",
+    )
+    companion = images.companion_image("seismic")
+    assert companion is not None
+    monkeypatch.setattr(
+        images,
+        "resolve_image_tag",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            images.ImageResolutionError("restore image absent")
+        ),
+    )
+
+    resolved_companion = images._resolve_companion(
+        "seismic", companion, "master", primary, None, ""
+    )
+    resolved = {
+        name: ResolvedImage(name, f"repo/{name}", "1" * 40, "", f"sha256:{name}")
+        for name in image_lock_names()
+    }
+    resolved.update({"seismic": primary, "seismic-restore": resolved_companion})
+    lock = build_lock_data(resolved, "master", "now")
+
+    assert resolved_companion.repository == primary.repository
+    assert resolved_companion.digest == primary.digest
+    assert "SEISMIC_RESTORE_ENABLED" not in lock
+    assert "SEISMIC_RESTORE_REPLICA_COUNT" not in lock
+
+
 def test_companion_runtime_keys_come_from_registry_metadata(monkeypatch):
     entry = images.IMAGE_REGISTRY["schema"]
     assert entry.companion is not None

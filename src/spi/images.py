@@ -126,6 +126,21 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
     "indexer": ImageRegistryEntry(25, "indexer-service", "services/indexer.yaml"),
     "indexer-queue": ImageRegistryEntry(73, "indexer-queue", "services/indexer-queue.yaml"),
     "file": ImageRegistryEntry(90, "file", "services/file.yaml"),
+    "seismic": ImageRegistryEntry(
+        395,
+        "seismic-store-service",
+        "services-ddms/seismic.yaml",
+        companion=CompanionImage(
+            name="seismic-restore",
+            package_suffix="-restore",
+            canonical_required=False,
+        ),
+    ),
+    "seismic-restore": ImageRegistryEntry(
+        395,
+        "seismic-store-service-restore",
+        "services-ddms/seismic-restore.yaml",
+    ),
     "workflow": ImageRegistryEntry(146, "ingestion-workflow", "services/workflow.yaml"),
     "crs-conversion": ImageRegistryEntry(
         22,
@@ -469,12 +484,23 @@ def _resolve_companion(
     """Resolve the companion built from the primary image's commit and source."""
 
     if not fork:
-        return resolve_image_tag(
-            companion.name,
-            IMAGE_REGISTRY[companion.name],
-            branch,
-            primary_image.tag,
-        )
+        try:
+            return resolve_image_tag(
+                companion.name,
+                IMAGE_REGISTRY[companion.name],
+                branch,
+                primary_image.tag,
+            )
+        except ImageResolutionError:
+            if companion.canonical_required:
+                raise
+            return ResolvedImage(
+                companion.name,
+                primary_image.repository,
+                primary_image.tag,
+                primary_image.created_at,
+                primary_image.digest,
+            )
     matched = resolve_fork_companion(primary_image.repository, commit, companion)
     if matched is None:
         raise ImageResolutionError(
@@ -966,7 +992,18 @@ def build_lock_data(
         data[f"{key}_IMAGE_DIGEST"] = image.digest
         data[f"{key}_IMAGE_REF"] = image_ref(image.repository, image.tag, image.digest)
         data[do_not_disrupt_key(name)] = str(name in protected).lower()
-        data.update(companion_runtime_patch(name, True))
+        primary_name = companion_primary(name)
+        primary_image = resolved.get(primary_name)
+        runtime_available = primary_image is None or (
+            image.repository,
+            image.tag,
+            image.digest,
+        ) != (
+            primary_image.repository,
+            primary_image.tag,
+            primary_image.digest,
+        )
+        data.update(companion_runtime_patch(name, runtime_available))
         if image.acceptance_digest:
             data[acceptance_digest_key(name)] = image.acceptance_digest
     return data

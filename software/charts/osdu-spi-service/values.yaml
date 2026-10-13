@@ -23,6 +23,9 @@ replicaCount: 1
 
 containerPort: 8080
 
+# -- Numeric UID declared by the service image.
+runAsUser: 1000
+
 # -- Created by the CLI bootstrap.
 serviceAccountName: workload-identity-sa
 

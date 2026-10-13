@@ -826,6 +826,7 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
         "graph_account_id": bicep_outputs.get("graphAccountId", ""),
         "common_storage_name": bicep_outputs.get("commonStorageName", ""),
         "common_storage_id": bicep_outputs.get("commonStorageId", ""),
+        "app_insights_connection_string": bicep_outputs.get("appInsightsConnectionString", ""),
         # Empty outside dns mode.
         "external_dns_client_id": bicep_outputs.get("externalDnsClientId", ""),
         "external_dns_principal_id": bicep_outputs.get("externalDnsPrincipalId", ""),

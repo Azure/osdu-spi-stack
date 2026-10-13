@@ -71,3 +71,25 @@ spec:
   prune: true
   wait: true
   timeout: 5m
+
+---
+# HTTPRoutes for domain data management services.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-osdu-ddms-routes
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "7"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-osdu-ddms
+    - name: spi-ingress-gateway
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/stacks/osdu/routes/ip-only/ddms
+  prune: true
+  wait: true
+  timeout: 5m

@@ -63,6 +63,10 @@ var osduSystemDbContainers = [
   { name: 'WorkflowV2', partitionKey: '/partitionKey' }
 ]
 
+var sdmsDbContainers = [
+  { name: 'data', partitionKey: '/id' }
+]
+
 var serviceBusTopicDefs = [
   { name: 'indexing-progress', maxSizeInMegabytes: 1024 }
   { name: 'legaltags', maxSizeInMegabytes: 1024 }
@@ -175,6 +179,37 @@ resource osduSystemDb 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2023-1
 
 resource osduSystemDbContainerResources 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2023-11-15' = [for container in osduSystemDbContainers: if (isPrimaryPartition) {
   parent: osduSystemDb
+  name: container.name
+  properties: {
+    resource: {
+      id: container.name
+      partitionKey: {
+        paths: [
+          container.partitionKey
+        ]
+        kind: 'Hash'
+      }
+    }
+  }
+}]
+
+resource sdmsDb 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2023-11-15' = {
+  parent: cosmosAccount
+  name: 'sdms-db'
+  properties: {
+    resource: {
+      id: 'sdms-db'
+    }
+    options: {
+      autoscaleSettings: {
+        maxThroughput: 4000
+      }
+    }
+  }
+}
+
+resource sdmsDbContainerResources 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2023-11-15' = [for container in sdmsDbContainers: {
+  parent: sdmsDb
   name: container.name
   properties: {
     resource: {

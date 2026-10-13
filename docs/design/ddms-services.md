@@ -1,7 +1,8 @@
 # DDMS service layer
 
-Status: planned. The `core` profile does not yet declare the DDMS workload and
-route Kustomizations described here.
+Status: implemented for the Seismic API. The RestoreRunner workload is present
+at zero replicas; its identity, permissions, queues, and restore storage
+settings remain unimplemented.
 
 DDMS workloads are OSDU product services with a lifecycle after core
 initialization. [ADR-041](../decisions/041-ddms-workloads-reconcile-in-their-own-layer.md)
@@ -57,9 +58,9 @@ decision is implemented. API onboarding cannot broaden the shared UAMI to make
 that worker start.
 
 Container pulls still use the kubelet identity. Runtime Azure calls use
-Workload Identity. DDMS-specific Cosmos, Storage, Service Bus, and Key Vault
-resources stay in Bicep; the workload layer consumes their names and endpoints
-through the existing configuration inputs. An in-cluster backend and an
+Workload Identity. DDMS-specific Cosmos, Storage, Service Bus, and Key Vault resources stay in
+Bicep; the workload layer consumes their names and endpoints through the
+existing configuration inputs. A DDMS-specific in-cluster backend and an
 upstream service-specific chart are outside this model.
 
 ## Images move as one service contract
@@ -86,19 +87,29 @@ tests need the state. A missing or failed load refuses that suite without
 making the runtime undeployable. This keeps service health distinct from test
 fixtures and domain data.
 
-## Planned implementation surfaces
+## Seismic implementation
 
-The first implementation adds the DDMS and route directories, their profile
-entries, status coverage, and tests before moving Seismic manifests out of the
-core service inventory. The Seismic API can then add its Azure data plane and
-shared-identity runtime. Restore execution follows only after its dedicated
-identity, role-definition ownership, and PITR feature gate have their own
-accepted decision.
+`services-ddms/seismic.yaml` deploys two API replicas and routes
+`/seistore-svc/api/v3`. The API uses the shared OSDU Workload Identity for
+Cosmos, Storage Queue, Key Vault, and partition-resolved Storage access. Its
+password-protected in-cluster Redis connection remains separate from that
+Azure identity and reads bootstrap aliases from Key Vault.
+
+Each partition contains `sdms-db/data`. The bulk-delete, change-tier,
+analytics, and restore flags are false, so their queues, status containers,
+archive container, and Storage restore settings are absent. The paired
+RestoreRunner image remains in `osdu-image-lock`, while
+the RestoreRunner HelmRelease declares zero replicas.
+
+Restore execution follows only after its dedicated identity, role-definition
+ownership, and PITR feature gate have an accepted decision.
 
 ## Source files
 
 - [`software/stacks/osdu/profiles/core/stack.yaml`](../../software/stacks/osdu/profiles/core/stack.yaml)
 - [`software/stacks/osdu/ingress/azure/stack.yaml`](../../software/stacks/osdu/ingress/azure/stack.yaml)
+- [`software/stacks/osdu/services-ddms/seismic.yaml`](../../software/stacks/osdu/services-ddms/seismic.yaml)
+- [`infra/modules/partition.bicep`](../../infra/modules/partition.bicep)
 - [`src/spi/images.py`](../../src/spi/images.py)
 - [`src/spi/pins.py`](../../src/spi/pins.py)
 - [`src/spi/loads.py`](../../src/spi/loads.py)

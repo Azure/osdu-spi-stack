@@ -131,6 +131,7 @@ _REPO_PATH_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$
 _FILE_KUSTOMIZATIONS = {
     "services/": "spi-osdu-services",
     "services-reference/": "spi-osdu-reference",
+    "services-ddms/": "spi-osdu-ddms",
     "schema-load/": "spi-osdu-schema-load",
 }
 
@@ -668,7 +669,12 @@ def mutate_lock(
 
 # A changed schema image must reach the service before the loader Job is
 # recreated, and the loader must finish before reference re-seeds.
-_CONSUMER_ORDER = ("spi-osdu-services", "spi-osdu-schema-load", "spi-osdu-reference")
+_CONSUMER_ORDER = (
+    "spi-osdu-services",
+    "spi-osdu-schema-load",
+    "spi-osdu-reference",
+    "spi-osdu-ddms",
+)
 
 
 def reconcile_consumers(services: list[str]) -> None:
@@ -2052,6 +2058,75 @@ class _NoBackfillNeeded(Exception):
     """Internal sentinel: the lock is absent or carries every companion."""
 
 
+def apply_image_lock_backfill(
+    resolved: Mapping[str, ResolvedImage],
+    description: str = "Backfill new services into the osdu-image-lock ConfigMap",
+    max_attempts: int = LOCK_MUTATION_MAX_ATTEMPTS,
+) -> bool:
+    """Add resolved services that an older image lock does not carry."""
+
+    backfilled = False
+
+    def compute(lock: dict | None) -> dict:
+        if lock is None:
+            raise _NoBackfillNeeded
+        lock_data = lock.get("data") or {}
+        data = dict(lock_data)
+        added = 0
+        for name, image in resolved.items():
+            key = image_lock_key(name)
+            repository = data.get(f"{key}_IMAGE_REPOSITORY", "")
+            tag = data.get(f"{key}_IMAGE_TAG", "")
+            digest = data.get(f"{key}_IMAGE_DIGEST", "")
+            if repository and (tag or digest):
+                continue
+            data.update(
+                {
+                    f"{key}_IMAGE": (
+                        image.image
+                        if image.tag
+                        else image_ref(image.repository, image.tag, image.digest)
+                    ),
+                    f"{key}_IMAGE_REPOSITORY": image.repository,
+                    f"{key}_IMAGE_TAG": image.tag,
+                    f"{key}_IMAGE_CREATED_AT": image.created_at,
+                    f"{key}_IMAGE_DIGEST": image.digest,
+                    f"{key}_IMAGE_REF": image_ref(image.repository, image.tag, image.digest),
+                    do_not_disrupt_key(name): "false",
+                }
+            )
+            primary_name = companion_primary(name)
+            primary_image = resolved.get(primary_name)
+            runtime_available = primary_image is None or (
+                image.repository,
+                image.tag,
+                image.digest,
+            ) != (
+                primary_image.repository,
+                primary_image.tag,
+                primary_image.digest,
+            )
+            data.update(companion_runtime_patch(name, runtime_available))
+            if image.acceptance_digest:
+                data[acceptance_digest_key(name)] = image.acceptance_digest
+            added += 1
+        if not added:
+            raise _NoBackfillNeeded
+        count = data.get("IMAGE_COUNT", "")
+        if count.isdigit():
+            data["IMAGE_COUNT"] = str(int(count) + added)
+        nonlocal backfilled
+        backfilled = True
+        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    try:
+        mutate_lock(compute, description, max_attempts=max_attempts)
+    except _NoBackfillNeeded:
+        return False
+    return backfilled
+
+
 def apply_companion_backfills(
     branch: str = DEFAULT_IMAGE_BRANCH,
     sources: Mapping[str, str] | None = None,
@@ -2080,6 +2155,13 @@ def apply_companion_backfills(
             primary
             for primary in service_image_names()
             if (companion := companion_image(primary))
+            and (
+                lock_data.get(f"{image_lock_key(primary)}_IMAGE_REPOSITORY")
+                and (
+                    lock_data.get(f"{image_lock_key(primary)}_IMAGE_TAG")
+                    or lock_data.get(f"{image_lock_key(primary)}_IMAGE_DIGEST")
+                )
+            )
             and image_lock_missing_companion(lock_data, companion.name)
         ]
         if not missing:
