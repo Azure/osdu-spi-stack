@@ -8,4 +8,4 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack
 data:
-  version: "0.28.5" # x-release-please-version
+  version: "0.28.6" # x-release-please-version
