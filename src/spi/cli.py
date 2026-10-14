@@ -32,7 +32,11 @@ from rich.table import Table
 from typer.completion import completion_init, install_callback, show_callback
 
 from . import __version__
-from .bootstrap import create_istio_revision_configmap, refresh_spi_init_values
+from .bootstrap import (
+    create_istio_revision_configmap,
+    refresh_osdu_config_partitions,
+    refresh_spi_init_values,
+)
 from .build import BuildError, build_image
 from .checks import PREREQ_TOOLS, check_prerequisites
 from .config import Config, IngressMode, Profile
@@ -70,6 +74,7 @@ from .pins import (
     trusted_canonical_sources,
     verify_service_image,
 )
+from .secrets import ensure_rafs_redis_secret
 from .shell import run_command
 from .templates import TESTER_NAMESPACE
 
@@ -1100,6 +1105,7 @@ ALL_SUITES = "all"
 def _inspect_suite(
     reports: Path,
     secrets: Collection[str],
+    report_paths: Collection[str],
     *,
     suite: str,
     bundle: Optional[Path],
@@ -1117,7 +1123,7 @@ def _inspect_suite(
 
     kept.update(secrets)
     try:
-        facts = collect(reports, secrets)
+        facts = collect(reports, secrets, report_paths)
     except Exception as exc:  # noqa: BLE001
         _report_warning(f"No report for {suite}", exc)
         return None
@@ -2124,6 +2130,8 @@ def reconcile(
     console.print("\n[bold]Refreshing cluster config for Flux substitution...[/bold]")
     create_istio_revision_configmap()
     refresh_spi_init_values()
+    if refresh_osdu_config_partitions():
+        ensure_rafs_redis_secret()
 
     if not refresh_images:
         _backfill_image_lock(image_branch)

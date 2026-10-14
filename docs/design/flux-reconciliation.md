@@ -238,11 +238,15 @@ spi reconcile --refresh-images
 spi status --watch
 ```
 
-It resolves canonical registry tags, preserves active service pins, and applies
-the image lock. It then reconciles and waits in order for the present core
-Kustomizations: services, schema load, and reference services. Layers absent
-from `bare` or `minimal` are skipped. The command does not rotate credentials
-or synchronize Key Vault values.
+It first refreshes the live partition list in `osdu-config` and applies the
+RAFS Redis Secret from the existing environment seed. It then resolves
+canonical registry tags, preserves active service pins, and applies the image
+lock. Missing independent services resolve from source policy; a missing
+schema-load companion resolves from the Schema tag already recorded in the
+lock. Reconciliation then waits for the present core Kustomizations, including
+services, schema load, DDMS, and reference services. Layers absent from `bare`
+or `minimal` are skipped. The command does not rotate credentials or
+synchronize Key Vault values.
 
 Each CLI wait uses a 40-minute timeout, shorter than the schema loader's own
 deadline. A CLI wait timeout does not itself stop the Job or Flux reconciliation;

@@ -27,6 +27,7 @@ from spi.bootstrap import (
     create_istio_revision_configmap,
     deploy_identity_facts,
     ensure_namespaces,
+    refresh_osdu_config_partitions,
     refresh_spi_init_values,
     render_istio_revision_configmap,
 )
@@ -305,6 +306,51 @@ class TestRefreshSpiInitValues:
         assert "Could not read spi-init-values: Forbidden" in capsys.readouterr().out
 
 
+class TestRefreshOsduConfigPartitions:
+    def test_backfills_partitions_from_live_init_values(self):
+        with (
+            patch(
+                "spi.bootstrap.read_init_values",
+                return_value="partitions:\n  - opendes\n  - second\n",
+            ),
+            patch(
+                "spi.bootstrap._read_configmap_data",
+                return_value={"PRIMARY_PARTITION": "opendes"},
+            ),
+            patch("spi.bootstrap.run_command") as run_command,
+        ):
+            assert refresh_osdu_config_partitions() is True
+
+        command = run_command.call_args.args[0]
+        assert command[:4] == ["kubectl", "patch", "configmap", "osdu-config"]
+        assert json.loads(command[command.index("-p") + 1]) == {
+            "data": {"PARTITIONS": "opendes,second"}
+        }
+
+    def test_leaves_current_partitions_unchanged(self):
+        with (
+            patch("spi.bootstrap.read_init_values", return_value="partitions:\n  - opendes\n"),
+            patch(
+                "spi.bootstrap._read_configmap_data",
+                return_value={"PARTITIONS": "opendes"},
+            ),
+            patch("spi.bootstrap.run_command") as run_command,
+        ):
+            assert refresh_osdu_config_partitions() is True
+
+        run_command.assert_not_called()
+
+    def test_skips_a_profile_without_osdu_config(self):
+        with (
+            patch("spi.bootstrap.read_init_values", return_value="partitions:\n  - opendes\n"),
+            patch("spi.bootstrap._read_configmap_data", return_value={}),
+            patch("spi.bootstrap.run_command") as run_command,
+        ):
+            assert refresh_osdu_config_partitions() is False
+
+        run_command.assert_not_called()
+
+
 class TestReconcileRefreshesClusterConfig:
     """`spi up` is not the only way a cluster reaches a new commit.
 
@@ -314,7 +360,15 @@ class TestReconcileRefreshesClusterConfig:
     before Flux applies anything.
     """
 
-    def _invoke(self, *args: str):
+    @pytest.fixture(autouse=True)
+    def _runtime_contract(self):
+        with (
+            patch("spi.cli.refresh_osdu_config_partitions", return_value=False),
+            patch("spi.cli.ensure_rafs_redis_secret"),
+        ):
+            yield
+
+    def _invoke(self, *args: str, core: bool = False):
         runner = CliRunner()
         with (
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
@@ -327,6 +381,11 @@ class TestReconcileRefreshesClusterConfig:
             ),
             patch("spi.cli.create_istio_revision_configmap") as configmap,
             patch("spi.cli.refresh_spi_init_values") as init_values,
+            patch(
+                "spi.cli.refresh_osdu_config_partitions",
+                return_value=core,
+            ) as osdu_config,
+            patch("spi.cli.ensure_rafs_redis_secret") as rafs_secret,
             # Reads the live lock through pins.run_process, which the
             # spi.cli.run_command patch above does not intercept; without
             # this the default reconcile path shells out to real kubectl.
@@ -336,6 +395,8 @@ class TestReconcileRefreshesClusterConfig:
             result = runner.invoke(cli.app, ["reconcile", *args])
         assert result.exit_code == 0, result.output
         self.init_values = init_values
+        self.osdu_config = osdu_config
+        self.rafs_secret = rafs_secret
         return configmap
 
     def test_default_reconcile_writes_configmap(self):
@@ -345,6 +406,12 @@ class TestReconcileRefreshesClusterConfig:
     def test_resume_writes_configmap(self):
         self._invoke("--resume").assert_called_once_with()
         self.init_values.assert_called_once_with()
+
+    def test_core_reconcile_prepares_rafs_runtime_contract(self):
+        self._invoke(core=True)
+
+        self.osdu_config.assert_called_once_with()
+        self.rafs_secret.assert_called_once_with()
 
     def test_suspend_leaves_configmap_alone(self):
         self._invoke("--suspend").assert_not_called()

@@ -1200,6 +1200,45 @@ class TestApplySchemaLoadBackfill:
 
 
 class TestApplyImageLockBackfill:
+    def test_resolves_loader_from_the_recorded_schema_image(self, monkeypatch):
+        existing = [name for name in pins.IMAGE_REGISTRY if name not in {"dataset", "schema-load"}]
+        data = _canonical_data(*existing)
+        lock = _lock(data=data)
+        calls = _wire_lock(monkeypatch, lock)
+        dataset = ResolvedImage(
+            "dataset",
+            "repo/dataset-main",
+            "d" * 40,
+            "now",
+            "sha256:dataset",
+        )
+        resolutions = []
+        monkeypatch.setattr(
+            pins,
+            "resolve_images",
+            lambda branch, names, sources: (
+                resolutions.append((branch, tuple(names), sources)) or {"dataset": dataset}
+            ),
+        )
+        monkeypatch.setattr(
+            pins,
+            "schema_load_lock_patch",
+            lambda lock_data, branch=None: {
+                "SCHEMA_LOAD_IMAGE_REPOSITORY": "repo/schema-load-recorded",
+                "SCHEMA_LOAD_IMAGE_TAG": lock_data["SCHEMA_IMAGE_TAG"],
+                "SCHEMA_LOAD_IMAGE_REF": (
+                    f"repo/schema-load-recorded:{lock_data['SCHEMA_IMAGE_TAG']}"
+                ),
+            },
+        )
+
+        assert pins.apply_image_lock_backfill("master", sources={})
+
+        patched, _saved = calls["patch"]
+        assert resolutions == [("master", ("dataset",), {})]
+        assert patched["SCHEMA_LOAD_IMAGE_TAG"] == data["SCHEMA_IMAGE_TAG"]
+        assert patched["SCHEMA_LOAD_IMAGE_REF"].endswith(data["SCHEMA_IMAGE_TAG"])
+
     def test_adds_new_services_without_moving_existing_entries(self, monkeypatch):
         existing = [name for name in pins.IMAGE_REGISTRY if name not in {"dataset", "rafs"}]
         data = _canonical_data(*existing)

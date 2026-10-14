@@ -2003,6 +2003,8 @@ def apply_image_lock_backfill(
     lock_data = lock.get("data") or {}
     missing = []
     for name in IMAGE_REGISTRY:
+        if name == SCHEMA_LOAD_SERVICE_NAME:
+            continue
         key = image_lock_key(name)
         repository = lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
         tag = lock_data.get(f"{key}_IMAGE_TAG", "")
@@ -2024,6 +2026,8 @@ def apply_image_lock_backfill(
         pins = decode_pins(fresh_lock)
         changed = False
         for name in IMAGE_REGISTRY:
+            if name == SCHEMA_LOAD_SERVICE_NAME:
+                continue
             key = image_lock_key(name)
             repository = data.get(f"{key}_IMAGE_REPOSITORY", "")
             tag = data.get(f"{key}_IMAGE_TAG", "")
@@ -2054,6 +2058,13 @@ def apply_image_lock_backfill(
                 acceptance_key = acceptance_digest_key(name)
                 if acceptance_key not in data:
                     data[acceptance_key] = image.acceptance_digest
+                    changed = True
+
+        if image_lock_missing_schema_load(data):
+            patch = schema_load_lock_patch(data, branch=branch)
+            for field, value in patch.items():
+                if data.get(field) != value:
+                    data[field] = value
                     changed = True
 
         complete = 0

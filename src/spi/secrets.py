@@ -198,6 +198,16 @@ def _create_osdu_secrets(s: dict):
         )
 
 
+def ensure_rafs_redis_secret() -> None:
+    """Apply the RAFS Redis credential from the stable environment seed."""
+    seed = get_or_create_seed()
+    _kubectl_apply_secret(
+        "osdu",
+        "rafs-redis-secret",
+        {"REDIS_PASSWORD": seed["redis_password"]},
+    )
+
+
 def ensure_secrets():
     """Generate and apply all secrets. Idempotent."""
     console.print("\n[bold]Configuring secrets...[/bold]")
