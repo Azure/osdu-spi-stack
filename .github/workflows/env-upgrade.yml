@@ -519,6 +519,7 @@ jobs:
         run: bash scripts/probe_gateway.sh https
 
       - name: Verify deployed stack matches the declaration
+        id: verify
         run: |
           set -euo pipefail
           set +e
@@ -536,6 +537,7 @@ jobs:
           RESOLVED=$(echo "$STATUS_JSON" | jq -r .environment.resolvedCommit)
           SUSPENDED=$(echo "$STATUS_JSON" | jq -r .suspended)
           READY=$(echo "$STATUS_JSON" | jq -r .ready)
+          DEPLOYABLE=$(echo "$STATUS_JSON" | jq -r .deployable)
           MAINTENANCE=$(echo "$STATUS_JSON" | jq -r .maintenance)
           REASON_CODE=$(echo "$STATUS_JSON" | jq -r .reason.code)
 
@@ -558,6 +560,13 @@ jobs:
             exit 1
           fi
           if [ "$MAINTENANCE" != "true" ]; then
+            # A re-run finds the flag an earlier attempt already cleared; a
+            # first attempt finding it off means someone else touched the environment.
+            if [ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 ] && [ "$DEPLOYABLE" = "true" ]; then
+              echo "::notice::maintenance already cleared and environment deployable on attempt $GITHUB_RUN_ATTEMPT; skipping the clear"
+              echo "clear=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "::error::maintenance flag is not set (maintenance=$MAINTENANCE); refusing to clear"
             exit 1
           fi
@@ -565,13 +574,46 @@ jobs:
             echo "::error::deployability is blocked by $REASON_CODE, not maintenance; refusing to clear"
             exit 1
           fi
+          echo "clear=true" >> "$GITHUB_OUTPUT"
 
       - name: Clear maintenance
         # Reached only after every check above passed; never `if: always()`.
+        if: steps.verify.outputs.clear == 'true'
         run: spi maintenance clear
 
       - name: Require deployable status
-        run: spi status --json
+        # A Kustomization with `wait: true` reports Progressing for seconds on
+        # every interval reconcile, so a single read can land on one.
+        timeout-minutes: 10
+        env:
+          DEPLOYABLE_TIMEOUT_SECONDS: "300"
+          DEPLOYABLE_POLL_SECONDS: "15"
+        run: |
+          set -euo pipefail
+          DEADLINE=$((SECONDS + DEPLOYABLE_TIMEOUT_SECONDS))
+          while true; do
+            set +e
+            STATUS_JSON=$(spi status --json)
+            STATUS_EXIT=$?
+            set -e
+            if [ "$STATUS_EXIT" -eq 0 ]; then
+              echo "$STATUS_JSON"
+              exit 0
+            fi
+            if [ "$STATUS_EXIT" -ne 2 ]; then
+              echo "$STATUS_JSON"
+              echo "::error::spi status --json failed (exit $STATUS_EXIT); see the contract-read error above"
+              exit "$STATUS_EXIT"
+            fi
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "$STATUS_JSON"
+              echo "::error::environment is not deployable after ${DEPLOYABLE_TIMEOUT_SECONDS}s"
+              exit 2
+            fi
+            REASON=$(echo "$STATUS_JSON" | jq -r '.reason.message // .reason.code') || REASON=unknown
+            echo "Not deployable yet ($REASON); retrying in ${DEPLOYABLE_POLL_SECONDS}s"
+            sleep "$DEPLOYABLE_POLL_SECONDS"
+          done
 
       - name: Load default datasets
         # After maintenance clears: a load needs a deployable environment and
