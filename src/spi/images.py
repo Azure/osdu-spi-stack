@@ -32,15 +32,14 @@ GITHUB_API_HOST = "https://api.github.com"
 DEFAULT_IMAGE_BRANCH = "master"
 # The template moves this tag to each push build of main.
 FORK_MAIN_TAG = "main-snapshot"
-FORK_MAIN_BRANCH = "main"
-# How many main commits are searched for the one whose build main-snapshot names.
-FORK_COMMIT_SEARCH_DEPTH = 30
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"
 SCHEMA_SERVICE_NAME = "schema"
 SCHEMA_LOAD_SERVICE_NAME = "schema-load"
 
 _SHA_TAG_RE = re.compile(r"^[0-9a-f]{40}$")
+_FORK_SHA_TAG_RE = re.compile(r"^sha-([0-9a-f]{12})$")
+_NEXT_LINK_RE = re.compile(r'<([^>]+)>;\s*rel="next"')
 _MANIFEST_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REPO_PATH_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$)[A-Za-z0-9_.-]+$")
 _MANIFEST_ACCEPT = ", ".join(
@@ -653,20 +652,93 @@ def github_file(repository: str, path: str, ref: str) -> bytes:
     )
 
 
+def _ghcr_get(path: str, url_path: str, accept: str, attempts: int = 3) -> tuple[bytes, str]:
+    """GET one anonymous GHCR registry path; returns the body and its ``Link`` header."""
+
+    url = f"https://{GHCR_HOST}{url_path}"
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "spi-stack-resolver",
+                    "Accept": accept,
+                    "Authorization": f"Bearer {_ghcr_pull_token(path)}",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
+                return resp.read(), resp.headers.get("Link", "")
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500 and exc.code != 429:
+                raise ImageResolutionError(f"GHCR refused {url}: HTTP {exc.code}") from exc
+            last_error = exc
+        except (TimeoutError, urllib.error.URLError, ConnectionError) as exc:
+            last_error = exc
+        if attempt < attempts:
+            time.sleep(5 * attempt)
+    raise ImageResolutionError(
+        f"GHCR unreachable after {attempts} attempts reading {url}: {last_error}"
+    )
+
+
+def ghcr_tags(repository: str) -> tuple[str, ...]:
+    """Every tag a public GHCR package lists."""
+
+    path = repository[len(GHCR_HOST) + 1 :]
+    tags: list[str] = []
+    url_path = f"/v2/{path}/tags/list?n=1000"
+    while url_path:
+        body, link = _ghcr_get(path, url_path, "application/json")
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise ImageResolutionError(f"GHCR tag list for {repository} is not JSON") from exc
+        listed = payload.get("tags") if isinstance(payload, dict) else None
+        tags.extend(tag for tag in listed or () if isinstance(tag, str))
+        match = _NEXT_LINK_RE.search(link)
+        url_path = match.group(1) if match else ""
+    return tuple(tags)
+
+
+def ghcr_image_created(repository: str, digest: str) -> str:
+    """The build time an image's config records, or ``""`` when it cannot be read.
+
+    An index is read through its first platform manifest; every platform in it
+    comes from one build.
+    """
+
+    path = repository[len(GHCR_HOST) + 1 :]
+    try:
+        body, _ = _ghcr_get(path, f"/v2/{path}/manifests/{digest}", _MANIFEST_ACCEPT)
+        manifest = json.loads(body)
+        entries = manifest.get("manifests")
+        if isinstance(entries, list) and entries:
+            body, _ = _ghcr_get(
+                path, f"/v2/{path}/manifests/{entries[0]['digest']}", _MANIFEST_ACCEPT
+            )
+            manifest = json.loads(body)
+        body, _ = _ghcr_get(path, f"/v2/{path}/blobs/{manifest['config']['digest']}", "*/*")
+        created = json.loads(body).get("created", "")
+    except (ImageResolutionError, json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        return ""
+    return created if isinstance(created, str) else ""
+
+
 def resolve_fork_image(service: str, source_repo: str) -> tuple[ResolvedImage, str]:
     """Resolve the image a fork's ``main`` last published, and the commit that built it.
 
     ``main-snapshot`` names the digest; the ``sha-<12>`` tag with the same digest
     names the commit, which the lock records as the tag so the image can be paired
-    with anything else built from that commit. The acceptance image at that tag is
-    read in the same pass, since the tag can move later and the image carries no
-    provenance. Returns ``(image, commit)``.
+    with anything else built from that commit. Everything is read from the public
+    packages, so a private fork resolves like a public one. The acceptance image at
+    that tag is read in the same pass, since the tag can move later and the image
+    carries no provenance. Returns ``(image, commit)`` with the 12-character commit.
     """
 
     if not _REPO_PATH_RE.match(source_repo):
         raise ImageResolutionError(f"{service}: {source_repo!r} is not <owner>/<name>")
     candidates = fork_package_repositories(source_repo, service)
-    # Both names can carry main-snapshot after a SERVICE_NAME change; the newest commit decides.
     snapshots = {
         repository: digest
         for repository in candidates
@@ -677,28 +749,21 @@ def resolve_fork_image(service: str, source_repo: str) -> tuple[ResolvedImage, s
             f"{service}: {source_repo} publishes no {FORK_MAIN_TAG} image at "
             f"{' or '.join(candidates)}; the package must be public and main must have built"
         )
-    commits = github_get(
-        f"repos/{source_repo}/commits?sha={FORK_MAIN_BRANCH}&per_page={FORK_COMMIT_SEARCH_DEPTH}"
-    )
-    for commit in commits if isinstance(commits, list) else []:
-        sha = str((commit or {}).get("sha", ""))
-        if not _SHA_TAG_RE.match(sha):
-            continue
-        tag = f"sha-{sha[:12]}"
-        for repository, digest in snapshots.items():
-            if resolve_ghcr_tag_digest(repository, tag) == digest:
-                committer = (commit.get("commit") or {}).get("committer") or {}
-                created_at = str(committer.get("date", ""))
+    found: list[tuple[ResolvedImage, str]] = []
+    for repository, digest in snapshots.items():
+        for tag in sorted(ghcr_tags(repository)):
+            match = _FORK_SHA_TAG_RE.match(tag)
+            if match and resolve_ghcr_tag_digest(repository, tag) == digest:
+                created_at = ghcr_image_created(repository, digest)
                 acceptance = resolve_ghcr_tag_digest(f"{repository}-acceptance", tag) or ""
-                return (
-                    ResolvedImage(service, repository, tag, created_at, digest, acceptance),
-                    sha,
-                )
-    described = " or ".join(f"{r}:{FORK_MAIN_TAG} ({d[:19]})" for r, d in snapshots.items())
-    raise ImageResolutionError(
-        f"{service}: {described} matches no sha- tag among the "
-        f"last {FORK_COMMIT_SEARCH_DEPTH} commits on {source_repo} {FORK_MAIN_BRANCH}"
-    )
+                image = ResolvedImage(service, repository, tag, created_at, digest, acceptance)
+                found.append((image, match.group(1)))
+                break
+    if not found:
+        described = " or ".join(f"{r}:{FORK_MAIN_TAG} ({d[:19]})" for r, d in snapshots.items())
+        raise ImageResolutionError(f"{service}: {described} matches no sha- tag in its package")
+    # Both names can carry main-snapshot after a SERVICE_NAME change; the newest build decides.
+    return max(found, key=lambda pair: _parse_gitlab_datetime(pair[0].created_at))
 
 
 def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> None:
