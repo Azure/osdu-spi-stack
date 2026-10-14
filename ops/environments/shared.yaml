@@ -23,15 +23,22 @@ forks:
     canonicalSource: fork
   - service: storage
     repo: Azure/osdu-spi-storage
+    canonicalSource: fork
   - service: indexer
     repo: Azure/osdu-spi-indexer
+    canonicalSource: fork
   - service: search
     repo: Azure/osdu-spi-search
+    canonicalSource: fork
   - service: workflow
     repo: Azure/osdu-spi-workflow
+    canonicalSource: fork
   - service: indexer-queue
     repo: Azure/osdu-spi-indexer-queue
+    canonicalSource: fork
   - service: unit
     repo: Azure/osdu-spi-unit
+    canonicalSource: fork
   - service: crs-catalog
     repo: Azure/osdu-spi-crs-catalog
+    canonicalSource: fork
