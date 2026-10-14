@@ -63,16 +63,20 @@ spec:
         value: http://partition/api/partition/v1
       - name: ENTITLEMENT_URL
         value: http://entitlements/api/entitlements/v2
-    # Downloads CRS catalog data; root so tdnf can install, every capability dropped.
+    # Downloads the catalog from the same immutable source revision when the
+    # pod starts and verifies it before making it visible to the service.
     initContainers:
       - name: download-catalog
-        image: mcr.microsoft.com/azurelinux/base/core:3.0
+        image: docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
         command:
           - sh
           - -c
           - |
-            tdnf install -y curl ca-certificates
-            curl -sSL -o /data/crs_catalog_v2.json https://community.opengroup.org/osdu/platform/system/reference/crs-catalog-service/-/raw/master/data/crs_catalog_v2.json
+            set -eu
+            file=/data/crs_catalog_v2.json.download
+            wget -O "$file" https://community.opengroup.org/osdu/platform/system/reference/crs-catalog-service/-/raw/1520fcfe1126ac5b28e6f4ccf9ec268b526ddedc/data/crs_catalog_v2.json
+            echo "0166cf95dc237152ba688d59cd7f921f00812704a464987df48fbf1813fb6ab1  $file" | sha256sum -c -
+            mv "$file" /data/crs_catalog_v2.json
         volumeMounts:
           - name: crs-data
             mountPath: /data
@@ -84,8 +88,9 @@ spec:
             cpu: 500m
             memory: 1Gi
         securityContext:
-          runAsUser: 0
-          runAsNonRoot: false
+          runAsUser: 1000
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
           capabilities:
             drop:

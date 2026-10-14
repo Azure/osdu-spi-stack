@@ -101,6 +101,10 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: 'v3.16.2'
       - name: pytest with coverage
         run: |
           uv run pytest \

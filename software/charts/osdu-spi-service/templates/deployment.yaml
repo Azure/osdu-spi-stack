@@ -43,6 +43,7 @@ spec:
       # AKS Deployment Safeguards compliance
       securityContext:
         runAsNonRoot: true
+        fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
 
