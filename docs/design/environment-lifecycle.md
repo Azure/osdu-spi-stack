@@ -144,6 +144,15 @@ pass moves canonical images during an upgrade, but the bump pins only the
 stack-definition axis. Weekday refreshes preserve community canonicals and
 advance fork-sourced ones (ADR-033).
 
+After the flag clears, both verbs poll `spi status --json` for up to 5
+minutes until it reports deployable. A Kustomization with `wait: true`
+reports Progressing for a few seconds on every interval reconcile, and a
+single read can land on one. A re-run of a failed attempt can find the flag
+already cleared by the earlier attempt; the verification step accepts that
+only when the run attempt is above 1 and the environment is deployable, then
+skips the clear. A first attempt that finds the flag off fails, since someone
+else changed the environment mid-run.
+
 **Onboarding intent** is loaded from the reviewed declaration before the
 refresh or upgrade workflow resolves an image; `spi service refresh` and
 `spi reconcile --refresh-images` run by hand read the lock's projections as
