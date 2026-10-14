@@ -71,6 +71,7 @@ def test_restore_release_uses_its_dedicated_identity_and_is_inert_by_default():
     assert values["serviceAccountName"] == "seismic-restore-sa"
     assert env["AZURE_SUBSCRIPTION_ID"] == "${AZURE_SUBSCRIPTION_ID}"
     assert env["AZURE_RESOURCE_GROUP"] == "${AZURE_RESOURCE_GROUP}"
+    assert env["DES_SERVICE_HOST"] == "https://${INGRESS_FQDN}"
     assert env["SDMS_RESTORE_QUEUE"] == "sdms-queue-restore"
     assert env["SDMS_REDIS_QUEUE_PORT"] == "6379"
     assert env["SDMS_REDIS_LOCKS_PORT"] == "6379"

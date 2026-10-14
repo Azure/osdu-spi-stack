@@ -84,6 +84,8 @@ spec:
         value: "${AZURE_SUBSCRIPTION_ID}"
       - name: AZURE_RESOURCE_GROUP
         value: "${AZURE_RESOURCE_GROUP}"
+      - name: DES_SERVICE_HOST
+        value: "https://${INGRESS_FQDN}"
       - name: SDMS_COSMOS_ENDPOINT
         valueFrom:
           configMapKeyRef:
