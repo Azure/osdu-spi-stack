@@ -96,6 +96,21 @@ def _statuses(facts: dict) -> dict:
 
 
 class TestCollect:
+    def test_declared_report_path_is_inspected_outside_maven_directories(self, suite):
+        _reports(
+            suite,
+            f"<testsuite>{_case('should_return200')}</testsuite>",
+            folder="results",
+        )
+        source = suite / "results" / "TEST-suite.xml"
+        target = suite / "results" / "rafs.xml"
+        source.rename(target)
+
+        facts = collect(suite, report_paths=("results/rafs.xml",))
+
+        assert facts["totals"]["tests"] == 1
+        assert _statuses(facts) == {"should_return200": "passed"}
+
     def test_a_pass_with_no_statement_is_empty_and_every_other_test_keeps_its_status(self, suite):
         _reports(
             suite,
