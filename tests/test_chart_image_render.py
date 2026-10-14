@@ -93,6 +93,17 @@ def test_requests_the_cpu_admission_will_grant_every_container():
         assert _millicores(requested) >= 100, container["name"]
 
 
+def test_pod_security_context_grants_non_root_containers_shared_volume_access():
+    deployment = _rendered_deployment({})
+    pod = deployment["spec"]["template"]["spec"]
+
+    assert pod["securityContext"] == {
+        "runAsNonRoot": True,
+        "fsGroup": 1000,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+
+
 _ISTIO_PROXY = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["istioProxyPin"]["image"]
 
 
