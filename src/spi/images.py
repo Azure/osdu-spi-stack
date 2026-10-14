@@ -110,7 +110,7 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
     "rafs": ImageRegistryEntry(
         1415,
         "rafs-ddms-services",
-        "services/rafs.yaml",
+        "ddms/rafs.yaml",
         branch="main",
     ),
     "crs-conversion": ImageRegistryEntry(

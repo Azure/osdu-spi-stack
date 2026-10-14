@@ -249,21 +249,3 @@ spec:
       backendRefs:
         - name: dataset
           port: 80
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: rafs
-  namespace: osdu
-spec:
-  parentRefs:
-    - name: spi-gateway
-      namespace: platform
-  hostnames:
-    - "${INGRESS_HOST_OSDU}"
-  rules:
-    - matches:
-        - path: { type: PathPrefix, value: /api/rafs-ddms/ }
-      backendRefs:
-        - name: rafs
-          port: 80

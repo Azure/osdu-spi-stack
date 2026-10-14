@@ -12,5 +12,3 @@ resources:
   - file.yaml
   - workflow.yaml
   - dataset.yaml
-  - ../../../components/rafs-runtime
-  - rafs.yaml

@@ -415,6 +415,7 @@ class TestMinimalProfileScope:
     def test_ingress_declares_no_osdu_routes(self, mode):
         names = _declared_names(_ingress_tree(Profile.MINIMAL, mode))
         assert "spi-osdu-routes" not in names
+        assert "spi-osdu-ddms-routes" not in names
 
 
 class TestBareProfileScope:
@@ -723,6 +724,7 @@ class TestAutomatedGatewayDeployment:
         assert "deletionPolicy" not in owner["spec"]
         assert "spi-gateway-tls" not in _dependency_names(INGRESS_DIR / mode)
 
+
 class TestReferenceCatalogDownloads:
     """Reference catalogs are immutable, verified, and fetched without root."""
 
@@ -788,17 +790,26 @@ class TestFileRuntime:
 
 
 class TestRafsRuntime:
-    def test_dataset_and_rafs_are_service_releases(self):
-        releases = {
+    def test_dataset_stays_core_and_rafs_is_a_ddms_release(self):
+        core_releases = {
             doc["metadata"]["name"]: doc
             for _, doc in _built_resources(STACKS / "services")
             if doc.get("kind") == "HelmRelease"
         }
+        ddms_releases = {
+            doc["metadata"]["name"]: doc
+            for _, doc in _built_resources(STACKS / "ddms")
+            if doc.get("kind") == "HelmRelease"
+        }
 
-        assert {"dataset", "rafs"} <= set(releases)
-        dataset_env = {item["name"]: item for item in releases["dataset"]["spec"]["values"]["env"]}
+        assert "dataset" in core_releases
+        assert "rafs" not in core_releases
+        assert set(ddms_releases) == {"rafs"}
+        dataset_env = {
+            item["name"]: item for item in core_releases["dataset"]["spec"]["values"]["env"]
+        }
         assert dataset_env["server.servlet.contextPath"]["value"] == "/api/dataset/v1"
-        rafs_values = releases["rafs"]["spec"]["values"]
+        rafs_values = ddms_releases["rafs"]["spec"]["values"]
         assert rafs_values["probes"]["readiness"]["path"] == "/api/rafs-ddms/readiness"
         assert rafs_values["resources"]["requests"] == {"cpu": "1", "memory": "8Gi"}
         env = {item["name"]: item for item in rafs_values["env"]}
@@ -811,7 +822,7 @@ class TestRafsRuntime:
         }
 
     def test_rafs_redis_is_ephemeral_hardened_and_digest_pinned(self):
-        resources = list(_built_resources(STACKS / "services"))
+        resources = list(_built_resources(STACKS / "ddms"))
         deployment = next(
             doc
             for _, doc in resources
@@ -846,7 +857,7 @@ class TestRafsRuntime:
         assert pod["volumes"] == [{"name": "data", "emptyDir": {}}]
 
     def test_rafs_indexer_uses_workload_identity_and_the_rafs_lock(self):
-        resources = list(_built_resources(STACKS / "services"))
+        resources = list(_built_resources(STACKS / "ddms"))
         cronjob = next(
             doc
             for _, doc in resources
@@ -865,7 +876,7 @@ class TestRafsRuntime:
         assert "CLIENT_SECRET" not in yaml.safe_dump(cronjob)
 
     def test_rafs_indexer_triggers_every_configured_partition(self, monkeypatch):
-        resources = list(_built_resources(STACKS / "services"))
+        resources = list(_built_resources(STACKS / "ddms"))
         configmap = next(
             doc
             for _, doc in resources
@@ -893,25 +904,39 @@ class TestRafsRuntime:
             ("ip-only", None),
         ],
     )
-    def test_dataset_and_rafs_routes_exist_in_each_ingress_mode(self, mode, hostname):
-        path = STACKS / "routes" / mode / "osdu" / "routes.yaml"
-        routes = {
+    def test_dataset_and_rafs_routes_have_separate_owners(self, mode, hostname):
+        core_path = STACKS / "routes" / mode / "osdu" / "routes.yaml"
+        core_routes = {
             doc["metadata"]["name"]: doc
-            for doc in yaml.safe_load_all(path.read_text(encoding="utf-8"))
+            for doc in yaml.safe_load_all(core_path.read_text(encoding="utf-8"))
         }
+        ddms_path = STACKS / "routes" / mode / "ddms" / "routes.yaml"
+        ddms_routes = {
+            doc["metadata"]["name"]: doc
+            for doc in yaml.safe_load_all(ddms_path.read_text(encoding="utf-8"))
+        }
+        assert "rafs" not in core_routes
+        assert set(ddms_routes) == {"rafs"}
+        rafs = ddms_routes["rafs"]
 
         if hostname is None:
-            assert "hostnames" not in routes["dataset"]["spec"]
-            assert "hostnames" not in routes["rafs"]["spec"]
+            assert "hostnames" not in core_routes["dataset"]["spec"]
+            assert "hostnames" not in rafs["spec"]
         else:
-            assert routes["dataset"]["spec"]["hostnames"] == [hostname]
-            assert routes["rafs"]["spec"]["hostnames"] == [hostname]
-        assert routes["dataset"]["spec"]["rules"][0]["matches"][0]["path"]["value"] == (
+            assert core_routes["dataset"]["spec"]["hostnames"] == [hostname]
+            assert rafs["spec"]["hostnames"] == [hostname]
+        assert core_routes["dataset"]["spec"]["rules"][0]["matches"][0]["path"]["value"] == (
             "/api/dataset/"
         )
-        assert routes["rafs"]["spec"]["rules"][0]["matches"][0]["path"]["value"] == (
-            "/api/rafs-ddms/"
-        )
+        assert rafs["spec"]["rules"][0]["matches"][0]["path"]["value"] == ("/api/rafs-ddms/")
+
+    @pytest.mark.parametrize("mode", list(IngressMode), ids=lambda mode: mode.value)
+    def test_rafs_routes_wait_for_the_ddms_layer(self, mode):
+        item = _kustomization(_ingress_tree(Profile.CORE, mode), "spi-osdu-ddms-routes")
+        dependencies = {dependency["name"] for dependency in item["spec"]["dependsOn"]}
+
+        assert "spi-osdu-ddms" in dependencies
+        assert item["spec"]["path"].endswith("/ddms")
 
 
 class TestBorrowedPodDisruptionSubstitution:
@@ -923,11 +948,11 @@ class TestBorrowedPodDisruptionSubstitution:
         releases = {
             entry.file: name
             for name, entry in IMAGE_REGISTRY.items()
-            if entry.file.startswith(("services/", "services-reference/"))
+            if entry.file.startswith(("services/", "services-reference/", "ddms/"))
         }
         manifests = sorted(
             path
-            for directory in ("services", "services-reference")
+            for directory in ("services", "services-reference", "ddms")
             for path in (STACKS / directory).glob("*.yaml")
             if path.name != "kustomization.yaml"
         )
@@ -938,7 +963,10 @@ class TestBorrowedPodDisruptionSubstitution:
             value = doc["spec"]["values"]["karpenter"]["doNotDisrupt"]
             assert value == f"${{{do_not_disrupt_key(service)}:=false}}", path.name
 
-    @pytest.mark.parametrize("name", ["spi-osdu-services", "spi-osdu-reference"])
+    @pytest.mark.parametrize(
+        "name",
+        ["spi-osdu-services", "spi-osdu-ddms", "spi-osdu-reference"],
+    )
     def test_service_kustomizations_substitute_from_the_image_lock(self, name):
         item = _kustomization(PROFILES_DIR / "core", name)
         sources = item["spec"]["postBuild"]["substituteFrom"]

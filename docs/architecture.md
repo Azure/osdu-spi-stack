@@ -66,7 +66,7 @@ Profiles select Kubernetes workloads, not a smaller Azure resource estate.
 |---|---|
 | `bare` | Release stamp only in the stack tree, empty ingress tree; infrastructure and CLI bootstrap inputs remain |
 | `minimal` | Operators, middleware, and CA bootstrap, without OSDU services or initialization Jobs |
-| `core` | The middleware substrate plus OSDU services, partition/entitlements initialization, schema loading, and reference APIs |
+| `core` | The middleware substrate plus OSDU services, DDMS workloads, partition/entitlements initialization, schema loading, and reference APIs |
 
 `minimal` selects an ingress tree ending in `-minimal`; its `ip` combination
 renders the Gateway and its LoadBalancer but no routes. Moving back to `bare` removes middleware
@@ -87,6 +87,9 @@ co-location to limit latency and cost. Those trade-offs are recorded in
 [ADR-003](decisions/003-in-cluster-middleware-scope.md).
 RAFS owns a separate ephemeral Redis Stack Deployment in `osdu` because its
 RedisJSON and RediSearch APIs are absent from the shared Redis deployment.
+The `core` profile installs RAFS and this dedicated Redis instance by default.
+Their combined requests add 2 CPU and 12 GiB of memory to the OSDU node pool;
+the Redis data remains ephemeral.
 
 A client request reaches the Istio gateway and is routed to an OSDU service.
 The receiving sidecar validates the bearer token and projects the identity
@@ -100,10 +103,12 @@ Workload-Identity-capable replacement image
 ([ADR-005](decisions/005-workload-identity.md)).
 
 The core service set is partition, entitlements, legal, schema, storage, search,
-indexer, indexer-queue, file, workflow, dataset, and RAFS DDMS. The reference
-APIs are unit, crs-conversion, and crs-catalog. Their configuration lives in
-[`services/`](../software/stacks/osdu/services/),
-[`ddms/`](../software/stacks/osdu/ddms/), and
+indexer, indexer-queue, file, workflow, and dataset. RAFS DDMS
+reconciles in a separate layer after core initialization, so a DDMS failure
+does not prevent `spi-osdu-services` from becoming Ready. The reference APIs
+are unit, crs-conversion, and crs-catalog. Core service configuration lives in
+[`services/`](../software/stacks/osdu/services/) and
+[`ddms/`](../software/stacks/osdu/ddms/), with reference APIs in
 [`services-reference/`](../software/stacks/osdu/services-reference/).
 
 ![Partition and entitlements sit upstream of legal, schema, and storage; search, indexer, file, and workflow depend on storage; reference services stand alone](diagrams/service-dependencies.png)
