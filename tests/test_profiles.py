@@ -722,6 +722,7 @@ class TestAutomatedGatewayDeployment:
         assert "deletionPolicy" not in owner["spec"]
         assert "spi-gateway-tls" not in _dependency_names(INGRESS_DIR / mode)
 
+
 class TestBorrowedPodDisruptionSubstitution:
     """Every service HelmRelease reads its own do-not-disrupt key from the image lock."""
 
