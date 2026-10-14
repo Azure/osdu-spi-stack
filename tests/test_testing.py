@@ -162,7 +162,12 @@ def test_script_arguments_come_from_the_resolver_contract(tmp_path):
         {},
     )
 
-    assert binding.arguments(()) == arguments
+    assert binding.arguments((), {"TOKEN": "bearer", "PARTITION": "opendes"}) == [
+        "--bearer-token",
+        "bearer",
+        "--partition",
+        "opendes",
+    ]
 
 
 def test_declared_script_report_is_counted(tmp_path):
@@ -179,6 +184,14 @@ def test_declared_script_report_is_counted(tmp_path):
         "failures": 34,
         "errors": 85,
     }
+
+
+@pytest.mark.parametrize("pattern", ["../outside.xml", "/tmp/outside.xml"])
+def test_report_paths_must_stay_beneath_the_suite(tmp_path, pattern):
+    with pytest.raises(SuiteNotRun, match="must stay beneath") as exc:
+        testing.count_tests(tmp_path, (pattern,))
+
+    assert exc.value.code == "descriptor_rejected"
 
 
 @pytest.fixture
@@ -503,6 +516,30 @@ class TestGuards:
 
 
 class TestCheckoutRun:
+    def test_native_script_runs_the_declared_entrypoint(self, cluster, tmp_path):
+        checkout = _checkout(
+            tmp_path,
+            test_type="script",
+            test_entrypoint="run_spi.sh",
+            test_arguments=["--token", "${TOKEN}"],
+            report_paths=["results/rafs.xml"],
+        )
+        entrypoint = checkout / "suite" / "run_spi.sh"
+        entrypoint.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR)
+        head = _head(checkout)
+        cluster["locks"] = [_lock(tag=f"sha-{head[:12]}")]
+
+        testing.run_suite("partition", checkout=checkout)
+
+        [(script, kwargs)] = [
+            command
+            for command in cluster["commands"]
+            if any(item.endswith("run_spi.sh") for item in command[0])
+        ]
+        assert script[-2:] == ["--token", "a=b"]
+        assert kwargs["cwd"] == str(checkout.resolve() / "suite")
+
     def test_native_maven_runs_the_suite_under_the_allowlisted_environment(
         self, cluster, monkeypatch, tmp_path
     ):
@@ -858,9 +895,10 @@ class TestReport:
     def test_the_inspector_reads_the_run_before_it_is_discarded(self, cluster):
         seen = {}
 
-        def inspect(reports, secrets):
+        def inspect(reports, secrets, report_paths):
             seen["reports"] = sorted(p.name for p in reports.rglob("TEST-*.xml"))
             seen["secrets"] = set(secrets)
+            seen["report_paths"] = tuple(report_paths)
             seen["where"] = reports
             return {"totals": {"tests": 11}}
 
@@ -869,6 +907,7 @@ class TestReport:
         assert seen["reports"] == ["TEST-a.xml"]
         # The bearers and what the env file holds under a credential's name; never HOST.
         assert seen["secrets"] == {"t", "m", "a=b"}
+        assert seen["report_paths"] == ()
         assert not seen["where"].exists()
         assert result.report == {"totals": {"tests": 11}}
         assert testing.run_suite("partition").report is None
@@ -956,7 +995,7 @@ class TestReportCommand:
                 suite_dir = tmp_path / "run" / suite
                 (suite_dir / "src").mkdir(parents=True, exist_ok=True)
                 (suite_dir / "src" / "TestList.java").write_text("class TestList {}")
-                report = inspect(suite_dir, ("minted-bearer-value",))
+                report = inspect(suite_dir, ("minted-bearer-value",), ())
             passed = suite not in state["failing"]
             verdict = "pass: 1 tests, 0 skipped" if passed else "FAIL: 1 of 1"
             commit = state.get("commits", {}).get(suite, SHA)
@@ -994,7 +1033,10 @@ class TestReportCommand:
         monkeypatch.setattr(suite_review, "review_suites", review_suites)
         monkeypatch.setattr(suite_contract, "fetch_contract", fetch_contract)
         monkeypatch.setattr(info, "collect_endpoint", lambda service: f"https://gw/{service}/")
-        monkeypatch.setattr("spi.suite_report.collect", lambda reports, secrets: dict(FACTS))
+        monkeypatch.setattr(
+            "spi.suite_report.collect",
+            lambda reports, secrets, report_paths: dict(FACTS),
+        )
         state["temp"] = tmp_path / "temp"
         return state
 
