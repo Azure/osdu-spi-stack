@@ -201,9 +201,7 @@ def require_cluster_pull(registry: Registry) -> None:
         )
 
 
-def descriptor_service(checkout: Path) -> str:
-    """The service the checkout's descriptor names."""
-
+def _descriptor_service(checkout: Path) -> dict:
     path = checkout / DESCRIPTOR_PATH
     try:
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -212,10 +210,18 @@ def descriptor_service(checkout: Path) -> str:
     except yaml.YAMLError as exc:
         raise BuildError(f"{path} is not valid YAML: {exc}") from exc
     service = (document or {}).get("service") if isinstance(document, dict) else None
-    name = service.get("name") if isinstance(service, dict) else None
+    if not isinstance(service, dict):
+        raise BuildError(f"{path} declares no service.name.")
+    name = service.get("name")
     if not isinstance(name, str) or not name:
         raise BuildError(f"{path} declares no service.name.")
-    return name
+    return service
+
+
+def descriptor_service(checkout: Path) -> str:
+    """The service the checkout's descriptor names."""
+
+    return str(_descriptor_service(checkout)["name"])
 
 
 def resolve_jar(checkout: Path, service: str, requested: str = "") -> str:
@@ -344,11 +350,18 @@ def require_buildable(service: str, checkout: Path) -> None:
         raise BuildError(f"Unknown service {service!r}. Known services: {known}")
     if not (checkout / DOCKERFILE_PATH).is_file():
         raise BuildError(f"{checkout} has no {DOCKERFILE_PATH}; is it a synced fork?")
-    declared = descriptor_service(checkout)
+    descriptor = _descriptor_service(checkout)
+    declared = str(descriptor["name"])
     if declared != service:
         raise BuildError(
             f"{checkout} builds {declared!r}, not {service!r}; point --source at the fork "
             "that builds it."
+        )
+    archetype = descriptor.get("archetype", "java-maven-azure")
+    if archetype != "java-maven-azure":
+        raise BuildError(
+            f"spi build supports only the java-maven-azure archetype; {service!r} declares "
+            f"{archetype!r}. Build it with the fork's CI and pin the published image."
         )
 
 
