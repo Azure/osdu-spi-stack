@@ -64,6 +64,7 @@ def test_restore_release_uses_its_dedicated_identity_and_is_inert_by_default():
     release = _release("seismic-restore")
     values = release["spec"]["values"]
     env = _env(release)
+    env_items = {item["name"]: item for item in values["env"]}
 
     assert values["replicaCount"] == "${SEISMIC_RESTORE_REPLICAS:=0}"
     assert values["workloadIdentity"] is True
@@ -75,6 +76,10 @@ def test_restore_release_uses_its_dedicated_identity_and_is_inert_by_default():
     assert env["SDMS_REDIS_LOCKS_PORT"] == "6379"
     assert env["SDMS_RESTORE_LOCK_TTL_SECONDS"] == "7200"
     assert env["SDMS_RESTORE_MAX_DEQUEUE_COUNT"] == "3"
+    assert env_items["SDMS_COSMOS_ENDPOINT"]["valueFrom"]["configMapKeyRef"] == {
+        "name": "osdu-config",
+        "key": "PRIMARY_COSMOSDB_ENDPOINT",
+    }
 
     assert values["serviceAccount"]["create"] is True
     assert values["serviceAccount"]["annotations"] == {

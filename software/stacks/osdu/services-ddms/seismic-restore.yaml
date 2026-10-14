@@ -84,6 +84,11 @@ spec:
         value: "${AZURE_SUBSCRIPTION_ID}"
       - name: AZURE_RESOURCE_GROUP
         value: "${AZURE_RESOURCE_GROUP}"
+      - name: SDMS_COSMOS_ENDPOINT
+        valueFrom:
+          configMapKeyRef:
+            name: osdu-config
+            key: PRIMARY_COSMOSDB_ENDPOINT
       - name: SDMS_RESTORE_QUEUE
         value: sdms-queue-restore
       - name: SDMS_REDIS_QUEUE_PORT
