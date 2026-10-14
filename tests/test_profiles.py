@@ -751,8 +751,7 @@ class TestReferenceCatalogDownloads:
         script = container["command"][-1]
 
         assert (
-            container["image"]
-            == "docker.io/library/alpine:3.22"
+            container["image"] == "docker.io/library/alpine:3.22"
             "@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8"
         )
         assert source_revision in script
