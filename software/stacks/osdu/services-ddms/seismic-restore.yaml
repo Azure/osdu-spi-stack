@@ -85,7 +85,7 @@ spec:
       - name: AZURE_RESOURCE_GROUP
         value: "${AZURE_RESOURCE_GROUP}"
       - name: DES_SERVICE_HOST
-        value: "https://${INGRESS_FQDN}"
+        value: http://partition
       - name: SDMS_COSMOS_ENDPOINT
         valueFrom:
           configMapKeyRef:
