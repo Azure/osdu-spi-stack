@@ -42,3 +42,6 @@ forks:
   - service: crs-catalog
     repo: Azure/osdu-spi-crs-catalog
     canonicalSource: fork
+  - service: crs-conversion
+    repo: Azure/osdu-spi-crs-conversion
+    canonicalSource: fork
