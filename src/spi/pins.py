@@ -55,6 +55,7 @@ from .images import (
     IMAGE_LOCK_CONFIGMAP,
     IMAGE_LOCK_NAMESPACE,
     IMAGE_REGISTRY,
+    INDEXER_SERVICE_NAME,
     SCHEMA_LOAD_SERVICE_NAME,
     SCHEMA_SERVICE_NAME,
     ImageNotFoundError,
@@ -70,6 +71,7 @@ from .images import (
     image_lock_key,
     image_lock_missing_schema_load,
     image_ref,
+    indexer_runtime_image,
     parse_image_digest_ref,
     render_image_lock_configmap,
     require_ghcr_repository,
@@ -471,7 +473,7 @@ def _lock_entry_patch(
     do_not_disrupt: bool = False,
 ):
     key = image_lock_key(service)
-    return {
+    patch = {
         # A digest pin has no tag; the digest ref avoids a dangling "repository:".
         f"{key}_IMAGE": f"{repository}:{tag}" if tag else image_ref(repository, tag, digest),
         f"{key}_IMAGE_REPOSITORY": repository,
@@ -482,6 +484,9 @@ def _lock_entry_patch(
         # Only a run-owned borrow holds its node; the refresh derives the same value.
         do_not_disrupt_key(service): str(do_not_disrupt).lower(),
     }
+    if service == INDEXER_SERVICE_NAME:
+        patch["INDEXER_RUNTIME_IMAGE"] = indexer_runtime_image(repository, tag, digest)
+    return patch
 
 
 def _ephemeral_names(pins: dict[str, ServicePin]) -> frozenset[str]:

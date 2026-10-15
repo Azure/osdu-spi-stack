@@ -29,6 +29,7 @@ from spi import cli, pins, status
 from spi.build import BuildError, BuiltImage, Registry
 from spi.deploy_record import DeployRecord, DeployRecordError
 from spi.images import (
+    INDEXER_COMMUNITY_RUNTIME_IMAGE,
     ImageNotFoundError,
     ImageResolutionError,
     ResolvedImage,
@@ -1279,7 +1280,26 @@ class TestApplyImageLockBackfill:
         assert patched["STORAGE_IMAGE_DIGEST"] == "sha256:old"
         assert patched["DATASET_IMAGE_REF"] == "repo/dataset-main@sha256:dataset"
         assert patched["RAFS_IMAGE_REF"] == "repo/rafs-main@sha256:rafs"
+        assert patched["INDEXER_RUNTIME_IMAGE"] == "repo/indexer-master@sha256:old"
         assert patched["IMAGE_COUNT"] == str(len(pins.IMAGE_REGISTRY))
+
+    def test_backfills_the_runtime_for_a_community_indexer(self, monkeypatch):
+        data = _canonical_data(*pins.IMAGE_REGISTRY)
+        repository = "community.opengroup.org:5555/osdu/indexer-master"
+        data["INDEXER_IMAGE"] = f"{repository}:{data['INDEXER_IMAGE_TAG']}"
+        data["INDEXER_IMAGE_REPOSITORY"] = repository
+        data["INDEXER_IMAGE_REF"] = f"{repository}@{data['INDEXER_IMAGE_DIGEST']}"
+        calls = _wire_lock(monkeypatch, _lock(data=data))
+        monkeypatch.setattr(
+            pins,
+            "resolve_images",
+            lambda *_args, **_kwargs: pytest.fail("a complete lock needs no registry lookup"),
+        )
+
+        assert pins.apply_image_lock_backfill("master", sources={})
+
+        patched, _saved = calls["patch"]
+        assert patched["INDEXER_RUNTIME_IMAGE"] == INDEXER_COMMUNITY_RUNTIME_IMAGE
 
     def test_concurrent_newer_service_does_not_inherit_the_resolved_pair(self, monkeypatch):
         existing = [name for name in pins.IMAGE_REGISTRY if name != "rafs"]

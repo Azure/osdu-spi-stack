@@ -47,8 +47,8 @@ spec:
       enabled: true
     initContainers:
       - name: install-java-runtime
-        # Match the glibc Azure Linux runtime in Azure/osdu-spi's service Dockerfile.
-        image: mcr.microsoft.com/openjdk/jdk:25-azurelinux@sha256:9c3b6e495e05d71f9db65e54d2946c92773baf71b550e26f8fd2ac25d2235831
+        # The lock selects a musl runtime for community images and the service image for forks.
+        image: ${INDEXER_RUNTIME_IMAGE}
         command:
           - sh
           - -c

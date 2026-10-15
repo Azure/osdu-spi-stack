@@ -34,6 +34,11 @@ DEFAULT_IMAGE_BRANCH = "master"
 FORK_MAIN_TAG = "main-snapshot"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"
+INDEXER_SERVICE_NAME = "indexer"
+INDEXER_COMMUNITY_RUNTIME_IMAGE = (
+    "docker.io/library/eclipse-temurin@"
+    "sha256:3c0a9084927a221ccd1d007fcaf614465672c0af37aaa834c5184483afe56d61"
+)
 SCHEMA_SERVICE_NAME = "schema"
 SCHEMA_LOAD_SERVICE_NAME = "schema-load"
 
@@ -866,6 +871,14 @@ def image_ref(repository: str, tag: str, digest: str) -> str:
     return f"{repository}@{digest}" if digest else f"{repository}:{tag}"
 
 
+def indexer_runtime_image(repository: str, tag: str, digest: str) -> str:
+    """A Java 25 runtime with the same libc as the selected Indexer image."""
+
+    if repository.startswith("community.opengroup.org:5555/"):
+        return INDEXER_COMMUNITY_RUNTIME_IMAGE
+    return image_ref(repository, tag, digest)
+
+
 def schema_load_lock_patch(
     lock_data: Mapping[str, str],
     branch: str = DEFAULT_IMAGE_BRANCH,
@@ -960,6 +973,12 @@ def build_lock_data(
         data[f"{key}_IMAGE_DIGEST"] = image.digest
         data[f"{key}_IMAGE_REF"] = image_ref(image.repository, image.tag, image.digest)
         data[do_not_disrupt_key(name)] = str(name in protected).lower()
+        if name == INDEXER_SERVICE_NAME:
+            data["INDEXER_RUNTIME_IMAGE"] = indexer_runtime_image(
+                image.repository,
+                image.tag,
+                image.digest,
+            )
         if image.acceptance_digest:
             data[acceptance_digest_key(name)] = image.acceptance_digest
     return data

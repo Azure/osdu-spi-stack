@@ -187,8 +187,20 @@ def test_render_image_lock_contains_schema_load_service_keys():
     assert 'IMAGE_BRANCH: "master"' in yaml
     assert "PARTITION_IMAGE_REPOSITORY" in yaml
     assert "INDEXER_QUEUE_IMAGE_TAG" in yaml
+    assert f'INDEXER_RUNTIME_IMAGE: "{images.INDEXER_COMMUNITY_RUNTIME_IMAGE}"' in yaml
     assert "SCHEMA_LOAD_IMAGE_REPOSITORY" in yaml
     assert "SCHEMA_LOAD_IMAGE_TAG" in yaml
+
+
+def test_fork_indexer_uses_its_own_runtime():
+    resolved = {
+        name: ResolvedImage(name, f"repo/{name}", "1" * 40, "", f"sha256:{name}")
+        for name in image_lock_names()
+    }
+
+    data = build_lock_data(resolved, "master", "now")
+
+    assert data["INDEXER_RUNTIME_IMAGE"] == "repo/indexer@sha256:indexer"
 
 
 def test_lock_data_marks_only_named_services_do_not_disrupt():

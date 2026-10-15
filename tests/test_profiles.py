@@ -736,10 +736,7 @@ class TestIndexerRuntime:
             if container["name"] == "install-java-runtime"
         )
 
-        assert runtime["image"] == (
-            "mcr.microsoft.com/openjdk/jdk:25-azurelinux"
-            "@sha256:9c3b6e495e05d71f9db65e54d2946c92773baf71b550e26f8fd2ac25d2235831"
-        )
+        assert runtime["image"] == "${INDEXER_RUNTIME_IMAGE}"
         assert runtime["command"] == ["sh", "-c", 'cp -R "$JAVA_HOME/." /java-runtime/']
         assert runtime["securityContext"] == {
             "allowPrivilegeEscalation": False,
