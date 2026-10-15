@@ -3,7 +3,7 @@
 //
 // Reservoir DDMS persistence for one OSDU data partition. The service reaches
 // the public endpoint only through the AKS NAT gateway and authenticates as the
-// OSDU workload identity. Password authentication stays disabled.
+// dedicated Reservoir workload identity. Password authentication stays disabled.
 
 @description('Globally unique PostgreSQL Flexible Server name.')
 param name string
@@ -14,10 +14,10 @@ param partition string
 @description('Azure region where the server is deployed.')
 param location string
 
-@description('Name of the OSDU workload identity configured as the Entra administrator.')
+@description('Name of the Reservoir workload identity configured as the Entra administrator.')
 param identityName string
 
-@description('Principal ID of the OSDU workload identity.')
+@description('Principal ID of the Reservoir workload identity.')
 param identityPrincipalId string
 
 @description('Public IP of the AKS NAT gateway allowed through the PostgreSQL firewall.')

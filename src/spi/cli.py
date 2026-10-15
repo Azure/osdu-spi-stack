@@ -32,7 +32,11 @@ from rich.table import Table
 from typer.completion import completion_init, install_callback, show_callback
 
 from . import __version__
-from .bootstrap import create_istio_revision_configmap, refresh_spi_init_values
+from .bootstrap import (
+    create_istio_revision_configmap,
+    refresh_reservoir_service_account,
+    refresh_spi_init_values,
+)
 from .build import BuildError, build_image
 from .checks import PREREQ_TOOLS, check_prerequisites
 from .config import Config, IngressMode, Profile
@@ -53,7 +57,7 @@ from .pins import (
     ResetRefusedError,
     VerifyError,
     apply_image_lock,
-    apply_schema_load_backfill,
+    apply_image_lock_backfill,
     await_service_image,
     describe_pin,
     live_pins,
@@ -363,15 +367,15 @@ def _reconcile_kustomization(name: str) -> None:
     )
 
 
-def _backfill_schema_load_lock(image_branch: str) -> None:
-    """Backfill schema-load through the shared image-lock CAS primitive."""
+def _backfill_image_lock(image_branch: str) -> None:
+    """Backfill services added after the live image lock was created."""
     try:
-        changed = apply_schema_load_backfill(branch=image_branch)
+        changed = apply_image_lock_backfill(branch=image_branch)
     except (ImageResolutionError, PinError) as exc:
-        console.print(f"[error]Unable to backfill the schema-load image: {exc}[/error]")
+        console.print(f"[error]Unable to backfill the image lock: {exc}[/error]")
         raise typer.Exit(code=1)
     if changed:
-        display_result("osdu-image-lock ConfigMap updated with schema-load")
+        display_result("osdu-image-lock ConfigMap updated with missing services")
 
 
 def _build_config(
@@ -2124,9 +2128,10 @@ def reconcile(
     console.print("\n[bold]Refreshing cluster config for Flux substitution...[/bold]")
     create_istio_revision_configmap()
     refresh_spi_init_values()
+    refresh_reservoir_service_account()
 
     if not refresh_images:
-        _backfill_schema_load_lock(image_branch)
+        _backfill_image_lock(image_branch)
 
     if resume:
         console.print("\n[bold]Resuming GitRepository...[/bold]")

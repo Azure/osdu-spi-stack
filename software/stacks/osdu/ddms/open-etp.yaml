@@ -22,6 +22,7 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
+    serviceAccountName: open-etp-sa
     image:
       repository: ${OPEN_ETP_IMAGE_REPOSITORY}
       tag: "${OPEN_ETP_IMAGE_TAG}"

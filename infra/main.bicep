@@ -63,6 +63,12 @@ param partitionStorageNames array
 @description('Ordered PostgreSQL Flexible Server names, with one entry per dataPartitions item.')
 param reservoirPostgresNames array
 
+@description('Resource name for the dedicated Reservoir workload identity.')
+param reservoirIdentityName string
+
+@description('Whether the core profile provisions Reservoir persistence and identity.')
+param deployReservoir bool = false
+
 @description('Fixed AKS NAT egress IP allowed through the Reservoir PostgreSQL firewalls.')
 param aksNatPublicIpAddress string
 
@@ -128,6 +134,19 @@ module identityModule 'modules/identity.bicep' = {
   }
 }
 
+module reservoirIdentityModule 'modules/reservoir-identity.bicep' = if (deployReservoir) {
+  name: 'spi-reservoir-identity'
+  params: {
+    name: reservoirIdentityName
+    location: location
+    oidcIssuerUrl: oidcIssuerUrl
+    keyVaultName: keyVaultName
+  }
+  dependsOn: [
+    keyvaultModule
+  ]
+}
+
 module gremlinModule 'modules/cosmos-gremlin.bicep' = {
   name: 'spi-gremlin'
   params: {
@@ -162,14 +181,15 @@ module partitionModules 'modules/partition.bicep' = [for (p, i) in dataPartition
   ]
 }]
 
-module reservoirPostgresModules 'modules/reservoir-postgres.bicep' = [for (p, i) in dataPartitions: {
+module reservoirPostgresModules 'modules/reservoir-postgres.bicep' = [for (p, i) in dataPartitions: if (deployReservoir) {
   name: 'spi-reservoir-postgres-${p}'
   params: {
     name: reservoirPostgresNames[i]
     partition: p
     location: location
-    identityName: identityName
-    identityPrincipalId: identityModule.outputs.principalId
+    identityName: reservoirIdentityName
+    #disable-next-line BCP318
+    identityPrincipalId: reservoirIdentityModule.outputs.principalId
     aksNatPublicIpAddress: aksNatPublicIpAddress
     keyVaultName: keyVaultName
   }
@@ -440,13 +460,25 @@ output partitionStorageIds array = [for i in range(0, length(dataPartitions)): p
 output partitionStorageNamesOut array = partitionStorageNames
 
 @description('PostgreSQL Flexible Server resource IDs ordered to match partitionNames.')
-output reservoirPostgresIds array = [for i in range(0, length(dataPartitions)): reservoirPostgresModules[i].outputs.resourceId]
+output reservoirPostgresIds array = [
+  for i in range(0, deployReservoir ? length(dataPartitions) : 0): reservoirPostgresModules[i]!.outputs.resourceId
+]
 
 @description('PostgreSQL server FQDNs ordered to match partitionNames.')
-output reservoirPostgresFqdns array = [for i in range(0, length(dataPartitions)): reservoirPostgresModules[i].outputs.fullyQualifiedDomainName]
+output reservoirPostgresFqdns array = [
+  for i in range(0, deployReservoir ? length(dataPartitions) : 0): reservoirPostgresModules[i]!.outputs.fullyQualifiedDomainName
+]
 
 @description('PostgreSQL database names ordered to match partitionNames.')
-output reservoirPostgresDatabaseNames array = [for i in range(0, length(dataPartitions)): reservoirPostgresModules[i].outputs.databaseName]
+output reservoirPostgresDatabaseNames array = [
+  for i in range(0, deployReservoir ? length(dataPartitions) : 0): reservoirPostgresModules[i]!.outputs.databaseName
+]
+
+@description('Client ID for the dedicated Reservoir workload identity.')
+output reservoirIdentityClientId string = deployReservoir ? reservoirIdentityModule!.outputs.clientId : ''
+
+@description('Principal ID for the dedicated Reservoir workload identity.')
+output reservoirIdentityPrincipalId string = deployReservoir ? reservoirIdentityModule!.outputs.principalId : ''
 
 @description('Application Insights connection string, or an empty string when telemetry is disabled.')
 #disable-next-line BCP318

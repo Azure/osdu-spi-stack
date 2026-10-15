@@ -11,4 +11,3 @@ resources:
   - indexer-queue.yaml
   - file.yaml
   - workflow.yaml
-  - open-etp.yaml

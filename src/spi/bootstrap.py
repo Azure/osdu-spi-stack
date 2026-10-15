@@ -24,6 +24,7 @@ from .templates import (
     parse_init_values,
     spi_init_values_configmap,
     storage_class,
+    workload_identity_sa,
 )
 
 STORAGE_CLASSES = ["pg-storageclass", "redis-storageclass", "es-storageclass"]
@@ -40,6 +41,7 @@ DEPLOY_IDENTITY_KEYS = (
     "AZURE_SUBSCRIPTION_ID",
     "AZURE_RESOURCE_GROUP",
     "AKS_CLUSTER_NAME",
+    "RESERVOIR_IDENTITY_CLIENT_ID",
 )
 
 
@@ -56,6 +58,9 @@ def deploy_identity_facts(
         "AZURE_SUBSCRIPTION_ID": infra_outputs.get("subscription_id", ""),
         "AZURE_RESOURCE_GROUP": resource_group,
         "AKS_CLUSTER_NAME": cluster_name,
+        "RESERVOIR_IDENTITY_CLIENT_ID": infra_outputs.get(
+            "reservoir_identity_client_id", ""
+        ),
     }
 
 
@@ -245,6 +250,27 @@ def refresh_spi_init_values() -> None:
     )
     display_yaml(yaml_content, f"ConfigMap: {INIT_VALUES_CONFIGMAP}")
     kubectl_apply_yaml(yaml_content, f"refresh {INIT_VALUES_CONFIGMAP} ConfigMap")
+
+
+def refresh_reservoir_service_account() -> None:
+    """Apply the dedicated Reservoir ServiceAccount when core infrastructure exists."""
+    try:
+        cluster_cfg = read_cluster_config()
+    except ClusterConfigError as exc:
+        console.print(f"[warning]{exc}; leaving open-etp-sa unchanged.[/warning]")
+        return
+    client_id = cluster_cfg.get("RESERVOIR_IDENTITY_CLIENT_ID", "")
+    tenant_id = cluster_cfg.get("AZURE_TENANT_ID", "")
+    if not client_id or not tenant_id:
+        return
+    yaml_content = workload_identity_sa(
+        namespace="osdu",
+        client_id=client_id,
+        tenant_id=tenant_id,
+        name="open-etp-sa",
+    )
+    display_yaml(yaml_content, "ServiceAccount: open-etp-sa in osdu")
+    kubectl_apply_yaml(yaml_content, "apply open-etp-sa in osdu")
 
 
 def create_storage_classes() -> None:

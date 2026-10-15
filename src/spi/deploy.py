@@ -116,6 +116,16 @@ def _create_osdu_config(config: Config, infra_outputs: dict) -> None:
         )
         display_yaml(sa_yaml, f"ServiceAccount: workload-identity-sa in {ns}")
         kubectl_apply_yaml(sa_yaml, f"apply workload-identity-sa in {ns}")
+    reservoir_client_id = infra_outputs.get("reservoir_identity_client_id", "")
+    if reservoir_client_id:
+        sa_yaml = workload_identity_sa(
+            namespace="osdu",
+            client_id=reservoir_client_id,
+            tenant_id=infra_outputs.get("tenant_id", ""),
+            name="open-etp-sa",
+        )
+        display_yaml(sa_yaml, "ServiceAccount: open-etp-sa in osdu")
+        kubectl_apply_yaml(sa_yaml, "apply open-etp-sa in osdu")
     for sa_name, output_key in TESTER_SERVICE_ACCOUNTS:
         client_id = infra_outputs.get(output_key, "")
         if not client_id:
