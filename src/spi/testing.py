@@ -872,9 +872,7 @@ def count_tests(reports: Path, report_paths: Sequence[str] = ()) -> dict[str, in
     return totals
 
 
-def judge(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
-    """The commit's own verdict over this run's reports."""
-
+def _run_verdict(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
     result = run_process(
         [
             sys.executable,
@@ -898,6 +896,25 @@ def judge(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
             + (f": {stderr[-1]}" if stderr else ""),
         )
     return result.returncode == 0, lines[-1]
+
+
+def judge(
+    root: Path,
+    exit_code: int,
+    reports: Path,
+    report_paths: Sequence[str] = (),
+) -> tuple[bool, str]:
+    """The commit's own verdict over this run's declared reports."""
+
+    if not report_paths:
+        return _run_verdict(root, exit_code, reports)
+    with tempfile.TemporaryDirectory(prefix="spi-verdict-") as temporary:
+        selected = Path(temporary) / REPORT_DIRS[0]
+        selected.mkdir()
+        for index, report in enumerate(_report_files(reports, report_paths)):
+            if report.is_file():
+                shutil.copy2(report, selected / f"TEST-{index:04d}.xml")
+        return _run_verdict(root, exit_code, Path(temporary))
 
 
 def _require_machinery(root: Path) -> None:
@@ -1087,7 +1104,7 @@ def run_suite(
                 )
         finally:
             env_file.unlink(missing_ok=True)
-        passed, verdict = judge(root, code, reports)
+        passed, verdict = judge(root, code, reports, bound.report_paths)
         tests = count_tests(reports, bound.report_paths)
         # A discarded run leaves nothing with the inspector.
         check_target(service, bound.expected, after=verdict, revision=revision)

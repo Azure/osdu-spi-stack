@@ -61,6 +61,24 @@ pathlib.Path(behavior["record"]).write_text(json.dumps(sys.argv[1:]))
 print(behavior.get("verdict_line", "pass: 1 tests, 0 skipped"))
 sys.exit(behavior.get("verdict", 0))
 """
+XML_VERDICT = """
+import argparse, pathlib, sys, xml.etree.ElementTree as ET
+parser = argparse.ArgumentParser()
+parser.add_argument("--exit-code", type=int, required=True)
+parser.add_argument("--reports", required=True)
+args = parser.parse_args()
+totals = {"tests": 0, "skipped": 0, "failures": 0, "errors": 0}
+for report in pathlib.Path(args.reports).rglob("TEST-*.xml"):
+    root = ET.parse(report).getroot()
+    for key in totals:
+        totals[key] += int(root.get(key, 0))
+ran = totals["tests"] - totals["skipped"]
+broken = totals["failures"] + totals["errors"]
+if args.exit_code or not ran or broken:
+    print(f"FAIL: {broken} of {ran} tests failed or errored")
+    sys.exit(1)
+print(f"pass: {ran} tests, {totals['skipped']} skipped")
+"""
 
 
 def _machinery(root: Path, **behavior) -> Path:
@@ -69,7 +87,10 @@ def _machinery(root: Path, **behavior) -> Path:
     for relative, body in (
         (testing.DESCRIPTOR_PATH, "service: partition\n"),
         (testing.RESOLVER_PATH, prelude + FAKE_RESOLVER),
-        (testing.VERDICT_PATH, prelude + FAKE_VERDICT),
+        (
+            testing.VERDICT_PATH,
+            XML_VERDICT if behavior.get("xml_verdict") else prelude + FAKE_VERDICT,
+        ),
     ):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -663,6 +684,39 @@ class TestCheckoutRun:
         ]
         assert script[-2:] == ["--token", "a=b"]
         assert kwargs["cwd"] == str(checkout.resolve() / "suite")
+
+    def test_native_script_declared_report_drives_the_commit_verdict(
+        self, cluster, monkeypatch, tmp_path
+    ):
+        checkout = _checkout(
+            tmp_path,
+            test_type="script",
+            test_entrypoint="run_spi.sh",
+            report_paths=["results/rafs.xml"],
+            xml_verdict=True,
+        )
+        entrypoint = checkout / "suite" / "run_spi.sh"
+        entrypoint.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR)
+        head = _head(checkout)
+        cluster["locks"] = [_lock(tag=f"sha-{head[:12]}")]
+
+        def run_script(command, **kwargs):
+            report = Path(kwargs["cwd"]) / "results" / "rafs.xml"
+            report.parent.mkdir()
+            report.write_text(
+                '<testsuite tests="3" skipped="1" failures="0" errors="0"/>',
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(testing, "run_command", run_script)
+
+        result = testing.run_suite("partition", checkout=checkout)
+
+        assert result.passed
+        assert result.verdict == "pass: 2 tests, 1 skipped"
+        assert result.tests == {"tests": 3, "skipped": 1, "failures": 0, "errors": 0}
 
     def test_native_maven_runs_the_suite_under_the_allowlisted_environment(
         self, cluster, monkeypatch, tmp_path
