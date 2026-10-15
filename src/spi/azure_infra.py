@@ -719,6 +719,8 @@ def _build_bicep_params(
         "deployIdentityName": config.deploy_identity_name,
         "memberIdentityName": config.member_identity_name,
         "noAccessIdentityName": config.no_access_identity_name,
+        "reservoirIdentityName": config.reservoir_identity_name,
+        "deployReservoir": config.profile.value == "core",
         "clusterName": config.cluster_name,
         "externalDnsIdentityName": config.external_dns_identity_name,
         "keyVaultName": config.keyvault_name,
@@ -828,6 +830,10 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
         "member_identity_principal_id": bicep_outputs.get("memberIdentityPrincipalId", ""),
         "no_access_identity_client_id": bicep_outputs.get("noAccessIdentityClientId", ""),
         "no_access_identity_principal_id": bicep_outputs.get("noAccessIdentityPrincipalId", ""),
+        "reservoir_identity_client_id": bicep_outputs.get("reservoirIdentityClientId", ""),
+        "reservoir_identity_principal_id": bicep_outputs.get(
+            "reservoirIdentityPrincipalId", ""
+        ),
         "identity_id": bicep_outputs.get("identityResourceId", ""),
         "keyvault_uri": bicep_outputs.get("keyvaultUri", ""),
         "keyvault_id": bicep_outputs.get("keyvaultId", ""),

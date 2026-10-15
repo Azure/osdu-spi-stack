@@ -108,8 +108,8 @@ class TestRequireBuildable:
     def test_a_non_maven_archetype_is_directed_to_fork_ci(self, tmp_path):
         with pytest.raises(BuildError, match="Build it with the fork's CI"):
             require_buildable(
-                "rafs",
-                _checkout(tmp_path, service="rafs", archetype="python-fastapi-azure"),
+                "open-etp",
+                _checkout(tmp_path, service="open-etp", archetype="cpp-cmake-azure"),
             )
 
     def test_a_checkout_without_the_dockerfile_is_refused(self, tmp_path):
