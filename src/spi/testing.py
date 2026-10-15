@@ -768,7 +768,9 @@ def _script(checkout: Path, entrypoint: str, args: Sequence[str]) -> list[str]:
             "descriptor_rejected",
             f"script entrypoint {entrypoint!r} is not a file in {checkout}",
         )
-    command = ["bash", str(target)] if _ON_WINDOWS and target.suffix == ".sh" else [str(target)]
+    command = (
+        ["bash", target.as_posix()] if _ON_WINDOWS and target.suffix == ".sh" else [str(target)]
+    )
     return [*command, *args]
 
 

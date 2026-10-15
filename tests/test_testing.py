@@ -170,6 +170,14 @@ def test_script_arguments_come_from_the_resolver_contract(tmp_path):
     ]
 
 
+def test_windows_bash_script_path_uses_forward_slashes(monkeypatch, tmp_path):
+    script = tmp_path / "run_spi.sh"
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setattr(testing, "_ON_WINDOWS", True)
+
+    assert testing._script(tmp_path, script.name, ()) == ["bash", script.resolve().as_posix()]
+
+
 def test_declared_script_report_is_counted(tmp_path):
     report = tmp_path / "tests" / "results" / "rafs.xml"
     report.parent.mkdir(parents=True)
