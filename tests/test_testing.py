@@ -10,6 +10,7 @@ import os
 import stat
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -174,15 +175,59 @@ def test_windows_bash_script_path_uses_forward_slashes(monkeypatch, tmp_path):
     script = tmp_path / "run_spi.sh"
     script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     monkeypatch.setattr(testing, "_ON_WINDOWS", True)
+    monkeypatch.setattr(testing.shutil, "which", lambda _name: r"C:\Git\bin\bash.exe")
+
+    assert testing._script(tmp_path, script.name, ()) == [
+        r"C:\Git\bin\bash.exe",
+        script.resolve().as_posix(),
+    ]
+
+
+def test_windows_wsl_bash_script_path_uses_mounted_drive():
+    assert testing._bash_path(Path("C:/Users/dev/run_spi.sh"), r"C:\Windows\System32\bash.exe") == (
+        "/mnt/c/Users/dev/run_spi.sh"
+    )
+
+
+def test_windows_prefers_git_bash_over_wsl(monkeypatch):
+    tools = {
+        "bash": r"C:\Windows\System32\bash.exe",
+        "git": r"C:\Program Files\Git\cmd\git.exe",
+    }
+    monkeypatch.setattr(testing.shutil, "which", tools.get)
+    monkeypatch.setattr(testing.os.path, "isfile", lambda _path: True)
+
+    assert testing._bash_executable() == r"C:\Program Files\Git\bin\bash.exe"
+
+
+def test_windows_git_bash_preserves_posix_script_arguments(monkeypatch, tmp_path):
+    script = tmp_path / "run_spi.sh"
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    env_file = tmp_path / "suite.env"
+    env_file.write_text("", encoding="utf-8")
+    seen = {}
+
+    def run(command, **kwargs):
+        seen["command"] = command
+        seen["env"] = kwargs["env"]
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(testing, "_ON_WINDOWS", True)
     monkeypatch.setattr(testing.shutil, "which", lambda _name: r"C:\Program Files\Git\bin\bash.exe")
+    monkeypatch.setattr(testing, "run_command", run)
 
-    assert testing._script(tmp_path, script.name, ()) == ["bash", script.resolve().as_posix()]
+    testing.run_checkout(
+        tmp_path,
+        ".",
+        env_file,
+        ("--url-prefix", "/api/rafs-ddms"),
+        None,
+        test_type="script",
+        entrypoint=script.name,
+    )
 
-
-def test_windows_wsl_bash_script_path_uses_mounted_drive(monkeypatch):
-    monkeypatch.setattr(testing.shutil, "which", lambda _name: r"C:\Windows\System32\bash.exe")
-
-    assert testing._bash_path(Path("C:/Users/dev/run_spi.sh")) == ("/mnt/c/Users/dev/run_spi.sh")
+    assert seen["command"][-2:] == ["--url-prefix", "/api/rafs-ddms"]
+    assert seen["env"]["MSYS2_ARG_CONV_EXCL"] == "*"
 
 
 def test_declared_script_report_is_counted(tmp_path):

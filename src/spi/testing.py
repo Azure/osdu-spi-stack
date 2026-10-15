@@ -755,14 +755,24 @@ def _maven(checkout: Path, args: Sequence[str]) -> list[str]:
     return [*command, *args]
 
 
-def _bash_path(target: Path) -> str:
+def _bash_executable() -> str:
+    bash = shutil.which("bash") or "bash"
+    if not _is_wsl_bash(bash):
+        return bash
+
+    git = PureWindowsPath(shutil.which("git") or "")
+    git_bash = git.parent.parent / "bin" / "bash.exe"
+    return str(git_bash) if git.name.lower() == "git.exe" and os.path.isfile(git_bash) else bash
+
+
+def _is_wsl_bash(bash: str) -> bool:
+    launcher = PureWindowsPath(bash)
+    return launcher.name.lower() == "bash.exe" and launcher.parent.name.lower() == "system32"
+
+
+def _bash_path(target: Path, bash: str) -> str:
     path = target.as_posix()
-    bash = PureWindowsPath(shutil.which("bash") or "")
-    if (
-        bash.name.lower() == "bash.exe"
-        and bash.parent.name.lower() == "system32"
-        and re.match(r"^[A-Za-z]:/", path)
-    ):
+    if _is_wsl_bash(bash) and re.match(r"^[A-Za-z]:/", path):
         return f"/mnt/{path[0].lower()}{path[2:]}"
     return path
 
@@ -780,9 +790,11 @@ def _script(checkout: Path, entrypoint: str, args: Sequence[str]) -> list[str]:
             "descriptor_rejected",
             f"script entrypoint {entrypoint!r} is not a file in {checkout}",
         )
-    command = (
-        ["bash", _bash_path(target)] if _ON_WINDOWS and target.suffix == ".sh" else [str(target)]
-    )
+    if _ON_WINDOWS and target.suffix == ".sh":
+        bash = _bash_executable()
+        command = [bash, _bash_path(target, bash)]
+    else:
+        command = [str(target)]
     return [*command, *args]
 
 
@@ -811,6 +823,13 @@ def run_checkout(
         command = _maven(checkout, args)
     env = _host_env(MAVEN_BASE_ENV, WINDOWS_PROCESS_ENV + WINDOWS_PROFILE_ENV)
     env.update(read_env_file(env_file))
+    if (
+        _ON_WINDOWS
+        and test_type == "script"
+        and Path(entrypoint).suffix == ".sh"
+        and not _is_wsl_bash(command[0])
+    ):
+        env["MSYS2_ARG_CONV_EXCL"] = "*"
     ran = run_command(
         command,
         capture_output=False,
