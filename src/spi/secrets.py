@@ -200,7 +200,12 @@ def _create_osdu_secrets(s: dict):
 
 def ensure_rafs_redis_secret() -> None:
     """Apply the RAFS Redis credential from the stable environment seed."""
-    seed = get_or_create_seed()
+    seed = _get_seed()
+    if not seed or not seed.get("redis_password"):
+        console.print(
+            f"  [error]Seed secret '{SEED_NAME}' is unreadable or has no Redis credential[/error]"
+        )
+        raise typer.Exit(code=1)
     _kubectl_apply_secret(
         "osdu",
         "rafs-redis-secret",
