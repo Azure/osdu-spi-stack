@@ -32,7 +32,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Collection, Iterable, Mapping, Sequence
 
 from rich.markup import escape
@@ -755,6 +755,18 @@ def _maven(checkout: Path, args: Sequence[str]) -> list[str]:
     return [*command, *args]
 
 
+def _bash_path(target: Path) -> str:
+    path = target.as_posix()
+    bash = PureWindowsPath(shutil.which("bash") or "")
+    if (
+        bash.name.lower() == "bash.exe"
+        and bash.parent.name.lower() == "system32"
+        and re.match(r"^[A-Za-z]:/", path)
+    ):
+        return f"/mnt/{path[0].lower()}{path[2:]}"
+    return path
+
+
 def _script(checkout: Path, entrypoint: str, args: Sequence[str]) -> list[str]:
     path = Path(entrypoint)
     if path.is_absolute() or ".." in path.parts:
@@ -769,7 +781,7 @@ def _script(checkout: Path, entrypoint: str, args: Sequence[str]) -> list[str]:
             f"script entrypoint {entrypoint!r} is not a file in {checkout}",
         )
     command = (
-        ["bash", target.as_posix()] if _ON_WINDOWS and target.suffix == ".sh" else [str(target)]
+        ["bash", _bash_path(target)] if _ON_WINDOWS and target.suffix == ".sh" else [str(target)]
     )
     return [*command, *args]
 

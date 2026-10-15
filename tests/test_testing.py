@@ -174,8 +174,15 @@ def test_windows_bash_script_path_uses_forward_slashes(monkeypatch, tmp_path):
     script = tmp_path / "run_spi.sh"
     script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     monkeypatch.setattr(testing, "_ON_WINDOWS", True)
+    monkeypatch.setattr(testing.shutil, "which", lambda _name: r"C:\Program Files\Git\bin\bash.exe")
 
     assert testing._script(tmp_path, script.name, ()) == ["bash", script.resolve().as_posix()]
+
+
+def test_windows_wsl_bash_script_path_uses_mounted_drive(monkeypatch):
+    monkeypatch.setattr(testing.shutil, "which", lambda _name: r"C:\Windows\System32\bash.exe")
+
+    assert testing._bash_path(Path("C:/Users/dev/run_spi.sh")) == ("/mnt/c/Users/dev/run_spi.sh")
 
 
 def test_declared_script_report_is_counted(tmp_path):
