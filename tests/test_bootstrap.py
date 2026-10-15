@@ -27,6 +27,7 @@ from spi.bootstrap import (
     create_istio_revision_configmap,
     deploy_identity_facts,
     ensure_namespaces,
+    refresh_osdu_config_partitions,
     refresh_spi_init_values,
     render_istio_revision_configmap,
 )
@@ -40,6 +41,15 @@ def _proc(returncode: int, stdout: str, stderr: str = "") -> SimpleNamespace:
 
 def _deploy_list(*names: str) -> dict:
     return {"items": [{"metadata": {"name": name}} for name in names]}
+
+
+@pytest.fixture(autouse=True)
+def _isolate_reconcile_runtime():
+    with (
+        patch("spi.cli.refresh_osdu_config_partitions", return_value=False),
+        patch("spi.cli.ensure_rafs_redis_secret"),
+    ):
+        yield
 
 
 def test_render_istio_revision_configmap():
@@ -305,6 +315,51 @@ class TestRefreshSpiInitValues:
         assert "Could not read spi-init-values: Forbidden" in capsys.readouterr().out
 
 
+class TestRefreshOsduConfigPartitions:
+    def test_backfills_partitions_from_live_init_values(self):
+        with (
+            patch(
+                "spi.bootstrap.read_init_values",
+                return_value="partitions:\n  - opendes\n  - second\n",
+            ),
+            patch(
+                "spi.bootstrap._read_configmap_data",
+                return_value={"PRIMARY_PARTITION": "opendes"},
+            ),
+            patch("spi.bootstrap.run_command") as run_command,
+        ):
+            assert refresh_osdu_config_partitions() is True
+
+        command = run_command.call_args.args[0]
+        assert command[:4] == ["kubectl", "patch", "configmap", "osdu-config"]
+        assert json.loads(command[command.index("-p") + 1]) == {
+            "data": {"PARTITIONS": "opendes,second"}
+        }
+
+    def test_leaves_current_partitions_unchanged(self):
+        with (
+            patch("spi.bootstrap.read_init_values", return_value="partitions:\n  - opendes\n"),
+            patch(
+                "spi.bootstrap._read_configmap_data",
+                return_value={"PARTITIONS": "opendes"},
+            ),
+            patch("spi.bootstrap.run_command") as run_command,
+        ):
+            assert refresh_osdu_config_partitions() is True
+
+        run_command.assert_not_called()
+
+    def test_skips_a_profile_without_osdu_config(self):
+        with (
+            patch("spi.bootstrap.read_init_values", return_value="partitions:\n  - opendes\n"),
+            patch("spi.bootstrap._read_configmap_data", return_value={}),
+            patch("spi.bootstrap.run_command") as run_command,
+        ):
+            assert refresh_osdu_config_partitions() is False
+
+        run_command.assert_not_called()
+
+
 class TestReconcileRefreshesClusterConfig:
     """`spi up` is not the only way a cluster reaches a new commit.
 
@@ -314,7 +369,7 @@ class TestReconcileRefreshesClusterConfig:
     before Flux applies anything.
     """
 
-    def _invoke(self, *args: str):
+    def _invoke(self, *args: str, core: bool = False):
         runner = CliRunner()
         with (
             patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
@@ -327,15 +382,22 @@ class TestReconcileRefreshesClusterConfig:
             ),
             patch("spi.cli.create_istio_revision_configmap") as configmap,
             patch("spi.cli.refresh_spi_init_values") as init_values,
+            patch(
+                "spi.cli.refresh_osdu_config_partitions",
+                return_value=core,
+            ) as osdu_config,
+            patch("spi.cli.ensure_rafs_redis_secret") as rafs_secret,
             # Reads the live lock through pins.run_process, which the
             # spi.cli.run_command patch above does not intercept; without
             # this the default reconcile path shells out to real kubectl.
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_image_lock_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
         assert result.exit_code == 0, result.output
         self.init_values = init_values
+        self.osdu_config = osdu_config
+        self.rafs_secret = rafs_secret
         return configmap
 
     def test_default_reconcile_writes_configmap(self):
@@ -345,6 +407,12 @@ class TestReconcileRefreshesClusterConfig:
     def test_resume_writes_configmap(self):
         self._invoke("--resume").assert_called_once_with()
         self.init_values.assert_called_once_with()
+
+    def test_core_reconcile_prepares_rafs_runtime_contract(self):
+        self._invoke(core=True)
+
+        self.osdu_config.assert_called_once_with()
+        self.rafs_secret.assert_called_once_with()
 
     def test_suspend_leaves_configmap_alone(self):
         self._invoke("--suspend").assert_not_called()
@@ -479,6 +547,7 @@ class TestReconcileRefreshesClusterConfig:
                 reconciled.append(args[3])
         assert reconciled == [
             "spi-osdu-services",
+            "spi-osdu-ddms",
             "spi-osdu-schema-load",
             "spi-osdu-reference",
         ]
@@ -559,7 +628,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_image_lock_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
@@ -588,7 +657,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_image_lock_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=stalled),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
@@ -634,7 +703,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", return_value=SimpleNamespace(returncode=0, stdout="")),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_image_lock_backfill", return_value=False),
             patch(
                 "spi.status.resettable_helmreleases",
                 side_effect=StatusError("Could not read Flux HelmReleases: connection refused"),
@@ -663,7 +732,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_image_lock_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[("osdu-flux", "partition")]),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
@@ -697,7 +766,7 @@ class TestSchemaLoadImageLockBackfill:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
-            patch("spi.cli.apply_schema_load_backfill", side_effect=_backfill) as backfill,
+            patch("spi.cli.apply_image_lock_backfill", side_effect=_backfill) as backfill,
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
             patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
@@ -710,14 +779,14 @@ class TestSchemaLoadImageLockBackfill:
 
         assert result.exit_code == 0, result.output
         backfill.assert_called_once_with(branch="master")
-        assert "updated with schema-load" in result.output
+        assert "updated with missing services" in result.output
 
     def test_current_lock_is_left_alone(self):
         result, backfill, _, _ = self._invoke(False)
 
         assert result.exit_code == 0, result.output
         backfill.assert_called_once_with(branch="master")
-        assert "updated with schema-load" not in result.output
+        assert "updated with missing services" not in result.output
 
     def test_absent_lock_is_skipped(self):
         """minimal/bare profiles never create the lock."""

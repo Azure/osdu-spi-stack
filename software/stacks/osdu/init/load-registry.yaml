@@ -24,3 +24,29 @@ loads:
       path: ReferenceValues/Manifests/reference-data
     loader: records
     scope: each-partition
+
+  - name: rafs-schemas
+    default: true
+    runner: job
+    requires: [schemas]
+    source:
+      type: gitlab-archive
+      project: osdu/platform/domain-data-mgmt-services/rock-and-fluid-sample/rafs-ddms-services
+      ref: ed9dda249e5b
+      commit: ed9dda249e5bc5f04736a1f5acd651468b233a8f
+      path: deployments/rafsddms_schemas_mvp.postman_collection.json
+    loader: schemas
+    scope: each-partition
+
+  - name: rafs-reference-data
+    default: true
+    runner: job
+    requires: [rafs-schemas]
+    source:
+      type: gitlab-archive
+      project: osdu/platform/domain-data-mgmt-services/rock-and-fluid-sample/rafs-ddms-services
+      ref: ed9dda249e5b
+      commit: ed9dda249e5bc5f04736a1f5acd651468b233a8f
+      path: deployments/reference-data
+    loader: records
+    scope: each-partition

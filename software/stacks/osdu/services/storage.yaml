@@ -55,6 +55,11 @@ spec:
         value: "true"
       - name: AZURE_PAAS_WORKLOADIDENTITY_ISENABLED
         value: "true"
+      # RAFS forwards x-collaboration to Storage, which rejects the header while this is disabled.
+      - name: COLLABORATIONS_ENABLED
+        value: "true"
+      - name: FEATUREFLAG_STRATEGY
+        value: appProperty
       - name: COSMOSDB_DATABASE
         value: osdu-db
       - name: AZURE_SERVICEBUS_ENABLED

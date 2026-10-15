@@ -63,6 +63,7 @@ def _job(
     *,
     source: str = SOURCE,
     partition: str = "opendes",
+    dataset: str = "reference-data",
     name: str = "load-reference-data-opendes-99f8fc88",
     created: str = "2026-10-02T15:00:00Z",
     outcome: str = "",
@@ -86,7 +87,7 @@ def _job(
             "creationTimestamp": created,
             "labels": {
                 loads.ROLE_LABEL: loads.LOAD_ROLE,
-                loads.DATASET_LABEL: "reference-data",
+                loads.DATASET_LABEL: dataset,
                 loads.PARTITION_LABEL: partition,
             },
             "annotations": annotations,
@@ -121,11 +122,27 @@ def _facts(registry, jobs=(), schema_job=None, partitions=("opendes",), outcome_
 
 
 def test_the_shipped_registry_parses(registry):
-    assert [load.name for load in registry.loads] == ["schemas", "reference-data"]
+    assert [load.name for load in registry.loads] == [
+        "schemas",
+        "reference-data",
+        "rafs-schemas",
+        "rafs-reference-data",
+    ]
     reference = registry.get("reference-data")
     assert reference.source.identity == SOURCE
     assert reference.requires == ["schemas"]
     assert loads.job_name(reference, "opendes") == "load-reference-data-opendes-99f8fc88"
+    assert registry.get("rafs-schemas").loader == "schemas"
+    assert registry.get("rafs-reference-data").requires == ["rafs-schemas"]
+
+
+def test_default_loads_follow_dependency_order(registry):
+    assert [load.name for load in loads.select_loads(registry, [])] == [
+        "schemas",
+        "reference-data",
+        "rafs-schemas",
+        "rafs-reference-data",
+    ]
 
 
 def _registry_with(**overrides) -> str:
@@ -238,6 +255,24 @@ def test_facts_name_every_registry_entry_before_anything_ran(registry):
             "version": "v0.30.0",
             "partitions": {"opendes": {"state": "absent"}},
         },
+        "rafs-schemas": {
+            "state": "absent",
+            "source": (
+                "osdu/platform/domain-data-mgmt-services/rock-and-fluid-sample/"
+                "rafs-ddms-services@ed9dda249e5b"
+            ),
+            "version": "ed9dda249e5b",
+            "partitions": {"opendes": {"state": "absent"}},
+        },
+        "rafs-reference-data": {
+            "state": "absent",
+            "source": (
+                "osdu/platform/domain-data-mgmt-services/rock-and-fluid-sample/"
+                "rafs-ddms-services@ed9dda249e5b"
+            ),
+            "version": "ed9dda249e5b",
+            "partitions": {"opendes": {"state": "absent"}},
+        },
     }
 
 
@@ -347,6 +382,7 @@ def _rendered_job() -> dict:
             dataset="reference-data",
             partition="opendes",
             source=SOURCE,
+            loader="records",
             env={"PARTITION": "opendes", "LEGAL_TAG": "opendes-demo-legaltag"},
         )
     )
@@ -415,6 +451,24 @@ def test_load_job_follows_the_init_chart_image_placement_and_scripts():
     ]
 
 
+def test_load_job_selects_the_declared_loader():
+    job = yaml.safe_load(
+        templates.load_job(
+            name="load-rafs-schemas-opendes-ed9dda24",
+            dataset="rafs-schemas",
+            partition="opendes",
+            source="rafs@ed9dda249e5b",
+            loader="schemas",
+            env={"PARTITION": "opendes"},
+        )
+    )
+
+    assert job["spec"]["template"]["spec"]["containers"][0]["command"] == [
+        "python",
+        "/scripts/load_schemas.py",
+    ]
+
+
 def test_schema_reconcile_waits_as_long_as_the_kustomization_does():
     documents = yaml.safe_load_all(STACK.read_text(encoding="utf-8"))
     kustomization = next(
@@ -461,6 +515,7 @@ class _Cluster:
             _job(
                 self.finish,
                 name=document["metadata"]["name"],
+                dataset=labels[loads.DATASET_LABEL],
                 partition=labels[loads.PARTITION_LABEL],
                 source=document["metadata"]["annotations"][loads.SOURCE_ANNOTATION],
                 created="2026-10-05T00:00:00Z",
@@ -489,7 +544,7 @@ def _run(registry, datasets=(), partition=None, force=False, wait=True, target=T
 def test_a_first_load_creates_the_job_and_records_its_outcome(monkeypatch, registry):
     cluster = _Cluster(monkeypatch, registry)
 
-    _run(registry)
+    _run(registry, ["reference-data"])
 
     assert [doc["metadata"]["name"] for doc in cluster.created] == [
         "load-reference-data-opendes-99f8fc88"
@@ -515,7 +570,7 @@ def test_a_first_load_creates_the_job_and_records_its_outcome(monkeypatch, regis
 def test_a_second_run_of_a_complete_load_changes_nothing(monkeypatch, registry):
     cluster = _Cluster(monkeypatch, registry, [_job("complete", outcome=OUTCOME)])
 
-    _run(registry)
+    _run(registry, ["reference-data"])
 
     assert cluster.created == []
     assert cluster.commands == []
@@ -524,7 +579,7 @@ def test_a_second_run_of_a_complete_load_changes_nothing(monkeypatch, registry):
 def test_a_complete_load_without_its_outcome_gets_it_recorded(monkeypatch, registry):
     cluster = _Cluster(monkeypatch, registry, [_job("complete")])
 
-    _run(registry)
+    _run(registry, ["reference-data"])
 
     assert cluster.created == []
     assert [c[:2] for c in cluster.commands] == [["kubectl", "annotate"]]
@@ -542,7 +597,7 @@ def test_force_recreates_a_complete_load(monkeypatch, registry):
 def test_a_failed_load_is_deleted_and_recreated(monkeypatch, registry):
     cluster = _Cluster(monkeypatch, registry, [_job("failed")])
 
-    _run(registry)
+    _run(registry, ["reference-data"])
 
     assert cluster.deleted() == ["load-reference-data-opendes-99f8fc88"]
     assert len(cluster.created) == 1
@@ -552,7 +607,7 @@ def test_a_load_from_another_source_is_replaced_once_the_new_one_completes(monke
     old = _job("complete", source="osdu/data/data-definitions@old", name="load-old")
     cluster = _Cluster(monkeypatch, registry, [old])
 
-    _run(registry)
+    _run(registry, ["reference-data"])
 
     assert cluster.names() == ["load-reference-data-opendes-99f8fc88"]
     assert cluster.deleted() == ["load-old"]
@@ -563,7 +618,7 @@ def test_the_previous_load_stays_when_its_replacement_fails(monkeypatch, registr
     cluster = _Cluster(monkeypatch, registry, [old], finish="failed")
 
     with pytest.raises(loads.LoadError) as raised:
-        _run(registry)
+        _run(registry, ["reference-data"])
 
     assert raised.value.code == "load_failed"
     assert not raised.value.refused
@@ -576,7 +631,7 @@ def test_a_running_load_is_waited_on_not_duplicated(monkeypatch, registry):
     polls = iter([_job("running"), _job("complete")])
     monkeypatch.setattr(loads, "_kubectl_read_json", lambda args, describe: next(polls))
 
-    _run(registry)
+    _run(registry, ["reference-data"])
 
     assert cluster.created == []
     assert cluster.deleted() == []
@@ -585,7 +640,7 @@ def test_a_running_load_is_waited_on_not_duplicated(monkeypatch, registry):
 def test_no_wait_starts_the_job_and_returns(monkeypatch, registry):
     cluster = _Cluster(monkeypatch, registry, finish="running")
 
-    _run(registry, wait=False)
+    _run(registry, ["reference-data"], wait=False)
 
     assert len(cluster.created) == 1
     assert cluster.commands == []
@@ -596,14 +651,14 @@ def test_each_partition_gets_its_own_job_and_partition_narrows_it(monkeypatch, r
         ("opendes", "second"), "demo-legaltag", "dataservices.energy", LOCK_SERVICES
     )
     cluster = _Cluster(monkeypatch, registry)
-    _run(registry, target=target)
+    _run(registry, ["reference-data"], target=target)
     assert cluster.names() == [
         "load-reference-data-opendes-99f8fc88",
         "load-reference-data-second-99f8fc88",
     ]
 
     narrowed = _Cluster(monkeypatch, registry)
-    _run(registry, partition="second", target=target)
+    _run(registry, ["reference-data"], partition="second", target=target)
     assert narrowed.names() == ["load-reference-data-second-99f8fc88"]
 
 
@@ -633,7 +688,7 @@ def test_a_missing_legal_tag_refuses_before_anything_is_created(monkeypatch, reg
     monkeypatch.setattr(loads, "_legal_tag_seeded", lambda partition: False)
 
     with pytest.raises(loads.LoadError) as raised:
-        _run(registry)
+        _run(registry, ["reference-data"])
 
     assert raised.value.code == "legal_tag_missing" and raised.value.refused
     assert cluster.created == []
@@ -648,7 +703,7 @@ def test_an_environment_that_is_not_deployable_refuses_a_job_load(monkeypatch, r
     monkeypatch.setattr(pins, "require_deployable", refuse)
 
     with pytest.raises(loads.LoadError) as raised:
-        _run(registry)
+        _run(registry, ["reference-data"])
 
     assert raised.value.code == "not_deployable" and raised.value.refused
     assert cluster.created == []
@@ -811,11 +866,11 @@ def test_a_changed_path_at_the_same_commit_is_another_source(registry):
 def test_a_replacement_started_without_waiting_is_cleaned_up_by_the_next_run(monkeypatch, registry):
     old = _job("complete", source="osdu/data/data-definitions@old", name="load-old")
     cluster = _Cluster(monkeypatch, registry, [old], finish="running")
-    _run(registry, wait=False)
+    _run(registry, ["reference-data"], wait=False)
     assert cluster.names() == ["load-old", "load-reference-data-opendes-99f8fc88"]
 
     cluster.jobs[-1] = _job("complete", created="2026-10-05T00:00:00Z", outcome=OUTCOME)
-    _run(registry)
+    _run(registry, ["reference-data"])
 
     assert cluster.names() == ["load-reference-data-opendes-99f8fc88"]
     assert cluster.deleted() == ["load-old"]

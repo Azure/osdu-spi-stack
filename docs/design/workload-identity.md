@@ -27,6 +27,12 @@ The exchange works as follows:
 5. The Azure resource authorizes the resulting identity according to its
    access configuration.
 
+Java services request one token resource through the shared Workload Identity
+configuration. File requires the legacy `AZURE_AD_APP_RESOURCE_ID` property at
+startup, so its manifest sets that property to the same management resource.
+A client ID there makes `core-lib-azure` add a second `/.default` scope, and
+Entra rejects the multi-resource request with `AADSTS70011`.
+
 The projected token is a file mounted in the pod, not a stored client secret.
 Its audience, `api://AzureADTokenExchange`, is distinct from the audience of the
 Azure access token returned by Entra ID.

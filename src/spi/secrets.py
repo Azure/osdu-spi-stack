@@ -182,6 +182,11 @@ def _create_osdu_secrets(s: dict):
 
     The CA certificates arrive separately through trust-manager Bundles.
     """
+    _kubectl_apply_secret(
+        "osdu",
+        "rafs-redis-secret",
+        {"REDIS_PASSWORD": s["redis_password"]},
+    )
     for svc in ["indexer", "search"]:
         _kubectl_apply_secret(
             "osdu",
@@ -191,6 +196,21 @@ def _create_osdu_secrets(s: dict):
                 "ELASTIC_PASS_SYSTEM": s["elastic_password"],
             },
         )
+
+
+def ensure_rafs_redis_secret() -> None:
+    """Apply the RAFS Redis credential from the stable environment seed."""
+    seed = _get_seed()
+    if not seed or not seed.get("redis_password"):
+        console.print(
+            f"  [error]Seed secret '{SEED_NAME}' is unreadable or has no Redis credential[/error]"
+        )
+        raise typer.Exit(code=1)
+    _kubectl_apply_secret(
+        "osdu",
+        "rafs-redis-secret",
+        {"REDIS_PASSWORD": seed["redis_password"]},
+    )
 
 
 def ensure_secrets():

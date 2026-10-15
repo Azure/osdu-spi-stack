@@ -1369,6 +1369,23 @@ def test_load_records_loads_every_record_once_in_sequence_order(init_scripts, mo
     )
 
 
+def test_load_records_accepts_an_array_of_complete_records(init_scripts, monkeypatch, capsys):
+    records = [_reference_record("rafs-a"), _reference_record("rafs-b")]
+    result = _run_load(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        files={"rafs.json": json.dumps(records).encode()},
+        sequence=[],
+    )
+
+    assert result.exit_code == 0
+    assert [record["data"]["Name"] for record in _put_records(result)] == [
+        "rafs-a",
+        "rafs-b",
+    ]
+
+
 def test_load_records_substitutes_tokens_and_replaces_acl_and_legal(
     init_scripts, monkeypatch, capsys
 ):
@@ -1593,3 +1610,281 @@ def test_load_records_carries_no_helm_action():
     template = (CHART_DIR / "templates" / "scripts.yaml").read_text(encoding="utf-8")
     start = template.index("  load_records.py: |")
     assert _BRACES[0] not in template[start : template.rindex(_BRACES[0])]
+
+
+@dataclass
+class _SchemaLoadResult:
+    exit_code: int
+    stdout: str
+    wait_calls: list[tuple]
+    token_calls: list[bool]
+    put_calls: list[tuple]
+    read_calls: list[str]
+
+
+def _run_schema_load(
+    init_scripts,
+    monkeypatch,
+    capsys,
+    *,
+    put_code: int = 201,
+    conflict_visible: bool = True,
+):
+    env = {
+        "PARTITION": "opendes",
+        "SOURCE_PROJECT": "osdu/rafs",
+        "SOURCE_COMMIT": "a" * 40,
+        "SOURCE_PATH": "schemas.json",
+    }
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    termination_log = Path(tempfile.mkdtemp()) / "termination-log"
+    monkeypatch.setenv("TERMINATION_MESSAGE_PATH", str(termination_log))
+    wait_calls = []
+    token_calls = []
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: token_calls.append(True) or "test-token")
+    wait = types.ModuleType("wait")
+    setattr(
+        wait,
+        "wait_for_status",
+        lambda *args, **kwargs: wait_calls.append((args, kwargs)) or True,
+    )
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+
+    namespace: dict[str, object] = {"__name__": "load_schemas_test"}
+    exec(init_scripts["load_schemas.py"], namespace)
+    request = {
+        "schemaInfo": {
+            "schemaIdentity": {
+                "authority": "rafsddms",
+                "id": "rafsddms:wks:Sample:1.0.0",
+            }
+        },
+        "schema": {"type": "object"},
+    }
+    namespace["fetch_archive"] = lambda *args: object()
+    namespace["source_members"] = lambda *args: ["schemas.json"]
+    namespace["load_requests"] = lambda *args: [request]
+    read_calls = []
+
+    def read_schema(_base, schema_id, _headers):
+        read_calls.append(schema_id)
+        if put_code == 409 and len(read_calls) > 1 and conflict_visible:
+            return {"schemaInfo": request["schemaInfo"], "schema": request["schema"]}
+        return None
+
+    put_calls = []
+
+    def call(*args):
+        put_calls.append(args)
+        return put_code, "response"
+
+    namespace["read_schema"] = read_schema
+    namespace["call"] = call
+    main = cast(Callable[[], int], namespace["main"])
+    exit_code = main()
+    return _SchemaLoadResult(
+        exit_code,
+        capsys.readouterr().out,
+        wait_calls,
+        token_calls,
+        put_calls,
+        read_calls,
+    )
+
+
+@pytest.mark.parametrize("put_code", [200, 201])
+def test_load_schemas_registers_a_missing_schema(init_scripts, monkeypatch, capsys, put_code):
+    result = _run_schema_load(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        put_code=put_code,
+    )
+
+    assert result.exit_code == 0
+    assert len(result.wait_calls) == 1
+    assert result.token_calls == [True]
+    assert len(result.put_calls) == 1
+    assert result.put_calls[0][3] == "PUT"
+    assert "load-schemas outcome: loaded" in result.stdout
+    assert "created=1 existing=0" in result.stdout
+
+
+def test_load_schemas_accepts_a_conflict_that_becomes_visible(init_scripts, monkeypatch, capsys):
+    result = _run_schema_load(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        put_code=409,
+    )
+
+    assert result.exit_code == 0
+    assert len(result.read_calls) == 2
+    assert "created=0 existing=1" in result.stdout
+
+
+def test_load_schemas_reports_a_rejected_schema(init_scripts, monkeypatch, capsys):
+    result = _run_schema_load(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        put_code=409,
+        conflict_visible=False,
+    )
+
+    assert result.exit_code == 1
+    assert len(result.read_calls) == 2
+    assert "load-schemas outcome: schema_rejected" in result.stdout
+
+
+def test_load_schemas_extracts_postman_put_bodies_and_substitutes_authorities(
+    init_scripts, monkeypatch
+):
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "test-token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+    monkeypatch.setenv("SCHEMA_AUTHORITY", "osdu")
+    monkeypatch.setenv("CUSTOM_SCHEMA_AUTHORITY", "rafsddms")
+    namespace: dict[str, object] = {"__name__": "load_schemas_test"}
+    exec(init_scripts["load_schemas.py"], namespace)
+    parse = cast(Callable[[object], list[dict]], namespace["schema_requests"])
+    body = {
+        "schemaInfo": {
+            "schemaIdentity": {
+                "id": _token("rafsddms-schema-authority") + ":wks:reference-data--SampleType:1.0.0"
+            }
+        },
+        "schema": {"$id": _token("schema-authority") + ":wks:AbstractObject:1.0.0"},
+    }
+    collection = {
+        "item": [
+            {
+                "request": {
+                    "method": "PUT",
+                    "body": {"mode": "raw", "raw": json.dumps(body)},
+                }
+            },
+            {"request": {"method": "GET"}},
+        ]
+    }
+
+    requests = parse(collection)
+
+    assert requests[0]["schemaInfo"]["schemaIdentity"]["id"].startswith("rafsddms:")
+    assert requests[0]["schema"]["$id"].startswith("osdu:")
+
+    unique = cast(Callable[[list[dict]], list[dict]], namespace["unique_requests"])
+    conflicting = json.loads(json.dumps(requests[0]))
+    conflicting["schema"]["$id"] = "osdu:wks:AnotherObject:1.0.0"
+    load_error = cast(type[Exception], namespace["LoadError"])
+    with pytest.raises(load_error) as raised:
+        unique([requests[0], conflicting])
+    assert getattr(raised.value, "code", "") == "manifest_invalid"
+
+
+def test_load_schemas_orders_internal_references(init_scripts, monkeypatch):
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "test-token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+    namespace: dict[str, object] = {"__name__": "load_schemas_test"}
+    exec(init_scripts["load_schemas.py"], namespace)
+    order = cast(Callable[[list[dict]], list[dict]], namespace["ordered_requests"])
+
+    base_id = "rafsddms:wks:AbstractLegalParentList:1.0.0"
+    dependent_id = "rafsddms:wks:reference-data--Method:1.0.0"
+    base = {
+        "schemaInfo": {"schemaIdentity": {"id": base_id}},
+        "schema": {"type": "object"},
+    }
+    dependent = {
+        "schemaInfo": {"schemaIdentity": {"id": dependent_id}},
+        "schema": {"properties": {"ancestry": {"$ref": base_id}}},
+    }
+
+    ordered = order([dependent, base])
+
+    assert [request["schemaInfo"]["schemaIdentity"]["id"] for request in ordered] == [
+        base_id,
+        dependent_id,
+    ]
+
+
+def test_load_schemas_maps_unresolved_custom_refs_to_shared_authority(init_scripts, monkeypatch):
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "test-token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+    namespace: dict[str, object] = {"__name__": "load_schemas_test"}
+    exec(init_scripts["load_schemas.py"], namespace)
+    normalize = cast(
+        Callable[[list[dict]], None],
+        namespace["normalize_external_references"],
+    )
+    request = {
+        "schemaInfo": {"schemaIdentity": {"id": "rafsddms:wks:reference-data--Method:1.0.0"}},
+        "schema": {
+            "properties": {"ancestry": {"$ref": "rafsddms:wks:AbstractLegalParentList:1.0.0"}}
+        },
+    }
+
+    normalize([request])
+
+    assert request["schema"]["properties"]["ancestry"]["$ref"] == (
+        "osdu:wks:AbstractLegalParentList:1.0.0"
+    )
+
+
+@pytest.mark.parametrize(
+    "authority",
+    ["rafsddms", "osdu"],
+)
+def test_load_schemas_accepts_visible_schema_ids_before_put(
+    init_scripts,
+    monkeypatch,
+    capsys,
+    authority,
+):
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "test-token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+    monkeypatch.setenv("PARTITION", "opendes")
+    monkeypatch.setenv("SOURCE_PROJECT", "osdu/rafs")
+    monkeypatch.setenv("SOURCE_COMMIT", "a" * 40)
+    monkeypatch.setenv("SOURCE_PATH", "schemas.json")
+
+    namespace: dict[str, object] = {"__name__": "load_schemas_test"}
+    exec(init_scripts["load_schemas.py"], namespace)
+    request = {
+        "schemaInfo": {
+            "schemaIdentity": {
+                "authority": authority,
+                "id": f"{authority}:wks:Sample:1.0.0",
+            }
+        },
+        "schema": {"type": "object"},
+    }
+    namespace["fetch_archive"] = lambda *args: object()
+    namespace["source_members"] = lambda *args: ["schemas.json"]
+    namespace["load_requests"] = lambda *args: [request]
+    namespace["read_schema"] = lambda *args: {"service": "normalized"}
+    put_calls = []
+    namespace["call"] = lambda *args: put_calls.append(args)
+
+    main = cast(Callable[[], int], namespace["main"])
+    assert main() == 0
+    assert "load-schemas outcome: loaded" in capsys.readouterr().out
+    assert put_calls == []
