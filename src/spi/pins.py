@@ -126,6 +126,7 @@ _REPO_PATH_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$
 # entry.file prefix -> the Flux Kustomization that substitutes those keys.
 _FILE_KUSTOMIZATIONS = {
     "services/": "spi-osdu-services",
+    "ddms/": "spi-osdu-ddms",
     "services-reference/": "spi-osdu-reference",
     "schema-load/": "spi-osdu-schema-load",
 }
@@ -621,7 +622,12 @@ def mutate_lock(
 
 # A changed schema image must reach the service before the loader Job is
 # recreated, and the loader must finish before reference re-seeds.
-_CONSUMER_ORDER = ("spi-osdu-services", "spi-osdu-schema-load", "spi-osdu-reference")
+_CONSUMER_ORDER = (
+    "spi-osdu-services",
+    "spi-osdu-ddms",
+    "spi-osdu-schema-load",
+    "spi-osdu-reference",
+)
 
 
 def reconcile_consumers(services: list[str]) -> None:

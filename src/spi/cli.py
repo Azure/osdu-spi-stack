@@ -2236,6 +2236,7 @@ def reconcile(
 
     core_kustomizations = [
         "spi-osdu-services",
+        "spi-osdu-ddms",
         "spi-osdu-schema-load",
         "spi-osdu-reference",
     ]
