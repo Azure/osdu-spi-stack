@@ -331,6 +331,28 @@ def test_declared_script_report_counts_child_suites(tmp_path):
     }
 
 
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        (
+            '<testsuites><testsuite tests="3" skipped="1" failures="0" errors="0"/></testsuites>',
+            (True, "pass: 2 tests, 1 skipped"),
+        ),
+        (
+            '<testsuites><testsuite tests="3" skipped="0" failures="1" errors="0"/></testsuites>',
+            (False, "FAIL: 1 of 3 tests failed or errored"),
+        ),
+    ],
+)
+def test_declared_script_report_child_suites_drive_verdict(tmp_path, report, expected):
+    root = _machinery(tmp_path / "root", xml_verdict=True)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "rafs.xml").write_text(report, encoding="utf-8")
+
+    assert testing.judge(root, 0, reports, ("rafs.xml",)) == expected
+
+
 @pytest.mark.parametrize("pattern", ["../outside.xml", "/tmp/outside.xml"])
 def test_report_paths_must_stay_beneath_the_suite(tmp_path, pattern):
     with pytest.raises(SuiteNotRun, match="must stay beneath") as exc:

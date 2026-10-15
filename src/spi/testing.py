@@ -898,6 +898,27 @@ def _run_verdict(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
     return result.returncode == 0, lines[-1]
 
 
+def _copy_verdict_report(source: Path, destination: Path) -> None:
+    try:
+        tree = ET.parse(source)
+    except ET.ParseError:
+        shutil.copy2(source, destination)
+        return
+    root = tree.getroot()
+    totals = ("tests", "skipped", "failures", "errors")
+    if any(root.get(key) is not None for key in totals):
+        shutil.copy2(source, destination)
+        return
+    child_suites = [child for child in root if child.tag.rsplit("}", 1)[-1] == "testsuite"]
+    try:
+        for key in totals:
+            root.set(key, str(sum(int(child.get(key, 0)) for child in child_suites)))
+    except ValueError:
+        shutil.copy2(source, destination)
+        return
+    tree.write(destination, encoding="utf-8", xml_declaration=True)
+
+
 def judge(
     root: Path,
     exit_code: int,
@@ -913,7 +934,7 @@ def judge(
         selected.mkdir()
         for index, report in enumerate(_report_files(reports, report_paths)):
             if report.is_file():
-                shutil.copy2(report, selected / f"TEST-{index:04d}.xml")
+                _copy_verdict_report(report, selected / f"TEST-{index:04d}.xml")
         return _run_verdict(root, exit_code, Path(temporary))
 
 
