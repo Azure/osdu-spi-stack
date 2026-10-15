@@ -736,12 +736,16 @@ class TestIndexerRuntime:
             if container["name"] == "install-java-runtime"
         )
 
-        assert runtime["image"] == "eclipse-temurin:25-jre-alpine"
+        assert runtime["image"] == (
+            "mcr.microsoft.com/openjdk/jdk:25-azurelinux"
+            "@sha256:9c3b6e495e05d71f9db65e54d2946c92773baf71b550e26f8fd2ac25d2235831"
+        )
         assert runtime["command"] == ["sh", "-c", 'cp -R "$JAVA_HOME/." /java-runtime/']
         assert runtime["securityContext"] == {
             "allowPrivilegeEscalation": False,
             "runAsNonRoot": True,
             "runAsUser": 1000,
+            "seccompProfile": {"type": "RuntimeDefault"},
             "capabilities": {"drop": ["ALL"]},
         }
         assert env["JAVA_HOME"] == "/java-runtime"
