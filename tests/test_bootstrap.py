@@ -43,6 +43,15 @@ def _deploy_list(*names: str) -> dict:
     return {"items": [{"metadata": {"name": name}} for name in names]}
 
 
+@pytest.fixture(autouse=True)
+def _isolate_reconcile_runtime():
+    with (
+        patch("spi.cli.refresh_osdu_config_partitions", return_value=False),
+        patch("spi.cli.ensure_rafs_redis_secret"),
+    ):
+        yield
+
+
 def test_render_istio_revision_configmap():
     yaml = render_istio_revision_configmap("asm-1-30")
 
@@ -359,14 +368,6 @@ class TestReconcileRefreshesClusterConfig:
     `spi reconcile`, so that command has to write the substitution source
     before Flux applies anything.
     """
-
-    @pytest.fixture(autouse=True)
-    def _runtime_contract(self):
-        with (
-            patch("spi.cli.refresh_osdu_config_partitions", return_value=False),
-            patch("spi.cli.ensure_rafs_redis_secret"),
-        ):
-            yield
 
     def _invoke(self, *args: str, core: bool = False):
         runner = CliRunner()
