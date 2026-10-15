@@ -17,3 +17,24 @@ spec:
         - source:
             requestPrincipals:
               - "*"
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: open-etp-client
+  namespace: osdu
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: osdu-open-etp-client
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            paths:
+              - /health/liveness
+              - /health/readiness
+    - from:
+        - source:
+            requestPrincipals:
+              - "*"

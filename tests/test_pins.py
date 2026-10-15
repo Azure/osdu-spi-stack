@@ -1251,6 +1251,60 @@ class TestApplyImageLockBackfill:
         assert patched["SCHEMA_LOAD_IMAGE_TAG"] == data["SCHEMA_IMAGE_TAG"]
         assert patched["IMAGE_COUNT"] == str(len(pins.IMAGE_REGISTRY))
 
+    def test_resolves_loader_from_recorded_schema_while_adding_open_etp_client(self, monkeypatch):
+        existing = [
+            name for name in pins.IMAGE_REGISTRY if name not in {"open-etp-client", "schema-load"}
+        ]
+        data = _canonical_data(*existing)
+        lock = _lock(data=data)
+        calls = _wire_lock(monkeypatch, lock)
+        open_etp_client = ResolvedImage(
+            "open-etp-client",
+            "repo/open-etp-client",
+            "d" * 40,
+            "now",
+            "sha256:open-etp-client",
+            "sha256:open-etp-client-acceptance",
+        )
+        resolutions = []
+        monkeypatch.setattr(
+            pins,
+            "resolve_images",
+            lambda branch, names, sources: (
+                resolutions.append((branch, tuple(names), sources))
+                or {"open-etp-client": open_etp_client}
+            ),
+        )
+        monkeypatch.setattr(
+            pins,
+            "schema_load_lock_patch",
+            lambda lock_data, branch=None: {
+                "SCHEMA_LOAD_IMAGE_REPOSITORY": "repo/schema-load-recorded",
+                "SCHEMA_LOAD_IMAGE_TAG": lock_data["SCHEMA_IMAGE_TAG"],
+                "SCHEMA_LOAD_IMAGE_REF": (
+                    f"repo/schema-load-recorded:{lock_data['SCHEMA_IMAGE_TAG']}"
+                ),
+            },
+        )
+
+        assert pins.apply_image_lock_backfill(
+            "master",
+            sources={"open-etp-client": "KiranBedre/osdu-spi-reservoir-open-etp-client"},
+        )
+
+        patched, _saved = calls["patch"]
+        assert resolutions == [
+            (
+                "master",
+                ("open-etp-client",),
+                {"open-etp-client": "KiranBedre/osdu-spi-reservoir-open-etp-client"},
+            )
+        ]
+        assert patched["OPEN_ETP_CLIENT_IMAGE_REF"] == "repo/open-etp-client@sha256:open-etp-client"
+        assert patched["OPEN_ETP_CLIENT_ACCEPTANCE_DIGEST"] == "sha256:open-etp-client-acceptance"
+        assert patched["SCHEMA_LOAD_IMAGE_TAG"] == data["SCHEMA_IMAGE_TAG"]
+        assert patched["IMAGE_COUNT"] == str(len(pins.IMAGE_REGISTRY))
+
     def test_does_not_pair_acceptance_with_a_concurrently_refreshed_service(self, monkeypatch):
         initial_data = _canonical_data(
             *(name for name in pins.IMAGE_REGISTRY if name != "open-etp")

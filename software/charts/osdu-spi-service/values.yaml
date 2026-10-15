@@ -22,6 +22,7 @@ image:
 replicaCount: 1
 
 containerPort: 8080
+terminationGracePeriodSeconds: 30
 
 # -- Optional container command and arguments. Empty values preserve the image defaults.
 command: []
@@ -29,6 +30,7 @@ args: []
 
 # -- Created by the CLI bootstrap.
 serviceAccountName: workload-identity-sa
+automountServiceAccountToken: true
 
 # -- Mounted as envFrom; created by the CLI bootstrap.
 configMapRef: osdu-config

@@ -734,6 +734,17 @@ class TestAutomatedGatewayDeployment:
             }
         ]
         assert rule["backendRefs"] == [{"name": "open-etp", "port": 80}]
+        client_rule = route["spec"]["rules"][1]
+        assert client_rule["matches"] == [
+            {
+                "path": {
+                    "type": "PathPrefix",
+                    "value": "/api/reservoir-ddms/v2/",
+                }
+            }
+        ]
+        assert client_rule["filters"] == rule["filters"]
+        assert client_rule["backendRefs"] == [{"name": "open-etp-client", "port": 80}]
 
     def test_open_etp_uses_mintable_data_plane_scopes(self):
         release = yaml.safe_load((STACKS / "ddms" / "open-etp.yaml").read_text(encoding="utf-8"))

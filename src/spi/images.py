@@ -112,6 +112,12 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
         "ddms/open-etp.yaml",
         branch="main",
     ),
+    "open-etp-client": ImageRegistryEntry(
+        1079,
+        "open-etp-client",
+        "ddms/open-etp-client.yaml",
+        branch="main",
+    ),
     "crs-conversion": ImageRegistryEntry(
         22,
         "crs-conversion-service",

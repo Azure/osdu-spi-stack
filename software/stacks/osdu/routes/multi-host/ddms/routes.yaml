@@ -21,3 +21,14 @@ spec:
       backendRefs:
         - name: open-etp
           port: 80
+    - matches:
+        - path: { type: PathPrefix, value: /api/reservoir-ddms/v2/ }
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: open-etp-client
+          port: 80
