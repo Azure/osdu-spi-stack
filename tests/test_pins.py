@@ -1281,6 +1281,40 @@ class TestApplyImageLockBackfill:
         assert patched["RAFS_IMAGE_REF"] == "repo/rafs-main@sha256:rafs"
         assert patched["IMAGE_COUNT"] == str(len(pins.IMAGE_REGISTRY))
 
+    def test_concurrent_newer_service_does_not_inherit_the_resolved_pair(self, monkeypatch):
+        existing = [name for name in pins.IMAGE_REGISTRY if name != "rafs"]
+        lock = _lock(data=_canonical_data(*existing))
+        calls = _wire_lock(monkeypatch, lock)
+        resolved = ResolvedImage(
+            "rafs",
+            "repo/rafs-old",
+            "d" * 40,
+            "then",
+            "sha256:old",
+            acceptance_digest="sha256:old-acceptance",
+        )
+
+        def resolve_images(_branch, _names, _sources):
+            calls["box"][0]["data"].update(
+                pins._lock_entry_patch(
+                    "rafs",
+                    "repo/rafs-new",
+                    "e" * 40,
+                    "now",
+                    "sha256:new",
+                )
+            )
+            return {"rafs": resolved}
+
+        monkeypatch.setattr(pins, "resolve_images", resolve_images)
+
+        assert pins.apply_image_lock_backfill("master", sources={})
+
+        patched, _saved = calls["patch"]
+        assert patched["RAFS_IMAGE_REPOSITORY"] == "repo/rafs-new"
+        assert patched["RAFS_IMAGE_DIGEST"] == "sha256:new"
+        assert "RAFS_ACCEPTANCE_DIGEST" not in patched
+
     def test_leaves_a_complete_current_lock_unchanged(self, monkeypatch):
         data = {}
         for name in pins.IMAGE_REGISTRY:

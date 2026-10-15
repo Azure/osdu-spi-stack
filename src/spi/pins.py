@@ -2060,7 +2060,16 @@ def apply_image_lock_backfill(
                     data[field] = value
                     changed = True
             image = resolved.get(name)
-            if image is not None and image.acceptance_digest:
+            resolution_matches = image is not None and (
+                repository,
+                tag,
+                digest,
+            ) == (
+                image.repository,
+                image.tag,
+                image.digest,
+            )
+            if resolution_matches and image.acceptance_digest:
                 acceptance_key = acceptance_digest_key(name)
                 if acceptance_key not in data:
                     data[acceptance_key] = image.acceptance_digest
