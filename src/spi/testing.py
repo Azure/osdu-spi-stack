@@ -641,6 +641,8 @@ def run_paired(
     timeout: int | None,
     reports: Path,
     entrypoint: str = "",
+    *,
+    secrets: Collection[str] = (),
 ) -> int:
     """Run the suite in the paired image; copy its reports out before the container goes."""
 
@@ -655,9 +657,11 @@ def run_paired(
         raise SuiteNotRun("pull_failed", f"docker could not pull {image}")
     container = f"spi-test-{uuid.uuid4().hex[:12]}"
     try:
+        command = _docker_run(image, test_dir, str(env_file), args, container, entrypoint)
         ran = run_command(
-            _docker_run(image, test_dir, str(env_file), args, container, entrypoint),
+            command,
             capture_output=False,
+            display_cmd=list(map(redactor(secrets), command)),
             description=f"Run {test_dir}",
             check=False,
             timeout=timeout,
@@ -808,6 +812,7 @@ def run_checkout(
     test_type: str = "maven",
     entrypoint: str = "",
     report_paths: Sequence[str] = (),
+    secrets: Collection[str] = (),
 ) -> tuple[int, Path]:
     """Run a Maven or script suite from its checkout."""
 
@@ -833,6 +838,7 @@ def run_checkout(
     ran = run_command(
         command,
         capture_output=False,
+        display_cmd=list(map(redactor(secrets), command)),
         description=f"Run {test_dir} natively",
         check=False,
         timeout=timeout,
@@ -1043,9 +1049,7 @@ def run_suite(
                     f"  [warning]No report: {escape(f'{env_file.name}: {exc}')}[/warning]"
                 )
                 inspect = None
-        secrets: tuple[str, ...] = ()
-        if inspect:
-            secrets = secret_values(bound.bearers, variables)
+        secrets = secret_values(bound.bearers, variables)
         test_dir = bound.test_dir
         args = bound.arguments(maven_arguments, variables)
         timeout = bound.timeout_minutes * 60 or None
@@ -1062,6 +1066,7 @@ def run_suite(
                     timeout,
                     reports,
                     bound.test_entrypoint,
+                    secrets=secrets,
                 )
             else:
                 code, reports = run_checkout(
@@ -1073,6 +1078,7 @@ def run_suite(
                     test_type=bound.test_type,
                     entrypoint=bound.test_entrypoint,
                     report_paths=bound.report_paths,
+                    secrets=secrets,
                 )
         finally:
             env_file.unlink(missing_ok=True)

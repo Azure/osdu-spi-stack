@@ -246,6 +246,7 @@ def run_command(
     capture_output: bool = True,
     text: bool = True,
     display: bool = True,
+    display_cmd: Optional[List[str]] = None,
     description: Optional[str] = None,
     check: bool = True,
     timeout: Optional[float] = None,
@@ -259,7 +260,7 @@ def run_command(
     ``env`` replaces the inherited environment rather than extending it.
     """
     if display:
-        display_command(cmd_list, description)
+        display_command(display_cmd or cmd_list, description)
 
     try:
         result = run_process(

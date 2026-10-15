@@ -209,25 +209,68 @@ def test_windows_git_bash_preserves_posix_script_arguments(monkeypatch, tmp_path
 
     def run(command, **kwargs):
         seen["command"] = command
+        seen["display_cmd"] = kwargs["display_cmd"]
         seen["env"] = kwargs["env"]
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(testing, "_ON_WINDOWS", True)
     monkeypatch.setattr(testing.shutil, "which", lambda _name: r"C:\Program Files\Git\bin\bash.exe")
     monkeypatch.setattr(testing, "run_command", run)
+    token = "minted-bearer-value"
 
     testing.run_checkout(
         tmp_path,
         ".",
         env_file,
-        ("--url-prefix", "/api/rafs-ddms"),
+        ("--url-prefix", "/api/rafs-ddms", "--bearer-token", token),
         None,
         test_type="script",
         entrypoint=script.name,
+        secrets=(token,),
     )
 
-    assert seen["command"][-2:] == ["--url-prefix", "/api/rafs-ddms"]
+    assert seen["command"][-4:] == [
+        "--url-prefix",
+        "/api/rafs-ddms",
+        "--bearer-token",
+        token,
+    ]
+    assert token not in seen["display_cmd"]
+    assert "[redacted]" in seen["display_cmd"]
     assert seen["env"]["MSYS2_ARG_CONV_EXCL"] == "*"
+
+
+def test_paired_run_displays_redacted_script_arguments(monkeypatch, tmp_path):
+    token = "minted-bearer-value"
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(testing, "_require_tool", lambda _name: None)
+    monkeypatch.setattr(testing, "run_command", run)
+    monkeypatch.setattr(
+        testing,
+        "run_process",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+
+    result = testing.run_paired(
+        "example/acceptance@sha256:test",
+        "suite",
+        tmp_path / "suite.env",
+        ("--bearer-token", token),
+        None,
+        tmp_path / "reports",
+        secrets=(token,),
+    )
+
+    command, kwargs = next(item for item in commands if item[0][:2] == ["docker", "run"])
+    assert token in command
+    assert token not in kwargs["display_cmd"]
+    assert "[redacted]" in kwargs["display_cmd"]
+    assert result == 0
 
 
 def test_declared_script_report_is_counted(tmp_path):
