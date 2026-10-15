@@ -289,6 +289,27 @@ def test_declared_script_report_is_counted(tmp_path):
     }
 
 
+def test_declared_script_report_counts_child_suites(tmp_path):
+    report = tmp_path / "tests" / "results" / "rafs.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        """
+<testsuites>
+  <testsuite tests="2" failures="1" errors="0" skipped="0"/>
+  <testsuite tests="3" failures="0" errors="1" skipped="1"/>
+</testsuites>
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert testing.count_tests(tmp_path, ("tests/results/rafs.xml",)) == {
+        "tests": 5,
+        "skipped": 1,
+        "failures": 1,
+        "errors": 1,
+    }
+
+
 @pytest.mark.parametrize("pattern", ["../outside.xml", "/tmp/outside.xml"])
 def test_report_paths_must_stay_beneath_the_suite(tmp_path, pattern):
     with pytest.raises(SuiteNotRun, match="must stay beneath") as exc:

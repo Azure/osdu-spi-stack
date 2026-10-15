@@ -859,11 +859,16 @@ def count_tests(reports: Path, report_paths: Sequence[str] = ()) -> dict[str, in
             root = ET.parse(path).getroot()
         except ET.ParseError:
             continue
-        for key in totals:
-            try:
-                totals[key] += int(root.get(key, 0))
-            except ValueError:
-                pass
+        nodes = [root]
+        if not any(root.get(key) is not None for key in totals):
+            child_suites = [child for child in root if child.tag.rsplit("}", 1)[-1] == "testsuite"]
+            nodes = child_suites or nodes
+        for node in nodes:
+            for key in totals:
+                try:
+                    totals[key] += int(node.get(key, 0))
+                except ValueError:
+                    pass
     return totals
 
 
