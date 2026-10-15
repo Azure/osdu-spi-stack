@@ -45,7 +45,43 @@ spec:
         effect: NoSchedule
     istioProxyPin:
       enabled: true
+    initContainers:
+      - name: install-java-runtime
+        image: eclipse-temurin:25-jre-alpine
+        command:
+          - sh
+          - -c
+          - cp -R "$JAVA_HOME/." /java-runtime/
+        volumeMounts:
+          - name: java-runtime
+            mountPath: /java-runtime
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 100m
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+              - ALL
+    volumeMounts:
+      - name: java-runtime
+        mountPath: /java-runtime
+        readOnly: true
+    volumes:
+      - name: java-runtime
+        emptyDir: {}
     env:
+      # The upstream image currently carries Java 25 bytecode over a Java 17 base runtime.
+      - name: JAVA_HOME
+        value: /java-runtime
+      - name: PATH
+        value: /java-runtime/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       - name: SPRING_APPLICATION_NAME
         value: indexer
       - name: SERVER_SERVLET_CONTEXTPATH

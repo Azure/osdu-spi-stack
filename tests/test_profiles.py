@@ -725,6 +725,33 @@ class TestAutomatedGatewayDeployment:
         assert "spi-gateway-tls" not in _dependency_names(INGRESS_DIR / mode)
 
 
+class TestIndexerRuntime:
+    def test_java_runtime_matches_upstream_bytecode(self):
+        release = yaml.safe_load((STACKS / "services" / "indexer.yaml").read_text(encoding="utf-8"))
+        values = release["spec"]["values"]
+        env = {item["name"]: item["value"] for item in values["env"]}
+        runtime = next(
+            container
+            for container in values["initContainers"]
+            if container["name"] == "install-java-runtime"
+        )
+
+        assert runtime["image"] == "eclipse-temurin:25-jre-alpine"
+        assert runtime["command"] == ["sh", "-c", 'cp -R "$JAVA_HOME/." /java-runtime/']
+        assert runtime["securityContext"] == {
+            "allowPrivilegeEscalation": False,
+            "runAsNonRoot": True,
+            "runAsUser": 1000,
+            "capabilities": {"drop": ["ALL"]},
+        }
+        assert env["JAVA_HOME"] == "/java-runtime"
+        assert env["PATH"].startswith("/java-runtime/bin:")
+        assert values["volumeMounts"] == [
+            {"name": "java-runtime", "mountPath": "/java-runtime", "readOnly": True}
+        ]
+        assert values["volumes"] == [{"name": "java-runtime", "emptyDir": {}}]
+
+
 class TestReferenceCatalogDownloads:
     """Reference catalogs are immutable, verified, and fetched without root."""
 
