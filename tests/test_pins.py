@@ -1200,26 +1200,28 @@ class TestApplySchemaLoadBackfill:
 
 
 class TestApplyImageLockBackfill:
-    def test_resolves_loader_from_recorded_schema_while_adding_open_etp(self, monkeypatch):
+    def test_resolves_loader_from_recorded_schema_while_adding_open_etp_client(self, monkeypatch):
         existing = [
-            name for name in pins.IMAGE_REGISTRY if name not in {"open-etp", "schema-load"}
+            name for name in pins.IMAGE_REGISTRY if name not in {"open-etp-client", "schema-load"}
         ]
         data = _canonical_data(*existing)
         lock = _lock(data=data)
         calls = _wire_lock(monkeypatch, lock)
-        open_etp = ResolvedImage(
-            "open-etp",
-            "repo/open-etp-main",
+        open_etp_client = ResolvedImage(
+            "open-etp-client",
+            "repo/open-etp-client",
             "d" * 40,
             "now",
-            "sha256:open-etp",
+            "sha256:open-etp-client",
+            "sha256:open-etp-client-acceptance",
         )
         resolutions = []
         monkeypatch.setattr(
             pins,
             "resolve_images",
             lambda branch, names, sources: (
-                resolutions.append((branch, tuple(names), sources)) or {"open-etp": open_etp}
+                resolutions.append((branch, tuple(names), sources))
+                or {"open-etp-client": open_etp_client}
             ),
         )
         monkeypatch.setattr(
@@ -1236,18 +1238,19 @@ class TestApplyImageLockBackfill:
 
         assert pins.apply_image_lock_backfill(
             "master",
-            sources={"open-etp": "KiranBedre/osdu-spi-reservoir-open-etp-server"},
+            sources={"open-etp-client": "KiranBedre/osdu-spi-reservoir-open-etp-client"},
         )
 
         patched, _saved = calls["patch"]
         assert resolutions == [
             (
                 "master",
-                ("open-etp",),
-                {"open-etp": "KiranBedre/osdu-spi-reservoir-open-etp-server"},
+                ("open-etp-client",),
+                {"open-etp-client": "KiranBedre/osdu-spi-reservoir-open-etp-client"},
             )
         ]
-        assert patched["OPEN_ETP_IMAGE_REF"] == "repo/open-etp-main@sha256:open-etp"
+        assert patched["OPEN_ETP_CLIENT_IMAGE_REF"] == "repo/open-etp-client@sha256:open-etp-client"
+        assert patched["OPEN_ETP_CLIENT_ACCEPTANCE_DIGEST"] == "sha256:open-etp-client-acceptance"
         assert patched["SCHEMA_LOAD_IMAGE_TAG"] == data["SCHEMA_IMAGE_TAG"]
         assert patched["IMAGE_COUNT"] == str(len(pins.IMAGE_REGISTRY))
 

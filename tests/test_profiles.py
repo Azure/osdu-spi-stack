@@ -690,7 +690,7 @@ class TestAutomatedGatewayDeployment:
         ],
     )
     def test_open_etp_route_rewrites_the_public_prefix(self, mode, hostname):
-        path = STACKS / "routes" / mode / "osdu" / "routes.yaml"
+        path = STACKS / "routes" / mode / "ddms" / "routes.yaml"
         route = next(
             doc
             for doc in yaml.safe_load_all(path.read_text(encoding="utf-8"))
@@ -718,9 +718,20 @@ class TestAutomatedGatewayDeployment:
             }
         ]
         assert rule["backendRefs"] == [{"name": "open-etp", "port": 80}]
+        client_rule = route["spec"]["rules"][1]
+        assert client_rule["matches"] == [
+            {
+                "path": {
+                    "type": "PathPrefix",
+                    "value": "/api/reservoir-ddms/v2/",
+                }
+            }
+        ]
+        assert client_rule["filters"] == rule["filters"]
+        assert client_rule["backendRefs"] == [{"name": "open-etp-client", "port": 80}]
 
     def test_open_etp_uses_the_key_vault_data_plane_scope(self):
-        release = yaml.safe_load((STACKS / "services" / "open-etp.yaml").read_text(encoding="utf-8"))
+        release = yaml.safe_load((STACKS / "ddms" / "open-etp.yaml").read_text(encoding="utf-8"))
         env = {item["name"]: item["value"] for item in release["spec"]["values"]["env"]}
 
         assert env["AZURE_KEYVAULT_ACCESS_TOKEN_SCOPE"] == "https://vault.azure.net/.default"

@@ -39,6 +39,8 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccountName }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
 
       # AKS Deployment Safeguards compliance
       securityContext:

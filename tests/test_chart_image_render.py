@@ -96,6 +96,23 @@ def test_renders_optional_command_and_arguments():
     assert container["args"] == ["server", "--start"]
 
 
+def test_renders_non_identity_service_account_and_shutdown_contract():
+    deployment = _rendered_deployment(
+        {
+            "serviceAccountName": "default",
+            "automountServiceAccountToken": "false",
+            "terminationGracePeriodSeconds": "45",
+            "workloadIdentity": "false",
+        }
+    )
+    pod = deployment["spec"]["template"]["spec"]
+
+    assert pod["serviceAccountName"] == "default"
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["terminationGracePeriodSeconds"] == 45
+    assert "azure.workload.identity/use" not in deployment["spec"]["template"]["metadata"]["labels"]
+
+
 def test_requests_the_cpu_admission_will_grant_every_container():
     deployment = _rendered_deployment({"redisTls": "true"})
     pod = deployment["spec"]["template"]["spec"]

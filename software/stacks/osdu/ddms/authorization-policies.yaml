@@ -1,0 +1,40 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: open-etp
+  namespace: osdu
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: open-etp
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            paths:
+              - /health
+    - from:
+        - source:
+            requestPrincipals:
+              - "*"
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: open-etp-client
+  namespace: osdu
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: open-etp-client
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            paths:
+              - /health/liveness
+              - /health/readiness
+    - from:
+        - source:
+            requestPrincipals:
+              - "*"

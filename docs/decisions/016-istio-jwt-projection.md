@@ -20,7 +20,7 @@ Rejected: substituting the OSDU UAMI client id for any management-audience calle
 
 Rejected: `RequestAuthentication` plus `AuthorizationPolicy` keyed on JWT claims. Works for images whose Spring chain reads `RequestPrincipal` directly; the Azure provider's does not.
 
-Rejected: per-service default-deny `AuthorizationPolicy` as defense in depth. The Spring chain already enforces identity, and default-deny on services serving traffic carries a wider blast radius; it remains available as a later hardening pass.
+Rejected: per-service default-deny `AuthorizationPolicy` for Spring Azure-provider services. Their in-process chain already enforces identity, and default-deny carries a wider blast radius. Non-Spring DDMS workloads that lack an equivalent chain require workload-scoped policy under ADR-041.
 
 Rejected: pre-populating entitlements without going through the service API. Bypasses the auth chain but ties bootstrap to schema internals of the entitlements implementation, the burden ADR-013 and ADR-015 removed.
 

@@ -16,3 +16,5 @@ forks:
     repo: Azure/osdu-spi-schema
   - service: file
     repo: Azure/osdu-spi-file
+  - service: open-etp-client
+    repo: KiranBedre/osdu-spi-reservoir-open-etp-client

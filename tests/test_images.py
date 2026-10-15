@@ -958,6 +958,32 @@ class TestResolveForkImage:
 
         assert image.acceptance_digest == paired
 
+    def test_open_etp_client_uses_the_runtime_and_acceptance_images_from_one_commit(
+        self, monkeypatch
+    ):
+        paired = "sha256:" + "a" * 64
+        _fork_registry(
+            monkeypatch,
+            {
+                ("ghcr.io/kiranbedre/open-etp-client", "main-snapshot"): SNAPSHOT,
+                ("ghcr.io/kiranbedre/open-etp-client", f"sha-{BUILT[:12]}"): SNAPSHOT,
+                (
+                    "ghcr.io/kiranbedre/open-etp-client-acceptance",
+                    f"sha-{BUILT[:12]}",
+                ): paired,
+            },
+        )
+
+        image, commit = images.resolve_fork_image(
+            "open-etp-client",
+            "KiranBedre/osdu-spi-reservoir-open-etp-client",
+        )
+
+        assert commit == BUILT
+        assert image.repository == "ghcr.io/kiranbedre/open-etp-client"
+        assert image.digest == SNAPSHOT
+        assert image.acceptance_digest == paired
+
     def test_a_fork_publishing_under_the_service_name_resolves_there(self, monkeypatch):
         _fork_registry(
             monkeypatch,
