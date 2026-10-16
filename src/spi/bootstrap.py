@@ -58,9 +58,7 @@ def deploy_identity_facts(
         "AZURE_SUBSCRIPTION_ID": infra_outputs.get("subscription_id", ""),
         "AZURE_RESOURCE_GROUP": resource_group,
         "AKS_CLUSTER_NAME": cluster_name,
-        "RESERVOIR_IDENTITY_CLIENT_ID": infra_outputs.get(
-            "reservoir_identity_client_id", ""
-        ),
+        "RESERVOIR_IDENTITY_CLIENT_ID": infra_outputs.get("reservoir_identity_client_id", ""),
     }
 
 
