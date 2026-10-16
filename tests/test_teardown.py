@@ -56,6 +56,10 @@ def full_inventory() -> list:
         _res("Microsoft.ContainerRegistry/registries", "osdudev1abcde"),
         _res("Microsoft.DocumentDB/databaseAccounts", "osdu-dev1-opendes-cosmos-abcde"),
         _res("Microsoft.DocumentDB/databaseAccounts", "osdu-dev1-graph-abcde"),
+        _res(
+            "Microsoft.DBforPostgreSQL/flexibleServers",
+            "osdu-dev1-opendes-reservoir-pg-abcde",
+        ),
         _res("Microsoft.EventGrid/systemTopics", "osdudev1commonabcde-guid"),
         _res("Microsoft.KeyVault/vaults", "osdudev1abcde"),
         _res("Microsoft.ManagedIdentity/userAssignedIdentities", "spi-stack-dev1-ctl-id"),
@@ -244,6 +248,7 @@ class TestOrdinaryTeardown:
             "managedclusters",
             "systemtopics",
             "databaseaccounts",
+            "flexibleservers",
             "namespaces",
             "storageaccounts",
             "registries",

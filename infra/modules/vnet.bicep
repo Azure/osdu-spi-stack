@@ -151,3 +151,6 @@ output natGatewayId string = natGateway.id
 
 @description('Azure resource ID of the public IP assigned to the NAT gateway.')
 output publicIpId string = publicIp.id
+
+@description('Fixed public IP used by resources that allow only AKS egress.')
+output publicIpAddress string = publicIp.properties.ipAddress

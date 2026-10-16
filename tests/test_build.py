@@ -53,13 +53,22 @@ _REGISTRY = Registry(
 )
 
 
-def _checkout(tmp_path: Path, service: str = "partition", module: str | None = None) -> Path:
+def _checkout(
+    tmp_path: Path,
+    service: str = "partition",
+    module: str | None = None,
+    archetype: str | None = None,
+) -> Path:
     """A fork checkout with a descriptor, the canonical Dockerfile, and one built JAR."""
 
     root = tmp_path / "fork"
     (root / ".spi").mkdir(parents=True)
+    service_descriptor = {"name": service}
+    if archetype is not None:
+        service_descriptor["archetype"] = archetype
     (root / ".spi/service.yaml").write_text(
-        yaml.safe_dump({"schemaVersion": 3, "service": {"name": service}}), encoding="utf-8"
+        yaml.safe_dump({"schemaVersion": 3, "service": service_descriptor}),
+        encoding="utf-8",
     )
     (root / "build").mkdir()
     (root / "build/Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
@@ -95,6 +104,13 @@ class TestRequireBuildable:
     def test_a_checkout_of_another_service_is_refused(self, tmp_path):
         with pytest.raises(BuildError, match="builds 'legal', not 'partition'"):
             require_buildable("partition", _checkout(tmp_path, service="legal"))
+
+    def test_a_non_maven_archetype_is_directed_to_fork_ci(self, tmp_path):
+        with pytest.raises(BuildError, match="Build it with the fork's CI"):
+            require_buildable(
+                "open-etp",
+                _checkout(tmp_path, service="open-etp", archetype="cpp-cmake-azure"),
+            )
 
     def test_a_checkout_without_the_dockerfile_is_refused(self, tmp_path):
         root = _checkout(tmp_path)

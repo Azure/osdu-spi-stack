@@ -35,6 +35,7 @@ from spi.shell import (
     escape_batch_argument,
     gather_reads,
     prepare_command,
+    run_command,
     run_process,
 )
 
@@ -51,6 +52,22 @@ def test_posix_argv_passes_through_untouched():
 
 def test_empty_argv_passes_through():
     assert prepare_command([]) == []
+
+
+def test_run_command_displays_override_but_executes_original():
+    actual = ["tool", "--bearer-token", "minted-bearer-value"]
+    shown = ["tool", "--bearer-token", "[redacted]"]
+    completed = subprocess.CompletedProcess(actual, 0)
+
+    with (
+        mock.patch("spi.shell.display_command") as display,
+        mock.patch("spi.shell.run_process", return_value=completed) as run,
+    ):
+        result = run_command(actual, display_cmd=shown, description="Run suite")
+
+    display.assert_called_once_with(shown, "Run suite")
+    assert run.call_args.args[0] == actual
+    assert result is completed
 
 
 def test_windows_native_executable_resolves_to_argv_list():

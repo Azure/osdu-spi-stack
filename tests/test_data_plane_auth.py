@@ -27,6 +27,7 @@ INFRA_DIR = REPO_ROOT / "infra"
 
 GREMLIN = INFRA_DIR / "modules" / "cosmos-gremlin.bicep"
 PARTITION = INFRA_DIR / "modules" / "partition.bicep"
+RESERVOIR_POSTGRES = INFRA_DIR / "modules" / "reservoir-postgres.bicep"
 
 
 def _read(path: Path) -> str:
@@ -55,6 +56,28 @@ def test_gremlin_disables_local_auth():
 def test_partition_disables_local_auth_on_cosmos_and_service_bus():
     assert "disableLocalAuth: true" in _resource_block(PARTITION, "cosmosAccount")
     assert "disableLocalAuth: true" in _resource_block(PARTITION, "serviceBusNamespace")
+
+
+def test_reservoir_postgres_uses_entra_only_authentication():
+    server = _resource_block(RESERVOIR_POSTGRES, "server")
+
+    assert "activeDirectoryAuth: 'Enabled'" in server
+    assert "passwordAuth: 'Disabled'" in server
+    assert "publicNetworkAccess: 'Enabled'" in server
+
+
+def test_reservoir_postgres_firewall_allows_only_the_aks_nat_ip():
+    firewall = _resource_block(RESERVOIR_POSTGRES, "aksNatFirewallRule")
+
+    assert "startIpAddress: aksNatPublicIpAddress" in firewall
+    assert "endIpAddress: aksNatPublicIpAddress" in firewall
+
+
+def test_reservoir_connection_secret_is_passwordless_and_requires_tls():
+    secret = _resource_block(RESERVOIR_POSTGRES, "connectionSecret")
+
+    assert "sslmode=require" in secret
+    assert "password=" not in secret
 
 
 def test_no_key_material_resolved_anywhere():

@@ -81,6 +81,7 @@ class Config(BaseModel):
     deploy_identity_name: str = ""
     member_identity_name: str = ""
     no_access_identity_name: str = ""
+    reservoir_identity_name: str = ""
     external_dns_identity_name: str = ""
     keyvault_name: str = ""
     acr_name: str = ""
@@ -111,6 +112,7 @@ class Config(BaseModel):
         deploy_identity_name = f"{cluster_name}-deployer"
         member_identity_name = f"{cluster_name}-member"
         no_access_identity_name = f"{cluster_name}-noaccess"
+        reservoir_identity_name = f"{cluster_name}-reservoir"
         external_dns_identity_name = f"{cluster_name}-external-dns"
 
         return Config(
@@ -122,6 +124,7 @@ class Config(BaseModel):
             deploy_identity_name=deploy_identity_name,
             member_identity_name=member_identity_name,
             no_access_identity_name=no_access_identity_name,
+            reservoir_identity_name=reservoir_identity_name,
             external_dns_identity_name=external_dns_identity_name,
             keyvault_name=keyvault_name,
             acr_name=acr_name,

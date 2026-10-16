@@ -83,6 +83,19 @@ def test_falls_back_to_repository_colon_tag_when_digest_empty():
     assert image == "community.opengroup.org:5555/osdu/partition-master:abc1234"
 
 
+def test_renders_optional_command_and_arguments():
+    deployment = _rendered_deployment(
+        {
+            "command[0]": "openETPServer",
+            "args[0]": "server",
+            "args[1]": "--start",
+        }
+    )
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    assert container["command"] == ["openETPServer"]
+    assert container["args"] == ["server", "--start"]
+
+
 def test_requests_the_cpu_admission_will_grant_every_container():
     deployment = _rendered_deployment({"redisTls": "true"})
     pod = deployment["spec"]["template"]["spec"]
