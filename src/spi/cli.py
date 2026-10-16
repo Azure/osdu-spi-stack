@@ -1104,6 +1104,7 @@ ALL_SUITES = "all"
 def _inspect_suite(
     reports: Path,
     secrets: Collection[str],
+    report_paths: Collection[str],
     *,
     suite: str,
     bundle: Optional[Path],
@@ -1121,7 +1122,7 @@ def _inspect_suite(
 
     kept.update(secrets)
     try:
-        facts = collect(reports, secrets)
+        facts = collect(reports, secrets, report_paths)
     except Exception as exc:  # noqa: BLE001
         _report_warning(f"No report for {suite}", exc)
         return None

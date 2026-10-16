@@ -641,6 +641,8 @@ def run_paired(
     timeout: int | None,
     reports: Path,
     entrypoint: str = "",
+    *,
+    secrets: Collection[str] = (),
 ) -> int:
     """Run the suite in the paired image; copy its reports out before the container goes."""
 
@@ -655,9 +657,11 @@ def run_paired(
         raise SuiteNotRun("pull_failed", f"docker could not pull {image}")
     container = f"spi-test-{uuid.uuid4().hex[:12]}"
     try:
+        command = _docker_run(image, test_dir, str(env_file), args, container, entrypoint)
         ran = run_command(
-            _docker_run(image, test_dir, str(env_file), args, container, entrypoint),
+            command,
             capture_output=False,
+            display_cmd=list(map(redactor(secrets), command)),
             description=f"Run {test_dir}",
             check=False,
             timeout=timeout,
@@ -782,6 +786,7 @@ def run_checkout(
     test_type: str = "maven",
     entrypoint: str = "",
     report_paths: Sequence[str] = (),
+    secrets: Collection[str] = (),
 ) -> tuple[int, Path]:
     """Run a Maven or script suite from its checkout."""
 
@@ -800,6 +805,7 @@ def run_checkout(
     ran = run_command(
         command,
         capture_output=False,
+        display_cmd=list(map(redactor(secrets), command)),
         description=f"Run {test_dir} natively",
         check=False,
         timeout=timeout,
@@ -820,17 +826,20 @@ def count_tests(reports: Path, report_paths: Sequence[str] = ()) -> dict[str, in
             root = ET.parse(path).getroot()
         except ET.ParseError:
             continue
-        for key in totals:
-            try:
-                totals[key] += int(root.get(key, 0))
-            except ValueError:
-                pass
+        nodes = [root]
+        if not any(root.get(key) is not None for key in totals):
+            child_suites = [child for child in root if child.tag.rsplit("}", 1)[-1] == "testsuite"]
+            nodes = child_suites or nodes
+        for node in nodes:
+            for key in totals:
+                try:
+                    totals[key] += int(node.get(key, 0))
+                except ValueError:
+                    pass
     return totals
 
 
-def judge(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
-    """The commit's own verdict over this run's reports."""
-
+def _run_verdict(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
     result = run_process(
         [
             sys.executable,
@@ -854,6 +863,46 @@ def judge(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
             + (f": {stderr[-1]}" if stderr else ""),
         )
     return result.returncode == 0, lines[-1]
+
+
+def _copy_verdict_report(source: Path, destination: Path) -> None:
+    try:
+        tree = ET.parse(source)
+    except ET.ParseError:
+        shutil.copy2(source, destination)
+        return
+    root = tree.getroot()
+    totals = ("tests", "skipped", "failures", "errors")
+    if any(root.get(key) is not None for key in totals):
+        shutil.copy2(source, destination)
+        return
+    child_suites = [child for child in root if child.tag.rsplit("}", 1)[-1] == "testsuite"]
+    try:
+        for key in totals:
+            root.set(key, str(sum(int(child.get(key, 0)) for child in child_suites)))
+    except ValueError:
+        shutil.copy2(source, destination)
+        return
+    tree.write(destination, encoding="utf-8", xml_declaration=True)
+
+
+def judge(
+    root: Path,
+    exit_code: int,
+    reports: Path,
+    report_paths: Sequence[str] = (),
+) -> tuple[bool, str]:
+    """The commit's own verdict over this run's declared reports."""
+
+    if not report_paths:
+        return _run_verdict(root, exit_code, reports)
+    with tempfile.TemporaryDirectory(prefix="spi-verdict-") as temporary:
+        selected = Path(temporary) / REPORT_DIRS[0]
+        selected.mkdir()
+        for index, report in enumerate(_report_files(reports, report_paths)):
+            if report.is_file():
+                _copy_verdict_report(report, selected / f"TEST-{index:04d}.xml")
+        return _run_verdict(root, exit_code, Path(temporary))
 
 
 def _require_machinery(root: Path) -> None:
@@ -1010,9 +1059,7 @@ def run_suite(
                     f"  [warning]No report: {escape(f'{env_file.name}: {exc}')}[/warning]"
                 )
                 inspect = None
-        secrets: tuple[str, ...] = ()
-        if inspect:
-            secrets = secret_values(bound.bearers, variables)
+        secrets = secret_values(bound.bearers, variables)
         test_dir = bound.test_dir
         args = bound.arguments(maven_arguments, variables)
         timeout = bound.timeout_minutes * 60 or None
@@ -1029,6 +1076,7 @@ def run_suite(
                     timeout,
                     reports,
                     bound.test_entrypoint,
+                    secrets=secrets,
                 )
             else:
                 code, reports = run_checkout(
@@ -1040,10 +1088,11 @@ def run_suite(
                     test_type=bound.test_type,
                     entrypoint=bound.test_entrypoint,
                     report_paths=bound.report_paths,
+                    secrets=secrets,
                 )
         finally:
             env_file.unlink(missing_ok=True)
-        passed, verdict = judge(root, code, reports)
+        passed, verdict = judge(root, code, reports, bound.report_paths)
         tests = count_tests(reports, bound.report_paths)
         # A discarded run leaves nothing with the inspector.
         check_target(service, bound.expected, after=verdict, revision=revision)
