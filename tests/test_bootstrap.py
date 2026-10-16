@@ -479,6 +479,7 @@ class TestReconcileRefreshesClusterConfig:
                 reconciled.append(args[3])
         assert reconciled == [
             "spi-osdu-services",
+            "spi-osdu-ddms",
             "spi-osdu-schema-load",
             "spi-osdu-reference",
         ]
