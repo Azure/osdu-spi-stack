@@ -735,12 +735,14 @@ class TestAutomatedGatewayDeployment:
         ]
         assert rule["backendRefs"] == [{"name": "open-etp", "port": 80}]
 
-    def test_open_etp_uses_the_key_vault_data_plane_scope(self):
+    def test_open_etp_uses_mintable_data_plane_scopes(self):
         release = yaml.safe_load((STACKS / "ddms" / "open-etp.yaml").read_text(encoding="utf-8"))
         env = {item["name"]: item["value"] for item in release["spec"]["values"]["env"]}
 
         assert env["AZURE_KEYVAULT_ACCESS_TOKEN_SCOPE"] == "https://vault.azure.net/.default"
-        assert env["AZURE_OSDU_ACCESS_TOKEN_SCOPE_OVERRIDE"] == "$(AAD_CLIENT_ID)/.default"
+        assert (
+            env["AZURE_OSDU_ACCESS_TOKEN_SCOPE_OVERRIDE"] == "https://management.azure.com/.default"
+        )
 
     def test_open_etp_requires_an_authenticated_principal_outside_health(self):
         policies = list(
