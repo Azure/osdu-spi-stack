@@ -64,7 +64,7 @@ param partitionStorageNames array
 param reservoirPostgresNames array
 
 @description('Resource name for the dedicated Reservoir workload identity.')
-param reservoirIdentityName string
+param reservoirIdentityName string = '${clusterName}-reservoir'
 
 @description('Whether the core profile provisions Reservoir persistence and identity.')
 param deployReservoir bool = false

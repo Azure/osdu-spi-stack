@@ -726,6 +726,22 @@ class TestAutomatedGatewayDeployment:
         assert env["AZURE_KEYVAULT_ACCESS_TOKEN_SCOPE"] == "https://vault.azure.net/.default"
         assert env["AZURE_OSDU_ACCESS_TOKEN_SCOPE_OVERRIDE"] == "$(AAD_CLIENT_ID)/.default"
 
+    def test_open_etp_requires_an_authenticated_principal_outside_health(self):
+        policies = list(
+            yaml.safe_load_all(
+                (STACKS / "ddms" / "authorization-policies.yaml").read_text(encoding="utf-8")
+            )
+        )
+        policy = next(item for item in policies if item["metadata"]["name"] == "open-etp")
+
+        assert policy["spec"]["selector"]["matchLabels"] == {
+            "app.kubernetes.io/name": "osdu-open-etp"
+        }
+        assert policy["spec"]["rules"] == [
+            {"to": [{"operation": {"paths": ["/health"]}}]},
+            {"from": [{"source": {"requestPrincipals": ["*"]}}]},
+        ]
+
     def test_tls_listeners_reference_secrets_in_the_gateway_namespace(self):
         for mode in ("azure", "dns"):
             for op in _gateway_patch_ops(INGRESS_DIR / mode):
