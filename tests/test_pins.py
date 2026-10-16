@@ -1386,6 +1386,16 @@ class TestLockMutationConflicts:
         pins.reconcile_consumers(["storage"])
         assert reconciled == ["spi-osdu-services"]
 
+    def test_open_etp_reconciles_the_ddms_consumer(self, monkeypatch):
+        reconciled = []
+        monkeypatch.setattr(
+            pins, "run_command", lambda command, **kwargs: reconciled.append(command[3])
+        )
+
+        pins.reconcile_consumers(["open-etp"])
+
+        assert reconciled == ["spi-osdu-ddms"]
+
 
 class TestParseImageDigestRef:
     def test_splits_repository_and_digest(self):
