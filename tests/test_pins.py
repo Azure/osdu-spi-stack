@@ -1201,9 +1201,7 @@ class TestApplySchemaLoadBackfill:
 
 class TestApplyImageLockBackfill:
     def test_resolves_loader_from_recorded_schema_while_adding_open_etp(self, monkeypatch):
-        existing = [
-            name for name in pins.IMAGE_REGISTRY if name not in {"open-etp", "schema-load"}
-        ]
+        existing = [name for name in pins.IMAGE_REGISTRY if name not in {"open-etp", "schema-load"}]
         data = _canonical_data(*existing)
         lock = _lock(data=data)
         calls = _wire_lock(monkeypatch, lock)

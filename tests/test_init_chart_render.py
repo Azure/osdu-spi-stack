@@ -721,9 +721,7 @@ def test_members_create_reservoir_groups_before_seeding_member_users(
         if json.loads(call.body)["email"] == "member-client-id"
     ]
     assert any(
-        call.url.endswith(
-            f"/groups/{_CREATED_GROUPS['service.reservoir-dms.viewers']}/members"
-        )
+        call.url.endswith(f"/groups/{_CREATED_GROUPS['service.reservoir-dms.viewers']}/members")
         for call in member_posts
     )
 
