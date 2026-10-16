@@ -1211,6 +1211,7 @@ class TestApplyImageLockBackfill:
             "d" * 40,
             "now",
             "sha256:open-etp",
+            "sha256:acceptance",
         )
         resolutions = []
         monkeypatch.setattr(
@@ -1246,8 +1247,52 @@ class TestApplyImageLockBackfill:
             )
         ]
         assert patched["OPEN_ETP_IMAGE_REF"] == "repo/open-etp-main@sha256:open-etp"
+        assert patched["OPEN_ETP_ACCEPTANCE_DIGEST"] == "sha256:acceptance"
         assert patched["SCHEMA_LOAD_IMAGE_TAG"] == data["SCHEMA_IMAGE_TAG"]
         assert patched["IMAGE_COUNT"] == str(len(pins.IMAGE_REGISTRY))
+
+    def test_does_not_pair_acceptance_with_a_concurrently_refreshed_service(self, monkeypatch):
+        initial_data = _canonical_data(
+            *(name for name in pins.IMAGE_REGISTRY if name != "open-etp")
+        )
+        fresh_data = {}
+        for name in pins.IMAGE_REGISTRY:
+            fresh_data.update(
+                pins._lock_entry_patch(
+                    name,
+                    f"repo/{name}-master",
+                    "c" * 40,
+                    "then",
+                    "sha256:old",
+                )
+            )
+        fresh_data["IMAGE_COUNT"] = str(len(pins.IMAGE_REGISTRY))
+        locks = iter([_lock(data=initial_data), _lock(data=fresh_data, resource_version="2")])
+        monkeypatch.setattr(pins, "read_lock", lambda required=False: next(locks))
+        monkeypatch.setattr(
+            pins,
+            "resolve_images",
+            lambda branch, names, sources: {
+                "open-etp": ResolvedImage(
+                    "open-etp",
+                    "repo/open-etp-main",
+                    "d" * 40,
+                    "now",
+                    "sha256:open-etp",
+                    "sha256:acceptance",
+                )
+            },
+        )
+        monkeypatch.setattr(
+            pins,
+            "run_command",
+            lambda *_args, **_kwargs: pytest.fail(
+                "a fresh service entry must not receive another commit's acceptance digest"
+            ),
+        )
+
+        assert pins.apply_image_lock_backfill("master", sources={}) is False
+        assert "OPEN_ETP_ACCEPTANCE_DIGEST" not in fresh_data
 
     def test_leaves_a_complete_current_lock_unchanged(self, monkeypatch):
         data = {}
