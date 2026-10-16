@@ -700,6 +700,34 @@ def test_members_seeds_member_users_into_the_user_groups_and_storage_admin_only(
     assert admin_posts == set(_ADMIN_GROUPS.values())
 
 
+def test_members_create_reservoir_groups_before_seeding_member_users(
+    init_scripts, monkeypatch, capsys
+):
+    listing = tuple(name for name in _ALL_GROUPS if name not in _CREATED_GROUPS)
+    result = _run_members(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        member_users="member-client-id",
+        groups=_responds(200, _groups_listing(listing)),
+    )
+
+    assert result.exit_code == 0
+    creates = [json.loads(call.body)["name"] for call in result.routed("create")]
+    assert "service.reservoir-dms.viewers" in creates
+    member_posts = [
+        call
+        for call in result.routed("post")
+        if json.loads(call.body)["email"] == "member-client-id"
+    ]
+    assert any(
+        call.url.endswith(
+            f"/groups/{_CREATED_GROUPS['service.reservoir-dms.viewers']}/members"
+        )
+        for call in member_posts
+    )
+
+
 def test_members_fails_closed_when_the_listing_exceeds_max_user_groups(
     init_scripts, monkeypatch, capsys
 ):

@@ -765,7 +765,11 @@ data:
                 f"{', '.join(member_users)} not seeded",
             )
             return 1
-        absent_user_groups = [name for name in MEMBER_USER_GROUPS if not emails.get(name)]
+        absent_user_groups = [
+            name
+            for name in MEMBER_USER_GROUPS
+            if name not in CREATED_GROUPS and not emails.get(name)
+        ]
         if member_users and absent_user_groups:
             outcome(
                 "group_missing",
@@ -789,6 +793,14 @@ data:
                 return 1
             if not emails.get(name) and emails.get("users", "").startswith("users@"):
                 emails[name] = f"{name}@{emails['users'].split('@', 1)[1]}"
+        absent_user_groups = [name for name in MEMBER_USER_GROUPS if not emails.get(name)]
+        if member_users and absent_user_groups:
+            outcome(
+                "group_missing",
+                f"member user groups not visible to the owner: {', '.join(absent_user_groups)}; "
+                f"{', '.join(member_users)} not seeded",
+            )
+            return 1
         absent = [name for name in ADMIN_GROUPS if not emails.get(name)]
         if absent:
             outcome(
