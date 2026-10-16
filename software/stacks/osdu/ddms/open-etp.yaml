@@ -90,7 +90,7 @@ spec:
       - name: AZURE_KEYVAULT_ACCESS_TOKEN_SCOPE
         value: https://vault.azure.net/.default
       - name: AZURE_OSDU_ACCESS_TOKEN_SCOPE_OVERRIDE
-        value: $(AAD_CLIENT_ID)/.default
+        value: https://management.azure.com/.default
       - name: AZURE_POSTGRES_ACCESS_TOKEN_SCOPE
         value: https://ossrdbms-aad.database.windows.net/.default
       - name: RDMS_DATA_PARTITION_MODE
