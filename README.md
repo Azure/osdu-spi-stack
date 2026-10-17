@@ -125,6 +125,11 @@ Flux deploys three application namespaces:
 | `platform` | Elasticsearch, Redis, PostgreSQL, Airflow, and the TLS certificates |
 | `osdu` | Core OSDU APIs, bootstrap jobs, schema load, and reference services |
 
+Reference catalog payloads are pinned to immutable upstream commits and verified
+with SHA-256 checksums before use. Their download init containers run as non-root
+with restricted privileges. See [issue #342](https://github.com/Azure/osdu-spi-stack/issues/342)
+and [pull request #343](https://github.com/Azure/osdu-spi-stack/pull/343).
+
 ### Profiles
 
 | Profile | Deploys | Use when |

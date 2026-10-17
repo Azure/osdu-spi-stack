@@ -255,7 +255,7 @@ class TestMaintenanceOrdering:
         assert wait_idx < gateway_idx < https_idx < assert_idx < clear_idx < deployable_idx
 
         clear_step = next(s for s in verify_steps if s.get("name") == "Clear maintenance")
-        assert "if" not in clear_step, (
+        assert clear_step["if"] == "steps.verify.outputs.clear == 'true'", (
             "maintenance must never be cleared from an if: always() failure path"
         )
 
@@ -284,7 +284,7 @@ class TestMaintenanceOrdering:
         assert reconcile_step["run"].strip() == 'spi reconcile --image-branch "$IMAGE_BRANCH"'
 
         clear_step = next(s for s in refresh_steps if s.get("name") == "Clear maintenance")
-        assert "if" not in clear_step, (
+        assert clear_step["if"] == "steps.verify.outputs.clear == 'true'", (
             "maintenance must never be cleared from an if: always() failure path"
         )
 
@@ -540,7 +540,12 @@ class TestAssertionsAndDeployability:
         for path, job_name in ((ENV_UPGRADE, "verify"), (ENV_REFRESH, "refresh")):
             steps = _steps(_workflow(path)["jobs"][job_name])
             deployable_step = steps["Require deployable status"]
-            assert deployable_step["run"].strip() == "spi status --json"
+            assert "spi status --json" in deployable_step["run"]
+            assert "if" not in deployable_step and "continue-on-error" not in deployable_step
+            assert int(deployable_step["env"]["DEPLOYABLE_TIMEOUT_SECONDS"]) <= 600
+            assert int(deployable_step["timeout-minutes"]) * 60 > int(
+                deployable_step["env"]["DEPLOYABLE_TIMEOUT_SECONDS"]
+            )
 
     def test_bare_profile_skips_gateway_probes(self):
         for path, job_name in ((ENV_UPGRADE, "verify"), (ENV_REFRESH, "refresh")):
@@ -551,6 +556,143 @@ class TestAssertionsAndDeployability:
             assert steps["Acceptance probe (HTTPS terminates)"]["if"] == (
                 "needs.declare.outputs.profile != 'bare'"
             )
+
+
+JOBS = [
+    (ENV_UPGRADE, "verify", "Verify deployed stack matches the declaration"),
+    (ENV_REFRESH, "refresh", "Verify stack version and source suspension are unchanged"),
+]
+
+
+def _stub_status(tmp_path: Path, responses: list[tuple[int, dict[str, Any]]]) -> None:
+    """Stub `spi status --json` to answer each call with the next response, then the last."""
+    for index, (code, payload) in enumerate(responses):
+        (tmp_path / f"status-{index}.json").write_text(json.dumps(payload), encoding="utf-8")
+        (tmp_path / f"status-{index}.code").write_text(str(code), encoding="utf-8")
+    last = len(responses) - 1
+    stub = tmp_path / "spi"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'n=$(cat "{tmp_path}/calls" 2>/dev/null || echo 0)\n'
+        f'echo $((n + 1)) > "{tmp_path}/calls"\n'
+        f'[ "$n" -gt {last} ] && n={last}\n'
+        f'cat "{tmp_path}/status-$n.json"\n'
+        f'exit "$(cat "{tmp_path}/status-$n.code")"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+
+
+def _status(*, maintenance: bool, deployable: bool, reason: str | None) -> dict[str, Any]:
+    return {
+        "ready": True,
+        "deployable": deployable,
+        "maintenance": maintenance,
+        "suspended": True,
+        "reason": {"code": reason, "message": f"{reason} message"} if reason else None,
+        "environment": {"stackVersion": "v0.28.5", "resolvedCommit": "abc123"},
+    }
+
+
+class TestVerifyOnReRun:
+    def _run(self, tmp_path, script: str, attempt: str, status: dict[str, Any]):
+        _stub_status(tmp_path, [(0 if status["deployable"] else 2, status)])
+        output = tmp_path / "github_output"
+        output.write_text("", encoding="utf-8")
+        env = {
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "STACK_VERSION": "v0.28.5",
+            "GITHUB_RUN_ATTEMPT": attempt,
+            "GITHUB_OUTPUT": str(output),
+        }
+        result = run_process(["bash", "-c", script], env=env, capture_output=True, text=True)
+        return result, output.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=["upgrade", "refresh"])
+    def test_first_attempt_in_maintenance_clears_it(self, tmp_path, path, job_name, step):
+        script = _steps(_workflow(path)["jobs"][job_name])[step]["run"]
+        status = _status(maintenance=True, deployable=False, reason="maintenance")
+
+        result, output = self._run(tmp_path, script, "1", status)
+
+        assert result.returncode == 0, result.stdout
+        assert "clear=true" in output.splitlines()
+
+    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=["upgrade", "refresh"])
+    def test_re_run_after_maintenance_cleared_skips_the_clear(self, tmp_path, path, job_name, step):
+        script = _steps(_workflow(path)["jobs"][job_name])[step]["run"]
+        status = _status(maintenance=False, deployable=True, reason=None)
+
+        result, output = self._run(tmp_path, script, "2", status)
+
+        assert result.returncode == 0, result.stdout
+        assert "clear=false" in output.splitlines()
+
+    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=["upgrade", "refresh"])
+    def test_first_attempt_with_maintenance_off_fails(self, tmp_path, path, job_name, step):
+        script = _steps(_workflow(path)["jobs"][job_name])[step]["run"]
+        status = _status(maintenance=False, deployable=True, reason=None)
+
+        result, output = self._run(tmp_path, script, "1", status)
+
+        assert result.returncode == 1
+        assert "maintenance flag is not set" in result.stdout
+        assert "clear=" not in output
+
+    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=["upgrade", "refresh"])
+    def test_re_run_with_maintenance_off_and_not_deployable_fails(
+        self, tmp_path, path, job_name, step
+    ):
+        script = _steps(_workflow(path)["jobs"][job_name])[step]["run"]
+        status = _status(maintenance=False, deployable=False, reason="kustomization_not_ready")
+
+        result, output = self._run(tmp_path, script, "2", status)
+
+        assert result.returncode == 1
+        assert "clear=" not in output
+
+
+class TestRequireDeployablePolls:
+    STEP = "Require deployable status"
+
+    def _run(self, tmp_path, path, job_name, responses, timeout: str = "30"):
+        _stub_status(tmp_path, responses)
+        env = {
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "DEPLOYABLE_TIMEOUT_SECONDS": timeout,
+            "DEPLOYABLE_POLL_SECONDS": "0",
+        }
+        script = _steps(_workflow(path)["jobs"][job_name])[self.STEP]["run"]
+        result = run_process(["bash", "-c", script], env=env, capture_output=True, text=True)
+        calls = int((tmp_path / "calls").read_text(encoding="utf-8"))
+        return result, calls
+
+    @pytest.mark.parametrize(("path", "job_name", "_step"), JOBS, ids=["upgrade", "refresh"])
+    def test_a_transient_progressing_read_is_retried(self, tmp_path, path, job_name, _step):
+        progressing = _status(maintenance=False, deployable=False, reason="kustomization_not_ready")
+        deployable = _status(maintenance=False, deployable=True, reason=None)
+
+        result, calls = self._run(tmp_path, path, job_name, [(2, progressing), (0, deployable)])
+
+        assert result.returncode == 0, result.stdout
+        assert calls == 2
+        assert "kustomization_not_ready message" in result.stdout
+
+    @pytest.mark.parametrize(("path", "job_name", "_step"), JOBS, ids=["upgrade", "refresh"])
+    def test_not_deployable_past_the_deadline_fails(self, tmp_path, path, job_name, _step):
+        progressing = _status(maintenance=False, deployable=False, reason="kustomization_not_ready")
+
+        result, _ = self._run(tmp_path, path, job_name, [(2, progressing)], timeout="0")
+
+        assert result.returncode == 2
+        assert "not deployable after 0s" in result.stdout
+
+    @pytest.mark.parametrize(("path", "job_name", "_step"), JOBS, ids=["upgrade", "refresh"])
+    def test_a_contract_read_error_fails_without_retry(self, tmp_path, path, job_name, _step):
+        result, calls = self._run(tmp_path, path, job_name, [(1, {"error": "boom"})])
+
+        assert result.returncode == 1
+        assert calls == 1
 
 
 class TestDiagnostics:

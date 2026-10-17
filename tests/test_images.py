@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import urllib.error
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -945,36 +946,47 @@ SNAPSHOT = "sha256:" + "5" * 64
 HEAD, BUILT = "c" * 40, "b" * 40
 
 
-def _fork_registry(monkeypatch, tags: dict[tuple[str, str], str | None], commits=(HEAD, BUILT)):
-    """GHCR answers only the (repository, tag) pairs given; GitHub lists main's commits."""
+def _fork_registry(
+    monkeypatch,
+    tags: dict[tuple[str, str], str | None],
+    created: dict[str, str] | None = None,
+):
+    """GHCR answers only the (repository, tag) pairs given; GitHub is never asked."""
 
     monkeypatch.setattr(
         images, "resolve_ghcr_tag_digest", lambda repository, tag: tags.get((repository, tag))
     )
     monkeypatch.setattr(
         images,
-        "github_get",
-        lambda path: [
-            {"sha": sha, "commit": {"committer": {"date": f"2026-09-2{i}T00:00:00Z"}}}
-            for i, sha in enumerate(commits)
-        ],
+        "ghcr_tags",
+        lambda repository: tuple(t for (r, t), d in tags.items() if r == repository and d),
     )
+    monkeypatch.setattr(
+        images, "ghcr_image_created", lambda repository, digest: (created or {}).get(digest, "")
+    )
+
+    def no_github(*args, **kwargs):
+        raise AssertionError("fork images resolve from GHCR alone")
+
+    monkeypatch.setattr(images, "_github_read", no_github)
 
 
 class TestResolveForkImage:
     def test_main_snapshot_is_labelled_with_the_commit_that_built_it(self, monkeypatch):
-        # main's newest commit has not published yet, so the snapshot is the one before it.
+        # A pull request build of a newer commit sits beside main's build in the package.
         _fork_registry(
             monkeypatch,
             {
                 ("ghcr.io/acme/osdu-spi-partition", "main-snapshot"): SNAPSHOT,
+                ("ghcr.io/acme/osdu-spi-partition", f"sha-{HEAD[:12]}"): "sha256:" + "9" * 64,
                 ("ghcr.io/acme/osdu-spi-partition", f"sha-{BUILT[:12]}"): SNAPSHOT,
             },
+            created={SNAPSHOT: "2026-09-21T00:00:00Z"},
         )
 
         image, commit = images.resolve_fork_image("partition", "Acme/osdu-spi-partition")
 
-        assert commit == BUILT
+        assert commit == BUILT[:12]
         assert image == images.ResolvedImage(
             "partition",
             "ghcr.io/acme/osdu-spi-partition",
@@ -1013,7 +1025,7 @@ class TestResolveForkImage:
 
         assert image.repository == "ghcr.io/acme/partition"
 
-    def test_the_package_built_from_the_newest_commit_wins(self, monkeypatch):
+    def test_the_package_built_most_recently_wins(self, monkeypatch):
         # A SERVICE_NAME change leaves the repository-named package on an older snapshot.
         stale = "sha256:" + "e" * 64
         _fork_registry(
@@ -1024,11 +1036,12 @@ class TestResolveForkImage:
                 ("ghcr.io/acme/partition", "main-snapshot"): SNAPSHOT,
                 ("ghcr.io/acme/partition", f"sha-{HEAD[:12]}"): SNAPSHOT,
             },
+            created={stale: "2026-09-20T00:00:00Z", SNAPSHOT: "2026-09-22T00:00:00Z"},
         )
 
         image, commit = images.resolve_fork_image("partition", "Acme/fork")
 
-        assert (image.repository, commit) == ("ghcr.io/acme/partition", HEAD)
+        assert (image.repository, commit) == ("ghcr.io/acme/partition", HEAD[:12])
 
     def test_no_main_snapshot_names_both_packages(self, monkeypatch):
         _fork_registry(monkeypatch, {})
@@ -1038,11 +1051,62 @@ class TestResolveForkImage:
 
         assert "ghcr.io/acme/fork or ghcr.io/acme/partition" in str(exc.value)
 
-    def test_a_snapshot_no_recent_commit_built_is_refused(self, monkeypatch):
-        _fork_registry(monkeypatch, {("ghcr.io/acme/fork", "main-snapshot"): SNAPSHOT})
+    def test_a_snapshot_no_commit_tag_names_is_refused(self, monkeypatch):
+        _fork_registry(
+            monkeypatch,
+            {
+                ("ghcr.io/acme/fork", "main-snapshot"): SNAPSHOT,
+                ("ghcr.io/acme/fork", f"sha-{HEAD[:12]}"): "sha256:" + "9" * 64,
+            },
+        )
 
         with pytest.raises(ImageResolutionError, match="matches no sha- tag"):
             images.resolve_fork_image("partition", "Acme/fork")
+
+
+class TestGhcrPackageReads:
+    def test_tags_follow_the_registry_next_link(self, monkeypatch):
+        pages = {
+            "/v2/acme/fork/tags/list?n=1000": (
+                b'{"tags": ["main-snapshot", "sha-aaaaaaaaaaaa"]}',
+                '</v2/acme/fork/tags/list?last=sha-aaaaaaaaaaaa&n=1000>; rel="next"',
+            ),
+            "/v2/acme/fork/tags/list?last=sha-aaaaaaaaaaaa&n=1000": (
+                b'{"tags": ["sha-bbbbbbbbbbbb"]}',
+                "",
+            ),
+        }
+        monkeypatch.setattr(images, "_ghcr_get", lambda path, url_path, accept: pages[url_path])
+
+        assert images.ghcr_tags("ghcr.io/acme/fork") == (
+            "main-snapshot",
+            "sha-aaaaaaaaaaaa",
+            "sha-bbbbbbbbbbbb",
+        )
+
+    def test_created_reads_an_index_through_its_first_platform(self, monkeypatch):
+        bodies = {
+            "/v2/acme/fork/manifests/sha256:index": {"manifests": [{"digest": "sha256:amd64"}]},
+            "/v2/acme/fork/manifests/sha256:amd64": {"config": {"digest": "sha256:config"}},
+            "/v2/acme/fork/blobs/sha256:config": {"created": "2026-10-13T19:30:00Z"},
+        }
+        monkeypatch.setattr(
+            images,
+            "_ghcr_get",
+            lambda path, url_path, accept: (json.dumps(bodies[url_path]).encode(), ""),
+        )
+
+        assert images.ghcr_image_created("ghcr.io/acme/fork", "sha256:index") == (
+            "2026-10-13T19:30:00Z"
+        )
+
+    def test_an_unreadable_config_leaves_created_empty(self, monkeypatch):
+        def refused(path, url_path, accept):
+            raise ImageResolutionError("HTTP 404")
+
+        monkeypatch.setattr(images, "_ghcr_get", refused)
+
+        assert images.ghcr_image_created("ghcr.io/acme/fork", "sha256:gone") == ""
 
 
 class TestResolveImagesUnderASourcePolicy:
