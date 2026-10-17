@@ -338,8 +338,8 @@ def test_omitted_image_refresh_preserves_existing_lock(monkeypatch):
     monkeypatch.setattr(deploy, "read_lock", lambda required=False: {"data": {"existing": "lock"}})
     monkeypatch.setattr(
         deploy,
-        "apply_schema_load_backfill",
-        lambda branch: backfills.append(branch),
+        "apply_companion_backfills",
+        lambda branch, sources=None: backfills.append(branch),
     )
     resolve = pytest.fail
     monkeypatch.setattr(
@@ -433,8 +433,8 @@ def test_explicit_no_refresh_preserves_existing_core_lock(monkeypatch):
     monkeypatch.setattr(deploy, "read_lock", lambda required=False: {"data": {}})
     monkeypatch.setattr(
         deploy,
-        "apply_schema_load_backfill",
-        lambda branch: backfills.append(branch),
+        "apply_companion_backfills",
+        lambda branch, sources=None: backfills.append(branch),
     )
     monkeypatch.setattr(
         deploy,

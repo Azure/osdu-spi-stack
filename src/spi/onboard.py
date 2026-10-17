@@ -48,12 +48,13 @@ from .environment import (
 )
 from .images import (
     IMAGE_REGISTRY,
-    SCHEMA_LOAD_SERVICE_NAME,
-    SCHEMA_SERVICE_NAME,
     ImageResolutionError,
+    companion_image,
     github_get,
+    is_companion_image,
+    resolve_fork_companion,
     resolve_fork_image,
-    resolve_fork_loader,
+    service_image_names,
 )
 from .pins import (
     CANONICAL_SOURCES_ANNOTATION,
@@ -1227,11 +1228,17 @@ def check_promotion(service: str, repo: str) -> str:
 
     try:
         image, commit = resolve_fork_image(service, repo)
-        if service == SCHEMA_SERVICE_NAME and resolve_fork_loader(image.repository, commit) is None:
+        companion = companion_image(service)
+        if (
+            companion
+            and companion.canonical_required
+            and resolve_fork_companion(image.repository, commit, companion) is None
+        ):
             raise OnboardError(
-                f"schema cannot follow {repo}: it published no loader "
-                f"{image.repository}-load:{image.tag} beside the service image. Onboard "
-                "without --canonical-source to trust the fork while schema stays on community."
+                f"{service} cannot follow {repo}: it published no {companion.name} "
+                f"{image.repository}{companion.package_suffix}:{image.tag} beside the service "
+                f"image. Onboard without --canonical-source to trust the fork while {service} "
+                "stays on community."
             )
     except ImageResolutionError as exc:
         raise OnboardError(f"{service} cannot follow {repo}: {exc}") from None
@@ -1239,8 +1246,8 @@ def check_promotion(service: str, repo: str) -> str:
 
 
 def require_known_service(service: str) -> None:
-    if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
-        known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
+    if service not in IMAGE_REGISTRY or is_companion_image(service):
+        known = ", ".join(sorted(service_image_names()))
         raise OnboardError(f"Unknown service {service!r}. Known services: {known}")
 
 

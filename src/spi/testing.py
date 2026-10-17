@@ -40,7 +40,6 @@ from rich.markup import escape
 from .console import console
 from .images import (
     IMAGE_REGISTRY,
-    SCHEMA_LOAD_SERVICE_NAME,
     ImageNotFoundError,
     ImageResolutionError,
     acceptance_digest_key,
@@ -48,7 +47,9 @@ from .images import (
     github_file,
     github_get,
     image_lock_key,
+    is_companion_image,
     resolve_ghcr_manifest,
+    service_image_names,
 )
 from .pins import (
     LOCAL_ORIGIN,
@@ -768,8 +769,8 @@ def _bind(
 ) -> _Binding:
     """Guard the environment and bind ``suite`` to it, under ``work``."""
 
-    if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
-        known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
+    if service not in IMAGE_REGISTRY or is_companion_image(service):
+        known = ", ".join(sorted(service_image_names()))
         raise SuiteNotRun(
             "unknown_service", f"Unknown service {service!r}. Known services: {known}"
         )
