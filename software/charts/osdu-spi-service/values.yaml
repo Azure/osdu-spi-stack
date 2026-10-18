@@ -21,6 +21,9 @@ image:
 
 replicaCount: 1
 
+# -- Optional Kubernetes Deployment strategy. Empty preserves RollingUpdate.
+deploymentStrategy: {}
+
 containerPort: 8080
 terminationGracePeriodSeconds: 30
 

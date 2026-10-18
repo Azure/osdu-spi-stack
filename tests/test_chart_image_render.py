@@ -113,6 +113,14 @@ def test_renders_non_identity_service_account_and_shutdown_contract():
     assert "azure.workload.identity/use" not in deployment["spec"]["template"]["metadata"]["labels"]
 
 
+def test_renders_optional_deployment_strategy():
+    default = _rendered_deployment({})
+    recreate = _rendered_deployment({"deploymentStrategy.type": "Recreate"})
+
+    assert "strategy" not in default["spec"]
+    assert recreate["spec"]["strategy"] == {"type": "Recreate"}
+
+
 def test_requests_the_cpu_admission_will_grant_every_container():
     deployment = _rendered_deployment({"redisTls": "true"})
     pod = deployment["spec"]["template"]["spec"]

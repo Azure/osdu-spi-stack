@@ -28,6 +28,8 @@ spec:
     automountServiceAccountToken: false
     workloadIdentity: false
     replicaCount: 1
+    deploymentStrategy:
+      type: Recreate
     terminationGracePeriodSeconds: 45
     image:
       repository: ${OPEN_ETP_CLIENT_IMAGE_REPOSITORY}

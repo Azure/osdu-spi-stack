@@ -12,7 +12,7 @@ The client calls in-cluster OSDU and Open ETP endpoints with the caller's bearer
 
 Workload-scoped Istio `AuthorizationPolicy` resources protect Open ETP server and client. Exact health paths allow anonymous probes. Every other path requires a principal produced by the namespace `RequestAuthentication` from ADR-016.
 
-Open ETP client runs with one replica until transaction state is externalized or a tested affinity contract keeps every transaction on its owning process. Its pod receives 45 seconds for termination, exceeding the application's 30-second transaction drain window.
+Open ETP client runs with one replica and a `Recreate` deployment strategy until transaction state is externalized or a tested affinity contract keeps every transaction on its owning process. `Recreate` prevents old and new client pods from serving concurrently during an upgrade. Its pod receives 45 seconds for termination, exceeding the application's 30-second transaction drain window.
 
 The client uses the namespace `default` ServiceAccount with service-account token automount disabled and without the Azure Workload Identity label. Open ETP server retains its dedicated Azure workload identity because it accesses OSDU data-plane dependencies.
 
@@ -27,5 +27,6 @@ Rejected: assign the shared workload identity to the client for consistency. The
 - REST, GraphQL, WebSocket, and local-token paths require an Istio-validated bearer principal.
 - `/health` on the server and `/health/liveness` plus `/health/readiness` on the client remain available to Kubernetes probes without a bearer token.
 - The client cannot provide horizontal capacity or pod-level failover while transaction state is process-local.
+- Client upgrades stop the old pod before starting its replacement, so upgrades include downtime.
 - A normal termination can spend up to 30 seconds draining transactions before Kubernetes ends the pod.
 - The client has neither a projected Kubernetes API token nor Azure workload identity credentials.

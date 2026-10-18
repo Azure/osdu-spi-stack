@@ -771,6 +771,32 @@ class TestAutomatedGatewayDeployment:
             {"from": [{"source": {"requestPrincipals": ["*"]}}]},
         ]
 
+    def test_open_etp_client_serializes_process_local_transactions(self):
+        release = yaml.safe_load(
+            (STACKS / "ddms" / "open-etp-client.yaml").read_text(encoding="utf-8")
+        )
+        values = release["spec"]["values"]
+
+        assert values["replicaCount"] == 1
+        assert values["deploymentStrategy"] == {"type": "Recreate"}
+        assert values["terminationGracePeriodSeconds"] == 45
+
+    def test_open_etp_client_requires_an_authenticated_principal_outside_health(self):
+        policies = list(
+            yaml.safe_load_all(
+                (STACKS / "ddms" / "authorization-policies.yaml").read_text(encoding="utf-8")
+            )
+        )
+        policy = next(item for item in policies if item["metadata"]["name"] == "open-etp-client")
+
+        assert policy["spec"]["selector"]["matchLabels"] == {
+            "app.kubernetes.io/name": "osdu-open-etp-client"
+        }
+        assert policy["spec"]["rules"] == [
+            {"to": [{"operation": {"paths": ["/health/liveness", "/health/readiness"]}}]},
+            {"from": [{"source": {"requestPrincipals": ["*"]}}]},
+        ]
+
     @pytest.mark.parametrize(
         ("ingress", "path", "extra_dependency", "substituted"),
         [
