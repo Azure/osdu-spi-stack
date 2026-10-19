@@ -423,6 +423,7 @@ class TestMinimalProfileScope:
     def test_ingress_declares_no_osdu_routes(self, mode):
         names = _declared_names(_ingress_tree(Profile.MINIMAL, mode))
         assert "spi-osdu-routes" not in names
+        assert "spi-ddms-routes" not in names
 
 
 class TestBareProfileScope:
@@ -705,6 +706,97 @@ class TestAutomatedGatewayDeployment:
             if {key: ref.get(key) for key in expected} != expected
         ]
         assert not wrong, f"parentRefs must attach to {expected}: {wrong}"
+
+    @pytest.mark.parametrize(
+        ("mode", "hostname"),
+        [
+            ("ip-only", None),
+            ("single-host", "${INGRESS_FQDN}"),
+            ("multi-host", "${INGRESS_HOST_OSDU}"),
+        ],
+    )
+    def test_open_etp_route_rewrites_the_public_prefix(self, mode, hostname):
+        path = STACKS / "routes" / mode / "ddms" / "routes.yaml"
+        route = next(
+            doc
+            for doc in yaml.safe_load_all(path.read_text(encoding="utf-8"))
+            if doc and doc.get("kind") == "HTTPRoute" and doc["metadata"]["name"] == "open-etp"
+        )
+        assert route["spec"].get("hostnames") == ([hostname] if hostname else None)
+        rule = route["spec"]["rules"][0]
+        assert rule["matches"] == [
+            {
+                "path": {
+                    "type": "PathPrefix",
+                    "value": "/api/reservoir-ddms-etp/v2/",
+                }
+            }
+        ]
+        assert rule["filters"] == [
+            {
+                "type": "URLRewrite",
+                "urlRewrite": {
+                    "path": {
+                        "type": "ReplacePrefixMatch",
+                        "replacePrefixMatch": "/",
+                    }
+                },
+            }
+        ]
+        assert rule["backendRefs"] == [{"name": "open-etp", "port": 80}]
+
+    def test_open_etp_uses_mintable_data_plane_scopes(self):
+        release = yaml.safe_load((STACKS / "ddms" / "open-etp.yaml").read_text(encoding="utf-8"))
+        env = {item["name"]: item["value"] for item in release["spec"]["values"]["env"]}
+
+        assert env["AZURE_KEYVAULT_ACCESS_TOKEN_SCOPE"] == "https://vault.azure.net/.default"
+        assert (
+            env["AZURE_OSDU_ACCESS_TOKEN_SCOPE_OVERRIDE"] == "https://management.azure.com/.default"
+        )
+
+    def test_open_etp_requires_an_authenticated_principal_outside_health(self):
+        policies = list(
+            yaml.safe_load_all(
+                (STACKS / "ddms" / "authorization-policies.yaml").read_text(encoding="utf-8")
+            )
+        )
+        policy = next(item for item in policies if item["metadata"]["name"] == "open-etp")
+
+        assert policy["spec"]["selector"]["matchLabels"] == {
+            "app.kubernetes.io/name": "osdu-open-etp"
+        }
+        assert policy["spec"]["rules"] == [
+            {"to": [{"operation": {"paths": ["/health"]}}]},
+            {"from": [{"source": {"requestPrincipals": ["*"]}}]},
+        ]
+
+    @pytest.mark.parametrize(
+        ("ingress", "path", "extra_dependency", "substituted"),
+        [
+            ("ip", "./software/stacks/osdu/routes/ip-only/ddms", None, False),
+            ("azure", "./software/stacks/osdu/routes/single-host/ddms", None, True),
+            (
+                "dns",
+                "./software/stacks/osdu/routes/multi-host/ddms",
+                "spi-external-dns-release",
+                True,
+            ),
+        ],
+    )
+    def test_full_ingress_profiles_own_ddms_routes(
+        self, ingress, path, extra_dependency, substituted
+    ):
+        stack = list(yaml.safe_load_all((INGRESS_DIR / ingress / "stack.yaml").read_text()))
+        route = next(item for item in stack if item["metadata"]["name"] == "spi-ddms-routes")
+        dependencies = {item["name"] for item in route["spec"]["dependsOn"]}
+
+        assert route["spec"]["path"] == path
+        assert {"spi-osdu-ddms", "spi-ingress-gateway"} <= dependencies
+        if extra_dependency:
+            assert extra_dependency in dependencies
+        else:
+            assert "spi-external-dns-release" not in dependencies
+        assert ("postBuild" in route["spec"]) is substituted
 
     def test_tls_listeners_reference_secrets_in_the_gateway_namespace(self):
         for mode in ("azure", "dns"):

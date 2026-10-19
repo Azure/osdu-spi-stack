@@ -338,8 +338,8 @@ def test_omitted_image_refresh_preserves_existing_lock(monkeypatch):
     monkeypatch.setattr(deploy, "read_lock", lambda required=False: {"data": {"existing": "lock"}})
     monkeypatch.setattr(
         deploy,
-        "apply_schema_load_backfill",
-        lambda branch: backfills.append(branch),
+        "apply_image_lock_backfill",
+        lambda branch, sources: backfills.append((branch, sources)),
     )
     resolve = pytest.fail
     monkeypatch.setattr(
@@ -353,8 +353,9 @@ def test_omitted_image_refresh_preserves_existing_lock(monkeypatch):
         lambda *_args, **_kwargs: resolve("lock write must not run"),
     )
 
-    assert deploy._ensure_image_lock(config, None, "master", {}) == {}
-    assert backfills == ["master"]
+    sources = {"open-etp": "KiranBedre/osdu-spi-reservoir-open-etp-server"}
+    assert deploy._ensure_image_lock(config, None, "master", {}, sources) == {}
+    assert backfills == [("master", sources)]
 
 
 def test_omitted_image_refresh_creates_missing_lock_under_the_source_policy(monkeypatch):
@@ -433,8 +434,8 @@ def test_explicit_no_refresh_preserves_existing_core_lock(monkeypatch):
     monkeypatch.setattr(deploy, "read_lock", lambda required=False: {"data": {}})
     monkeypatch.setattr(
         deploy,
-        "apply_schema_load_backfill",
-        lambda branch: backfills.append(branch),
+        "apply_image_lock_backfill",
+        lambda branch, sources: backfills.append((branch, sources)),
     )
     monkeypatch.setattr(
         deploy,
@@ -443,7 +444,7 @@ def test_explicit_no_refresh_preserves_existing_core_lock(monkeypatch):
     )
 
     assert deploy._ensure_image_lock(config, False, "master", {}) == {}
-    assert backfills == ["master"]
+    assert backfills == [("master", None)]
 
 
 def test_explicit_refresh_uses_pre_resolved_images(monkeypatch):

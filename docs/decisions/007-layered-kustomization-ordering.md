@@ -24,9 +24,9 @@ The core profile defines a set of ordered layers (0a through 6) wired by explici
 | 5b | `spi-osdu-schema-load` (one-shot Job, ADR-013) | `spi-osdu-init` |
 | 5c | `spi-osdu-legal` (legal tag seeding, ADR-015) | `spi-osdu-init` |
 | 5d | `spi-osdu-members` (entitlements membership seeding, ADR-015) | `spi-osdu-init` |
-| 6 | `spi-osdu-reference` (reference services) | 5, 5b |
+| 6 | `spi-osdu-reference` (reference services), `spi-osdu-ddms` (domain data management services) | reference: 5, 5b; DDMS: 5a |
 
-The ingress profile (`software/stacks/osdu/ingress/<mode>/stack.yaml`, ADR-012) attaches additional Kustomizations at Layer 1 (the Gateway rendering, for which the selected ingress tree is the sole Flux owner per ADR-025, plus cert issuers, ExternalDNS, TLS overlays) and Layer 6 (`spi-middleware-routes`, `spi-osdu-routes`). The two profiles reconcile independently under one `fluxConfigurations` resource (ADR-009).
+The ingress profile (`software/stacks/osdu/ingress/<mode>/stack.yaml`, ADR-012) attaches additional Kustomizations at Layer 1 (the Gateway rendering, for which the selected ingress tree is the sole Flux owner per ADR-025, plus cert issuers, ExternalDNS, TLS overlays) and Layer 6 (`spi-middleware-routes`, `spi-osdu-routes`, `spi-ddms-routes`). The two profiles reconcile independently under one `fluxConfigurations` resource (ADR-009).
 
 The `minimal` profile (ADR-021) declares layers 0a through 4b, apart from 0c, and stops, pairing with the `<mode>-minimal` ingress trees so no `dependsOn` is left unsatisfiable.
 

@@ -30,6 +30,7 @@ from spi.azure_infra import (
     _build_bicep_params,
     _decode_jwt_claim,
     _deployer_oid_from_arm_token,
+    _reservoir_postgres_name,
     _resolve_deployer_principal,
     provision_azure_infra,
 )
@@ -210,9 +211,20 @@ def test_bicep_params_receive_resolved_deployer_identity():
 
 def test_bicep_params_carry_the_kubelet_identity_for_its_pull_grant():
     params = _build_bicep_params(
-        Config(env="test"), "https://oidc.example/", OID, "User", "kubelet-oid"
+        Config(env="test"),
+        "https://oidc.example/",
+        OID,
+        "User",
+        "kubelet-oid",
+        "203.0.113.10",
     )
     assert params["kubeletIdentityObjectId"] == "kubelet-oid"
+    assert params["aksNatPublicIpAddress"] == "203.0.113.10"
+    assert params["reservoirPostgresNames"] == ["osdu-test-opendes-reservoir-pg"]
+
+
+def test_reservoir_postgres_name_is_valid_without_an_environment():
+    assert _reservoir_postgres_name("opendes", "", "abcde") == ("osdu-opendes-reservoir-pg-abcde")
 
     preview = _build_bicep_params(Config(env="test"), "", OID, "User")
     assert preview["kubeletIdentityObjectId"] == ""
@@ -274,6 +286,7 @@ def test_unresolved_deployer_fails_before_suffix_persistence():
 def _provision(aks_outputs: dict) -> dict:
     """Run `provision_azure_infra` past the cluster and return main.bicep's parameters."""
 
+    aks_outputs.setdefault("natGatewayPublicIpAddress", "203.0.113.10")
     account = {"id": "subscription-id", "tenantId": TID}
     with (
         patch("spi.azure_infra._resolve_system_pool_zones", return_value=None),
@@ -297,3 +310,21 @@ def test_a_cluster_reporting_no_kubelet_identity_is_called_out(capsys):
     parameters = _provision({"oidcIssuerUrl": "https://oidc.example/"})
     assert parameters["kubeletIdentityObjectId"] == ""
     assert "no kubelet identity" in " ".join(capsys.readouterr().out.split())
+
+
+def test_dry_run_uses_a_documentation_address_when_aks_has_no_nat_output():
+    account = {"id": "subscription-id", "tenantId": TID}
+    with (
+        patch("spi.azure_infra._resolve_system_pool_zones", return_value=None),
+        patch("spi.azure_infra.create_resource_group"),
+        patch("spi.azure_infra.create_aks_automatic", return_value={}),
+        patch("spi.azure_infra.run_bicep_deployment", return_value={}) as deploy,
+    ):
+        provision_azure_infra(
+            Config(env="test"),
+            dry_run=True,
+            account=account,
+            deployer_principal=(OID, "User"),
+        )
+
+    assert deploy.call_args.kwargs["parameters"]["aksNatPublicIpAddress"] == "192.0.2.1"
