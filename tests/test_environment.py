@@ -371,6 +371,14 @@ class TestFetchDeclared:
             fetch_declared(self.LOCATOR)
 
 
+FORKED_YAML = (
+    VALID_YAML
+    + """\
+forks:
+  - service: legal
+    repo: Acme/osdu-spi-legal
+"""
+)
 RESOURCES = """\
 resources:
   postgres:
@@ -385,7 +393,7 @@ def test_a_declaration_without_resources_sets_no_sizing():
 
 
 def test_a_declaration_carries_its_sizing():
-    declaration = parse_declaration(VALID_YAML + RESOURCES)
+    declaration = parse_declaration(FORKED_YAML + RESOURCES)
 
     assert declaration.sizing() == {"PG_INSTANCES": "2", "LEGAL_REPLICAS": "1"}
 
@@ -401,9 +409,14 @@ def test_rejects_resources_below_core():
         parse_declaration(raw)
 
 
+def test_rejects_resources_without_forks():
+    with pytest.raises(EnvironmentDeclarationError, match="resources requires forks"):
+        parse_declaration(VALID_YAML + RESOURCES)
+
+
 def test_rejects_resources_the_sizing_checks_refuse():
     with pytest.raises(EnvironmentDeclarationError, match="postgres.instances 1 is below 2"):
-        parse_declaration(VALID_YAML + RESOURCES.replace("instances: 2", "instances: 1"))
+        parse_declaration(FORKED_YAML + RESOURCES.replace("instances: 2", "instances: 1"))
 
 
 class TestStackFile:

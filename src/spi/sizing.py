@@ -124,13 +124,17 @@ _AIRFLOW_COMPONENTS = {
 
 _COUNT_SUFFIXES = ("_REPLICAS", "_COUNT", "_INSTANCES")
 _STORAGE_SUFFIX = "_STORAGE"
-_CPU_RE = re.compile(r"^(?:[1-9][0-9]*m|[0-9]+(?:\.[0-9]+)?)$")
+_CPU_RE = re.compile(r"^(?:[1-9][0-9]*m|[0-9]+(?:\.[0-9]{1,3})?)$")
 _BYTES_RE = re.compile(r"^([1-9][0-9]*)(Ki|Mi|Gi|Ti)$")
 _UNITS = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40}
 _DECIMAL_UNITS = {"": 1, "k": 10**3, "M": 10**6, "G": 10**9, "T": 10**12}
 
 # Must equal the limits on the platform and osdu NodePools in software/components/nodepools.
 POOL_LIMITS = {"platform": (64_000, 256 * 2**30), "osdu": (64_000, 256 * 2**30)}
+# The largest node each pool's sku-cpu allows; the D family carries 4GiB per vCPU.
+NODE_SIZES = {"platform": (8_000, 32 * 2**30), "osdu": (16_000, 64 * 2**30)}
+# Each of these requires a node per pod through hostname anti-affinity.
+_ONE_PER_NODE = {"ES": "ES_COUNT", "PG": "PG_INSTANCES", "REDIS": "REDIS_REPLICAS"}
 MIN_CPU_REQUEST = 100
 # The Postgres cluster keeps one synchronous replica, which needs a second instance.
 MIN_PG_INSTANCES = 2
@@ -158,7 +162,7 @@ def _leaves(value: Any, path: tuple[str, ...] = ()) -> Iterator[tuple[tuple[str,
     if isinstance(value, Mapping) and value:
         for key, child in value.items():
             yield from _leaves(child, (*path, str(key)))
-    elif not isinstance(value, Mapping):
+    else:
         yield path, value
 
 
@@ -196,6 +200,8 @@ def overrides(resources: Mapping[str, Any]) -> dict[str, str]:
         for path, value in _leaves(fields):
             label = ".".join(("resources", component, *path))
             key = paths.get(path)
+            if key is None and value == {} and any(p[: len(path)] == path for p in paths):
+                continue
             if key is None:
                 raise SizingError(
                     f"{label}: unknown field; {component} takes "
@@ -289,6 +295,19 @@ def check(values: Mapping[str, str]) -> None:
             "slot alone may keep 2GB of WAL"
         )
     for pool, pods in _pods(sized).items():
+        node_cpu, node_memory = NODE_SIZES[pool]
+        nodes = min(POOL_LIMITS[pool][0] // node_cpu, POOL_LIMITS[pool][1] // node_memory)
+        for prefix, count in pods:
+            node = f"one {pool} node of {node_cpu // 1000} CPU and {node_memory // 2**30}Gi"
+            if millicores(sized[f"{prefix}_CPU_REQUEST"]) >= node_cpu:
+                problems.append(f"{_said(sized, f'{prefix}_CPU_REQUEST')} does not fit {node}")
+            if to_bytes(sized[f"{prefix}_MEMORY_REQUEST"]) >= node_memory:
+                problems.append(f"{_said(sized, f'{prefix}_MEMORY_REQUEST')} does not fit {node}")
+            if prefix in _ONE_PER_NODE and count > nodes:
+                problems.append(
+                    f"{_said(sized, _ONE_PER_NODE[prefix])} needs {count} {pool} nodes, one "
+                    f"per pod, and the pool holds at most {nodes}"
+                )
         cpu = sum(millicores(sized[f"{p}_CPU_REQUEST"]) * n for p, n in pods)
         memory = sum(to_bytes(sized[f"{p}_MEMORY_REQUEST"]) * n for p, n in pods)
         cpu_limit, memory_limit = POOL_LIMITS[pool]

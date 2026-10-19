@@ -232,6 +232,12 @@ def _validate_resources(declaration: EnvironmentDeclaration) -> None:
             f"resources requires profile 'core'; sizing builds on core, and profile "
             f"{declaration.profile.value!r} is below it"
         )
+    # env-upgrade hands a declaration the environment only when it lists forks.
+    if declaration.resources and not declaration.forks:
+        raise EnvironmentDeclarationError(
+            "resources requires forks; a declaration owns the environment, and its sizing, "
+            "only once it lists the forks it trusts"
+        )
     try:
         declaration.sizing()
     except SizingError as exc:

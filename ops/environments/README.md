@@ -52,7 +52,9 @@ follows:
 | `repo` | The `<org>/<fork>` the service's `fork-<service>` credential trusts; unique within the list, compared without case, at most nineteen entries (ADR-032). |
 | `canonicalSource` | `community` or `fork`, default `community`; a fork is trusted first and promoted by a later reviewed change (ADR-033). |
 
-`resources` is optional and valid only with `profile: core`. It sizes the
+`resources` is optional and valid only with `profile: core` and a `forks`
+list, since `env-upgrade` hands the environment to a declaration only when it
+lists forks. It sizes the
 OSDU services and the in-cluster middleware: a service name, `elasticsearch`,
 `postgres`, `redis`, or `airflow`, each with the fields `src/spi/sizing.py`
 names, such as `replicas`, `cpu: {request, limit}`, `memory: {request, limit}`,

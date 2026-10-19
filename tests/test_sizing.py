@@ -89,6 +89,20 @@ def test_every_field_an_operator_writes_names_a_key_the_manifests_carry():
         assert sorted(sizing.field_paths(component).values()) == sorted(defaults), component
 
 
+def test_the_node_sizes_the_checks_assume_are_the_largest_the_nodepools_allow():
+    nodepools = COMPONENTS / "nodepools" / "nodepools.yaml"
+    largest = {}
+    for doc in yaml.safe_load_all(nodepools.read_text()):
+        if doc and doc["kind"] == "NodePool":
+            (cpus,) = [
+                r["values"]
+                for r in doc["spec"]["template"]["spec"]["requirements"]
+                if r["key"] == "karpenter.azure.com/sku-cpu"
+            ]
+            largest[doc["metadata"]["name"]] = max(int(c) for c in cpus) * 1000
+    assert largest == {pool: cpu for pool, (cpu, _) in sizing.NODE_SIZES.items()}
+
+
 def test_the_pool_limits_the_checks_assume_are_the_nodepools():
     nodepools = COMPONENTS / "nodepools" / "nodepools.yaml"
     limits = {
@@ -139,6 +153,20 @@ def test_a_resources_section_becomes_only_the_keys_it_sets():
         ({"postgres": {"storage": "20G"}}, "must be a whole number with a unit"),
         ({"legal": {"memory": {"limit": "2"}}}, "must be a whole number with a unit"),
         ({"legal": {"cpu": {"limit": "two"}}}, "must be a CPU quantity"),
+        # Finer than 1m would round to the limit and pass the comparison.
+        ({"legal": {"cpu": {"request": "1.0004"}}}, "must be a CPU quantity"),
+        ({"legal": {"replicas": {}}}, "whole number of at least 1"),
+        ({"legal": {"typo": {}}}, "resources.legal.typo: unknown field"),
+        (
+            {"postgres": {"cpu": {"request": 9, "limit": 9}}},
+            "postgres.cpu.request 9 does not fit one platform node of 8 CPU",
+        ),
+        (
+            {"storage": {"memory": {"request": "64Gi", "limit": "64Gi"}}},
+            "storage.memory.request 64Gi does not fit one osdu node",
+        ),
+        ({"elasticsearch": {"count": 9}}, "elasticsearch.count 9 needs 9 platform nodes"),
+        ({"redis": {"replicas": 8}}, "redis.replicas 8 needs 9 platform nodes"),
         ({"legal": {"cpu": {"request": "50m"}}}, "legal.cpu.request 50m is below the 100m"),
         ({"legal": {"cpu": {"request": "2"}}}, "legal.cpu.request 2 exceeds legal.cpu.limit 1"),
         (
@@ -154,6 +182,10 @@ def test_a_resources_section_becomes_only_the_keys_it_sets():
 def test_a_value_the_cluster_would_refuse_is_refused_first(resources, refusal):
     with pytest.raises(sizing.SizingError, match=re.escape(refusal)):
         sizing.overrides(resources)
+
+
+def test_empty_groupings_set_nothing():
+    assert sizing.overrides({"legal": {}, "unit": {"cpu": {}}, "airflow": {"scheduler": {}}}) == {}
 
 
 def test_every_problem_is_reported_at_once():
