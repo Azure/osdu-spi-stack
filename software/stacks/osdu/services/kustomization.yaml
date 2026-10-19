@@ -11,3 +11,4 @@ resources:
   - indexer-queue.yaml
   - file.yaml
   - workflow.yaml
+  - dataset.yaml

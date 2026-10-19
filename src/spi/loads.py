@@ -108,7 +108,7 @@ class Load(BaseModel):
     runner: Literal["flux", "job"]
     requires: list[str] = []
     source: Source
-    loader: Optional[Literal["records"]] = None
+    loader: Optional[Literal["records", "schemas"]] = None
     scope: Literal["primary-partition", "each-partition"]
 
     @model_validator(mode="after")
@@ -448,6 +448,7 @@ def _create_job(load: Load, partition: str, target: Target) -> str:
         dataset=load.name,
         partition=partition,
         source=load.source.identity,
+        loader=load.loader or "",
         env={
             "PARTITION": partition,
             "LEGAL_TAG": f"{partition}-{target.legal_tag_base}",

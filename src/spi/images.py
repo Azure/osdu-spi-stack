@@ -34,6 +34,11 @@ DEFAULT_IMAGE_BRANCH = "master"
 FORK_MAIN_TAG = "main-snapshot"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"
+INDEXER_SERVICE_NAME = "indexer"
+INDEXER_COMMUNITY_RUNTIME_IMAGE = (
+    "docker.io/library/eclipse-temurin@"
+    "sha256:3c0a9084927a221ccd1d007fcaf614465672c0af37aaa834c5184483afe56d61"
+)
 SCHEMA_SERVICE_NAME = "schema"
 SCHEMA_LOAD_SERVICE_NAME = "schema-load"
 
@@ -68,6 +73,7 @@ class ImageRegistryEntry:
     image: str
     file: str
     image_lock: bool = True
+    branch: str = ""
 
 
 @dataclass(frozen=True)
@@ -105,6 +111,13 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
     "indexer-queue": ImageRegistryEntry(73, "indexer-queue", "services/indexer-queue.yaml"),
     "file": ImageRegistryEntry(90, "file", "services/file.yaml"),
     "workflow": ImageRegistryEntry(146, "ingestion-workflow", "services/workflow.yaml"),
+    "dataset": ImageRegistryEntry(118, "dataset", "services/dataset.yaml"),
+    "rafs": ImageRegistryEntry(
+        1415,
+        "rafs-ddms-services",
+        "ddms/rafs.yaml",
+        branch="main",
+    ),
     "crs-conversion": ImageRegistryEntry(
         22,
         "crs-conversion-service",
@@ -229,7 +242,15 @@ def _parse_gitlab_datetime(value: str) -> datetime:
 
 
 def _newest_immutable_tag(project_id: int, repo_id: int, tags: Iterable[dict]) -> dict | None:
-    details = [_tag_detail(project_id, repo_id, tag["name"]) for tag in tags if tag.get("name")]
+    details = []
+    for tag in tags:
+        if not tag.get("name"):
+            continue
+        try:
+            details.append(_tag_detail(project_id, repo_id, tag["name"]))
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
     immutable = [tag for tag in details if _SHA_TAG_RE.match(tag.get("name", ""))]
     candidates = immutable or details
     if not candidates:
@@ -240,13 +261,28 @@ def _newest_immutable_tag(project_id: int, repo_id: int, tags: Iterable[dict]) -
 def resolve_image(service_name: str, entry: ImageRegistryEntry, branch: str) -> ResolvedImage:
     """Resolve the newest immutable image tag for a service."""
 
+    branch = entry.branch or branch
     image_name = f"{entry.image}-{branch}"
     repo = _registry_repository(entry.project_id, image_name)
     if not repo:
         raise ImageResolutionError(f"{service_name}: registry repository {image_name!r} not found")
 
-    tags = _registry_tags(entry.project_id, repo["id"])
-    tag = _newest_immutable_tag(entry.project_id, repo["id"], tags)
+    tag = None
+    if entry.branch:
+        quoted_branch = urllib.parse.quote(entry.branch, safe="")
+        branch_data = gitlab_get(
+            f"{GITLAB_HOST}/api/v4/projects/{entry.project_id}/repository/branches/{quoted_branch}"
+        )
+        commit = (branch_data.get("commit") or {}).get("id")
+        if commit:
+            try:
+                tag = _tag_detail(entry.project_id, repo["id"], commit)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404:
+                    raise
+    if not tag:
+        tags = _registry_tags(entry.project_id, repo["id"])
+        tag = _newest_immutable_tag(entry.project_id, repo["id"], tags)
     if not tag:
         raise ImageResolutionError(f"{service_name}: no tags found in {image_name!r}")
 
@@ -835,6 +871,14 @@ def image_ref(repository: str, tag: str, digest: str) -> str:
     return f"{repository}@{digest}" if digest else f"{repository}:{tag}"
 
 
+def indexer_runtime_image(repository: str, tag: str, digest: str) -> str:
+    """A Java 25 runtime with the same libc as the selected Indexer image."""
+
+    if repository.startswith("community.opengroup.org:5555/"):
+        return INDEXER_COMMUNITY_RUNTIME_IMAGE
+    return image_ref(repository, tag, digest)
+
+
 def schema_load_lock_patch(
     lock_data: Mapping[str, str],
     branch: str = DEFAULT_IMAGE_BRANCH,
@@ -929,6 +973,12 @@ def build_lock_data(
         data[f"{key}_IMAGE_DIGEST"] = image.digest
         data[f"{key}_IMAGE_REF"] = image_ref(image.repository, image.tag, image.digest)
         data[do_not_disrupt_key(name)] = str(name in protected).lower()
+        if name == INDEXER_SERVICE_NAME:
+            data["INDEXER_RUNTIME_IMAGE"] = indexer_runtime_image(
+                image.repository,
+                image.tag,
+                image.digest,
+            )
         if image.acceptance_digest:
             data[acceptance_digest_key(name)] = image.acceptance_digest
     return data

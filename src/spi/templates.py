@@ -45,6 +45,7 @@ allowVolumeExpansion: {str(allow_volume_expansion).lower()}"""
 def osdu_config_configmap(
     domain: str,
     primary_partition: str,
+    partitions: list[str],
     tenant_id: str,
     identity_client_id: str,
     aad_client_id: str,
@@ -76,6 +77,7 @@ metadata:
 data:
   DOMAIN: "{domain}"
   PRIMARY_PARTITION: "{primary_partition}"
+  PARTITIONS: "{",".join(partitions)}"
   AZURE_TENANT_ID: "{tenant_id}"
   AAD_CLIENT_ID: "{aad_client_id}"
   KEYVAULT_URI: "{keyvault_uri}"
@@ -385,7 +387,14 @@ LOAD_JOB_SCRIPTS = "osdu-spi-init-scripts"
 LOAD_JOB_DEADLINE_SECONDS = 7200
 
 
-def load_job(name: str, dataset: str, partition: str, source: str, env: Mapping[str, str]) -> str:
+def load_job(
+    name: str,
+    dataset: str,
+    partition: str,
+    source: str,
+    loader: str,
+    env: Mapping[str, str],
+) -> str:
     """The Job `spi load` creates for one dataset and partition (ADR-040).
 
     It mirrors the init chart's pod spec so admission treats it the same. No
@@ -447,7 +456,7 @@ spec:
           imagePullPolicy: IfNotPresent
           command:
             - python
-            - /scripts/load_records.py
+            - /scripts/load_{loader}.py
           env:
             # Unbuffered, so `spi load` can show progress while the Job runs.
             - name: PYTHONUNBUFFERED

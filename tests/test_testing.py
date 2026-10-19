@@ -10,6 +10,7 @@ import os
 import stat
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -34,7 +35,15 @@ args = parser.parse_args()
 report = {
     "report_schema": behavior.get("schema", 1),
     "service": behavior.get("service", "partition"),
-    "contract": {"test_dir": "suite", "maven_arguments": ["verify"], "timeout_minutes": 5},
+    "contract": {
+        "test_type": behavior.get("test_type", "maven"),
+        "test_dir": "suite",
+        "test_entrypoint": behavior.get("test_entrypoint", ""),
+        "test_arguments": behavior.get("test_arguments", []),
+        "report_paths": behavior.get("report_paths", []),
+        "maven_arguments": ["verify"],
+        "timeout_minutes": 5,
+    },
     "seen_env": sorted(os.environ),
     "suite": args.suite,
     "error": None,
@@ -52,6 +61,24 @@ pathlib.Path(behavior["record"]).write_text(json.dumps(sys.argv[1:]))
 print(behavior.get("verdict_line", "pass: 1 tests, 0 skipped"))
 sys.exit(behavior.get("verdict", 0))
 """
+XML_VERDICT = """
+import argparse, pathlib, sys, xml.etree.ElementTree as ET
+parser = argparse.ArgumentParser()
+parser.add_argument("--exit-code", type=int, required=True)
+parser.add_argument("--reports", required=True)
+args = parser.parse_args()
+totals = {"tests": 0, "skipped": 0, "failures": 0, "errors": 0}
+for report in pathlib.Path(args.reports).rglob("TEST-*.xml"):
+    root = ET.parse(report).getroot()
+    for key in totals:
+        totals[key] += int(root.get(key, 0))
+ran = totals["tests"] - totals["skipped"]
+broken = totals["failures"] + totals["errors"]
+if args.exit_code or not ran or broken:
+    print(f"FAIL: {broken} of {ran} tests failed or errored")
+    sys.exit(1)
+print(f"pass: {ran} tests, {totals['skipped']} skipped")
+"""
 
 
 def _machinery(root: Path, **behavior) -> Path:
@@ -60,7 +87,10 @@ def _machinery(root: Path, **behavior) -> Path:
     for relative, body in (
         (testing.DESCRIPTOR_PATH, "service: partition\n"),
         (testing.RESOLVER_PATH, prelude + FAKE_RESOLVER),
-        (testing.VERDICT_PATH, prelude + FAKE_VERDICT),
+        (
+            testing.VERDICT_PATH,
+            XML_VERDICT if behavior.get("xml_verdict") else prelude + FAKE_VERDICT,
+        ),
     ):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -124,6 +154,211 @@ def _pin(**overrides) -> ServicePin:
     )
     fields.update(overrides)
     return ServicePin(**fields)
+
+
+def test_paired_script_entrypoint_is_forwarded_without_changing_maven_images():
+    script = testing._docker_run(
+        "repo/script",
+        ".",
+        "suite.env",
+        ["--flag"],
+        entrypoint="tests/integration/run_spi.sh",
+    )
+    maven = testing._docker_run("repo/maven", "testing", "suite.env", ["verify"])
+
+    assert script[script.index("SUITE_ENTRYPOINT=tests/integration/run_spi.sh") - 1] == "-e"
+    assert all(not item.startswith("SUITE_ENTRYPOINT=") for item in maven)
+
+
+def test_script_arguments_come_from_the_resolver_contract(tmp_path):
+    arguments = ["--bearer-token", "${TOKEN}", "--partition", "${PARTITION}"]
+    binding = testing._Binding(
+        "paired",
+        "",
+        "repo/script",
+        "a" * 40,
+        tmp_path,
+        {"test_type": "script", "test_arguments": arguments},
+        tmp_path / "suite.env",
+        {},
+        {},
+    )
+
+    assert binding.arguments((), {"TOKEN": "bearer", "PARTITION": "opendes"}) == [
+        "--bearer-token",
+        "bearer",
+        "--partition",
+        "opendes",
+    ]
+
+
+def test_windows_bash_script_path_uses_forward_slashes(monkeypatch, tmp_path):
+    script = tmp_path / "run_spi.sh"
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setattr(testing, "_ON_WINDOWS", True)
+    monkeypatch.setattr(testing.shutil, "which", lambda _name: r"C:\Git\bin\bash.exe")
+
+    assert testing._script(tmp_path, script.name, ()) == [
+        r"C:\Git\bin\bash.exe",
+        script.resolve().as_posix(),
+    ]
+
+
+def test_windows_wsl_bash_script_path_uses_mounted_drive():
+    assert testing._bash_path(Path("C:/Users/dev/run_spi.sh"), r"C:\Windows\System32\bash.exe") == (
+        "/mnt/c/Users/dev/run_spi.sh"
+    )
+
+
+def test_windows_prefers_git_bash_over_wsl(monkeypatch):
+    tools = {
+        "bash": r"C:\Windows\System32\bash.exe",
+        "git": r"C:\Program Files\Git\cmd\git.exe",
+    }
+    monkeypatch.setattr(testing.shutil, "which", tools.get)
+    monkeypatch.setattr(testing.os.path, "isfile", lambda _path: True)
+
+    assert testing._bash_executable() == r"C:\Program Files\Git\bin\bash.exe"
+
+
+def test_windows_git_bash_preserves_posix_script_arguments(monkeypatch, tmp_path):
+    script = tmp_path / "run_spi.sh"
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    env_file = tmp_path / "suite.env"
+    env_file.write_text("", encoding="utf-8")
+    seen = {}
+
+    def run(command, **kwargs):
+        seen["command"] = command
+        seen["display_cmd"] = kwargs["display_cmd"]
+        seen["env"] = kwargs["env"]
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(testing, "_ON_WINDOWS", True)
+    monkeypatch.setattr(testing.shutil, "which", lambda _name: r"C:\Program Files\Git\bin\bash.exe")
+    monkeypatch.setattr(testing, "run_command", run)
+    token = "minted-bearer-value"
+
+    testing.run_checkout(
+        tmp_path,
+        ".",
+        env_file,
+        ("--url-prefix", "/api/rafs-ddms", "--bearer-token", token),
+        None,
+        test_type="script",
+        entrypoint=script.name,
+        secrets=(token,),
+    )
+
+    assert seen["command"][-4:] == [
+        "--url-prefix",
+        "/api/rafs-ddms",
+        "--bearer-token",
+        token,
+    ]
+    assert token not in seen["display_cmd"]
+    assert "[redacted]" in seen["display_cmd"]
+    assert seen["env"]["MSYS2_ARG_CONV_EXCL"] == "*"
+
+
+def test_paired_run_displays_redacted_script_arguments(monkeypatch, tmp_path):
+    token = "minted-bearer-value"
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(testing, "_require_tool", lambda _name: None)
+    monkeypatch.setattr(testing, "run_command", run)
+    monkeypatch.setattr(
+        testing,
+        "run_process",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+
+    result = testing.run_paired(
+        "example/acceptance@sha256:test",
+        "suite",
+        tmp_path / "suite.env",
+        ("--bearer-token", token),
+        None,
+        tmp_path / "reports",
+        secrets=(token,),
+    )
+
+    command, kwargs = next(item for item in commands if item[0][:2] == ["docker", "run"])
+    assert token in command
+    assert token not in kwargs["display_cmd"]
+    assert "[redacted]" in kwargs["display_cmd"]
+    assert result == 0
+
+
+def test_declared_script_report_is_counted(tmp_path):
+    report = tmp_path / "tests" / "results" / "rafs.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        '<testsuites tests="2472" failures="34" errors="85" skipped="0"/>',
+        encoding="utf-8",
+    )
+
+    assert testing.count_tests(tmp_path, ("tests/results/rafs.xml",)) == {
+        "tests": 2472,
+        "skipped": 0,
+        "failures": 34,
+        "errors": 85,
+    }
+
+
+def test_declared_script_report_counts_child_suites(tmp_path):
+    report = tmp_path / "tests" / "results" / "rafs.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        """
+<testsuites>
+  <testsuite tests="2" failures="1" errors="0" skipped="0"/>
+  <testsuite tests="3" failures="0" errors="1" skipped="1"/>
+</testsuites>
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert testing.count_tests(tmp_path, ("tests/results/rafs.xml",)) == {
+        "tests": 5,
+        "skipped": 1,
+        "failures": 1,
+        "errors": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        (
+            '<testsuites><testsuite tests="3" skipped="1" failures="0" errors="0"/></testsuites>',
+            (True, "pass: 2 tests, 1 skipped"),
+        ),
+        (
+            '<testsuites><testsuite tests="3" skipped="0" failures="1" errors="0"/></testsuites>',
+            (False, "FAIL: 1 of 3 tests failed or errored"),
+        ),
+    ],
+)
+def test_declared_script_report_child_suites_drive_verdict(tmp_path, report, expected):
+    root = _machinery(tmp_path / "root", xml_verdict=True)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "rafs.xml").write_text(report, encoding="utf-8")
+
+    assert testing.judge(root, 0, reports, ("rafs.xml",)) == expected
+
+
+@pytest.mark.parametrize("pattern", ["../outside.xml", "/tmp/outside.xml"])
+def test_report_paths_must_stay_beneath_the_suite(tmp_path, pattern):
+    with pytest.raises(SuiteNotRun, match="must stay beneath") as exc:
+        testing.count_tests(tmp_path, (pattern,))
+
+    assert exc.value.code == "descriptor_rejected"
 
 
 @pytest.fixture
@@ -448,6 +683,63 @@ class TestGuards:
 
 
 class TestCheckoutRun:
+    def test_native_script_runs_the_declared_entrypoint(self, cluster, tmp_path):
+        checkout = _checkout(
+            tmp_path,
+            test_type="script",
+            test_entrypoint="run_spi.sh",
+            test_arguments=["--token", "${TOKEN}"],
+            report_paths=["results/rafs.xml"],
+        )
+        entrypoint = checkout / "suite" / "run_spi.sh"
+        entrypoint.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR)
+        head = _head(checkout)
+        cluster["locks"] = [_lock(tag=f"sha-{head[:12]}")]
+
+        testing.run_suite("partition", checkout=checkout)
+
+        [(script, kwargs)] = [
+            command
+            for command in cluster["commands"]
+            if any(item.endswith("run_spi.sh") for item in command[0])
+        ]
+        assert script[-2:] == ["--token", "a=b"]
+        assert kwargs["cwd"] == str(checkout.resolve() / "suite")
+
+    def test_native_script_declared_report_drives_the_commit_verdict(
+        self, cluster, monkeypatch, tmp_path
+    ):
+        checkout = _checkout(
+            tmp_path,
+            test_type="script",
+            test_entrypoint="run_spi.sh",
+            report_paths=["results/rafs.xml"],
+            xml_verdict=True,
+        )
+        entrypoint = checkout / "suite" / "run_spi.sh"
+        entrypoint.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR)
+        head = _head(checkout)
+        cluster["locks"] = [_lock(tag=f"sha-{head[:12]}")]
+
+        def run_script(command, **kwargs):
+            report = Path(kwargs["cwd"]) / "results" / "rafs.xml"
+            report.parent.mkdir()
+            report.write_text(
+                '<testsuite tests="3" skipped="1" failures="0" errors="0"/>',
+                encoding="utf-8",
+            )
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(testing, "run_command", run_script)
+
+        result = testing.run_suite("partition", checkout=checkout)
+
+        assert result.passed
+        assert result.verdict == "pass: 2 tests, 1 skipped"
+        assert result.tests == {"tests": 3, "skipped": 1, "failures": 0, "errors": 0}
+
     def test_native_maven_runs_the_suite_under_the_allowlisted_environment(
         self, cluster, monkeypatch, tmp_path
     ):
@@ -803,9 +1095,10 @@ class TestReport:
     def test_the_inspector_reads_the_run_before_it_is_discarded(self, cluster):
         seen = {}
 
-        def inspect(reports, secrets):
+        def inspect(reports, secrets, report_paths):
             seen["reports"] = sorted(p.name for p in reports.rglob("TEST-*.xml"))
             seen["secrets"] = set(secrets)
+            seen["report_paths"] = tuple(report_paths)
             seen["where"] = reports
             return {"totals": {"tests": 11}}
 
@@ -814,6 +1107,7 @@ class TestReport:
         assert seen["reports"] == ["TEST-a.xml"]
         # The bearers and what the env file holds under a credential's name; never HOST.
         assert seen["secrets"] == {"t", "m", "a=b"}
+        assert seen["report_paths"] == ()
         assert not seen["where"].exists()
         assert result.report == {"totals": {"tests": 11}}
         assert testing.run_suite("partition").report is None
@@ -901,7 +1195,7 @@ class TestReportCommand:
                 suite_dir = tmp_path / "run" / suite
                 (suite_dir / "src").mkdir(parents=True, exist_ok=True)
                 (suite_dir / "src" / "TestList.java").write_text("class TestList {}")
-                report = inspect(suite_dir, ("minted-bearer-value",))
+                report = inspect(suite_dir, ("minted-bearer-value",), ())
             passed = suite not in state["failing"]
             verdict = "pass: 1 tests, 0 skipped" if passed else "FAIL: 1 of 1"
             commit = state.get("commits", {}).get(suite, SHA)
@@ -939,7 +1233,10 @@ class TestReportCommand:
         monkeypatch.setattr(suite_review, "review_suites", review_suites)
         monkeypatch.setattr(suite_contract, "fetch_contract", fetch_contract)
         monkeypatch.setattr(info, "collect_endpoint", lambda service: f"https://gw/{service}/")
-        monkeypatch.setattr("spi.suite_report.collect", lambda reports, secrets: dict(FACTS))
+        monkeypatch.setattr(
+            "spi.suite_report.collect",
+            lambda reports, secrets, report_paths: dict(FACTS),
+        )
         state["temp"] = tmp_path / "temp"
         return state
 

@@ -63,10 +63,10 @@ class ClusterConfigError(RuntimeError):
     """The live spi-cluster-config could not be read, as opposed to not existing."""
 
 
-def _read_configmap_data(name: str) -> dict[str, str]:
-    """A ConfigMap's data in osdu-flux; empty when absent, an error on any other failure."""
+def _read_configmap_data(name: str, namespace: str = ISTIO_REVISION_NAMESPACE) -> dict[str, str]:
+    """A ConfigMap's data; empty when absent, an error on any other failure."""
     result = run_process(
-        ["kubectl", "get", "configmap", name, "-n", ISTIO_REVISION_NAMESPACE]
+        ["kubectl", "get", "configmap", name, "-n", namespace]
         + ["--ignore-not-found", "-o", "json"],
         capture_output=True,
         text=True,
@@ -191,6 +191,8 @@ def create_istio_revision_configmap(
 
 
 INIT_VALUES_CONFIGMAP = "spi-init-values"
+OSDU_CONFIG_CONFIGMAP = "osdu-config"
+OSDU_CONFIG_NAMESPACE = "osdu"
 
 
 def read_init_values() -> str:
@@ -245,6 +247,45 @@ def refresh_spi_init_values() -> None:
     )
     display_yaml(yaml_content, f"ConfigMap: {INIT_VALUES_CONFIGMAP}")
     kubectl_apply_yaml(yaml_content, f"refresh {INIT_VALUES_CONFIGMAP} ConfigMap")
+
+
+def refresh_osdu_config_partitions() -> bool:
+    """Backfill the partition list required by partition-aware runtime components.
+
+    Returns whether the cluster carries the core-profile ConfigMap. Reconcile
+    uses that result to avoid creating core-only runtime secrets in minimal and
+    bare environments.
+    """
+    try:
+        values = parse_init_values(read_init_values())
+        partitions = [str(partition) for partition in values.get("partitions") or []]
+        if not partitions:
+            console.print("  [dim]spi-init-values not found; skipping osdu-config refresh[/dim]")
+            return False
+        data = _read_configmap_data(OSDU_CONFIG_CONFIGMAP, OSDU_CONFIG_NAMESPACE)
+    except ClusterConfigError as exc:
+        console.print(f"[warning]{exc}; leaving {OSDU_CONFIG_CONFIGMAP} unchanged.[/warning]")
+        return False
+    if not data:
+        return False
+    joined = ",".join(partitions)
+    if data.get("PARTITIONS") == joined:
+        return True
+    run_command(
+        [
+            "kubectl",
+            "patch",
+            "configmap",
+            OSDU_CONFIG_CONFIGMAP,
+            "-n",
+            OSDU_CONFIG_NAMESPACE,
+            "--type=merge",
+            "-p",
+            json.dumps({"data": {"PARTITIONS": joined}}, separators=(",", ":")),
+        ],
+        description=f"Refresh {OSDU_CONFIG_CONFIGMAP} partition list",
+    )
+    return True
 
 
 def create_storage_classes() -> None:

@@ -82,4 +82,4 @@ spec:
       - name: SEARCH_HOST
         value: http://search/api/search/v2
       - name: AZURE_AD_APP_RESOURCE_ID
-        value: $(AAD_CLIENT_ID)
+        value: https://management.azure.com

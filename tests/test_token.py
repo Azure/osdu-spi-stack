@@ -245,6 +245,21 @@ def test_deploy_applies_annotated_tester_accounts():
     assert 'azure.workload.identity/client-id: "member-client-id"' in member
 
 
+def test_deploy_publishes_every_data_partition_to_osdu_config():
+    with (
+        patch("spi.deploy.display_yaml"),
+        patch("spi.deploy.kubectl_apply_yaml") as apply_yaml,
+    ):
+        deploy._create_osdu_config(
+            Config.from_env("dev1", data_partitions=["opendes", "second"]),
+            {"identity_client_id": "uami-id"},
+        )
+
+    configmap = apply_yaml.call_args_list[0].args[0]
+    assert 'PRIMARY_PARTITION: "opendes"' in configmap
+    assert 'PARTITIONS: "opendes,second"' in configmap
+
+
 def test_deploy_skips_tester_accounts_without_identity_outputs():
     with (
         patch("spi.deploy.display_yaml"),

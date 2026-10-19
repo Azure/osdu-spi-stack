@@ -55,6 +55,7 @@ from .images import (
     IMAGE_LOCK_CONFIGMAP,
     IMAGE_LOCK_NAMESPACE,
     IMAGE_REGISTRY,
+    INDEXER_SERVICE_NAME,
     SCHEMA_LOAD_SERVICE_NAME,
     SCHEMA_SERVICE_NAME,
     ImageNotFoundError,
@@ -70,6 +71,7 @@ from .images import (
     image_lock_key,
     image_lock_missing_schema_load,
     image_ref,
+    indexer_runtime_image,
     parse_image_digest_ref,
     render_image_lock_configmap,
     require_ghcr_repository,
@@ -126,6 +128,7 @@ _REPO_PATH_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$
 # entry.file prefix -> the Flux Kustomization that substitutes those keys.
 _FILE_KUSTOMIZATIONS = {
     "services/": "spi-osdu-services",
+    "ddms/": "spi-osdu-ddms",
     "services-reference/": "spi-osdu-reference",
     "schema-load/": "spi-osdu-schema-load",
 }
@@ -470,7 +473,7 @@ def _lock_entry_patch(
     do_not_disrupt: bool = False,
 ):
     key = image_lock_key(service)
-    return {
+    patch = {
         # A digest pin has no tag; the digest ref avoids a dangling "repository:".
         f"{key}_IMAGE": f"{repository}:{tag}" if tag else image_ref(repository, tag, digest),
         f"{key}_IMAGE_REPOSITORY": repository,
@@ -481,6 +484,9 @@ def _lock_entry_patch(
         # Only a run-owned borrow holds its node; the refresh derives the same value.
         do_not_disrupt_key(service): str(do_not_disrupt).lower(),
     }
+    if service == INDEXER_SERVICE_NAME:
+        patch["INDEXER_RUNTIME_IMAGE"] = indexer_runtime_image(repository, tag, digest)
+    return patch
 
 
 def _ephemeral_names(pins: dict[str, ServicePin]) -> frozenset[str]:
@@ -621,7 +627,12 @@ def mutate_lock(
 
 # A changed schema image must reach the service before the loader Job is
 # recreated, and the loader must finish before reference re-seeds.
-_CONSUMER_ORDER = ("spi-osdu-services", "spi-osdu-schema-load", "spi-osdu-reference")
+_CONSUMER_ORDER = (
+    "spi-osdu-services",
+    "spi-osdu-ddms",
+    "spi-osdu-schema-load",
+    "spi-osdu-reference",
+)
 
 
 def reconcile_consumers(services: list[str]) -> None:
@@ -1986,6 +1997,116 @@ def apply_image_lock(
 
 class _NoBackfillNeeded(Exception):
     """Internal sentinel: the lock is absent or already carries schema-load."""
+
+
+def apply_image_lock_backfill(
+    branch: str = DEFAULT_IMAGE_BRANCH,
+    sources: Mapping[str, str] | None = None,
+    description: str = "Backfill missing services into the osdu-image-lock ConfigMap",
+    max_attempts: int = LOCK_MUTATION_MAX_ATTEMPTS,
+) -> bool:
+    """Add newly registered services and derived keys to an existing image lock."""
+
+    lock = read_lock(required=False)
+    if lock is None:
+        return False
+    source_policy = dict(sources) if sources is not None else trusted_canonical_sources(lock)
+    lock_data = lock.get("data") or {}
+    missing = []
+    for name in IMAGE_REGISTRY:
+        if name == SCHEMA_LOAD_SERVICE_NAME:
+            continue
+        key = image_lock_key(name)
+        repository = lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
+        tag = lock_data.get(f"{key}_IMAGE_TAG", "")
+        digest = lock_data.get(f"{key}_IMAGE_DIGEST", "")
+        if not repository or not (tag or digest):
+            missing.append(name)
+    try:
+        resolved = resolve_images(branch, missing, source_policy) if missing else {}
+    except ImageResolutionError as exc:
+        raise PinError(str(exc)) from exc
+
+    changed = False
+
+    def compute(fresh_lock: dict | None) -> dict:
+        if fresh_lock is None:
+            raise _NoBackfillNeeded
+        nonlocal changed
+        data = dict(fresh_lock.get("data") or {})
+        pins = decode_pins(fresh_lock)
+        changed = False
+        for name in IMAGE_REGISTRY:
+            if name == SCHEMA_LOAD_SERVICE_NAME:
+                continue
+            key = image_lock_key(name)
+            repository = data.get(f"{key}_IMAGE_REPOSITORY", "")
+            tag = data.get(f"{key}_IMAGE_TAG", "")
+            digest = data.get(f"{key}_IMAGE_DIGEST", "")
+            created_at = data.get(f"{key}_IMAGE_CREATED_AT", "")
+            if not repository or not (tag or digest):
+                image = resolved.get(name)
+                if image is None:
+                    continue
+                repository = image.repository
+                tag = image.tag
+                digest = image.digest
+                created_at = image.created_at
+            patch = _lock_entry_patch(
+                name,
+                repository,
+                tag,
+                created_at,
+                digest,
+                do_not_disrupt=bool(pins.get(name) and pins[name].ephemeral),
+            )
+            for field, value in patch.items():
+                if field not in data:
+                    data[field] = value
+                    changed = True
+            image = resolved.get(name)
+            resolution_matches = image is not None and (
+                repository,
+                tag,
+                digest,
+            ) == (
+                image.repository,
+                image.tag,
+                image.digest,
+            )
+            if resolution_matches and image.acceptance_digest:
+                acceptance_key = acceptance_digest_key(name)
+                if acceptance_key not in data:
+                    data[acceptance_key] = image.acceptance_digest
+                    changed = True
+
+        if image_lock_missing_schema_load(data):
+            patch = schema_load_lock_patch(data, branch=branch)
+            for field, value in patch.items():
+                if data.get(field) != value:
+                    data[field] = value
+                    changed = True
+
+        complete = 0
+        for name in IMAGE_REGISTRY:
+            key = image_lock_key(name)
+            if data.get(f"{key}_IMAGE_REPOSITORY") and (
+                data.get(f"{key}_IMAGE_TAG") or data.get(f"{key}_IMAGE_DIGEST")
+            ):
+                complete += 1
+        if data.get("IMAGE_COUNT") != str(complete):
+            data["IMAGE_COUNT"] = str(complete)
+            changed = True
+        if not changed:
+            raise _NoBackfillNeeded
+        annotations = dict((fresh_lock.get("metadata") or {}).get("annotations") or {})
+        return {"data": data, "metadata": {"annotations": annotations}}
+
+    try:
+        mutate_lock(compute, description, max_attempts=max_attempts)
+    except _NoBackfillNeeded:
+        return False
+    return changed
 
 
 def apply_schema_load_backfill(

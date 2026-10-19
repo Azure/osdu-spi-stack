@@ -25,6 +25,7 @@ import itertools
 import json
 import re
 from pathlib import Path
+from typing import Callable, cast
 
 import pytest
 import yaml
@@ -423,6 +424,7 @@ class TestMinimalProfileScope:
     def test_ingress_declares_no_osdu_routes(self, mode):
         names = _declared_names(_ingress_tree(Profile.MINIMAL, mode))
         assert "spi-osdu-routes" not in names
+        assert "spi-osdu-ddms-routes" not in names
 
 
 class TestBareProfileScope:
@@ -733,6 +735,34 @@ class TestAutomatedGatewayDeployment:
         assert "spi-gateway-tls" not in _dependency_names(INGRESS_DIR / mode)
 
 
+class TestIndexerRuntime:
+    def test_java_runtime_matches_upstream_bytecode(self):
+        release = yaml.safe_load((STACKS / "services" / "indexer.yaml").read_text(encoding="utf-8"))
+        values = release["spec"]["values"]
+        env = {item["name"]: item["value"] for item in values["env"]}
+        runtime = next(
+            container
+            for container in values["initContainers"]
+            if container["name"] == "install-java-runtime"
+        )
+
+        assert runtime["image"] == "${INDEXER_RUNTIME_IMAGE}"
+        assert runtime["command"] == ["sh", "-c", 'cp -R "$JAVA_HOME/." /java-runtime/']
+        assert runtime["securityContext"] == {
+            "allowPrivilegeEscalation": False,
+            "runAsNonRoot": True,
+            "runAsUser": 1000,
+            "seccompProfile": {"type": "RuntimeDefault"},
+            "capabilities": {"drop": ["ALL"]},
+        }
+        assert env["JAVA_HOME"] == "/java-runtime"
+        assert env["PATH"].startswith("/java-runtime/bin:")
+        assert values["volumeMounts"] == [
+            {"name": "java-runtime", "mountPath": "/java-runtime", "readOnly": True}
+        ]
+        assert values["volumes"] == [{"name": "java-runtime", "emptyDir": {}}]
+
+
 class TestReferenceCatalogDownloads:
     """Reference catalogs are immutable, verified, and fetched without root."""
 
@@ -779,6 +809,174 @@ class TestReferenceCatalogDownloads:
         }
 
 
+class TestStorageRuntime:
+    def test_collaboration_context_is_enabled(self):
+        release = yaml.safe_load((STACKS / "services" / "storage.yaml").read_text(encoding="utf-8"))
+        env = {item["name"]: item["value"] for item in release["spec"]["values"]["env"]}
+
+        assert env["COLLABORATIONS_ENABLED"] == "true"
+        assert env["FEATUREFLAG_STRATEGY"] == "appProperty"
+
+
+class TestFileRuntime:
+    def test_workload_identity_uses_one_token_resource(self):
+        release = yaml.safe_load((STACKS / "services" / "file.yaml").read_text(encoding="utf-8"))
+        env = {item["name"]: item["value"] for item in release["spec"]["values"]["env"]}
+
+        assert env["AZURE_PAAS_WORKLOADIDENTITY_ISENABLED"] == "true"
+        assert env["AZURE_AD_APP_RESOURCE_ID"] == "https://management.azure.com"
+
+
+class TestRafsRuntime:
+    def test_dataset_stays_core_and_rafs_is_a_ddms_release(self):
+        core_releases = {
+            doc["metadata"]["name"]: doc
+            for _, doc in _built_resources(STACKS / "services")
+            if doc.get("kind") == "HelmRelease"
+        }
+        ddms_releases = {
+            doc["metadata"]["name"]: doc
+            for _, doc in _built_resources(STACKS / "ddms")
+            if doc.get("kind") == "HelmRelease"
+        }
+
+        assert "dataset" in core_releases
+        assert "rafs" not in core_releases
+        assert set(ddms_releases) == {"rafs"}
+        dataset_env = {
+            item["name"]: item for item in core_releases["dataset"]["spec"]["values"]["env"]
+        }
+        assert dataset_env["server.servlet.contextPath"]["value"] == "/api/dataset/v1"
+        rafs_values = ddms_releases["rafs"]["spec"]["values"]
+        assert rafs_values["probes"]["readiness"]["path"] == "/api/rafs-ddms/readiness"
+        assert rafs_values["resources"]["requests"] == {"cpu": "1", "memory": "8Gi"}
+        env = {item["name"]: item for item in rafs_values["env"]}
+        assert env["SERVICE_HOST_DATASET"]["value"] == "http://dataset/api/dataset/v1"
+        assert env["CACHE_ENABLE"]["value"] == "true"
+        assert env["REDIS_INDEX_ENABLE"]["value"] == "true"
+        assert env["REDIS_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+            "name": "rafs-redis-secret",
+            "key": "REDIS_PASSWORD",
+        }
+
+    def test_rafs_redis_is_ephemeral_hardened_and_digest_pinned(self):
+        resources = list(_built_resources(STACKS / "ddms"))
+        deployment = next(
+            doc
+            for _, doc in resources
+            if doc.get("kind") == "Deployment"
+            and doc.get("metadata", {}).get("name") == "rafs-redis"
+        )
+        pod = deployment["spec"]["template"]["spec"]
+        container = pod["containers"][0]
+        env = {item["name"]: item for item in container["env"]}
+
+        assert deployment["spec"]["strategy"] == {
+            "type": "RollingUpdate",
+            "rollingUpdate": {
+                "maxSurge": 0,
+                "maxUnavailable": 1,
+            },
+        }
+        assert pod["automountServiceAccountToken"] is False
+        assert pod["securityContext"]["runAsNonRoot"] is True
+        assert container["image"].endswith(
+            "@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a"
+        )
+        assert container["securityContext"] == {
+            "allowPrivilegeEscalation": False,
+            "capabilities": {"drop": ["ALL"]},
+        }
+        assert env["REDIS_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+            "name": "rafs-redis-secret",
+            "key": "REDIS_PASSWORD",
+        }
+        assert env["REDIS_ARGS"]["value"] == "--requirepass $(REDIS_PASSWORD)"
+        assert pod["volumes"] == [{"name": "data", "emptyDir": {}}]
+
+    def test_rafs_indexer_uses_workload_identity_and_the_rafs_lock(self):
+        resources = list(_built_resources(STACKS / "ddms"))
+        cronjob = next(
+            doc
+            for _, doc in resources
+            if doc.get("kind") == "CronJob"
+            and doc.get("metadata", {}).get("name") == "rafs-indexer"
+        )
+        pod = cronjob["spec"]["jobTemplate"]["spec"]["template"]
+        container = pod["spec"]["containers"][0]
+
+        assert pod["metadata"]["labels"]["azure.workload.identity/use"] == "true"
+        assert pod["spec"]["serviceAccountName"] == "workload-identity-sa"
+        assert container["image"] == "${RAFS_IMAGE_REF}"
+        assert cronjob["spec"]["jobTemplate"]["spec"]["backoffLimit"] == 0
+        assert cronjob["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"] == 2400
+        assert "secretRef" not in yaml.safe_dump(cronjob)
+        assert "CLIENT_SECRET" not in yaml.safe_dump(cronjob)
+
+    def test_rafs_indexer_triggers_every_configured_partition(self, monkeypatch):
+        resources = list(_built_resources(STACKS / "ddms"))
+        configmap = next(
+            doc
+            for _, doc in resources
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "rafs-indexer-trigger"
+        )
+        namespace = {"__name__": "rafs_indexer_trigger_test"}
+        exec(configmap["data"]["trigger.py"], namespace)
+        calls = []
+        namespace["token"] = lambda: "token"
+        namespace["trigger"] = lambda partition, access_token: (
+            calls.append((partition, access_token)) or True
+        )
+        monkeypatch.setenv("PARTITIONS", "opendes,second")
+
+        main = cast(Callable[[], int], namespace["main"])
+        assert main() == 0
+        assert sorted(calls) == [("opendes", "token"), ("second", "token")]
+
+    @pytest.mark.parametrize(
+        ("mode", "hostname"),
+        [
+            ("single-host", "${INGRESS_FQDN}"),
+            ("multi-host", "${INGRESS_HOST_OSDU}"),
+            ("ip-only", None),
+        ],
+    )
+    def test_dataset_and_rafs_routes_have_separate_owners(self, mode, hostname):
+        core_path = STACKS / "routes" / mode / "osdu" / "routes.yaml"
+        core_routes = {
+            doc["metadata"]["name"]: doc
+            for doc in yaml.safe_load_all(core_path.read_text(encoding="utf-8"))
+        }
+        ddms_path = STACKS / "routes" / mode / "ddms" / "routes.yaml"
+        ddms_routes = {
+            doc["metadata"]["name"]: doc
+            for doc in yaml.safe_load_all(ddms_path.read_text(encoding="utf-8"))
+        }
+        assert "rafs" not in core_routes
+        assert set(ddms_routes) == {"rafs"}
+        rafs = ddms_routes["rafs"]
+
+        if hostname is None:
+            assert "hostnames" not in core_routes["dataset"]["spec"]
+            assert "hostnames" not in rafs["spec"]
+        else:
+            assert core_routes["dataset"]["spec"]["hostnames"] == [hostname]
+            assert rafs["spec"]["hostnames"] == [hostname]
+        assert core_routes["dataset"]["spec"]["rules"][0]["matches"][0]["path"]["value"] == (
+            "/api/dataset/"
+        )
+        assert rafs["spec"]["rules"][0]["matches"][0]["path"]["value"] == ("/api/rafs-ddms/")
+
+    @pytest.mark.parametrize("mode", list(IngressMode), ids=lambda mode: mode.value)
+    def test_rafs_routes_wait_for_the_ddms_layer(self, mode):
+        item = _kustomization(_ingress_tree(Profile.CORE, mode), "spi-osdu-ddms-routes")
+        dependencies = {dependency["name"] for dependency in item["spec"]["dependsOn"]}
+
+        assert "spi-osdu-ddms" in dependencies
+        assert item["spec"]["path"].endswith("/ddms")
+
+
 class TestBorrowedPodDisruptionSubstitution:
     """Every service HelmRelease reads its own do-not-disrupt key from the image lock."""
 
@@ -788,22 +986,25 @@ class TestBorrowedPodDisruptionSubstitution:
         releases = {
             entry.file: name
             for name, entry in IMAGE_REGISTRY.items()
-            if entry.file.startswith(("services/", "services-reference/"))
+            if entry.file.startswith(("services/", "services-reference/", "ddms/"))
         }
         manifests = sorted(
             path
-            for directory in ("services", "services-reference")
+            for directory in ("services", "services-reference", "ddms")
             for path in (STACKS / directory).glob("*.yaml")
             if path.name != "kustomization.yaml"
         )
-        assert {str(path.relative_to(STACKS)) for path in manifests} == set(releases)
+        assert {path.relative_to(STACKS).as_posix() for path in manifests} == set(releases)
         for path in manifests:
             doc = yaml.safe_load(path.read_text())
-            service = releases[str(path.relative_to(STACKS))]
+            service = releases[path.relative_to(STACKS).as_posix()]
             value = doc["spec"]["values"]["karpenter"]["doNotDisrupt"]
             assert value == f"${{{do_not_disrupt_key(service)}:=false}}", path.name
 
-    @pytest.mark.parametrize("name", ["spi-osdu-services", "spi-osdu-reference"])
+    @pytest.mark.parametrize(
+        "name",
+        ["spi-osdu-services", "spi-osdu-ddms", "spi-osdu-reference"],
+    )
     def test_service_kustomizations_substitute_from_the_image_lock(self, name):
         item = _kustomization(PROFILES_DIR / "core", name)
         sources = item["spec"]["postBuild"]["substituteFrom"]

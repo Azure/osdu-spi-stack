@@ -1,0 +1,282 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rafs-redis
+  namespace: osdu
+  labels:
+    app.kubernetes.io/name: rafs-redis
+    app.kubernetes.io/part-of: rafs
+spec:
+  selector:
+    app.kubernetes.io/name: rafs-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rafs-redis
+  namespace: osdu
+  labels:
+    app.kubernetes.io/name: rafs-redis
+    app.kubernetes.io/part-of: rafs
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rafs-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rafs-redis
+        app.kubernetes.io/part-of: rafs
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        spi-pool: osdu
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: "osdu"
+          effect: NoSchedule
+        - key: kubernetes.azure.com/scalesetpriority
+          operator: Equal
+          value: "spot"
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis/redis-stack-server:7.4.0-v8@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: redis
+              containerPort: 6379
+          livenessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+            limits:
+              cpu: "2"
+              memory: 6Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rafs-redis-secret
+                  key: REDIS_PASSWORD
+            - name: REDIS_ARGS
+              value: --requirepass $(REDIS_PASSWORD)
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rafs-indexer-trigger
+  namespace: osdu
+  labels:
+    app.kubernetes.io/part-of: rafs
+data:
+  trigger.py: |
+    import concurrent.futures
+    import json
+    import os
+    import sys
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    ATTEMPTS = 5
+    REQUEST_TIMEOUT = 420
+
+
+    def token() -> str:
+        tenant = os.environ["AZURE_TENANT_ID"]
+        client = os.environ["AZURE_CLIENT_ID"]
+        path = os.environ.get(
+            "AZURE_FEDERATED_TOKEN_FILE",
+            "/var/run/secrets/azure/tokens/azure-identity-token",
+        )
+        with open(path, encoding="utf-8") as handle:
+            assertion = handle.read().strip()
+        body = urllib.parse.urlencode(
+            {
+                "grant_type": "client_credentials",
+                "client_id": client,
+                "client_assertion_type": (
+                    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                ),
+                "client_assertion": assertion,
+                "resource": "https://management.azure.com/",
+            }
+        ).encode()
+        request = urllib.request.Request(
+            f"https://login.microsoftonline.com/{tenant}/oauth2/token",
+            data=body,
+            method="POST",
+        )
+        response = urllib.request.urlopen(request, timeout=60)
+        return json.loads(response.read())["access_token"]
+
+
+    def trigger(partition: str, access_token: str) -> bool:
+        url = "http://rafs/api/rafs-ddms/dev/trigger-sa-indexer"
+        headers = {
+            "Authorization": "Bearer " + access_token,
+            "data-partition-id": partition,
+        }
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                request = urllib.request.Request(url, headers=headers)
+                response = urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT)
+                print(f"GET {url} [{partition}] -> {response.getcode()}")
+                return True
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode(errors="replace")
+                print(f"GET {url} [{partition}] -> {error.code}: {detail[:500]}")
+                if error.code < 500 and error.code != 429:
+                    return False
+            except Exception as error:
+                print(
+                    f"GET {url} [{partition}] -> "
+                    f"{type(error).__name__}: {error}"
+                )
+            if attempt < ATTEMPTS:
+                time.sleep(30)
+        return False
+
+
+    def main() -> int:
+        partitions = [
+            partition.strip()
+            for partition in os.environ["PARTITIONS"].split(",")
+            if partition.strip()
+        ]
+        if not partitions:
+            print("PARTITIONS contains no data partitions")
+            return 1
+        access_token = token()
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(partitions)
+        ) as executor:
+            results = dict(
+                zip(
+                    partitions,
+                    executor.map(
+                        lambda partition: trigger(partition, access_token),
+                        partitions,
+                    ),
+                )
+            )
+        failed = [partition for partition, succeeded in results.items() if not succeeded]
+        if failed:
+            print("Indexer trigger failed for: " + ", ".join(failed))
+            return 1
+        return 0
+
+
+    if __name__ == "__main__":
+        sys.exit(main())
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rafs-indexer
+  namespace: osdu
+  labels:
+    app.kubernetes.io/part-of: rafs
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 2400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: rafs-indexer
+            app.kubernetes.io/part-of: rafs
+            azure.workload.identity/use: "true"
+        spec:
+          serviceAccountName: workload-identity-sa
+          restartPolicy: Never
+          nodeSelector:
+            spi-pool: osdu
+          tolerations:
+            - key: workload
+              operator: Equal
+              value: "osdu"
+              effect: NoSchedule
+            - key: kubernetes.azure.com/scalesetpriority
+              operator: Equal
+              value: "spot"
+              effect: NoSchedule
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: trigger
+              image: ${RAFS_IMAGE_REF}
+              imagePullPolicy: IfNotPresent
+              command: [python, /scripts/trigger.py]
+              envFrom:
+                - configMapRef:
+                    name: osdu-config
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: rafs-indexer-trigger
+                defaultMode: 0555
