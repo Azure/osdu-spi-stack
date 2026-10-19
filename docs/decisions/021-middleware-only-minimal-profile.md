@@ -6,7 +6,7 @@ The `Profile` enum offered `core` and `full`, but only `software/stacks/osdu/pro
 
 ## Decision
 
-Add `minimal`, drop `full`. `Profile` is `bare | minimal | core`: `bare` is infrastructure plus activated GitOps against an empty ingress tree and a stack tree carrying only the release stamp (ADR-030), `minimal` is the middleware substrate, `core` adds the OSDU services. `software/stacks/osdu/profiles/minimal/stack.yaml` reproduces layers 0a through 4b verbatim and stops at the boundary `spi-osdu-services` starts from, so the middleware layers are identical across profiles and what is validated on `minimal` holds on `core`.
+Add `minimal`, drop `full`. `Profile` is `bare | minimal | core`: `bare` is infrastructure plus activated GitOps against an empty ingress tree and a stack tree carrying only the release stamp (ADR-030), `minimal` is the middleware substrate, `core` adds the OSDU services. `software/stacks/osdu/profiles/minimal/` declares layers 0a through 4b, apart from 0c, and stops at the boundary `spi-osdu-services` starts from. `core` includes that tree by reference and declares only the layers it adds, so each middleware layer has one definition and what is validated on `minimal` is what `core` runs; `tests/test_profiles.py` asserts `core` declares every `minimal` Kustomization unchanged.
 
 The ingress trees declared one `spi-osdu-routes` Kustomization with `dependsOn: spi-osdu-services`; under `minimal` that dependency never appears and Flux stalls the Kustomization on `DependencyNotReady` indefinitely. Two changes resolve this:
 
@@ -18,6 +18,8 @@ Dropping back to `bare` removes the middleware workloads. Redis is a cache (ADR-
 Rejected: build out `full` with a real tree of additional services. This repo has none; every OSDU service already ships under `core`.
 
 Rejected: leave `full` documented as unimplemented. Keeps advertising a broken flag.
+
+Rejected: a verbatim copy of the middleware layers in each profile. Every middleware edit touches two files, and a missed one lets `core` drift from what `minimal` validated.
 
 ## Consequences
 

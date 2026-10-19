@@ -64,7 +64,8 @@ additional ordering.
 | `spi-osdu-reference` | Core services, schema load |
 
 Names are shortened in the dependency column; the full definitions are in
-[`stack.yaml`](../../software/stacks/osdu/profiles/core/stack.yaml). Ingress
+the [minimal](../../software/stacks/osdu/profiles/minimal/stack.yaml) stack,
+which core includes, and the [core](../../software/stacks/osdu/profiles/core/stack.yaml) stack. Ingress
 adds dependencies defined in its selected profile. For example, TLS routes
 depend on the gateway certificate layer as well as service readiness.
 
@@ -362,7 +363,7 @@ when updating the shared environment.
 - [ADR-017](../decisions/017-osdu-image-lock.md): service image lock.
 - [ADR-019](../decisions/019-osdu-flux-gitops-namespace.md): SPI-owned objects outside the controller namespace.
 - [Flux activation](../../infra/flux.bicep): source and root Kustomizations.
-- [Core stack](../../software/stacks/osdu/profiles/core/stack.yaml) and [ingress profiles](../../software/stacks/osdu/ingress/): dependencies.
+- [Minimal stack](../../software/stacks/osdu/profiles/minimal/stack.yaml), [core stack](../../software/stacks/osdu/profiles/core/stack.yaml), and [ingress profiles](../../software/stacks/osdu/ingress/): dependencies.
 - [CLI](../../src/spi/cli.py) and [deployment](../../src/spi/deploy.py): reconcile commands and initial suspension.
 - [Images](../../src/spi/images.py): image-lock membership, resolution, and keys.
 - [Pins](../../src/spi/pins.py): MR and fork image selection, verification, provenance, and reset.
