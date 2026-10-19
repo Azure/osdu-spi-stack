@@ -199,6 +199,11 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/elasticsearch
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   prune: true
   wait: true
   timeout: 15m
@@ -222,6 +227,11 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/redis
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   # Source ownership handoff: pruning stays off until this has reconciled
   # once without the bitnami HelmRepository in its inventory.
   prune: false
@@ -246,6 +256,11 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/postgres
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   prune: true
   wait: true
   timeout: 10m
@@ -267,6 +282,11 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/airflow
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   prune: true
   wait: true
   timeout: 15m

@@ -46,14 +46,14 @@ spec:
       persistence:
         enabled: true
         storageClass: redis-storageclass
-        size: 8Gi
+        size: "${REDIS_STORAGE:=8Gi}"
       resources:
         requests:
-          cpu: 250m
-          memory: 256Mi
+          cpu: "${REDIS_CPU_REQUEST:=250m}"
+          memory: "${REDIS_MEMORY_REQUEST:=256Mi}"
         limits:
-          cpu: "1"
-          memory: 1Gi
+          cpu: "${REDIS_CPU_LIMIT:=1}"
+          memory: "${REDIS_MEMORY_LIMIT:=1Gi}"
       podSecurityContext:
         enabled: true
         runAsNonRoot: true
@@ -85,7 +85,7 @@ spec:
                 matchLabels:
                   app.kubernetes.io/name: redis
     replica:
-      replicaCount: 2
+      replicaCount: ${REDIS_REPLICAS:=2}
       containerPorts:
         redis: 6380
       persistentVolumeClaimRetentionPolicy:
@@ -95,14 +95,14 @@ spec:
       persistence:
         enabled: true
         storageClass: redis-storageclass
-        size: 8Gi
+        size: "${REDIS_STORAGE:=8Gi}"
       resources:
         requests:
-          cpu: 250m
-          memory: 256Mi
+          cpu: "${REDIS_CPU_REQUEST:=250m}"
+          memory: "${REDIS_MEMORY_REQUEST:=256Mi}"
         limits:
-          cpu: "1"
-          memory: 1Gi
+          cpu: "${REDIS_CPU_LIMIT:=1}"
+          memory: "${REDIS_MEMORY_LIMIT:=1Gi}"
       podSecurityContext:
         enabled: true
         runAsNonRoot: true
