@@ -1,7 +1,8 @@
 # SPI Stack - Minimal Profile
-# Middleware only: Layers 0a through 4b, with no OSDU services, bootstrap Jobs,
-# schema load, or reference services. The core profile includes this tree and
-# adds its layers on top, so these definitions are the ones core runs.
+# Middleware only: Layers 0a through 4b apart from 0c, with no fork RBAC, OSDU
+# services, bootstrap Jobs, schema load, or reference services. The core
+# profile includes this tree and adds its layers on top, so these definitions
+# are the ones core runs.
 # Pairs with any --ingress-mode; the CLI selects the matching
 # software/stacks/osdu/ingress/<mode>-minimal tree.
 

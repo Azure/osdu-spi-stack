@@ -6,7 +6,7 @@ The `Profile` enum offered `core` and `full`, but only `software/stacks/osdu/pro
 
 ## Decision
 
-Add `minimal`, drop `full`. `Profile` is `bare | minimal | core`: `bare` is infrastructure plus activated GitOps against an empty ingress tree and a stack tree carrying only the release stamp (ADR-030), `minimal` is the middleware substrate, `core` adds the OSDU services. `software/stacks/osdu/profiles/minimal/` declares layers 0a through 4b and stops at the boundary `spi-osdu-services` starts from. `core` includes that tree by reference and declares only the layers it adds, so each middleware layer has one definition and what is validated on `minimal` is what `core` runs; `tests/test_profiles.py` asserts every `minimal` Kustomization renders unchanged under `core`.
+Add `minimal`, drop `full`. `Profile` is `bare | minimal | core`: `bare` is infrastructure plus activated GitOps against an empty ingress tree and a stack tree carrying only the release stamp (ADR-030), `minimal` is the middleware substrate, `core` adds the OSDU services. `software/stacks/osdu/profiles/minimal/` declares layers 0a through 4b, apart from 0c, and stops at the boundary `spi-osdu-services` starts from. `core` includes that tree by reference and declares only the layers it adds, so each middleware layer has one definition and what is validated on `minimal` is what `core` runs; `tests/test_profiles.py` asserts `core` declares every `minimal` Kustomization unchanged.
 
 The ingress trees declared one `spi-osdu-routes` Kustomization with `dependsOn: spi-osdu-services`; under `minimal` that dependency never appears and Flux stalls the Kustomization on `DependencyNotReady` indefinitely. Two changes resolve this:
 
@@ -19,7 +19,7 @@ Rejected: build out `full` with a real tree of additional services. This repo ha
 
 Rejected: leave `full` documented as unimplemented. Keeps advertising a broken flag.
 
-Rejected: a verbatim copy of layers 0a through 4b in each profile. Every middleware edit touches two files, and a missed one lets `core` drift from what `minimal` validated.
+Rejected: a verbatim copy of the middleware layers in each profile. Every middleware edit touches two files, and a missed one lets `core` drift from what `minimal` validated.
 
 ## Consequences
 
