@@ -24,6 +24,14 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
+    replicaCount: ${INDEXER_REPLICAS:=1}
+    resources:
+      requests:
+        cpu: "${INDEXER_CPU_REQUEST:=300m}"
+        memory: "${INDEXER_MEMORY_REQUEST:=896Mi}"
+      limits:
+        cpu: "${INDEXER_CPU_LIMIT:=1}"
+        memory: "${INDEXER_MEMORY_LIMIT:=1536Mi}"
     image:
       repository: ${INDEXER_IMAGE_REPOSITORY}
       tag: "${INDEXER_IMAGE_TAG}"

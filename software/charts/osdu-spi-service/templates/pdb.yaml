@@ -8,7 +8,8 @@ You may obtain a copy of the License at
      http://www.apache.org/licenses/LICENSE-2.0
 */}}
 
-{{- if .Values.podDisruptionBudget.enabled }}
+{{- /* One replica with minAvailable 1 would block every node drain. */}}
+{{- if and .Values.podDisruptionBudget.enabled (ge (int .Values.replicaCount) 2) }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

@@ -1,8 +1,10 @@
 # SPI Stack - Minimal Profile
-# Middleware only: identical to the core profile through Layer 4b, then stops
-# (no OSDU services, bootstrap Jobs, schema load, or reference services).
-# Pairs with any --ingress-mode; the CLI selects the matching
-# software/stacks/osdu/ingress/<mode>-minimal tree.
+# Middleware only: Layers 0a through 4b apart from 0c, with no fork RBAC, OSDU
+# services, bootstrap Jobs, schema load, or reference services. The core
+# profile includes this tree and adds its layers on top, so these definitions
+# are the ones core runs.
+# Pairs with any --ingress-mode, using the same software/stacks/osdu/ingress/<mode>
+# tree as core.
 
 ---
 # Layer 0a: Namespaces
@@ -197,6 +199,15 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/elasticsearch
+  postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   prune: true
   wait: true
   timeout: 15m
@@ -220,6 +231,15 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/redis
+  postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   # Source ownership handoff: pruning stays off until this has reconciled
   # once without the bitnami HelmRepository in its inventory.
   prune: false
@@ -244,6 +264,15 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/postgres
+  postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   prune: true
   wait: true
   timeout: 10m
@@ -265,6 +294,15 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/airflow
+  postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   prune: true
   wait: true
   timeout: 15m

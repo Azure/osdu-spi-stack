@@ -19,9 +19,9 @@ Two root Kustomizations consume that source:
 | Root | Path | Responsibility |
 |---|---|---|
 | `stack` | `software/stacks/osdu/profiles/<profile>` | Operators, middleware, OSDU services, initialization |
-| `ingress` | `software/stacks/osdu/ingress/<mode>` for `core` | Certificates, DNS controller where needed, TLS overlays, routes |
+| `ingress` | `software/stacks/osdu/ingress/<mode>` for `minimal` and `core` | Certificates, DNS controller where needed, TLS overlays, routes |
 
-`minimal` selects `<mode>-minimal` without OSDU API routes. `bare` selects an
+`bare` selects an
 empty ingress tree and a stack tree carrying only the release stamp. These path
 combinations are derived in `infra/flux.bicep`, not selected independently by
 the operator.
@@ -64,9 +64,11 @@ additional ordering.
 | `spi-osdu-reference` | Core services, schema load |
 
 Names are shortened in the dependency column; the full definitions are in
-[`stack.yaml`](../../software/stacks/osdu/profiles/core/stack.yaml). Ingress
-adds dependencies defined in its selected profile. For example, TLS routes
-depend on the gateway certificate layer as well as service readiness.
+the [minimal](../../software/stacks/osdu/profiles/minimal/stack.yaml) stack,
+which core includes, and the [core](../../software/stacks/osdu/profiles/core/stack.yaml) stack. Ingress
+adds dependencies defined in its selected mode: middleware routes wait on
+Airflow and Kibana, while OSDU routes wait only on the Gateway, so the same
+tree reconciles under `minimal`.
 
 Legal-tag and entitlements-member seeding are non-gating branches:
 reference services wait for schema load, without depending on
@@ -362,7 +364,7 @@ when updating the shared environment.
 - [ADR-017](../decisions/017-osdu-image-lock.md): service image lock.
 - [ADR-019](../decisions/019-osdu-flux-gitops-namespace.md): SPI-owned objects outside the controller namespace.
 - [Flux activation](../../infra/flux.bicep): source and root Kustomizations.
-- [Core stack](../../software/stacks/osdu/profiles/core/stack.yaml) and [ingress profiles](../../software/stacks/osdu/ingress/): dependencies.
+- [Minimal stack](../../software/stacks/osdu/profiles/minimal/stack.yaml), [core stack](../../software/stacks/osdu/profiles/core/stack.yaml), and [ingress profiles](../../software/stacks/osdu/ingress/): dependencies.
 - [CLI](../../src/spi/cli.py) and [deployment](../../src/spi/deploy.py): reconcile commands and initial suspension.
 - [Images](../../src/spi/images.py): image-lock membership, resolution, and keys.
 - [Pins](../../src/spi/pins.py): MR and fork image selection, verification, provenance, and reset.

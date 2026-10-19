@@ -60,16 +60,13 @@ DOLLAR_RUN = re.compile(r"(?<!\$)(\$+)\{[^}]*\}")
 
 
 def _flux_kustomizations(tree: Path):
-    """Yield every Flux Kustomization doc declared under a stack directory."""
-    for path in sorted(tree.glob("*.yaml")):
-        if path.name == "kustomization.yaml":
+    """Yield every Flux Kustomization doc a stack directory builds, including trees it includes."""
+    for _path, doc in _built_resources(tree):
+        if doc.get("kind") != KUSTOMIZATION_KIND:
             continue
-        for doc in yaml.safe_load_all(path.read_text()):
-            if not doc or doc.get("kind") != KUSTOMIZATION_KIND:
-                continue
-            if not str(doc.get("apiVersion", "")).startswith(FLUX_API_PREFIX):
-                continue
-            yield doc
+        if not str(doc.get("apiVersion", "")).startswith(FLUX_API_PREFIX):
+            continue
+        yield doc
 
 
 def _declared_names(tree: Path) -> set:
@@ -177,8 +174,7 @@ def _kustomization(tree: Path, name: str):
 def _ingress_tree(profile: Profile, mode: IngressMode) -> Path:
     if profile is Profile.BARE:
         return INGRESS_DIR / "bare"
-    suffix = "-minimal" if profile is Profile.MINIMAL else ""
-    return INGRESS_DIR / f"{mode.value}{suffix}"
+    return INGRESS_DIR / mode.value
 
 
 PAIRS = list(itertools.product(Profile, IngressMode))
@@ -410,10 +406,17 @@ class TestMinimalProfileScope:
                 "the profile is defined to stop below layer 5"
             )
 
-    @pytest.mark.parametrize("mode", list(IngressMode), ids=lambda m: m.value)
-    def test_ingress_declares_no_osdu_routes(self, mode):
-        names = _declared_names(_ingress_tree(Profile.MINIMAL, mode))
-        assert "spi-osdu-routes" not in names
+    def test_core_runs_every_minimal_layer_unchanged(self):
+        """What is validated on minimal is what core runs."""
+        minimal = {
+            k["metadata"]["name"]: k
+            for k in _flux_kustomizations(PROFILES_DIR / Profile.MINIMAL.value)
+        }
+        core = {
+            k["metadata"]["name"]: k
+            for k in _flux_kustomizations(PROFILES_DIR / Profile.CORE.value)
+        }
+        assert {name: core.get(name) for name in minimal} == minimal
 
 
 class TestBareProfileScope:
@@ -552,6 +555,7 @@ class TestSingleRenderer:
             tree = tmp_path / name
             tree.mkdir()
             (tree / "stack.yaml").write_text(doc, encoding="utf-8")
+            (tree / "kustomization.yaml").write_text("resources: [stack.yaml]\n", encoding="utf-8")
             trees.append(tree)
 
         found: dict = {}
@@ -596,7 +600,7 @@ class TestSingleRenderer:
         # Unlike retired inventories, Redis remains active and must be prunable later.
         assert redis["spec"]["prune"] is False
 
-    @pytest.mark.parametrize("mode", ["dns", "dns-minimal"])
+    @pytest.mark.parametrize("mode", ["dns"])
     def test_legacy_external_dns_inventory_is_orphaned(self, mode):
         external_dns = _kustomization(INGRESS_DIR / mode, "spi-external-dns")
         assert external_dns["spec"]["path"] == "./software/components/inventory-handoff"
@@ -661,7 +665,7 @@ class TestAutomatedGatewayDeployment:
             f"{GATEWAY_SERVICE} is referenced by the CLI but gateway-ingress.md never names it"
         )
 
-    @pytest.mark.parametrize("mode", ["azure", "azure-minimal"])
+    @pytest.mark.parametrize("mode", ["azure"])
     def test_azure_modes_carry_the_dns_label_on_the_gateway(self, mode):
         ops = [
             op
@@ -672,7 +676,7 @@ class TestAutomatedGatewayDeployment:
         annotations = ops[0]["value"]["annotations"]
         assert annotations[AZURE_DNS_LABEL_ANNOTATION] == "${DNS_LABEL}"
 
-    @pytest.mark.parametrize("mode", ["dns", "dns-minimal", "ip", "ip-minimal"])
+    @pytest.mark.parametrize("mode", ["dns", "ip"])
     def test_other_modes_leave_the_gateway_infrastructure_alone(self, mode):
         ops = _gateway_patch_ops(INGRESS_DIR / mode)
         assert not [op for op in ops if op["path"].startswith("/spec/infrastructure")]
@@ -704,9 +708,7 @@ class TestAutomatedGatewayDeployment:
         grants = [doc for _, doc in _software_documents() if doc.get("kind") == "ReferenceGrant"]
         assert not [g for g in grants if any(f.get("kind") == "Gateway" for f in g["spec"]["from"])]
 
-    @pytest.mark.parametrize(
-        "mode", ["azure", "azure-minimal", "dns", "dns-minimal", "ip", "ip-minimal"]
-    )
+    @pytest.mark.parametrize("mode", ["azure", "dns", "ip"])
     def test_retired_gateway_owner_keeps_its_inventory_without_pruning(self, mode):
         """Pre-move clusters listed a Gateway in aks-istio-ingress under this name.
 

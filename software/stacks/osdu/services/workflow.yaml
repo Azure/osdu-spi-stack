@@ -24,6 +24,14 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
+    replicaCount: ${WORKFLOW_REPLICAS:=1}
+    resources:
+      requests:
+        cpu: "${WORKFLOW_CPU_REQUEST:=300m}"
+        memory: "${WORKFLOW_MEMORY_REQUEST:=896Mi}"
+      limits:
+        cpu: "${WORKFLOW_CPU_LIMIT:=1}"
+        memory: "${WORKFLOW_MEMORY_LIMIT:=1536Mi}"
     image:
       repository: ${WORKFLOW_IMAGE_REPOSITORY}
       tag: "${WORKFLOW_IMAGE_TAG}"

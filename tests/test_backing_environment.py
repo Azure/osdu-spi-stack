@@ -800,3 +800,160 @@ class TestDeclarationTag:
             azure_infra.create_resource_group(self._config())
 
         assert not [argv for argv in calls if argv[:3] == ["az", "group", "update"]]
+
+
+STACK_FILE = """\
+resources:
+  postgres:
+    instances: 2
+"""
+
+
+class TestUpSizing:
+    @pytest.fixture
+    def up(self, monkeypatch, tmp_path):
+        """Run `spi up` against an undeclared or declared environment, capturing the sizing."""
+        seen = {}
+        stack = tmp_path / "stack.yaml"
+        stack.write_text(STACK_FILE, encoding="utf-8")
+        monkeypatch.setattr(cli, "__version__", "0.24.0")
+        monkeypatch.setattr(cli, "check_prerequisites", lambda tools: None)
+        monkeypatch.setattr(
+            cli,
+            "_resolve_up_context",
+            lambda env, requested_suffix: (requested_suffix or "abc12", {}, ("", "")),
+        )
+        monkeypatch.setattr(cli, "_show_config", lambda config: None)
+        monkeypatch.setattr(cli, "_show_next_steps", lambda config: None)
+        monkeypatch.setattr(deploy, "deploy_azure", lambda config, **kwargs: seen.update(kwargs))
+
+        def run(*args, declared=None, azure=True):
+            def lookup(env, option):
+                if not azure:
+                    pytest.fail("read Azure before refusing the stack file")
+                return declared
+
+            monkeypatch.setattr(cli, "_up_declaration", lookup)
+            argv = [arg.replace("STACK", str(stack)) for arg in args]
+            return CliRunner().invoke(cli.app, ["up", "--env", "shared", *argv]), seen
+
+        return run
+
+    def test_without_a_stack_file_the_sizing_is_left_alone(self, up):
+        result, seen = up()
+
+        assert result.exit_code == 0, result.output
+        assert seen["sizing"] is None
+
+    def test_a_stack_file_sets_the_sizing(self, up):
+        result, seen = up("-f", "STACK")
+
+        assert result.exit_code == 0, result.output
+        assert seen["sizing"] == {"PG_INSTANCES": "2"}
+
+    @pytest.mark.parametrize("profile", ["bare", "minimal"])
+    def test_a_stack_file_below_core_is_refused_before_azure_is_read(self, up, profile):
+        result, seen = up("-f", "STACK", "--profile", profile, azure=False)
+        assert result.exit_code == 2
+        assert "a stack file always builds on core" in _flat(result.output)
+        assert seen == {}
+
+    def test_a_stack_file_the_checks_refuse_stops_before_azure_is_read(self, up, tmp_path):
+        bad = tmp_path / "bad.yaml"
+        bad.write_text(STACK_FILE.replace("instances: 2", "instances: 1"), encoding="utf-8")
+
+        result, seen = up("-f", str(bad), azure=False)
+
+        assert result.exit_code == 2
+        assert "postgres.instances 1 is below 2" in _flat(result.output)
+        assert seen == {}
+
+    def test_a_declared_environment_takes_its_sizing_from_the_declaration(self, up):
+        from spi.environment import Declared, parse_declaration, parse_locator
+
+        declared = Declared(parse_locator(LOCATOR), parse_declaration(DECLARATION + STACK_FILE))
+
+        result, seen = up(declared=declared)
+
+        assert result.exit_code == 0, result.output
+        assert seen["sizing"] == {"PG_INSTANCES": "2"}
+
+    def test_a_declaration_without_resources_resets_the_sizing(self, up):
+        result, seen = up(declared=_declared())
+
+        assert result.exit_code == 0, result.output
+        assert seen["sizing"] == {}
+
+    def test_a_stack_file_on_a_declared_environment_is_refused(self, up):
+        result, seen = up("-f", "STACK", declared=_declared())
+
+        assert result.exit_code == 2
+        assert f"{LOCATOR} declares this environment; set resources: there" in _flat(result.output)
+        assert seen == {}
+
+
+class TestDeploySizing:
+    @pytest.fixture
+    def written(self, monkeypatch):
+        """deploy_azure with every Azure and cluster step stubbed, recording sizing writes."""
+        calls = []
+        for name in (
+            "provision_azure_infra",
+            "ensure_namespaces",
+            "create_istio_revision_configmap",
+            "deploy_identity_facts",
+            "ensure_secrets",
+            "create_storage_classes",
+            "install_gateway_api_crds",
+            "_ensure_image_lock",
+            "_project_trusted_repos",
+            "_create_osdu_config",
+            "_create_istio_auth",
+            "_create_spi_init_values",
+            "resolve_post_deploy_inputs",
+            "create_ingress_config",
+            "get_ingress_ip",
+            "run_bicep_deployment",
+            "_write_keyvault_bootstrap_secrets",
+            "_finalize_gitops_source",
+            "_source_policy",
+        ):
+            monkeypatch.setattr(deploy, name, lambda *a, **k: {})
+        monkeypatch.setattr(
+            deploy, "get_or_create_seed", lambda: {"elastic_password": "", "redis_password": ""}
+        )
+        monkeypatch.setattr(deploy, "ensure_namespaces", lambda: calls.append("cluster write"))
+        monkeypatch.setattr(deploy, "check_storage", lambda values: calls.append(("check", values)))
+        monkeypatch.setattr(deploy, "apply_sizing", lambda values: calls.append(("write", values)))
+        return calls
+
+    @pytest.mark.parametrize(
+        ("profile", "sizing", "expected"),
+        [
+            (
+                Profile.CORE,
+                {"PG_INSTANCES": "2"},
+                [
+                    ("check", {"PG_INSTANCES": "2"}),
+                    "cluster write",
+                    ("write", {"PG_INSTANCES": "2"}),
+                ],
+            ),
+            (Profile.CORE, {}, [("check", {}), "cluster write", ("write", {})]),
+            (Profile.CORE, None, ["cluster write"]),
+            (Profile.MINIMAL, {"PG_INSTANCES": "2"}, ["cluster write"]),
+        ],
+    )
+    def test_core_checks_storage_before_any_cluster_write_then_writes_the_sizing(
+        self, written, profile, sizing, expected
+    ):
+        deploy.deploy_azure(Config.from_env("shared", profile=profile), sizing=sizing)
+
+        assert written == expected
+
+    def test_a_preview_writes_no_sizing(self, written):
+        deploy.deploy_azure(
+            Config.from_env("shared", profile=Profile.CORE), dry_run=True, sizing={}
+        )
+
+        assert written == []

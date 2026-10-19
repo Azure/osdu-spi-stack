@@ -24,6 +24,14 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
+    replicaCount: ${STORAGE_REPLICAS:=1}
+    resources:
+      requests:
+        cpu: "${STORAGE_CPU_REQUEST:=300m}"
+        memory: "${STORAGE_MEMORY_REQUEST:=896Mi}"
+      limits:
+        cpu: "${STORAGE_CPU_LIMIT:=1}"
+        memory: "${STORAGE_MEMORY_LIMIT:=1536Mi}"
     image:
       repository: ${STORAGE_IMAGE_REPOSITORY}
       tag: "${STORAGE_IMAGE_TAG}"

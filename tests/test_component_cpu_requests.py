@@ -2,6 +2,7 @@
 #
 # Licensed under the Apache License, Version 2.0.
 
+import re
 from pathlib import Path
 
 import yaml
@@ -9,6 +10,8 @@ from _quantities import _millicores
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPONENTS_DIR = REPO_ROOT / "software" / "components"
+# A sized value is checked at its default; the CLI checks overrides.
+SIZING_DEFAULT = re.compile(r"\$\{[A-Z][A-Z0-9_]*:=([^}]*)\}")
 
 
 def _cpu_requests(value, keys=()):
@@ -27,7 +30,8 @@ def test_helmrelease_values_request_at_least_the_cpu_admission_floor():
     below_floor = []
 
     for manifest_path in sorted(COMPONENTS_DIR.rglob("*.yaml")):
-        for document in yaml.safe_load_all(manifest_path.read_text(encoding="utf-8")):
+        text = SIZING_DEFAULT.sub(r"\1", manifest_path.read_text(encoding="utf-8"))
+        for document in yaml.safe_load_all(text):
             if not document or document.get("kind") != "HelmRelease":
                 continue
             values = document.get("spec", {}).get("values", {})

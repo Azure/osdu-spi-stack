@@ -11,6 +11,7 @@ must fail closed, and every exported value must already be safe to append to
 `$GITHUB_OUTPUT` without shell evaluation.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from spi.environment import (
     EnvironmentDeclarationError,
     fetch_declared,
     load_declaration,
+    load_stack_file,
     parse_declaration,
     parse_locator,
 )
@@ -367,3 +369,83 @@ class TestFetchDeclared:
 
         with pytest.raises(EnvironmentDeclarationError, match="could not read .*HTTP 404"):
             fetch_declared(self.LOCATOR)
+
+
+FORKED_YAML = (
+    VALID_YAML
+    + """\
+forks:
+  - service: legal
+    repo: Acme/osdu-spi-legal
+"""
+)
+RESOURCES = """\
+resources:
+  postgres:
+    instances: 2
+  legal:
+    replicas: 1
+"""
+
+
+def test_a_declaration_without_resources_sets_no_sizing():
+    assert parse_declaration(VALID_YAML).sizing() == {}
+
+
+def test_a_declaration_carries_its_sizing():
+    declaration = parse_declaration(FORKED_YAML + RESOURCES)
+
+    assert declaration.sizing() == {"PG_INSTANCES": "2", "LEGAL_REPLICAS": "1"}
+
+
+def test_an_empty_resources_section_sets_no_sizing():
+    assert parse_declaration(VALID_YAML + "resources:\n").sizing() == {}
+
+
+def test_rejects_resources_below_core():
+    raw = VALID_YAML.replace("profile: core", "profile: minimal") + RESOURCES
+
+    with pytest.raises(EnvironmentDeclarationError, match="resources requires profile 'core'"):
+        parse_declaration(raw)
+
+
+def test_rejects_resources_without_forks():
+    with pytest.raises(EnvironmentDeclarationError, match="resources requires forks"):
+        parse_declaration(VALID_YAML + RESOURCES)
+
+
+def test_rejects_resources_the_sizing_checks_refuse():
+    with pytest.raises(EnvironmentDeclarationError, match="postgres.instances 1 is below 2"):
+        parse_declaration(FORKED_YAML + RESOURCES.replace("instances: 2", "instances: 1"))
+
+
+class TestStackFile:
+    def _load(self, tmp_path: Path, raw: str) -> dict[str, str]:
+        path = tmp_path / "stack.yaml"
+        path.write_text(raw, encoding="utf-8")
+        return load_stack_file(path)
+
+    def test_a_stack_file_sets_the_sizing_its_resources_name(self, tmp_path: Path):
+        assert self._load(tmp_path, RESOURCES) == {"PG_INSTANCES": "2", "LEGAL_REPLICAS": "1"}
+
+    @pytest.mark.parametrize("raw", ["", "resources:\n", "resources: {}\n"])
+    def test_an_empty_stack_file_sets_no_sizing(self, tmp_path: Path, raw):
+        assert self._load(tmp_path, raw) == {}
+
+    @pytest.mark.parametrize(
+        ("raw", "refusal"),
+        [
+            ("profile: minimal\n", "always builds on core and takes no profile"),
+            ("env: dev1\n", "env: Extra inputs are not permitted"),
+            ("- resources\n", "must be a YAML mapping"),
+            (RESOURCES + "resources: {}\n", "duplicate key"),
+            (RESOURCES.replace("instances: 2", "instances: 1"), "postgres.instances 1"),
+        ],
+    )
+    def test_rejects_a_stack_file_that_is_not_a_core_sizing(self, tmp_path: Path, raw, refusal):
+        with pytest.raises(EnvironmentDeclarationError, match=re.escape(refusal)):
+            self._load(tmp_path, raw)
+
+    def test_rejects_a_missing_stack_file(self, tmp_path: Path):
+        with pytest.raises(EnvironmentDeclarationError, match="cannot read"):
+            load_stack_file(tmp_path / "absent.yaml")

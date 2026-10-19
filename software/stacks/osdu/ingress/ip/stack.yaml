@@ -51,7 +51,9 @@ spec:
   timeout: 5m
 
 ---
-# HTTPRoutes for the OSDU APIs, no hostnames.
+# HTTPRoutes for the OSDU APIs, no hostnames. No dependsOn on spi-osdu-services:
+# the minimal profile shares this tree and deploys no services, and a route
+# whose backend is not up yet returns an error until it is.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -62,7 +64,6 @@ metadata:
 spec:
   interval: 10m
   dependsOn:
-    - name: spi-osdu-services
     - name: spi-ingress-gateway
   sourceRef:
     kind: GitRepository
