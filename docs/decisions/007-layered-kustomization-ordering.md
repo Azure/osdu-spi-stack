@@ -8,7 +8,7 @@ Flux Kustomizations with explicit `dependsOn` encode those constraints once, in 
 
 ## Decision
 
-The core profile (`software/stacks/osdu/profiles/core/stack.yaml`) defines a set of ordered layers (0a through 6) wired by explicit `dependsOn`, including four one-shot Job layers (`spi-osdu-init`, `spi-osdu-schema-load`, `spi-osdu-legal`, `spi-osdu-members`). Kustomizations within the same layer reconcile in parallel when they have no mutual dependency.
+The core profile defines a set of ordered layers (0a through 6) wired by explicit `dependsOn`, including four one-shot Job layers (`spi-osdu-init`, `spi-osdu-schema-load`, `spi-osdu-legal`, `spi-osdu-members`). Kustomizations within the same layer reconcile in parallel when they have no mutual dependency. Layers 0a through 4b, apart from 0c, are declared once in `software/stacks/osdu/profiles/minimal/stack.yaml`; `profiles/core/` includes that tree and declares 0c and layers 5 and up in its own `stack.yaml`.
 
 | Layer | Kustomization(s) | Depends on |
 |---|---|---|

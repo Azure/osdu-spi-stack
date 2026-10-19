@@ -201,4 +201,4 @@ planned sequencing is in [environment lifecycle](environment-lifecycle.md).
 - [Teardown](../../src/spi/teardown.py): deletion inventory, retention, external-grant cleanup, and deadlines.
 - [Deploy record](../../src/spi/deploy_record.py): verified revision and maintenance state.
 - [Azure provisioning](../../src/spi/azure_infra.py): AKS, PaaS, recovery, and preview ordering.
-- [Core stack](../../software/stacks/osdu/profiles/core/stack.yaml): workload dependencies.
+- [Minimal stack](../../software/stacks/osdu/profiles/minimal/stack.yaml) and [core stack](../../software/stacks/osdu/profiles/core/stack.yaml): workload dependencies.

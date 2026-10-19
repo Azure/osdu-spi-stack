@@ -60,16 +60,13 @@ DOLLAR_RUN = re.compile(r"(?<!\$)(\$+)\{[^}]*\}")
 
 
 def _flux_kustomizations(tree: Path):
-    """Yield every Flux Kustomization doc declared under a stack directory."""
-    for path in sorted(tree.glob("*.yaml")):
-        if path.name == "kustomization.yaml":
+    """Yield every Flux Kustomization doc a stack directory builds, including trees it includes."""
+    for _path, doc in _built_resources(tree):
+        if doc.get("kind") != KUSTOMIZATION_KIND:
             continue
-        for doc in yaml.safe_load_all(path.read_text()):
-            if not doc or doc.get("kind") != KUSTOMIZATION_KIND:
-                continue
-            if not str(doc.get("apiVersion", "")).startswith(FLUX_API_PREFIX):
-                continue
-            yield doc
+        if not str(doc.get("apiVersion", "")).startswith(FLUX_API_PREFIX):
+            continue
+        yield doc
 
 
 def _declared_names(tree: Path) -> set:
@@ -410,6 +407,18 @@ class TestMinimalProfileScope:
                 "the profile is defined to stop below layer 5"
             )
 
+    def test_core_runs_every_minimal_layer_unchanged(self):
+        """What is validated on minimal is what core runs."""
+        minimal = {
+            k["metadata"]["name"]: k
+            for k in _flux_kustomizations(PROFILES_DIR / Profile.MINIMAL.value)
+        }
+        core = {
+            k["metadata"]["name"]: k
+            for k in _flux_kustomizations(PROFILES_DIR / Profile.CORE.value)
+        }
+        assert {name: core.get(name) for name in minimal} == minimal
+
     @pytest.mark.parametrize("mode", list(IngressMode), ids=lambda m: m.value)
     def test_ingress_declares_no_osdu_routes(self, mode):
         names = _declared_names(_ingress_tree(Profile.MINIMAL, mode))
@@ -552,6 +561,7 @@ class TestSingleRenderer:
             tree = tmp_path / name
             tree.mkdir()
             (tree / "stack.yaml").write_text(doc, encoding="utf-8")
+            (tree / "kustomization.yaml").write_text("resources: [stack.yaml]\n", encoding="utf-8")
             trees.append(tree)
 
         found: dict = {}
