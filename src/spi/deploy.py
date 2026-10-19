@@ -56,7 +56,7 @@ from .ingress import (
     resolve_post_deploy_inputs,
 )
 from .paths import INFRA_ROOT
-from .pins import ServicePin, apply_image_lock, apply_schema_load_backfill, describe_pin, read_lock
+from .pins import ServicePin, apply_companion_backfills, apply_image_lock, describe_pin, read_lock
 from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, run_command, run_process
 from .templates import (
@@ -278,7 +278,7 @@ def _ensure_image_lock(
     if refresh_images is not True:
         existing_lock = read_lock(required=False)
         if existing_lock is not None:
-            apply_schema_load_backfill(branch=image_branch)
+            apply_companion_backfills(branch=image_branch, sources=sources)
             return {}
         if refresh_images is False:
             raise RuntimeError(

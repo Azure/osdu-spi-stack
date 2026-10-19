@@ -152,24 +152,37 @@ that public package, the deploy job pins it by digest, and canonical refresh
 resolves its `main` line after promotion. No separate package-path state or
 Azure namespace fallback is involved.
 
-Schema's ephemeral pin pairs the loader. The template builds `<image>-load`
-beside the service image from the same commit (osdu-spi ADR-042), so
-`spi service pin schema --image ... --ephemeral --source-sha <sha>` first
-requires the schema package's own `sha-<12>` tag to name the pinned digest,
-so the pair cannot straddle two builds of one commit, then looks up
-`<pinned repository>-load:sha-<12>` (the template names the loader after the
-same image name as the service, so `ghcr.io/azure/osdu-spi-schema` pairs only
-`ghcr.io/azure/osdu-spi-schema-load`), resolves the tag to its manifest digest
-(`resolve_fork_loader` in `src/spi/images.py`), and pins `schema-load` under
-the same run id. A fork that published no loader for that commit keeps the
-canonical loader, and a loader left pinned by an earlier MR or run is
-released to its canonical entry so no mismatched pair runs. `spi service
-reset schema --if-run <id>` releases the loader the run paired and leaves a
-loader owned by anything else standing. The `schema-load` Job passes
-`SCHEMA_URL` and the workload identity to the fork-built image; the wrapper
-ConfigMap is mounted as the community image's `scripts/azure` directory and
-serves only that image; it stays while an environment can select community
-as schema's canonical source.
+Companion behavior comes from the primary's `ImageRegistryEntry` in
+`src/spi/images.py`. The declaration names the companion, its fork package
+suffix, optional runtime enablement and replica-count keys, and separate
+requirements for canonical resolution and pins.
+`service_image_names()` removes companions from direct build, test, onboard,
+pin, and refresh inputs. `paired_image_names()` expands the primary for
+refresh and reset, and `mutate_lock()` rejects a split write after migration.
+This keeps refresh, MR pin, digest pin, reset, stale sweep, and source
+reporting on one registry contract.
+
+Schema declares `schema-load` with the `-load` package suffix. The companion
+is required for canonical resolution and optional for a pin. The template
+builds `<image>-load` beside the service image from the same commit
+(osdu-spi ADR-042). `spi service pin schema --image ... --ephemeral
+--source-sha <sha>` first requires the schema package's `sha-<12>` tag to name
+the pinned digest, then resolves `<pinned repository>-load:sha-<12>` through
+`resolve_fork_companion()`. A published loader is pinned under the same run
+id. An absent loader stays canonical, and a loader left pinned by an earlier
+MR or run returns to its canonical entry. `spi service reset schema-load`
+folds to the primary and releases the primary-owned pair. The `schema-load`
+Job passes `SCHEMA_URL` and the workload identity to the fork-built image;
+the wrapper ConfigMap is mounted as the community image's `scripts/azure`
+directory and serves only that image.
+
+`apply_companion_backfills()` migrates a lock that predates a declared
+companion. The compare-and-set retry reads the primary and active pins again.
+An active primary pin contributes its captured canonical repository, tag, and
+creation time, not its borrowed image. A fork source appends the declared
+package suffix and resolves that canonical tag in GHCR; a community source
+resolves the companion's community image at the primary tag. A partial legacy
+entry gains its composed `_IMAGE_REF` without incrementing `IMAGE_COUNT`.
 
 `require_ghcr_repository` in `src/spi/images.py` checks GHCR host, path,
 and digest shape without naming an owner. An ephemeral pin additionally
