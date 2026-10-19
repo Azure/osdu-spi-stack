@@ -29,7 +29,7 @@ spec:
           elasticsearch.service/transport: "true"
   nodeSets:
     - name: default
-      count: 3
+      count: ${ES_COUNT:=3}
       config:
         node.roles: ["master", "data", "ingest"]
         node.store.allow_mmap: false
@@ -69,11 +69,11 @@ spec:
             - name: elasticsearch
               resources:
                 requests:
-                  cpu: 500m
-                  memory: 2Gi
+                  cpu: "${ES_CPU_REQUEST:=500m}"
+                  memory: "${ES_MEMORY_REQUEST:=2Gi}"
                 limits:
-                  cpu: "2"
-                  memory: 4Gi
+                  cpu: "${ES_CPU_LIMIT:=2}"
+                  memory: "${ES_MEMORY_LIMIT:=4Gi}"
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities:
@@ -95,4 +95,4 @@ spec:
               - ReadWriteOnce
             resources:
               requests:
-                storage: 128Gi
+                storage: "${ES_STORAGE:=128Gi}"

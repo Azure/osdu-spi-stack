@@ -22,6 +22,14 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
+    replicaCount: ${CRS_CONVERSION_REPLICAS:=1}
+    resources:
+      requests:
+        cpu: "${CRS_CONVERSION_CPU_REQUEST:=300m}"
+        memory: "${CRS_CONVERSION_MEMORY_REQUEST:=896Mi}"
+      limits:
+        cpu: "${CRS_CONVERSION_CPU_LIMIT:=1}"
+        memory: "${CRS_CONVERSION_MEMORY_LIMIT:=1536Mi}"
     image:
       repository: ${CRS_CONVERSION_IMAGE_REPOSITORY}
       tag: "${CRS_CONVERSION_IMAGE_TAG}"

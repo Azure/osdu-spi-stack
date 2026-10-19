@@ -24,7 +24,14 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
-    replicaCount: 2
+    replicaCount: ${ENTITLEMENTS_REPLICAS:=2}
+    resources:
+      requests:
+        cpu: "${ENTITLEMENTS_CPU_REQUEST:=300m}"
+        memory: "${ENTITLEMENTS_MEMORY_REQUEST:=896Mi}"
+      limits:
+        cpu: "${ENTITLEMENTS_CPU_LIMIT:=1}"
+        memory: "${ENTITLEMENTS_MEMORY_LIMIT:=1536Mi}"
     hostAntiAffinity: true
     podDisruptionBudget:
       enabled: true

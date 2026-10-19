@@ -34,9 +34,11 @@ for tool in kustomize kubeconform; do
     fi
 done
 
-# Unresolved Flux postBuild ${VAR} references trip kubeconform's strict mode.
+# Unresolved Flux postBuild references trip kubeconform's strict mode, so
+# ${VAR:=default} validates as its default and a bare ${VAR} as a placeholder.
 sub_vars() {
-    sed -E 's/\$\{[A-Z_][A-Z0-9_]*\}/placeholder/g'
+    sed -E -e 's/\$\{[A-Z_][A-Z0-9_]*:=([^}]*)\}/\1/g' \
+        -e 's/\$\{[A-Z_][A-Z0-9_]*\}/placeholder/g'
 }
 
 failures=()

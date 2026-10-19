@@ -22,7 +22,14 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
-    replicaCount: 2
+    replicaCount: ${PARTITION_REPLICAS:=2}
+    resources:
+      requests:
+        cpu: "${PARTITION_CPU_REQUEST:=300m}"
+        memory: "${PARTITION_MEMORY_REQUEST:=896Mi}"
+      limits:
+        cpu: "${PARTITION_CPU_LIMIT:=1}"
+        memory: "${PARTITION_MEMORY_LIMIT:=1536Mi}"
     hostAntiAffinity: true
     podDisruptionBudget:
       enabled: true

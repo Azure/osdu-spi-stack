@@ -50,6 +50,9 @@ spec:
     substituteFrom:
       - kind: ConfigMap
         name: osdu-image-lock
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   prune: true
   wait: true
   timeout: 30m
@@ -198,6 +201,9 @@ spec:
     substituteFrom:
       - kind: ConfigMap
         name: osdu-image-lock
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   prune: true
   wait: true
   timeout: 30m

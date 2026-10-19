@@ -199,6 +199,15 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/elasticsearch
+  postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   prune: true
   wait: true
   timeout: 15m
@@ -222,6 +231,15 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/redis
+  postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   # Source ownership handoff: pruning stays off until this has reconciled
   # once without the bitnami HelmRepository in its inventory.
   prune: false
@@ -246,6 +264,15 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/postgres
+  postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   prune: true
   wait: true
   timeout: 10m
@@ -267,6 +294,15 @@ spec:
     kind: GitRepository
     name: osdu-spi-stack-system
   path: ./software/components/airflow
+  postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
+    substituteFrom:
+      - kind: ConfigMap
+        name: spi-sizing
+        optional: true
   prune: true
   wait: true
   timeout: 15m
