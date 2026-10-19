@@ -68,8 +68,13 @@ def test_every_kustomization_applying_a_sized_manifest_reads_the_sizing_configma
             directory = REPO_ROOT / doc["spec"]["path"].removeprefix("./")
             if directory not in sized:
                 continue
-            sources = (doc["spec"].get("postBuild") or {}).get("substituteFrom", [])
+            post_build = doc["spec"].get("postBuild") or {}
+            sources = post_build.get("substituteFrom", [])
             source = {"kind": "ConfigMap", "name": SIZING_CONFIGMAP, "optional": True}
             assert source in sources, doc["metadata"]["name"]
+            # Flux substitutes nothing, defaults included, when it has no variables.
+            assert post_build.get("substitute") or any(not s.get("optional") for s in sources), (
+                f"{doc['metadata']['name']} has no variable when {SIZING_CONFIGMAP} is absent"
+            )
             reading.add(directory)
     assert reading == sized

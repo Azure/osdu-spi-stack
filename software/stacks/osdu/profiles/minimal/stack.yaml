@@ -200,6 +200,10 @@ spec:
     name: osdu-spi-stack-system
   path: ./software/components/elasticsearch
   postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
     substituteFrom:
       - kind: ConfigMap
         name: spi-sizing
@@ -228,6 +232,10 @@ spec:
     name: osdu-spi-stack-system
   path: ./software/components/redis
   postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
     substituteFrom:
       - kind: ConfigMap
         name: spi-sizing
@@ -257,6 +265,10 @@ spec:
     name: osdu-spi-stack-system
   path: ./software/components/postgres
   postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
     substituteFrom:
       - kind: ConfigMap
         name: spi-sizing
@@ -283,6 +295,10 @@ spec:
     name: osdu-spi-stack-system
   path: ./software/components/airflow
   postBuild:
+    # Flux skips substitution when it has no variables, which would leave the
+    # ${KEY:=default} placeholders unrendered while spi-sizing is absent.
+    substitute:
+      SPI_SIZING_DEFAULTS: "true"
     substituteFrom:
       - kind: ConfigMap
         name: spi-sizing
