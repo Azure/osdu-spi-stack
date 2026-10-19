@@ -3,8 +3,8 @@
 # services, bootstrap Jobs, schema load, or reference services. The core
 # profile includes this tree and adds its layers on top, so these definitions
 # are the ones core runs.
-# Pairs with any --ingress-mode; the CLI selects the matching
-# software/stacks/osdu/ingress/<mode>-minimal tree.
+# Pairs with any --ingress-mode, using the same software/stacks/osdu/ingress/<mode>
+# tree as core.
 
 ---
 # Layer 0a: Namespaces
