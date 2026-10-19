@@ -68,8 +68,9 @@ Profiles select Kubernetes workloads, not a smaller Azure resource estate.
 | `minimal` | Operators, middleware, and CA bootstrap, without OSDU services or initialization Jobs |
 | `core` | The middleware substrate plus OSDU services, partition/entitlements initialization, schema loading, and reference APIs |
 
-`minimal` selects an ingress tree ending in `-minimal`; its `ip` combination
-renders the Gateway and its LoadBalancer but no routes. Moving back to `bare` removes middleware
+`minimal` uses the same ingress tree as `core`, so the OSDU API routes exist
+and return errors with no services behind them; its `ip` combination routes no
+middleware UIs. Moving back to `bare` removes middleware
 workloads and Redis volumes, but operator CRDs can remain. See
 [ADR-021](decisions/021-middleware-only-minimal-profile.md).
 

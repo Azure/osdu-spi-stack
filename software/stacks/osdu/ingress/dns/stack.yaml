@@ -154,8 +154,7 @@ spec:
         name: spi-ingress-config
 
 ---
-# HTTPRoutes for the middleware UIs. Separate from spi-osdu-routes so they
-# carry no dependency on spi-osdu-services and reconcile under minimal.
+# HTTPRoutes for the middleware UIs.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -183,7 +182,9 @@ spec:
         name: spi-ingress-config
 
 ---
-# HTTPRoutes for the OSDU APIs.
+# HTTPRoutes for the OSDU APIs. No dependsOn on spi-osdu-services: the minimal
+# profile shares this tree and deploys no services, and a route whose backend
+# is not up yet returns an error until it is.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -194,7 +195,6 @@ metadata:
 spec:
   interval: 10m
   dependsOn:
-    - name: spi-osdu-services
     - name: spi-ingress-gateway
     - name: spi-external-dns-release
   sourceRef:

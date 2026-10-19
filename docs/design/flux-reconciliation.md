@@ -19,9 +19,9 @@ Two root Kustomizations consume that source:
 | Root | Path | Responsibility |
 |---|---|---|
 | `stack` | `software/stacks/osdu/profiles/<profile>` | Operators, middleware, OSDU services, initialization |
-| `ingress` | `software/stacks/osdu/ingress/<mode>` for `core` | Certificates, DNS controller where needed, TLS overlays, routes |
+| `ingress` | `software/stacks/osdu/ingress/<mode>` for `minimal` and `core` | Certificates, DNS controller where needed, TLS overlays, routes |
 
-`minimal` selects `<mode>-minimal` without OSDU API routes. `bare` selects an
+`bare` selects an
 empty ingress tree and a stack tree carrying only the release stamp. These path
 combinations are derived in `infra/flux.bicep`, not selected independently by
 the operator.
@@ -66,8 +66,9 @@ additional ordering.
 Names are shortened in the dependency column; the full definitions are in
 the [minimal](../../software/stacks/osdu/profiles/minimal/stack.yaml) stack,
 which core includes, and the [core](../../software/stacks/osdu/profiles/core/stack.yaml) stack. Ingress
-adds dependencies defined in its selected profile. For example, TLS routes
-depend on the gateway certificate layer as well as service readiness.
+adds dependencies defined in its selected mode: middleware routes wait on
+Airflow and Kibana, while OSDU routes wait only on the Gateway, so the same
+tree reconciles under `minimal`.
 
 Legal-tag and entitlements-member seeding are non-gating branches:
 reference services wait for schema load, without depending on
