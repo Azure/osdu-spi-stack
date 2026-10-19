@@ -10,8 +10,8 @@ Add `minimal`, drop `full`. `Profile` is `bare | minimal | core`: `bare` is infr
 
 The ingress trees declared one `spi-osdu-routes` Kustomization with `dependsOn: spi-osdu-services`; under `minimal` that dependency never appears and Flux stalls the Kustomization on `DependencyNotReady` indefinitely. Two changes resolve this:
 
-- Routes split by scope: `middleware/` (Kibana, Airflow, their ReferenceGrants) and `osdu/` (the OSDU APIs) reconcile as separate Kustomizations, so middleware routing does not depend on OSDU services being present.
-- `infra/flux.bicep` derives the ingress path from the profile: `minimal` selects `ingress/<mode>-minimal/`, the mode's tree minus the OSDU routes block, keeping flat trees per combination rather than conditional overlays (consistent with ADR-012). `profile` and `ingressMode` carry `@allowed` constraints, so an unbacked value fails at template validation; `tests/test_profiles.py` asserts for each pairing that every referenced path exists and no `dependsOn` names an undeclared Kustomization.
+- Routes split by scope: `middleware/` (Kibana, Airflow, their ReferenceGrants) and `osdu/` (the OSDU APIs) reconcile as separate Kustomizations, so middleware routing does not depend on OSDU services being present. `spi-osdu-routes` waits only on the Gateway, so under `minimal` the OSDU routes exist with no backend and return errors.
+- `infra/flux.bicep` routes `bare` to the empty ingress tree and every other profile to `ingress/<mode>/`, so `minimal` and `core` share one tree per mode. `profile` and `ingressMode` carry `@allowed` constraints, so an unbacked value fails at template validation; `tests/test_profiles.py` asserts for each pairing that every referenced path exists and no `dependsOn` names an undeclared Kustomization.
 
 Dropping back to `bare` removes the middleware workloads. Redis is a cache (ADR-003), so its StatefulSets set `persistentVolumeClaimRetentionPolicy` to `Delete` on both `whenDeleted` and `whenScaled`: rolling upgrades preserve data, while profile removal deletes the PVCs and their Azure disks instead of leaving billable unattached volumes. Helm retains operator CRDs on uninstall, so `bare` promises no active workloads, not cluster-scoped CRD cleanup.
 
@@ -19,12 +19,14 @@ Rejected: build out `full` with a real tree of additional services. This repo ha
 
 Rejected: leave `full` documented as unimplemented. Keeps advertising a broken flag.
 
+Rejected: a `-minimal` copy of each ingress tree without the OSDU routes. Every ingress edit touches two files per mode, to hide routes that only return errors.
+
 Rejected: a verbatim copy of the middleware layers in each profile. Every middleware edit touches two files, and a missed one lets `core` drift from what `minimal` validated.
 
 ## Consequences
 
 - Every accepted `--profile` value resolves to a tree that reconciles to Ready, and the dangling-dependency class of bug is caught by a unit test rather than a timed-out cloud deploy.
 - Middleware work gets a deploy with no OSDU services and layers identical to `core`.
-- Each ingress mode carries a near-duplicate `-minimal` stack file; edits to shared blocks touch two files per mode.
-- `ip` plus `minimal` deploys no ingress at all; middleware UIs need `kubectl port-forward` on that combination.
+- Under `minimal` the OSDU API paths are routed and return errors, since no service backs them.
+- `ip` mode routes no middleware UIs; they need `kubectl port-forward` on that combination.
 - Returning to `bare` deletes Redis volumes but can leave operator CRDs behind; they carry no running workload or storage cost.

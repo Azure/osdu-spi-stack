@@ -19,9 +19,9 @@ Two root Kustomizations consume that source:
 | Root | Path | Responsibility |
 |---|---|---|
 | `stack` | `software/stacks/osdu/profiles/<profile>` | Operators, middleware, OSDU services, initialization |
-| `ingress` | `software/stacks/osdu/ingress/<mode>` for `core` | Certificates, DNS controller where needed, TLS overlays, routes |
+| `ingress` | `software/stacks/osdu/ingress/<mode>` for `minimal` and `core` | Certificates, DNS controller where needed, TLS overlays, routes |
 
-`minimal` selects `<mode>-minimal` without OSDU API routes. `bare` selects an
+`bare` selects an
 empty ingress tree and a stack tree carrying only the release stamp. These path
 combinations are derived in `infra/flux.bicep`, not selected independently by
 the operator.

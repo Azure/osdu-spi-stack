@@ -28,7 +28,7 @@ The core profile defines a set of ordered layers (0a through 6) wired by explici
 
 The ingress profile (`software/stacks/osdu/ingress/<mode>/stack.yaml`, ADR-012) attaches additional Kustomizations at Layer 1 (the Gateway rendering, for which the selected ingress tree is the sole Flux owner per ADR-025, plus cert issuers, ExternalDNS, TLS overlays) and Layer 6 (`spi-middleware-routes`, `spi-osdu-routes`). The two profiles reconcile independently under one `fluxConfigurations` resource (ADR-009).
 
-The `minimal` profile (ADR-021) declares layers 0a through 4b, apart from 0c, and stops, pairing with the `<mode>-minimal` ingress trees so no `dependsOn` is left unsatisfiable.
+The `minimal` profile (ADR-021) declares layers 0a through 4b, apart from 0c, and stops. The ingress trees depend on nothing above that boundary, so one tree per mode serves both profiles with no `dependsOn` left unsatisfiable.
 
 All Kustomizations use `wait: true` so each layer's Ready gate reflects actual workload health; per-layer `timeout` is tuned to the slowest workload in that layer (15 min for Elasticsearch and Airflow, 10 min for the other middleware, 30 min for the OSDU service layers; schema-load's 155 min tracks the Job's `activeDeadlineSeconds` of 9000 s, a pod-startup allowance plus the cold-cluster wait and the throttled load, with headroom for reconcile overhead).
 

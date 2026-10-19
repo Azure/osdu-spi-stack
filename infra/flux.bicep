@@ -37,13 +37,10 @@ param ingressMode string = 'azure'
 @description('Resource name for the cluster Flux configuration.')
 param configurationName string = 'osdu-spi-stack-system'
 
-// bare has no ingress substrate, so ingressMode is unused; the minimal trees
-// omit the OSDU HTTPRoutes, whose dependsOn spi-osdu-services would never resolve.
+// bare has no ingress substrate, so ingressMode is unused.
 var ingressPath = profile == 'bare'
   ? './software/stacks/osdu/ingress/bare'
-  : profile == 'minimal'
-    ? './software/stacks/osdu/ingress/${ingressMode}-minimal'
-    : './software/stacks/osdu/ingress/${ingressMode}'
+  : './software/stacks/osdu/ingress/${ingressMode}'
 
 var repositoryRef = empty(repoTag)
   ? {
