@@ -591,6 +591,23 @@ def _up_declaration(env: str, option: Optional[str]) -> Optional[Declared]:
     return declared
 
 
+def _up_stack_file(path: Optional[Path], profile: Optional[Profile]) -> Optional[dict[str, str]]:
+    """The sizing a stack file sets, or None to leave the environment's sizing alone."""
+    from .environment import EnvironmentDeclarationError, load_stack_file
+
+    if path is None:
+        return None
+    if profile not in (None, Profile.CORE):
+        raise typer.BadParameter(
+            "a stack file always builds on core; bare and minimal take none",
+            param_hint="--profile",
+        )
+    try:
+        return load_stack_file(path)
+    except EnvironmentDeclarationError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--file") from exc
+
+
 def _declared_value(flag: str, given: Any, declared: Any) -> Any:
     """The declared value; an explicit option that disagrees with it is refused."""
     if given is not None and given != declared:
@@ -684,13 +701,28 @@ def up(
         help="Reviewed environment declaration as <owner>/<repo>:<path>, read from main. "
         "It supplies the provisioning options and the trusted forks; later runs reuse it.",
     ),
+    stack_file: Optional[Path] = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Stack file that builds on core. Its resources: section sizes services and "
+        "middleware; without -f an existing sizing is left as it is.",
+    ),
 ):
     """Provision Azure infrastructure and deploy the OSDU SPI stack."""
     # Argument errors surface before the first Azure read.
     _check_tag(tag, branch)
+    sizing = _up_stack_file(stack_file, profile)
     declared = _up_declaration(env, declaration)
     if declared is not None:
         intent = declared.declaration
+        if stack_file is not None:
+            raise typer.BadParameter(
+                f"{declared.locator} declares this environment; set resources: there",
+                param_hint="--file",
+            )
+        if intent.profile is Profile.CORE:
+            sizing = intent.sizing()
         if branch is not None:
             raise typer.BadParameter(
                 f"conflicts with the declaration, which pins {intent.stack_version}",
@@ -774,6 +806,7 @@ def up(
             azure_account=azure_account,
             deployer_principal=deployer_principal,
             declared=declared,
+            sizing=sizing,
         )
         if dry_run:
             console.print(

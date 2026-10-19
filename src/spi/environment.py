@@ -10,9 +10,10 @@ the exact stack release, profile, and Azure placement a lifecycle workflow
 strictly validating that file. Workflows read it through
 `scripts/export_environment.py`, never by shell-evaluating YAML directly.
 
-The declaration is seven flat keys plus an optional `forks:` list, the
-repositories the environment trusts and whose image each service follows.
-Anything richer belongs in the CLI's own `Config`, not in the reviewed pin.
+The declaration is seven flat keys plus two optional sections: `forks:`, the
+repositories the environment trusts and whose image each service follows, and
+`resources:`, the sizing `spi up` writes to the `spi-sizing` ConfigMap. A stack
+file passed to `spi up -f` carries only `resources:` and always builds on core.
 
 A stack names its declaration by locator, `<owner>/<repo>:<path>`, read from
 `main` and retained on the resource group as the `spi-environment-declaration`
@@ -24,15 +25,16 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import yaml
 import yaml.constructor
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_core import ErrorDetails
 
 from .config import IngressMode, Profile
 from .images import IMAGE_REGISTRY, SCHEMA_LOAD_SERVICE_NAME, ImageResolutionError, github_file
+from .sizing import SizingError, overrides
 
 DEFAULT_DECLARATION_PATH = Path("ops/environments/shared.yaml")
 DECLARATION_REF = "main"
@@ -119,6 +121,15 @@ class EnvironmentDeclaration(BaseModel):
     image_branch: str = Field(alias="imageBranch")
     name_suffix: str = Field(alias="nameSuffix")
     forks: tuple[ForkDeclaration, ...] = ()
+    resources: dict[str, Any] = Field(default_factory=dict)
+
+    _empty_resources = field_validator("resources", mode="before")(
+        lambda value: {} if value is None else value
+    )
+
+    def sizing(self) -> dict[str, str]:
+        """The `spi-sizing` keys `resources:` sets; empty leaves every default."""
+        return overrides(self.resources)
 
     def fork(self, service: str) -> Optional[ForkDeclaration]:
         return next((entry for entry in self.forks if entry.service == service), None)
@@ -215,6 +226,18 @@ def _validate_forks(declaration: EnvironmentDeclaration) -> None:
         repos.add(entry.repo.lower())
 
 
+def _validate_resources(declaration: EnvironmentDeclaration) -> None:
+    if declaration.resources and declaration.profile is not Profile.CORE:
+        raise EnvironmentDeclarationError(
+            f"resources requires profile 'core'; sizing builds on core, and profile "
+            f"{declaration.profile.value!r} is below it"
+        )
+    try:
+        declaration.sizing()
+    except SizingError as exc:
+        raise EnvironmentDeclarationError(str(exc)) from exc
+
+
 # Lets a rejected snake_case key be pointed at the camelCase key the schema
 # accepts, instead of a bare "extra field" error.
 _ALIAS_BY_FIELD_NAME: dict[str, str] = {
@@ -257,7 +280,46 @@ def parse_declaration(raw: str) -> EnvironmentDeclaration:
         messages = "; ".join(_describe_error(error) for error in exc.errors())
         raise EnvironmentDeclarationError(f"schema validation failed: {messages}") from exc
     _validate_forks(declaration)
+    _validate_resources(declaration)
     return declaration
+
+
+class StackFile(BaseModel):
+    """A local file `spi up -f` deploys on top of core."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    resources: dict[str, Any] = Field(default_factory=dict)
+
+    _empty_resources = field_validator("resources", mode="before")(
+        lambda value: {} if value is None else value
+    )
+
+
+def load_stack_file(path: Path) -> dict[str, str]:
+    """The `spi-sizing` keys a stack file sets, after every check that needs no cluster."""
+    try:
+        data = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+    except OSError as exc:
+        raise EnvironmentDeclarationError(f"cannot read {path}: {exc.strerror}") from exc
+    except yaml.YAMLError as exc:
+        raise EnvironmentDeclarationError(f"{path}: invalid YAML: {exc}") from exc
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise EnvironmentDeclarationError(f"{path}: a stack file must be a YAML mapping")
+    if "profile" in data:
+        raise EnvironmentDeclarationError(
+            f"{path}: a stack file always builds on core and takes no profile"
+        )
+    try:
+        stack = StackFile.model_validate(data)
+        return overrides(stack.resources)
+    except ValidationError as exc:
+        messages = "; ".join(_describe_error(error) for error in exc.errors())
+        raise EnvironmentDeclarationError(f"{path}: {messages}") from exc
+    except SizingError as exc:
+        raise EnvironmentDeclarationError(f"{path}: {exc}") from exc
 
 
 def _require_stem(declaration: EnvironmentDeclaration, path: PurePosixPath | Path) -> None:

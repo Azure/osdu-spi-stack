@@ -154,7 +154,27 @@ spi up --env dev1 --ingress-mode dns --dns-zone example.com
 
 # Middleware without OSDU services
 spi up --env dev1 --profile minimal
+
+# Core with replicas, CPU, memory, and storage from a stack file
+spi up --env dev1 -f stack.yaml
 ```
+
+A stack file always builds on core. Its `resources:` section lists only what
+differs from the defaults, and `spi up` checks it before it changes the cluster:
+
+```yaml
+resources:
+  elasticsearch:
+    count: 1
+    storage: 16Gi
+  postgres:
+    instances: 2
+  partition: {replicas: 1}
+```
+
+Running `spi up` again without `-f` keeps the sizing; a stack file with no
+`resources:` returns every value to its default. Storage only grows. See
+[ADR-043](docs/decisions/043-sizing-through-one-substituted-configmap.md).
 
 See [Ingress modes](docs/architecture.md#ingress-profiles) and
 [Deployment lifecycle](docs/design/deployment-lifecycle.md) for the complete behavior.

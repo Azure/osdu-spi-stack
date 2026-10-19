@@ -25,6 +25,11 @@ forks:
   - service: legal
     repo: Azure/osdu-spi-legal
     canonicalSource: fork
+resources:
+  elasticsearch:
+    storage: 256Gi
+  storage:
+    replicas: 2
 ```
 
 | Key | Meaning |
@@ -46,6 +51,15 @@ follows:
 | `service` | The service the repository builds; unique within the list. `forks` is valid only with `profile: core`. |
 | `repo` | The `<org>/<fork>` the service's `fork-<service>` credential trusts; unique within the list, compared without case, at most nineteen entries (ADR-032). |
 | `canonicalSource` | `community` or `fork`, default `community`; a fork is trusted first and promoted by a later reviewed change (ADR-033). |
+
+`resources` is optional and valid only with `profile: core`. It sizes the
+OSDU services and the in-cluster middleware: a service name, `elasticsearch`,
+`postgres`, `redis`, or `airflow`, each with the fields `src/spi/sizing.py`
+names, such as `replicas`, `cpu: {request, limit}`, `memory: {request, limit}`,
+and `storage`. `spi up` checks the section and writes it to the `spi-sizing`
+ConfigMap; a key the section leaves out keeps the manifest's default, and
+storage only grows (ADR-043). The CLI of the declared `stackVersion` must know
+the section, so add it only once `stackVersion` names a release that does.
 
 The file is strict: no other keys are accepted, and every value is
 validated before a lifecycle workflow acts on it (`scripts/export_environment.py`
