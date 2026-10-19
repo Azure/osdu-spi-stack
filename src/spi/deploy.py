@@ -59,6 +59,7 @@ from .paths import INFRA_ROOT
 from .pins import ServicePin, apply_image_lock, apply_schema_load_backfill, describe_pin, read_lock
 from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, run_command, run_process
+from .sizing import apply_sizing, check_storage
 from .templates import (
     TESTER_NAMESPACE,
     TESTER_SERVICE_ACCOUNTS,
@@ -584,13 +585,15 @@ def deploy_azure(
     azure_account: Optional[Dict[str, Any]] = None,
     deployer_principal: Optional[Tuple[str, str]] = None,
     declared: Optional[Declared] = None,
+    sizing: Optional[dict[str, str]] = None,
 ) -> None:
     """Provision Azure infra, bootstrap Kubernetes, deploy via GitOps.
 
     Under ``dry_run`` only the Bicep what-if previews run; the Kubernetes
     bootstrap and GitOps activation are skipped. A ``declared`` environment
     takes its fork trust and source policy from the declaration, not from the
-    records the resource group retained.
+    records the resource group retained. ``sizing`` replaces what `spi-sizing`
+    holds on core; None leaves it as it is.
     """
     resolved_images: dict[str, ResolvedImage] = {}
     sources: dict[str, str] = {}
@@ -621,6 +624,9 @@ def deploy_azure(
     if dry_run:
         return
 
+    sizes = sizing is not None and config.profile is Profile.CORE
+    if sizes:
+        check_storage(sizing)
     istio_revision = ensure_namespaces()
     create_istio_revision_configmap(
         istio_revision,
@@ -630,6 +636,8 @@ def deploy_azure(
     create_storage_classes()
     install_gateway_api_crds()
     _ensure_image_lock(config, refresh_images, image_branch, resolved_images, sources)
+    if sizes:
+        apply_sizing(sizing)
     _project_trusted_repos(config, declared)
     _create_osdu_config(config, infra_outputs)
     _create_istio_auth(config, infra_outputs)
