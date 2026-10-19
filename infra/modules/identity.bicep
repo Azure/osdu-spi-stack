@@ -15,6 +15,12 @@
 @description('Resource name for the OSDU workload identity.')
 param name string
 
+@description('Resource name for the dedicated Seismic RestoreRunner identity.')
+param restoreIdentityName string
+
+@description('Whether to create and federate the RestoreRunner identity.')
+param enableSeismicRestore bool = false
+
 @description('Resource name for the deploy identity fork CI federates to.')
 param deployIdentityName string
 
@@ -72,6 +78,23 @@ resource memberIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-0
 resource noAccessIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: noAccessIdentityName
   location: location
+}
+
+resource restoreIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (enableSeismicRestore) {
+  name: restoreIdentityName
+  location: location
+}
+
+resource restoreCredential 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = if (enableSeismicRestore && !empty(oidcIssuerUrl)) {
+  parent: restoreIdentity
+  name: 'cluster-osdu'
+  properties: {
+    issuer: oidcIssuerUrl
+    subject: 'system:serviceaccount:osdu:seismic-restore-sa'
+    audiences: [
+      'api://AzureADTokenExchange'
+    ]
+  }
 }
 
 // The Managed Identity RP rejects concurrent federated credential writes on
@@ -135,6 +158,12 @@ output clientId string = identity.properties.clientId
 
 @description('Principal ID used for Azure data-plane role assignments.')
 output principalId string = identity.properties.principalId
+
+@description('Client ID of the dedicated RestoreRunner identity, or empty when disabled.')
+output restoreClientId string = enableSeismicRestore ? restoreIdentity!.properties.clientId : ''
+
+@description('Principal ID of the dedicated RestoreRunner identity, or empty when disabled.')
+output restorePrincipalId string = enableSeismicRestore ? restoreIdentity!.properties.principalId : ''
 
 @description('Azure resource ID of the deploy identity.')
 output deployIdentityResourceId string = deployIdentity.id

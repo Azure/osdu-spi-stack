@@ -141,7 +141,7 @@ spec:
               protocol: TCP
           securityContext:
             allowPrivilegeEscalation: false
-            runAsUser: 1000
+            runAsUser: {{ .Values.runAsUser }}
             capabilities:
               drop:
                 - ALL
@@ -176,7 +176,12 @@ spec:
             {{- end }}
             {{- range .Values.env }}
             - name: {{ .name }}
+              {{- if hasKey . "valueFrom" }}
+              valueFrom:
+                {{- toYaml .valueFrom | nindent 16 }}
+              {{- else }}
               value: {{ .value | quote }}
+              {{- end }}
             {{- end }}
           {{- end }}
           {{- if or .Values.elasticTls .Values.redisTls .Values.volumeMounts }}

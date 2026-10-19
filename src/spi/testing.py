@@ -35,12 +35,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Collection, Iterable, Mapping, Sequence
 
-from rich.markup import escape
-
 from .console import console
 from .images import (
     IMAGE_REGISTRY,
-    SCHEMA_LOAD_SERVICE_NAME,
     ImageNotFoundError,
     ImageResolutionError,
     acceptance_digest_key,
@@ -48,7 +45,9 @@ from .images import (
     github_file,
     github_get,
     image_lock_key,
+    is_companion_image,
     resolve_ghcr_manifest,
+    service_image_names,
 )
 from .pins import (
     LOCAL_ORIGIN,
@@ -102,6 +101,7 @@ _RESOLVER_EXITS = {
 }
 _COMMIT_TAG_RE = re.compile(r"^sha-([0-9a-f]{12})$")
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_ENV_ARGUMENT_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]{0,127})\}$")
 
 
 class SuiteNotRun(RuntimeError):
@@ -205,8 +205,41 @@ class _Binding:
     def timeout_minutes(self) -> int:
         return int(self.contract.get("timeout_minutes") or 0)
 
-    def arguments(self, maven_arguments: Sequence[str]) -> list[str]:
-        return list(maven_arguments) or list(self.contract.get("maven_arguments") or [])
+    @property
+    def test_type(self) -> str:
+        return str(self.contract.get("test_type") or "maven")
+
+    @property
+    def test_entrypoint(self) -> str:
+        return str(self.contract.get("test_entrypoint") or "")
+
+    @property
+    def report_paths(self) -> tuple[str, ...]:
+        return tuple(self.contract.get("report_paths") or ())
+
+    def arguments(self, maven_arguments: Sequence[str], variables: Mapping[str, str]) -> list[str]:
+        if self.test_type == "maven":
+            return list(maven_arguments) or list(self.contract.get("maven_arguments") or [])
+        resolved = []
+        for argument in self.contract.get("test_arguments") or []:
+            match = _ENV_ARGUMENT_RE.fullmatch(argument)
+            if match is None:
+                if "${" in argument:
+                    raise SuiteNotRun(
+                        "descriptor_rejected",
+                        "an environment placeholder must be the entire script argument",
+                    )
+                resolved.append(argument)
+                continue
+            name = match.group(1)
+            value = variables.get(name, "")
+            if not value:
+                raise SuiteNotRun(
+                    "resolver_failed",
+                    f"script argument references unresolved environment variable {name!r}",
+                )
+            resolved.append(value)
+        return resolved
 
 
 def _fork_canonical(lock: dict, service: str) -> tuple[tuple[str, str, str] | None, str]:
@@ -571,9 +604,15 @@ def _require_tool(name: str) -> None:
 
 
 def _docker_run(
-    image: str, test_dir: str, env_file: str, args: Sequence[str], container: str = ""
+    image: str,
+    test_dir: str,
+    env_file: str,
+    args: Sequence[str],
+    container: str = "",
+    entrypoint: str = "",
 ) -> list[str]:
     name = ["--name", container] if container else []
+    script = ["-e", f"SUITE_ENTRYPOINT={entrypoint}"] if entrypoint else []
     return [
         "docker",
         "run",
@@ -584,6 +623,7 @@ def _docker_run(
         env_file,
         "-e",
         f"SUITE_DIR={test_dir}",
+        *script,
         image,
         *args,
     ]
@@ -596,6 +636,7 @@ def run_paired(
     args: Sequence[str],
     timeout: int | None,
     reports: Path,
+    entrypoint: str = "",
 ) -> int:
     """Run the suite in the paired image; copy its reports out before the container goes."""
 
@@ -611,7 +652,7 @@ def run_paired(
     container = f"spi-test-{uuid.uuid4().hex[:12]}"
     try:
         ran = run_command(
-            _docker_run(image, test_dir, str(env_file), args, container),
+            _docker_run(image, test_dir, str(env_file), args, container, entrypoint),
             capture_output=False,
             description=f"Run {test_dir}",
             check=False,
@@ -667,6 +708,23 @@ def _clear_reports(suite_dir: Path) -> None:
             shutil.rmtree(path)
 
 
+def _report_files(reports: Path, patterns: Sequence[str]) -> list[Path]:
+    if not patterns:
+        return [
+            path
+            for path in reports.rglob("TEST-*.xml")
+            if path.parent.name in REPORT_DIRS and path.is_file()
+        ]
+    return sorted(
+        {path for pattern in patterns for path in reports.glob(pattern) if path.is_file()}
+    )
+
+
+def _clear_declared_reports(suite_dir: Path, patterns: Sequence[str]) -> None:
+    for path in _report_files(suite_dir, patterns):
+        path.unlink()
+
+
 def _suite_dir(checkout: Path, test_dir: str) -> Path:
     suite_dir = (checkout / test_dir).resolve()
     if not suite_dir.is_relative_to(checkout) or not suite_dir.is_dir():
@@ -682,18 +740,47 @@ def _maven(checkout: Path, args: Sequence[str]) -> list[str]:
     return [*command, *args]
 
 
-def run_checkout(
-    checkout: Path, test_dir: str, env_file: Path, args: Sequence[str], timeout: int | None
-) -> tuple[int, Path]:
-    """Run the suite with the host's Maven, as the image's entrypoint would."""
+def _script(suite_dir: Path, entrypoint: str, args: Sequence[str]) -> list[str]:
+    executable = (suite_dir / entrypoint).resolve()
+    if not executable.is_relative_to(suite_dir) or not executable.is_file():
+        raise SuiteNotRun(
+            "descriptor_rejected",
+            f"script entrypoint {entrypoint} is not a file in {suite_dir}",
+        )
+    if executable.suffix == ".sh":
+        return ["bash", str(executable), *args]
+    return [str(executable), *args]
 
-    _require_tool("mvn")
+
+def run_checkout(
+    checkout: Path,
+    test_dir: str,
+    env_file: Path,
+    args: Sequence[str],
+    timeout: int | None,
+    *,
+    test_type: str = "maven",
+    entrypoint: str = "",
+    report_paths: Sequence[str] = (),
+) -> tuple[int, Path]:
+    """Run the suite from the checkout with its declared runtime."""
+
     suite_dir = _suite_dir(checkout, test_dir)
-    _clear_reports(suite_dir)
+    if report_paths:
+        _clear_declared_reports(suite_dir, report_paths)
+    else:
+        _clear_reports(suite_dir)
     env = _host_env(MAVEN_BASE_ENV, WINDOWS_PROCESS_ENV + WINDOWS_PROFILE_ENV)
     env.update(read_env_file(env_file))
+    if test_type == "script":
+        command = _script(suite_dir, entrypoint, args)
+        if command[0] == "bash":
+            _require_tool("bash")
+    else:
+        _require_tool("mvn")
+        command = _maven(checkout, args)
     ran = run_command(
-        _maven(checkout, args),
+        command,
         capture_output=False,
         description=f"Run {test_dir} natively",
         check=False,
@@ -704,28 +791,33 @@ def run_checkout(
     return ran.returncode, suite_dir
 
 
-def count_tests(reports: Path) -> dict[str, int]:
-    """Totals across the Surefire and Failsafe reports, for display beside the verdict."""
+def count_tests(reports: Path, patterns: Sequence[str] = ()) -> dict[str, int]:
+    """Totals across the selected JUnit reports, for display beside the verdict."""
 
     totals = {"tests": 0, "skipped": 0, "failures": 0, "errors": 0}
-    for path in reports.rglob("TEST-*.xml"):
-        if path.parent.name not in REPORT_DIRS:
-            continue
+    for path in _report_files(reports, patterns):
         try:
             root = ET.parse(path).getroot()
         except ET.ParseError:
             continue
-        for key in totals:
-            try:
-                totals[key] += int(root.get(key, 0))
-            except ValueError:
-                pass
+        suites = [root] if root.tag == "testsuite" else root.findall(".//testsuite")
+        if root.tag == "testsuites" and not suites:
+            suites = [root]
+        for suite in suites:
+            for key in totals:
+                try:
+                    totals[key] += int(suite.get(key, 0))
+                except ValueError:
+                    pass
     return totals
 
 
-def judge(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
+def judge(
+    root: Path, exit_code: int, reports: Path, patterns: Sequence[str] = ()
+) -> tuple[bool, str]:
     """The commit's own verdict over this run's reports."""
 
+    declared = ["--patterns-json", json.dumps(list(patterns))] if patterns else []
     result = run_process(
         [
             sys.executable,
@@ -734,6 +826,7 @@ def judge(root: Path, exit_code: int, reports: Path) -> tuple[bool, str]:
             str(exit_code),
             "--reports",
             str(reports),
+            *declared,
         ],
         env=_host_env(("PATH",), WINDOWS_PROCESS_ENV),
         capture_output=True,
@@ -768,8 +861,8 @@ def _bind(
 ) -> _Binding:
     """Guard the environment and bind ``suite`` to it, under ``work``."""
 
-    if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
-        known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
+    if service not in IMAGE_REGISTRY or is_companion_image(service):
+        known = ", ".join(sorted(service_image_names()))
         raise SuiteNotRun(
             "unknown_service", f"Unknown service {service!r}. Known services: {known}"
         )
@@ -833,13 +926,24 @@ def plan_suite(
         except (OSError, ValueError) as exc:
             raise SuiteNotRun("resolver_failed", f"{bound.env_file.name}: {exc}") from exc
         check_target(service, bound.expected)
-        args = bound.arguments(maven_arguments)
+        args = bound.arguments(maven_arguments, variables)
         if checkout is None:
             directory = f"{IMAGE_SUITE_ROOT}/{bound.test_dir}"
-            command = _docker_run(bound.image, bound.test_dir, env_file or "suite.env", args)
+            command = _docker_run(
+                bound.image,
+                bound.test_dir,
+                env_file or "suite.env",
+                args,
+                entrypoint=bound.test_entrypoint,
+            )
         else:
-            directory = str(_suite_dir(bound.root, bound.test_dir))
-            command = _maven(bound.root, args)
+            suite_dir = _suite_dir(bound.root, bound.test_dir)
+            directory = str(suite_dir)
+            command = (
+                _script(suite_dir, bound.test_entrypoint, args)
+                if bound.test_type == "script"
+                else _maven(bound.root, args)
+            )
 
     secrets = secret_values(bound.bearers, variables)
     redact = redactor(secrets, named=False)
@@ -870,7 +974,7 @@ def run_suite(
     checkout: Path | None = None,
     overrides: Mapping[str, str] | None = None,
     maven_arguments: Sequence[str] = (),
-    inspect: Callable[[Path, Collection[str]], dict | None] | None = None,
+    inspect: Callable[[Path, Collection[str], Sequence[str]], dict | None] | None = None,
 ) -> SuiteResult:
     """Run ``suite`` of ``service`` against the environment; raise SuiteNotRun otherwise.
 
@@ -882,34 +986,53 @@ def run_suite(
         work = Path(scratch)
         bound = _bind(service, suite, checkout, overrides, work)
         root, env_file = bound.root, bound.env_file
+        variables: dict[str, str] = {}
         secrets: tuple[str, ...] = ()
-        if inspect:
+        if bound.test_type == "script" or inspect:
             try:
-                secrets = secret_values(bound.bearers, read_env_file(env_file))
+                variables = read_env_file(env_file)
             except (OSError, ValueError) as exc:
-                # Nothing of a run is shown when its credentials cannot be named.
-                console.print(
-                    f"  [warning]No report: {escape(f'{env_file.name}: {exc}')}[/warning]"
-                )
+                if bound.test_type == "script":
+                    raise SuiteNotRun("resolver_failed", f"{env_file.name}: {exc}") from exc
+                console.print(f"  [warning]No report: {env_file.name}: {exc}[/warning]")
                 inspect = None
+        if inspect:
+            secrets = secret_values(bound.bearers, variables)
         test_dir = bound.test_dir
-        args = bound.arguments(maven_arguments)
+        args = bound.arguments(maven_arguments, variables)
         timeout = bound.timeout_minutes * 60 or None
 
         revision = check_target(service, bound.expected)
         try:
             if checkout is None:
                 reports = work / "reports"
-                code = run_paired(bound.image, test_dir, env_file, args, timeout, reports)
+                code = run_paired(
+                    bound.image,
+                    test_dir,
+                    env_file,
+                    args,
+                    timeout,
+                    reports,
+                    bound.test_entrypoint,
+                )
             else:
-                code, reports = run_checkout(root, test_dir, env_file, args, timeout)
+                code, reports = run_checkout(
+                    root,
+                    test_dir,
+                    env_file,
+                    args,
+                    timeout,
+                    test_type=bound.test_type,
+                    entrypoint=bound.test_entrypoint,
+                    report_paths=bound.report_paths,
+                )
         finally:
             env_file.unlink(missing_ok=True)
-        passed, verdict = judge(root, code, reports)
-        tests = count_tests(reports)
+        passed, verdict = judge(root, code, reports, bound.report_paths)
+        tests = count_tests(reports, bound.report_paths)
         # A discarded run leaves nothing with the inspector.
         check_target(service, bound.expected, after=verdict, revision=revision)
-        report = inspect(reports, secrets) if inspect else None
+        report = inspect(reports, secrets, bound.report_paths) if inspect else None
 
     declared = tuple(bound.contract.get("suites") or ())
     return SuiteResult(

@@ -12,6 +12,7 @@ param envName = 'dev1'
 param location = 'eastus2'
 
 param identityName = 'spi-stack-dev1-osdu-identity'
+param restoreIdentityName = 'spi-stack-dev1-seismic-restore'
 param deployIdentityName = 'spi-stack-dev1-deployer'
 param memberIdentityName = 'spi-stack-dev1-member'
 param noAccessIdentityName = 'spi-stack-dev1-noaccess'

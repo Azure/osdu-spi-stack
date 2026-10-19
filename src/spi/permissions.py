@@ -44,7 +44,9 @@ STACK_ROLES: Dict[str, str] = {
     "Key Vault Secrets Officer": "b86a8fe4-44ce-4948-aee5-eccb2c155cd7",
     "Key Vault Secrets User": "4633458b-17de-408a-b874-0445c86b69e6",
     "Storage Blob Data Contributor": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+    "Storage Account Backup Contributor": "e5e2a7ff-d759-4cd2-bb51-3152d37e2eb1",
     "Storage Table Data Contributor": "0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3",
+    "Storage Queue Data Contributor": "974c5e8b-45b9-4653-ba55-5f855dd0fb88",
     "Azure Service Bus Data Sender": "69a216fc-b8fb-44d8-bc22-1f3c2cd27a39",
     "Azure Service Bus Data Receiver": "4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0",
     "AcrPull": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
@@ -63,7 +65,12 @@ ACTION_LABELS: Dict[str, str] = {
     WRITE_ASSIGNMENT: "Create role assignments",
     DELETE_ASSIGNMENT: "Remove role assignments",
 }
-DEPLOY_ACTIONS: Tuple[str, ...] = tuple(ACTION_LABELS)
+DEPLOY_ACTIONS: Tuple[str, ...] = (
+    CREATE_GROUP,
+    CREATE_CLUSTER,
+    WRITE_ASSIGNMENT,
+    DELETE_ASSIGNMENT,
+)
 CONTRIBUTOR_ACTIONS = (CREATE_GROUP, CREATE_CLUSTER)
 GRANT_ACTIONS = (WRITE_ASSIGNMENT, DELETE_ASSIGNMENT)
 
@@ -249,7 +256,11 @@ def report_denial(results: Sequence[ScopeResult], commands: Sequence[str], comma
         console.print(text, markup=False, highlight=False, soft_wrap=True)
 
 
-def resolve_scope(subscription_id: str, resource_group: str) -> ScopeResult:
+def resolve_scope(
+    subscription_id: str,
+    resource_group: str,
+    actions: Sequence[str] = DEPLOY_ACTIONS,
+) -> ScopeResult:
     """Evaluate at the group when it exists, otherwise at the subscription."""
     exists = run_command(
         ["az", "group", "exists", "--name", resource_group],
@@ -259,18 +270,21 @@ def resolve_scope(subscription_id: str, resource_group: str) -> ScopeResult:
     )
     if exists.returncode == 0 and exists.stdout.strip().lower() == "true":
         scope = group_scope(subscription_id, resource_group)
-        actions = (CREATE_CLUSTER, WRITE_ASSIGNMENT, DELETE_ASSIGNMENT)
-        return evaluate(scope, "resource group", actions)
-    return evaluate(subscription_scope(subscription_id), "subscription scope", DEPLOY_ACTIONS)
+        group_actions = tuple(action for action in actions if action != CREATE_GROUP)
+        return evaluate(scope, "resource group", group_actions)
+    return evaluate(subscription_scope(subscription_id), "subscription scope", actions)
 
 
 def require_deploy_permissions(
-    account: Dict[str, Any], principal: Tuple[str, str], resource_group: str
+    account: Dict[str, Any],
+    principal: Tuple[str, str],
+    resource_group: str,
+    actions: Sequence[str] = DEPLOY_ACTIONS,
 ) -> None:
     """Stop `spi up` before its first mutation when the deployer lacks a required permission."""
     subscription_id = account.get("id", "")
     console.print("\n[bold]Checking Azure permissions...[/bold]")
-    result = resolve_scope(subscription_id, resource_group)
+    result = resolve_scope(subscription_id, resource_group, actions)
     if result.error:
         console.print(
             f"  [warning]Permissions not checked at {result.scope}: {result.error}. "

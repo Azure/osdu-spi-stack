@@ -23,7 +23,7 @@ import sys
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Any, Collection, Dict, List, NoReturn, Optional, Tuple
+from typing import Any, Collection, Dict, List, NoReturn, Optional, Sequence, Tuple
 
 import shellingham
 import typer
@@ -41,9 +41,9 @@ from .environment import Declared
 from .guard import get_suspend_status, verify_spi_cluster
 from .images import (
     DEFAULT_IMAGE_BRANCH,
-    SCHEMA_LOAD_SERVICE_NAME,
-    SCHEMA_SERVICE_NAME,
     ImageResolutionError,
+    companion_image,
+    is_companion_image,
     resolve_image_lock,
 )
 from .ingress import resolve_acme_email, resolve_ingress_mode
@@ -52,8 +52,8 @@ from .pins import (
     PinError,
     ResetRefusedError,
     VerifyError,
+    apply_companion_backfills,
     apply_image_lock,
-    apply_schema_load_backfill,
     await_service_image,
     describe_pin,
     live_pins,
@@ -363,15 +363,15 @@ def _reconcile_kustomization(name: str) -> None:
     )
 
 
-def _backfill_schema_load_lock(image_branch: str) -> None:
-    """Backfill schema-load through the shared image-lock CAS primitive."""
+def _backfill_companion_locks(image_branch: str) -> None:
+    """Backfill companion entries through the shared image-lock CAS primitive."""
     try:
-        changed = apply_schema_load_backfill(branch=image_branch)
+        changed = apply_companion_backfills(branch=image_branch)
     except (ImageResolutionError, PinError) as exc:
-        console.print(f"[error]Unable to backfill the schema-load image: {exc}[/error]")
+        console.print(f"[error]Unable to backfill companion images: {exc}[/error]")
         raise typer.Exit(code=1)
     if changed:
-        display_result("osdu-image-lock ConfigMap updated with schema-load")
+        display_result("osdu-image-lock ConfigMap updated with companion images")
 
 
 def _build_config(
@@ -387,6 +387,7 @@ def _build_config(
     ingress_prefix: str = "",
     acme_email: str = "",
     name_suffix: str = "",
+    enable_seismic_restore: bool = False,
 ) -> Config:
     return Config.from_env(
         env=env,
@@ -401,6 +402,7 @@ def _build_config(
         dns_zone=dns_zone,
         ingress_prefix=ingress_prefix,
         acme_email=acme_email,
+        enable_seismic_restore=enable_seismic_restore,
     )
 
 
@@ -684,6 +686,13 @@ def up(
         help="Reviewed environment declaration as <owner>/<repo>:<path>, read from main. "
         "It supplies the provisioning options and the trusted forks; later runs reuse it.",
     ),
+    enable_seismic_restore: Optional[bool] = typer.Option(
+        None,
+        "--enable-seismic-restore/--disable-seismic-restore",
+        help="Enable Seismic point-in-time restore, or disable its runtime and recovery "
+        "policies while retaining dormant Azure resources. Omit to preserve the deployed "
+        "setting.",
+    ),
 ):
     """Provision Azure infrastructure and deploy the OSDU SPI stack."""
     # Argument errors surface before the first Azure read.
@@ -691,6 +700,11 @@ def up(
     declared = _up_declaration(env, declaration)
     if declared is not None:
         intent = declared.declaration
+        if enable_seismic_restore is not None:
+            raise typer.BadParameter(
+                "is not supported by environment declarations yet",
+                param_hint="--enable-seismic-restore",
+            )
         if branch is not None:
             raise typer.BadParameter(
                 f"conflicts with the declaration, which pins {intent.stack_version}",
@@ -736,13 +750,20 @@ def up(
     console.print(Panel(title, border_style="cyan"))
     check_prerequisites(PREREQ_TOOLS)
 
+    from .azure_infra import read_deployed_seismic_restore
+
+    if enable_seismic_restore is None:
+        enable_seismic_restore = read_deployed_seismic_restore(
+            Config.from_env(env).resource_group,
+            env,
+        )
+
     # Resolve the deployer before suffix persistence so an identity failure
     # cannot mutate an existing untagged resource group.
     name_suffix, azure_account, deployer_principal = _resolve_up_context(
         env,
         requested_suffix=name_suffix,
     )
-
     config = _build_config(
         profile=profile,
         env=env,
@@ -756,6 +777,7 @@ def up(
         ingress_prefix=ingress_prefix,
         acme_email=resolve_acme_email(acme_email),
         name_suffix=name_suffix,
+        enable_seismic_restore=enable_seismic_restore,
     )
     # A preview provisions nothing, so it does not hand the environment to the declaration.
     if declared is not None and not dry_run:
@@ -1100,6 +1122,7 @@ ALL_SUITES = "all"
 def _inspect_suite(
     reports: Path,
     secrets: Collection[str],
+    patterns: Sequence[str] = (),
     *,
     suite: str,
     bundle: Optional[Path],
@@ -1117,7 +1140,7 @@ def _inspect_suite(
 
     kept.update(secrets)
     try:
-        facts = collect(reports, secrets)
+        facts = collect(reports, secrets, patterns) if patterns else collect(reports, secrets)
     except Exception as exc:  # noqa: BLE001
         _report_warning(f"No report for {suite}", exc)
         return None
@@ -2126,7 +2149,7 @@ def reconcile(
     refresh_spi_init_values()
 
     if not refresh_images:
-        _backfill_schema_load_lock(image_branch)
+        _backfill_companion_locks(image_branch)
 
     if resume:
         console.print("\n[bold]Resuming GitRepository...[/bold]")
@@ -2230,6 +2253,7 @@ def reconcile(
         "spi-osdu-services",
         "spi-osdu-schema-load",
         "spi-osdu-reference",
+        "spi-osdu-ddms",
     ]
 
     if refresh_images:
@@ -2353,10 +2377,11 @@ def service_pin(
                     f"  [success]{name}[/success] paired to {paired.digest[:19]} "
                     "from the same commit"
                 )
-        if pin.ephemeral and service == SCHEMA_SERVICE_NAME and len(applied) == 1:
+        companion = companion_image(service)
+        if pin.ephemeral and companion and not companion.pin_required and len(applied) == 1:
             console.print(
-                f"  [dim]{SCHEMA_LOAD_SERVICE_NAME} stays canonical: the fork published "
-                "no loader image for this commit[/dim]"
+                f"  [dim]{companion.name} stays canonical: the fork published "
+                "no companion image for this commit[/dim]"
             )
         if pin.ephemeral:
             console.print(
@@ -2673,7 +2698,7 @@ def service_refresh(
             f"'spi service reset {name}' and a refresh[/warning]"
         )
     for name, ref in refs.items():
-        if name != SCHEMA_LOAD_SERVICE_NAME:
+        if not is_companion_image(name):
             console.print(f"  [dim]spi service verify {name} --image {ref}[/dim]")
 
 

@@ -1110,6 +1110,21 @@ class TestApplyImageLock:
         # Unpinned services get the freshly resolved canonical entries.
         assert data["PARTITION_IMAGE_TAG"] == "e" * 40
 
+    def test_refresh_holds_an_unpinned_companion_with_its_pinned_primary(self, monkeypatch):
+        prior = _canonical_data("schema", "schema-load")
+        prior["SCHEMA_LOAD_IMAGE_REF"] = "repo/schema-load-master@sha256:old"
+        schema_pin = _pin(repository="repo/schema-pin", tag="p" * 40)
+        lock = _lock(data=prior, pins_annotation=encode_pins({"schema": schema_pin}))
+        calls = _wire_lock(monkeypatch, lock)
+
+        pins.apply_image_lock(self._resolved(), "master")
+
+        data, saved = calls["patch"]
+        assert data["SCHEMA_IMAGE_REPOSITORY"] == "repo/schema-pin"
+        assert data["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "repo/schema-load-master"
+        assert data["SCHEMA_LOAD_IMAGE_TAG"] == "c" * 40
+        assert set(saved) == {"schema"}
+
     def test_refresh_keeps_a_borrowed_pod_protected(self, monkeypatch):
         """A refresh mid-borrow must not strip the annotation from the pod under test."""
         active = {
@@ -1162,10 +1177,52 @@ class TestApplyImageLock:
         assert set(saved) == {"storage", "_concurrent"}
 
 
-class TestApplySchemaLoadBackfill:
+class TestApplyImageLockBackfill:
+    def test_adds_only_missing_services(self, monkeypatch):
+        lock = _lock(data={**_canonical_data("storage"), "IMAGE_COUNT": "1"})
+        calls = _wire_lock(monkeypatch, lock)
+        resolved = {
+            "seismic": ResolvedImage(
+                "seismic",
+                "ghcr.io/acme/seismic",
+                "sha-canonical",
+                "2026-08-20T00:00:00Z",
+                "sha256:seismic",
+            ),
+            "seismic-restore": ResolvedImage(
+                "seismic-restore",
+                "ghcr.io/acme/seismic-restore",
+                "sha-canonical",
+                "2026-08-20T00:00:00Z",
+                "sha256:restore",
+            ),
+        }
+
+        assert pins.apply_image_lock_backfill(resolved) is True
+        data, _saved = calls["patch"]
+        assert data["STORAGE_IMAGE_REPOSITORY"] == "repo/storage-master"
+        assert data["SEISMIC_IMAGE_REPOSITORY"] == "ghcr.io/acme/seismic"
+        assert data["SEISMIC_RESTORE_IMAGE_REPOSITORY"] == "ghcr.io/acme/seismic-restore"
+        assert data["IMAGE_COUNT"] == "3"
+
+    def test_returns_false_when_services_exist(self, monkeypatch):
+        lock = _lock(data=_canonical_data("seismic"))
+        monkeypatch.setattr(pins, "read_lock", lambda required=True: lock)
+
+        image = ResolvedImage(
+            "seismic",
+            "ghcr.io/acme/seismic",
+            "sha-canonical",
+            "",
+            "sha256:seismic",
+        )
+        assert pins.apply_image_lock_backfill({"seismic": image}) is False
+
+
+class TestApplyCompanionBackfills:
     def test_returns_false_when_lock_absent(self, monkeypatch):
         monkeypatch.setattr(pins, "read_lock", lambda required=True: None)
-        assert pins.apply_schema_load_backfill("master") is False
+        assert pins.apply_companion_backfills("master") is False
 
     def test_returns_false_when_already_backfilled(self, monkeypatch):
         data = _canonical_data("schema")
@@ -1178,25 +1235,119 @@ class TestApplySchemaLoadBackfill:
             pytest.fail("a lock that already carries schema-load must not be patched")
 
         monkeypatch.setattr(pins, "run_command", fail_run_command)
-        assert pins.apply_schema_load_backfill("master") is False
+        assert pins.apply_companion_backfills("master") is False
 
     def test_backfills_legacy_lock(self, monkeypatch):
         lock = _lock(data=_canonical_data("schema"))
         calls = _wire_lock(monkeypatch, lock)
         monkeypatch.setattr(
             pins,
-            "schema_load_lock_patch",
-            lambda lock_data, branch=None: {
+            "companion_lock_patch",
+            lambda lock_data, primary_name, branch=None, **kwargs: {
                 "SCHEMA_LOAD_IMAGE_REPOSITORY": "repo/schema-load-master",
                 "SCHEMA_LOAD_IMAGE_TAG": lock_data["SCHEMA_IMAGE_TAG"],
                 "SCHEMA_LOAD_IMAGE_REF": f"repo/schema-load-master:{lock_data['SCHEMA_IMAGE_TAG']}",
             },
         )
 
-        assert pins.apply_schema_load_backfill("master") is True
+        assert pins.apply_companion_backfills("master") is True
         data, _saved = calls["patch"]
         assert data["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "repo/schema-load-master"
         assert data["SCHEMA_LOAD_IMAGE_TAG"] == "c" * 40
+
+    def test_active_pin_backfills_from_its_captured_canonical(self, monkeypatch):
+        schema_pin = _pin(
+            canonical_repository="ghcr.io/acme/schema",
+            canonical_tag="sha-canonical",
+            canonical_created_at="2026-08-20T00:00:00Z",
+        )
+        lock = _lock(
+            data=_canonical_data("schema"),
+            pins_annotation=encode_pins({"schema": schema_pin}),
+        )
+        calls = _wire_lock(monkeypatch, lock)
+        seen = {}
+
+        def fake_patch(lock_data, primary_name, branch=None, **kwargs):
+            seen.update(primary_name=primary_name, branch=branch, **kwargs)
+            return {
+                "SCHEMA_LOAD_IMAGE_REPOSITORY": "ghcr.io/acme/schema-load",
+                "SCHEMA_LOAD_IMAGE_TAG": "sha-canonical",
+                "SCHEMA_LOAD_IMAGE_REF": "ghcr.io/acme/schema-load:sha-canonical",
+            }
+
+        monkeypatch.setattr(pins, "companion_lock_patch", fake_patch)
+
+        assert (
+            pins.apply_companion_backfills("master", sources={"schema": "Acme/osdu-spi-schema"})
+            is True
+        )
+        assert seen == {
+            "primary_name": "schema",
+            "branch": "master",
+            "primary_repository": "ghcr.io/acme/schema",
+            "primary_tag": "sha-canonical",
+            "primary_created_at": "2026-08-20T00:00:00Z",
+            "source_repo": "Acme/osdu-spi-schema",
+        }
+        data, saved = calls["patch"]
+        assert data["SCHEMA_LOAD_IMAGE_TAG"] == "sha-canonical"
+        assert set(saved) == {"schema"}
+
+
+class TestCompanionWriteBoundary:
+    @staticmethod
+    def _require_schema_companion(monkeypatch):
+        entry = pins.IMAGE_REGISTRY["schema"]
+        assert entry.companion is not None
+        monkeypatch.setitem(
+            pins.IMAGE_REGISTRY,
+            "schema",
+            replace(entry, companion=replace(entry.companion, pin_required=True)),
+        )
+
+    def test_required_companion_rejects_a_primary_only_write(self, monkeypatch):
+        self._require_schema_companion(monkeypatch)
+        lock = _lock(data=_canonical_data("schema", "schema-load"))
+        calls = _wire_lock(monkeypatch, lock)
+
+        def primary_only(current):
+            data = dict(current["data"])
+            data.update(pins._lock_entry_patch("schema", "repo/schema-new", "new", "", ""))
+            return {"data": data, "metadata": current["metadata"]}
+
+        with pytest.raises(PinError, match="requires companion schema-load"):
+            pins.mutate_lock(primary_only, "Split required pair")
+        assert calls["attempts"] == 0
+
+    def test_companion_only_write_is_rejected_after_backfill(self, monkeypatch):
+        data = _canonical_data("schema", "schema-load")
+        data["SCHEMA_LOAD_IMAGE_REF"] = "repo/schema-load-master@sha256:old"
+        lock = _lock(data=data)
+        calls = _wire_lock(monkeypatch, lock)
+
+        def companion_only(current):
+            data = dict(current["data"])
+            data.update(
+                pins._lock_entry_patch("schema-load", "repo/schema-load-new", "new", "", "")
+            )
+            return {"data": data, "metadata": current["metadata"]}
+
+        with pytest.raises(PinError, match="cannot change independently"):
+            pins.mutate_lock(companion_only, "Split companion")
+        assert calls["attempts"] == 0
+
+    def test_missing_companion_can_be_backfilled_independently(self, monkeypatch):
+        lock = _lock(data=_canonical_data("schema"))
+        calls = _wire_lock(monkeypatch, lock)
+
+        def backfill(current):
+            data = dict(current["data"])
+            data.update(pins._lock_entry_patch("schema-load", "repo/schema-load", "same", "", ""))
+            return {"data": data, "metadata": current["metadata"]}
+
+        pins.mutate_lock(backfill, "Backfill companion")
+        assert calls["attempts"] == 1
 
 
 class TestLockMutationConflicts:
@@ -1276,11 +1427,12 @@ class TestLockMutationConflicts:
             reconciled.append(command[3])
 
         monkeypatch.setattr(pins, "run_command", fake_run)
-        pins.reconcile_consumers(["unit", "schema-load", "storage"])
+        pins.reconcile_consumers(["unit", "schema-load", "storage", "seismic"])
         assert reconciled == [
             "spi-osdu-services",
             "spi-osdu-schema-load",
             "spi-osdu-reference",
+            "spi-osdu-ddms",
         ]
 
     def test_failed_stage_stops_the_sequence(self, monkeypatch):
@@ -1305,6 +1457,10 @@ class TestLockMutationConflicts:
         )
         pins.reconcile_consumers(["storage"])
         assert reconciled == ["spi-osdu-services"]
+
+        reconciled.clear()
+        pins.reconcile_consumers(["seismic"])
+        assert reconciled == ["spi-osdu-ddms"]
 
 
 class TestParseImageDigestRef:
@@ -1361,7 +1517,7 @@ class TestPinServiceImage:
             if not manifest_ok:
                 raise ImageResolutionError("manifest missing")
 
-        def fake_loader(source_repo, source_sha):
+        def fake_companion(source_repo, source_sha, companion):
             calls["loader_lookups"].append((source_repo, source_sha))
             if isinstance(loader, Exception):
                 raise loader
@@ -1375,7 +1531,7 @@ class TestPinServiceImage:
         # The fork's sha-<12> tag names the pinned digest unless a test moves it.
         calls["tagged"] = _GHCR_DIGEST
         monkeypatch.setattr(pins, "resolve_ghcr_manifest", fake_manifest)
-        monkeypatch.setattr(pins, "resolve_fork_loader", fake_loader)
+        monkeypatch.setattr(pins, "resolve_fork_companion", fake_companion)
         monkeypatch.setattr(pins, "resolve_ghcr_tag_digest", fake_tag)
         return calls
 
@@ -1704,6 +1860,28 @@ class TestPinServiceImage:
         assert data["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "repo/schema-load-master"
         assert data["SCHEMA_LOAD_IMAGE_TAG"] == "c" * 40
 
+    def test_required_companion_must_be_published_for_an_ephemeral_pin(self, monkeypatch):
+        entry = pins.IMAGE_REGISTRY["schema"]
+        assert entry.companion is not None
+        monkeypatch.setitem(
+            pins.IMAGE_REGISTRY,
+            "schema",
+            replace(entry, companion=replace(entry.companion, pin_required=True)),
+        )
+        lock = _lock(data=_canonical_data("schema", "schema-load"))
+        calls = self._wire(monkeypatch, lock, loader=None)
+
+        with pytest.raises(PinError, match="requires companion schema-load"):
+            pin_service_image(
+                "schema",
+                f"ghcr.io/azure/schema@{_GHCR_DIGEST}",
+                ephemeral=True,
+                run_id="1234",
+                source_repo="Azure/osdu-spi-schema",
+                source_sha="b" * 40,
+            )
+        assert calls["patch"] is None
+
     def test_schema_ephemeral_pin_refuses_a_digest_the_commit_tag_does_not_name(self, monkeypatch):
         """The loader is found by the commit's tag, so a service digest that tag does not
         point at would pair images from two builds."""
@@ -1734,7 +1912,7 @@ class TestPinServiceImage:
         answers = iter([_GHCR_DIGEST, "sha256:" + "d" * 64])
         monkeypatch.setattr(pins, "resolve_ghcr_tag_digest", lambda repository, tag: next(answers))
 
-        with pytest.raises(PinError, match="moved while the loader was being resolved"):
+        with pytest.raises(PinError, match="moved while schema-load was being resolved"):
             pin_service_image(
                 "schema",
                 f"ghcr.io/azure/schema@{_GHCR_DIGEST}",

@@ -32,7 +32,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_core import ErrorDetails
 
 from .config import IngressMode, Profile
-from .images import IMAGE_REGISTRY, SCHEMA_LOAD_SERVICE_NAME, ImageResolutionError, github_file
+from .images import (
+    IMAGE_REGISTRY,
+    ImageResolutionError,
+    github_file,
+    is_companion_image,
+    service_image_names,
+)
 
 DEFAULT_DECLARATION_PATH = Path("ops/environments/shared.yaml")
 DECLARATION_REF = "main"
@@ -197,8 +203,8 @@ def _validate_forks(declaration: EnvironmentDeclaration) -> None:
     services: set[str] = set()
     repos: set[str] = set()
     for entry in forks:
-        if entry.service not in IMAGE_REGISTRY or entry.service == SCHEMA_LOAD_SERVICE_NAME:
-            known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
+        if entry.service not in IMAGE_REGISTRY or is_companion_image(entry.service):
+            known = ", ".join(sorted(service_image_names()))
             raise EnvironmentDeclarationError(
                 f"forks: unknown service {entry.service!r}; known services: {known}"
             )

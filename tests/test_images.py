@@ -14,6 +14,7 @@
 
 import json
 import urllib.error
+from dataclasses import replace
 from datetime import datetime, timezone
 from email.message import Message
 
@@ -105,6 +106,97 @@ def test_render_image_lock_contains_schema_load_service_keys():
     assert "INDEXER_QUEUE_IMAGE_TAG" in yaml
     assert "SCHEMA_LOAD_IMAGE_REPOSITORY" in yaml
     assert "SCHEMA_LOAD_IMAGE_TAG" in yaml
+
+
+def test_registry_declares_companion_ownership_and_pin_policy():
+    companion = images.companion_image("schema")
+
+    assert companion == images.CompanionImage(
+        name="schema-load",
+        package_suffix="-load",
+        canonical_required=True,
+        pin_required=False,
+    )
+    assert images.companion_primary("schema-load") == "schema"
+    assert images.paired_image_names("schema-load") == ("schema", "schema-load")
+    assert "schema-load" not in images.service_image_names()
+
+
+def test_registry_declares_seismic_restore_companion():
+    companion = images.companion_image("seismic")
+
+    assert companion == images.CompanionImage(
+        name="seismic-restore",
+        package_suffix="-restore",
+        canonical_required=False,
+        pin_required=True,
+    )
+    assert images.companion_primary("seismic-restore") == "seismic"
+    assert images.paired_image_names("seismic") == ("seismic", "seismic-restore")
+    assert images.companion_runtime_patch("seismic-restore", False) == {}
+    assert "seismic-restore" not in images.service_image_names()
+
+
+def test_optional_community_companion_uses_disabled_primary_placeholder(monkeypatch):
+    primary = ResolvedImage(
+        "seismic",
+        "community.opengroup.org:5555/osdu/seismic-store-service-master",
+        "a" * 40,
+        "2026-05-22T00:00:00+00:00",
+        "sha256:api",
+    )
+    companion = images.companion_image("seismic")
+    assert companion is not None
+    monkeypatch.setattr(
+        images,
+        "resolve_image_tag",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            images.ImageResolutionError("restore image absent")
+        ),
+    )
+
+    resolved_companion = images._resolve_companion(
+        "seismic", companion, "master", primary, None, ""
+    )
+    resolved = {
+        name: ResolvedImage(name, f"repo/{name}", "1" * 40, "", f"sha256:{name}")
+        for name in image_lock_names()
+    }
+    resolved.update({"seismic": primary, "seismic-restore": resolved_companion})
+    lock = build_lock_data(resolved, "master", "now")
+
+    assert resolved_companion.repository == primary.repository
+    assert resolved_companion.digest == primary.digest
+    assert "SEISMIC_RESTORE_ENABLED" not in lock
+    assert "SEISMIC_RESTORE_REPLICA_COUNT" not in lock
+
+
+def test_companion_runtime_keys_come_from_registry_metadata(monkeypatch):
+    entry = images.IMAGE_REGISTRY["schema"]
+    assert entry.companion is not None
+    monkeypatch.setitem(
+        images.IMAGE_REGISTRY,
+        "schema",
+        replace(
+            entry,
+            companion=replace(
+                entry.companion,
+                runtime_enabled_key="WORKER_ENABLED",
+                runtime_replica_count_key="WORKER_REPLICAS",
+                runtime_enabled_replicas=2,
+            ),
+        ),
+    )
+
+    assert images.companion_runtime_patch("schema-load", True) == {
+        "WORKER_ENABLED": "true",
+        "WORKER_REPLICAS": "2",
+    }
+    assert images.companion_runtime_patch("schema-load", False) == {
+        "WORKER_ENABLED": "false",
+        "WORKER_REPLICAS": "0",
+    }
+    assert images.companion_runtime_patch("schema", True) == {}
 
 
 def test_lock_data_marks_only_named_services_do_not_disrupt():
@@ -443,7 +535,7 @@ def test_resolve_images_schema_load_only_reports_alternate_error(monkeypatch):
     )
 
 
-def test_image_lock_missing_schema_load_detects_legacy_lock():
+def test_image_lock_missing_companion_detects_legacy_lock():
     legacy = {"SCHEMA_IMAGE_TAG": "a" * 40}
     missing_ref = {
         "SCHEMA_IMAGE_TAG": "a" * 40,
@@ -456,15 +548,22 @@ def test_image_lock_missing_schema_load_detects_legacy_lock():
         "SCHEMA_LOAD_IMAGE_TAG": "a" * 40,
         "SCHEMA_LOAD_IMAGE_REF": "registry/schema-load:" + "a" * 40,
     }
+    digest_pin = {
+        "SCHEMA_LOAD_IMAGE_REPOSITORY": "ghcr.io/acme/schema-load",
+        "SCHEMA_LOAD_IMAGE_TAG": "",
+        "SCHEMA_LOAD_IMAGE_DIGEST": "sha256:pinned",
+        "SCHEMA_LOAD_IMAGE_REF": "ghcr.io/acme/schema-load@sha256:pinned",
+    }
 
-    assert images.image_lock_missing_schema_load(legacy) is True
+    assert images.image_lock_missing_companion(legacy, "schema-load") is True
     # A lock with repository/tag but no composed ref still needs backfilling:
     # the Job substitutes the single ref key.
-    assert images.image_lock_missing_schema_load(missing_ref) is True
-    assert images.image_lock_missing_schema_load(current) is False
+    assert images.image_lock_missing_companion(missing_ref, "schema-load") is True
+    assert images.image_lock_missing_companion(current, "schema-load") is False
+    assert images.image_lock_missing_companion(digest_pin, "schema-load") is False
 
 
-def test_schema_load_lock_patch_resolves_from_recorded_schema_tag(monkeypatch):
+def test_companion_lock_patch_resolves_from_recorded_primary_tag(monkeypatch):
     """Backfilling a legacy lock has to reuse the schema tag it already pins,
     so the loader matches the running service instead of jumping to master."""
     schema_sha = "d" * 40
@@ -488,8 +587,9 @@ def test_schema_load_lock_patch_resolves_from_recorded_schema_tag(monkeypatch):
 
     monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
 
-    patch = images.schema_load_lock_patch(
-        {"IMAGE_BRANCH": "master", "IMAGE_COUNT": "13", "SCHEMA_IMAGE_TAG": schema_sha}
+    patch = images.companion_lock_patch(
+        {"IMAGE_BRANCH": "master", "IMAGE_COUNT": "13", "SCHEMA_IMAGE_TAG": schema_sha},
+        "schema",
     )
 
     assert patch["SCHEMA_LOAD_IMAGE_TAG"] == schema_sha
@@ -507,32 +607,57 @@ def test_schema_load_lock_patch_resolves_from_recorded_schema_tag(monkeypatch):
     assert patch["IMAGE_COUNT"] == "14"
 
 
-def test_schema_load_lock_patch_composes_missing_ref_without_incrementing_count(monkeypatch):
+def test_companion_lock_patch_composes_missing_ref_without_incrementing_count(monkeypatch):
     def fail(url: str):
         raise AssertionError(f"registry must not be queried to compose an existing image: {url}")
 
     monkeypatch.setattr(images, "gitlab_get", fail)
-    patch = images.schema_load_lock_patch(
+    patch = images.companion_lock_patch(
         {
             "IMAGE_BRANCH": "master",
             "IMAGE_COUNT": "14",
             "SCHEMA_LOAD_IMAGE_REPOSITORY": "registry/schema-load",
             "SCHEMA_LOAD_IMAGE_TAG": "a" * 40,
             "SCHEMA_LOAD_IMAGE_DIGEST": "sha256:loader",
-        }
+        },
+        "schema",
     )
 
     assert patch == {"SCHEMA_LOAD_IMAGE_REF": "registry/schema-load@sha256:loader"}
 
 
-def test_schema_load_lock_patch_without_schema_tag_raises(monkeypatch):
+def test_companion_lock_patch_without_primary_tag_raises(monkeypatch):
     def fail(url: str):
         raise AssertionError("registry must not be queried without a schema tag")
 
     monkeypatch.setattr(images, "gitlab_get", fail)
 
     with pytest.raises(ImageResolutionError, match="no schema image tag"):
-        images.schema_load_lock_patch({"IMAGE_BRANCH": "master"})
+        images.companion_lock_patch({"IMAGE_BRANCH": "master"}, "schema")
+
+
+def test_companion_lock_patch_uses_the_primary_fork_package(monkeypatch):
+    seen = []
+
+    def fake_digest(repository, tag):
+        seen.append((repository, tag))
+        return "sha256:companion"
+
+    monkeypatch.setattr(images, "resolve_ghcr_tag_digest", fake_digest)
+
+    patch = images.companion_lock_patch(
+        {"IMAGE_COUNT": "13"},
+        "schema",
+        primary_repository="ghcr.io/acme/osdu-spi-schema",
+        primary_tag="sha-canonical",
+        primary_created_at="2026-08-20T00:00:00Z",
+        source_repo="Acme/osdu-spi-schema",
+    )
+
+    assert seen == [("ghcr.io/acme/osdu-spi-schema-load", "sha-canonical")]
+    assert patch["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "ghcr.io/acme/osdu-spi-schema-load"
+    assert patch["SCHEMA_LOAD_IMAGE_DIGEST"] == "sha256:companion"
+    assert patch["SCHEMA_LOAD_IMAGE_CREATED_AT"] == "2026-08-20T00:00:00Z"
 
 
 class TestImageRef:
@@ -839,8 +964,8 @@ class TestResolveGhcrTagDigest:
             images.resolve_ghcr_tag_digest("ghcr.io/azure/schema-load", "sha-abc", attempts=1)
 
 
-class TestResolveForkLoader:
-    def test_loader_is_the_pinned_repository_plus_load_at_the_commit_tag(self, monkeypatch):
+class TestResolveForkCompanion:
+    def test_companion_uses_declared_suffix_at_the_commit_tag(self, monkeypatch):
         seen = []
 
         def fake_tag(repository, tag):
@@ -849,15 +974,21 @@ class TestResolveForkLoader:
 
         monkeypatch.setattr(images, "resolve_ghcr_tag_digest", fake_tag)
 
-        assert images.resolve_fork_loader("ghcr.io/azure/osdu-spi-schema", "b" * 40) == (
+        companion = images.companion_image("schema")
+        assert companion is not None
+        assert images.resolve_fork_companion(
+            "ghcr.io/azure/osdu-spi-schema", "b" * 40, companion
+        ) == (
             "ghcr.io/azure/osdu-spi-schema-load",
             "sha256:" + "e" * 64,
         )
         assert seen == [("ghcr.io/azure/osdu-spi-schema-load", "sha-" + "b" * 12)]
 
-    def test_no_loader_at_the_commit_is_none(self, monkeypatch):
+    def test_no_companion_at_the_commit_is_none(self, monkeypatch):
         monkeypatch.setattr(images, "resolve_ghcr_tag_digest", lambda repository, tag: None)
-        assert images.resolve_fork_loader("ghcr.io/azure/schema", "b" * 40) is None
+        companion = images.companion_image("schema")
+        assert companion is not None
+        assert images.resolve_fork_companion("ghcr.io/azure/schema", "b" * 40, companion) is None
 
 
 SNAPSHOT = "sha256:" + "5" * 64
@@ -1054,8 +1185,8 @@ class TestResolveImagesUnderASourcePolicy:
         loaders = []
         monkeypatch.setattr(
             images,
-            "resolve_fork_loader",
-            lambda repository, commit: (
+            "resolve_fork_companion",
+            lambda repository, commit, companion: (
                 loaders.append((repository, commit))
                 or ("ghcr.io/acme/schema-load", "sha256:" + "e" * 64)
             ),
@@ -1073,7 +1204,9 @@ class TestResolveImagesUnderASourcePolicy:
     def test_a_fork_sourced_schema_without_its_loader_fails_resolution(self, monkeypatch):
         schema = images.ResolvedImage("schema", "ghcr.io/acme/schema", "sha-b", "d", SNAPSHOT)
         monkeypatch.setattr(images, "resolve_fork_image", lambda name, repo: (schema, BUILT))
-        monkeypatch.setattr(images, "resolve_fork_loader", lambda repository, commit: None)
+        monkeypatch.setattr(
+            images, "resolve_fork_companion", lambda repository, commit, companion: None
+        )
 
         with pytest.raises(ImageResolutionError, match="ghcr.io/acme/schema-load:sha-b"):
             images.resolve_images(names=("schema", "schema-load"), sources={"schema": "Acme/s"})

@@ -34,8 +34,6 @@ DEFAULT_IMAGE_BRANCH = "master"
 FORK_MAIN_TAG = "main-snapshot"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"
-SCHEMA_SERVICE_NAME = "schema"
-SCHEMA_LOAD_SERVICE_NAME = "schema-load"
 
 _SHA_TAG_RE = re.compile(r"^[0-9a-f]{40}$")
 _FORK_SHA_TAG_RE = re.compile(r"^sha-([0-9a-f]{12})$")
@@ -61,6 +59,19 @@ class ImageNotFoundError(ImageResolutionError):
 
 
 @dataclass(frozen=True)
+class CompanionImage:
+    """An image built and advanced with a primary service image."""
+
+    name: str
+    package_suffix: str
+    canonical_required: bool = True
+    pin_required: bool = True
+    runtime_enabled_key: str = ""
+    runtime_replica_count_key: str = ""
+    runtime_enabled_replicas: int = 1
+
+
+@dataclass(frozen=True)
 class ImageRegistryEntry:
     """GitLab registry lookup metadata for one OSDU image."""
 
@@ -68,6 +79,7 @@ class ImageRegistryEntry:
     image: str
     file: str
     image_lock: bool = True
+    companion: CompanionImage | None = None
 
 
 @dataclass(frozen=True)
@@ -93,7 +105,16 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
     "partition": ImageRegistryEntry(221, "partition", "services/partition.yaml"),
     "entitlements": ImageRegistryEntry(400, "entitlements", "services/entitlements.yaml"),
     "legal": ImageRegistryEntry(74, "legal", "services/legal.yaml"),
-    "schema": ImageRegistryEntry(26, "schema-service", "services/schema.yaml"),
+    "schema": ImageRegistryEntry(
+        26,
+        "schema-service",
+        "services/schema.yaml",
+        companion=CompanionImage(
+            name="schema-load",
+            package_suffix="-load",
+            pin_required=False,
+        ),
+    ),
     "schema-load": ImageRegistryEntry(
         26,
         "schema-service-schema-load",
@@ -104,6 +125,21 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
     "indexer": ImageRegistryEntry(25, "indexer-service", "services/indexer.yaml"),
     "indexer-queue": ImageRegistryEntry(73, "indexer-queue", "services/indexer-queue.yaml"),
     "file": ImageRegistryEntry(90, "file", "services/file.yaml"),
+    "seismic": ImageRegistryEntry(
+        395,
+        "seismic-store-service",
+        "services-ddms/seismic.yaml",
+        companion=CompanionImage(
+            name="seismic-restore",
+            package_suffix="-restore",
+            canonical_required=False,
+        ),
+    ),
+    "seismic-restore": ImageRegistryEntry(
+        395,
+        "seismic-store-service-restore",
+        "services-ddms/seismic-restore.yaml",
+    ),
     "workflow": ImageRegistryEntry(146, "ingestion-workflow", "services/workflow.yaml"),
     "crs-conversion": ImageRegistryEntry(
         22,
@@ -117,6 +153,57 @@ IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
     ),
     "unit": ImageRegistryEntry(5, "unit-service", "services-reference/unit.yaml"),
 }
+
+
+def companion_image(service_name: str) -> CompanionImage | None:
+    """Return the companion declared by a primary service, if any."""
+
+    entry = IMAGE_REGISTRY.get(service_name)
+    return entry.companion if entry else None
+
+
+def companion_primary(service_name: str) -> str:
+    """Return the primary service governing ``service_name``."""
+
+    for name, entry in IMAGE_REGISTRY.items():
+        if entry.companion and entry.companion.name == service_name:
+            return name
+    return service_name
+
+
+def is_companion_image(service_name: str) -> bool:
+    """Whether ``service_name`` is owned by another registry entry."""
+
+    return companion_primary(service_name) != service_name
+
+
+def service_image_names() -> tuple[str, ...]:
+    """Return image names operators may manage directly."""
+
+    return tuple(name for name in IMAGE_REGISTRY if not is_companion_image(name))
+
+
+def paired_image_names(service_name: str) -> tuple[str, ...]:
+    """Return the primary image followed by its declared companion."""
+
+    primary = companion_primary(service_name)
+    companion = companion_image(primary)
+    return (primary, companion.name) if companion else (primary,)
+
+
+def companion_runtime_patch(service_name: str, enabled: bool) -> dict[str, str]:
+    """Return registry-declared runtime controls for a companion image."""
+
+    primary = companion_primary(service_name)
+    companion = companion_image(primary)
+    if companion is None or companion.name != service_name or not companion.runtime_enabled_key:
+        return {}
+    patch = {companion.runtime_enabled_key: str(enabled).lower()}
+    if companion.runtime_replica_count_key:
+        patch[companion.runtime_replica_count_key] = str(
+            companion.runtime_enabled_replicas if enabled else 0
+        )
+    return patch
 
 
 def image_lock_names() -> tuple[str, ...]:
@@ -348,78 +435,81 @@ def resolve_images(
 
     requested = list(names or IMAGE_REGISTRY.keys())
     forks = dict(sources or {})
-    schema_load_requested = SCHEMA_LOAD_SERVICE_NAME in requested
     resolved: dict[str, ResolvedImage] = {}
     errors: list[str] = []
 
-    for name in requested:
-        if name == SCHEMA_LOAD_SERVICE_NAME or (
-            name == SCHEMA_SERVICE_NAME and schema_load_requested
-        ):
-            continue
-        try:
-            if name in forks:
-                resolved[name] = resolve_fork_image(name, forks[name])[0]
-            else:
-                resolved[name] = resolve_image(name, IMAGE_REGISTRY[name], branch)
-        except Exception as exc:
-            errors.append(str(exc))
-
-    if schema_load_requested:
-        fork = forks.get(SCHEMA_SERVICE_NAME)
+    for primary in dict.fromkeys(companion_primary(name) for name in requested):
+        companion = companion_image(primary)
+        companion_requested = bool(companion and companion.name in requested)
+        fork = forks.get(primary)
         try:
             if fork:
-                schema_image, commit = resolve_fork_image(SCHEMA_SERVICE_NAME, fork)
+                primary_image, commit = resolve_fork_image(primary, fork)
             else:
-                schema_image = resolve_image(
-                    SCHEMA_SERVICE_NAME, IMAGE_REGISTRY[SCHEMA_SERVICE_NAME], branch
-                )
+                primary_image = resolve_image(primary, IMAGE_REGISTRY[primary], branch)
                 commit = ""
         except Exception as exc:
-            if SCHEMA_SERVICE_NAME in requested:
+            if primary in requested:
                 errors.append(str(exc))
-                errors.append(f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag")
-            else:
-                errors.append(
-                    f"{SCHEMA_LOAD_SERVICE_NAME}: unable to resolve matching schema tag: {exc}"
-                )
-        else:
-            if SCHEMA_SERVICE_NAME in requested:
-                resolved[SCHEMA_SERVICE_NAME] = schema_image
-            try:
-                resolved[SCHEMA_LOAD_SERVICE_NAME] = _resolve_loader(
-                    branch, schema_image, fork, commit
-                )
-            except Exception as exc:
-                errors.append(str(exc))
+            if companion_requested:
+                message = f"{companion.name}: unable to resolve matching {primary} tag"
+                errors.append(message if primary in requested else f"{message}: {exc}")
+            continue
+
+        if primary in requested:
+            resolved[primary] = primary_image
+        if not companion_requested or companion is None:
+            continue
+        try:
+            resolved[companion.name] = _resolve_companion(
+                primary, companion, branch, primary_image, fork, commit
+            )
+        except Exception as exc:
+            errors.append(str(exc))
 
     if errors:
         raise ImageResolutionError("; ".join(errors))
     return {name: resolved[name] for name in requested}
 
 
-def _resolve_loader(
-    branch: str, schema_image: ResolvedImage, fork: str | None, commit: str
+def _resolve_companion(
+    primary_name: str,
+    companion: CompanionImage,
+    branch: str,
+    primary_image: ResolvedImage,
+    fork: str | None,
+    commit: str,
 ) -> ResolvedImage:
-    """The loader built from the same commit as ``schema_image``, from the same source."""
+    """Resolve the companion built from the primary image's commit and source."""
 
     if not fork:
-        return resolve_image_tag(
-            SCHEMA_LOAD_SERVICE_NAME,
-            IMAGE_REGISTRY[SCHEMA_LOAD_SERVICE_NAME],
-            branch,
-            schema_image.tag,
-        )
-    loader = resolve_fork_loader(schema_image.repository, commit)
-    if loader is None:
+        try:
+            return resolve_image_tag(
+                companion.name,
+                IMAGE_REGISTRY[companion.name],
+                branch,
+                primary_image.tag,
+            )
+        except ImageResolutionError:
+            if companion.canonical_required:
+                raise
+            return ResolvedImage(
+                companion.name,
+                primary_image.repository,
+                primary_image.tag,
+                primary_image.created_at,
+                primary_image.digest,
+            )
+    matched = resolve_fork_companion(primary_image.repository, commit, companion)
+    if matched is None:
         raise ImageResolutionError(
-            f"{SCHEMA_LOAD_SERVICE_NAME}: {fork} published no loader "
-            f"{schema_image.repository}-load:{schema_image.tag}; schema cannot follow the "
-            "fork until it builds one beside the service image"
+            f"{companion.name}: {fork} published no companion "
+            f"{primary_image.repository}{companion.package_suffix}:{primary_image.tag}; "
+            f"{primary_name} cannot follow the fork until it builds one beside the service image"
         )
-    repository, digest = loader
+    repository, digest = matched
     return ResolvedImage(
-        SCHEMA_LOAD_SERVICE_NAME, repository, schema_image.tag, schema_image.created_at, digest
+        companion.name, repository, primary_image.tag, primary_image.created_at, digest
     )
 
 
@@ -541,16 +631,24 @@ def fork_package_repositories(source_repo: str, service: str) -> tuple[str, ...]
     variable names the service publishes ``ghcr.io/<owner>/<service>`` instead.
     """
 
+    primary = companion_primary(service)
+    companion = companion_image(primary)
+    suffix = companion.package_suffix if companion and companion.name == service else ""
     owner, _, name = source_repo.lower().partition("/")
-    return tuple(dict.fromkeys((f"{GHCR_HOST}/{owner}/{name}", f"{GHCR_HOST}/{owner}/{service}")))
+    return tuple(
+        dict.fromkeys(
+            (
+                f"{GHCR_HOST}/{owner}/{name}{suffix}",
+                f"{GHCR_HOST}/{owner}/{primary}{suffix}",
+            )
+        )
+    )
 
 
 def runs_fork_package(service: str, repository: str, source_repo: str) -> bool:
     """Whether ``repository`` is a package ``source_repo`` publishes for ``service``."""
 
-    loader = service == SCHEMA_LOAD_SERVICE_NAME
-    packages = fork_package_repositories(source_repo, SCHEMA_SERVICE_NAME if loader else service)
-    return repository in {f"{package}-load" if loader else package for package in packages}
+    return repository in fork_package_repositories(source_repo, service)
 
 
 def resolve_ghcr_tag_digest(repository: str, tag: str, attempts: int = 3) -> str | None:
@@ -601,19 +699,22 @@ def resolve_ghcr_tag_digest(repository: str, tag: str, attempts: int = 3) -> str
     )
 
 
-def resolve_fork_loader(repository: str, source_sha: str) -> tuple[str, str] | None:
-    """Find the loader the fork built beside the schema image at ``source_sha``.
+def resolve_fork_companion(
+    repository: str,
+    source_sha: str,
+    companion: CompanionImage,
+) -> tuple[str, str] | None:
+    """Find the companion the fork built beside its primary image at ``source_sha``.
 
-    The template names the loader ``<image>-load`` after the same image name as
-    the service and tags both ``sha-<12>`` from one commit (template ADR-042), so
-    the loader for ``ghcr.io/<owner>/<image>`` is ``ghcr.io/<owner>/<image>-load``
-    at that tag and nothing else. Returns ``(repository, digest)``, or None when
-    the fork published no loader for the commit.
+    The template names a companion by appending its declared package suffix to
+    the primary package and tags both ``sha-<12>`` from one commit. Returns
+    ``(repository, digest)``, or None when the fork published no companion for
+    the commit.
     """
 
-    loader_repository = f"{repository}-load"
-    digest = resolve_ghcr_tag_digest(loader_repository, f"sha-{source_sha[:12]}")
-    return (loader_repository, digest) if digest else None
+    companion_repository = f"{repository}{companion.package_suffix}"
+    digest = resolve_ghcr_tag_digest(companion_repository, f"sha-{source_sha[:12]}")
+    return (companion_repository, digest) if digest else None
 
 
 def _github_read(path: str, accept: str) -> bytes:
@@ -812,19 +913,20 @@ def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> No
     )
 
 
-def image_lock_missing_schema_load(lock_data: Mapping[str, str]) -> bool:
-    """Report whether an existing lock predates schema-load's inclusion.
+def image_lock_missing_companion(
+    lock_data: Mapping[str, str],
+    service_name: str,
+) -> bool:
+    """Report whether an existing lock predates a companion's inclusion.
 
     A lock missing the composed ref counts as missing even when it already
-    carries repository/tag: the schema-load Job substitutes the single
-    ``_IMAGE_REF`` key, so a lock recorded before that key existed
-    still needs backfilling.
+    carries repository/tag because consumers may substitute ``_IMAGE_REF``.
     """
 
-    key = image_lock_key(SCHEMA_LOAD_SERVICE_NAME)
+    key = image_lock_key(service_name)
     return not (
         lock_data.get(f"{key}_IMAGE_REPOSITORY")
-        and lock_data.get(f"{key}_IMAGE_TAG")
+        and (lock_data.get(f"{key}_IMAGE_TAG") or lock_data.get(f"{key}_IMAGE_DIGEST"))
         and lock_data.get(f"{key}_IMAGE_REF")
     )
 
@@ -835,24 +937,31 @@ def image_ref(repository: str, tag: str, digest: str) -> str:
     return f"{repository}@{digest}" if digest else f"{repository}:{tag}"
 
 
-def schema_load_lock_patch(
+def companion_lock_patch(
     lock_data: Mapping[str, str],
+    primary_name: str,
     branch: str = DEFAULT_IMAGE_BRANCH,
+    *,
+    primary_repository: str = "",
+    primary_tag: str = "",
+    primary_created_at: str = "",
+    source_repo: str = "",
 ) -> dict[str, str]:
-    """Return the loader entries missing from an existing image lock.
+    """Return companion entries missing from an existing image lock.
 
-    Locks generated before schema-load joined the live lock carry a schema pin
-    but no loader keys, and the Job requires them. The loader is
-    resolved from the schema tag the lock already records, so the backfill
-    keeps the loader on the running service's commit instead of jumping to the
-    newest master build.
+    The companion resolves from the recorded canonical primary, including the
+    restore target hidden by an active pin. This keeps both images on one
+    source commit instead of jumping the companion to the newest build.
     """
 
-    key = image_lock_key(SCHEMA_LOAD_SERVICE_NAME)
+    companion = companion_image(primary_name)
+    if companion is None:
+        raise ImageResolutionError(f"{primary_name}: registry declares no companion image")
+    key = image_lock_key(companion.name)
     existing_repository = lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
     existing_tag = lock_data.get(f"{key}_IMAGE_TAG", "")
-    if existing_repository and existing_tag:
-        existing_digest = lock_data.get(f"{key}_IMAGE_DIGEST", "")
+    existing_digest = lock_data.get(f"{key}_IMAGE_DIGEST", "")
+    if existing_repository and (existing_tag or existing_digest):
         return {
             f"{key}_IMAGE_REF": image_ref(
                 existing_repository,
@@ -861,18 +970,36 @@ def schema_load_lock_patch(
             )
         }
 
-    schema_tag = lock_data.get(f"{image_lock_key(SCHEMA_SERVICE_NAME)}_IMAGE_TAG", "")
-    if not schema_tag:
+    primary_key = image_lock_key(primary_name)
+    primary_repository = primary_repository or lock_data.get(f"{primary_key}_IMAGE_REPOSITORY", "")
+    primary_tag = primary_tag or lock_data.get(f"{primary_key}_IMAGE_TAG", "")
+    primary_created_at = primary_created_at or lock_data.get(f"{primary_key}_IMAGE_CREATED_AT", "")
+    if not primary_tag:
         raise ImageResolutionError(
-            f"{SCHEMA_LOAD_SERVICE_NAME}: image lock records no schema image tag to match"
+            f"{companion.name}: image lock records no {primary_name} image tag to match"
         )
 
-    image = resolve_image_tag(
-        SCHEMA_LOAD_SERVICE_NAME,
-        IMAGE_REGISTRY[SCHEMA_LOAD_SERVICE_NAME],
-        lock_data.get("IMAGE_BRANCH") or branch,
-        schema_tag,
-    )
+    if source_repo and runs_fork_package(primary_name, primary_repository, source_repo):
+        repository = f"{primary_repository}{companion.package_suffix}"
+        digest = resolve_ghcr_tag_digest(repository, primary_tag)
+        if not digest:
+            raise ImageResolutionError(
+                f"{companion.name}: {source_repo} published no companion {repository}:{primary_tag}"
+            )
+        image = ResolvedImage(
+            companion.name,
+            repository,
+            primary_tag,
+            primary_created_at,
+            digest,
+        )
+    else:
+        image = resolve_image_tag(
+            companion.name,
+            IMAGE_REGISTRY[companion.name],
+            lock_data.get("IMAGE_BRANCH") or branch,
+            primary_tag,
+        )
 
     patch = {
         f"{key}_IMAGE": image.image,
@@ -882,6 +1009,7 @@ def schema_load_lock_patch(
         f"{key}_IMAGE_DIGEST": image.digest,
         f"{key}_IMAGE_REF": image_ref(image.repository, image.tag, image.digest),
     }
+    patch.update(companion_runtime_patch(companion.name, True))
     count = lock_data.get("IMAGE_COUNT", "")
     if count.isdigit() and not existing_repository and not existing_tag:
         patch["IMAGE_COUNT"] = str(int(count) + 1)
@@ -929,6 +1057,18 @@ def build_lock_data(
         data[f"{key}_IMAGE_DIGEST"] = image.digest
         data[f"{key}_IMAGE_REF"] = image_ref(image.repository, image.tag, image.digest)
         data[do_not_disrupt_key(name)] = str(name in protected).lower()
+        primary_name = companion_primary(name)
+        primary_image = resolved.get(primary_name)
+        runtime_available = primary_image is None or (
+            image.repository,
+            image.tag,
+            image.digest,
+        ) != (
+            primary_image.repository,
+            primary_image.tag,
+            primary_image.digest,
+        )
+        data.update(companion_runtime_patch(name, runtime_available))
         if image.acceptance_digest:
             data[acceptance_digest_key(name)] = image.acceptance_digest
     return data

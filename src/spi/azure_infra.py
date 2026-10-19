@@ -219,6 +219,47 @@ def write_rg_tag(resource_group: str, name: str, value: str) -> None:
     )
 
 
+def read_deployed_seismic_restore(resource_group: str, env: str) -> bool:
+    """Read the restore gate from the last successful main Bicep deployment."""
+    exists = run_command(
+        ["az", "group", "exists", "--name", resource_group],
+        description=f"Check resource group exists: {resource_group}",
+        display=False,
+        check=False,
+    )
+    if exists.returncode != 0:
+        detail = (exists.stderr or "").strip() or f"az exited {exists.returncode}"
+        raise RuntimeError(f"Unable to check {resource_group}: {detail}")
+    if exists.stdout.strip().lower() != "true":
+        return False
+
+    deployment_name = f"spi-{env or 'base'}"
+    result = run_command(
+        [
+            "az",
+            "deployment",
+            "group",
+            "list",
+            "--resource-group",
+            resource_group,
+            "--query",
+            f"[?name=='{deployment_name}'].properties.parameters.enableSeismicRestore.value | [0]",
+            "--output",
+            "tsv",
+        ],
+        description=f"Read Seismic restore setting from deployment: {deployment_name}",
+        display=False,
+    )
+    value = (result.stdout or "").strip().lower()
+    if not value:
+        return False
+    if value not in ("true", "false"):
+        raise RuntimeError(
+            f"Deployment {deployment_name} has invalid enableSeismicRestore value {value!r}"
+        )
+    return value == "true"
+
+
 def detect_legacy_keyvault(resource_group: str, env: str) -> bool:
     """True when an existing unsuffixed Key Vault is present in the RG.
 
@@ -709,6 +750,7 @@ def _build_bicep_params(
         "envName": config.env,
         "location": config.location,
         "identityName": config.identity_name,
+        "restoreIdentityName": config.restore_identity_name,
         "deployIdentityName": config.deploy_identity_name,
         "memberIdentityName": config.member_identity_name,
         "noAccessIdentityName": config.no_access_identity_name,
@@ -725,6 +767,7 @@ def _build_bicep_params(
         "partitionStorageNames": [
             _storage_name("osdu" + config.env + p, "", s) for p in config.data_partitions
         ],
+        "enableSeismicRestore": config.enable_seismic_restore,
         "oidcIssuerUrl": oidc_issuer,
         # Empty outside dns mode; main.bicep's conditional modules then no-op.
         "dnsZoneName": config.dns_zone,
@@ -811,6 +854,7 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "identity_client_id": bicep_outputs.get("identityClientId", ""),
         "identity_principal_id": bicep_outputs.get("identityPrincipalId", ""),
+        "restore_identity_client_id": bicep_outputs.get("restoreIdentityClientId", ""),
         "deploy_identity_client_id": bicep_outputs.get("deployIdentityClientId", ""),
         "deploy_identity_principal_id": bicep_outputs.get("deployIdentityPrincipalId", ""),
         "member_identity_client_id": bicep_outputs.get("memberIdentityClientId", ""),
@@ -826,6 +870,7 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
         "graph_account_id": bicep_outputs.get("graphAccountId", ""),
         "common_storage_name": bicep_outputs.get("commonStorageName", ""),
         "common_storage_id": bicep_outputs.get("commonStorageId", ""),
+        "app_insights_connection_string": bicep_outputs.get("appInsightsConnectionString", ""),
         # Empty outside dns mode.
         "external_dns_client_id": bicep_outputs.get("externalDnsClientId", ""),
         "external_dns_principal_id": bicep_outputs.get("externalDnsPrincipalId", ""),

@@ -56,6 +56,7 @@ def test_render_cluster_config_carries_deploy_identity_facts():
             "deploy_identity_client_id": "client",
             "deploy_identity_principal_id": "principal",
             "no_access_identity_client_id": "noaccess",
+            "restore_identity_client_id": "restore",
             "tenant_id": "tenant",
             "subscription_id": "sub",
         },
@@ -69,6 +70,9 @@ def test_render_cluster_config_carries_deploy_identity_facts():
     assert 'DEPLOY_IDENTITY_CLIENT_ID: "client"' in yaml
     assert 'DEPLOY_IDENTITY_PRINCIPAL_ID: "principal"' in yaml
     assert 'NO_ACCESS_IDENTITY_CLIENT_ID: "noaccess"' in yaml
+    assert 'SEISMIC_RESTORE_IDENTITY_CLIENT_ID: "restore"' in yaml
+    assert 'ENABLE_SEISMIC_RESTORE: "true"' in yaml
+    assert 'SEISMIC_RESTORE_REPLICAS: "1"' in yaml
     assert 'AZURE_TENANT_ID: "tenant"' in yaml
     assert 'AZURE_SUBSCRIPTION_ID: "sub"' in yaml
     assert 'AKS_CLUSTER_NAME: "spi-stack-dks"' in yaml
@@ -330,7 +334,7 @@ class TestReconcileRefreshesClusterConfig:
             # Reads the live lock through pins.run_process, which the
             # spi.cli.run_command patch above does not intercept; without
             # this the default reconcile path shells out to real kubectl.
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_companion_backfills", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
@@ -481,6 +485,7 @@ class TestReconcileRefreshesClusterConfig:
             "spi-osdu-services",
             "spi-osdu-schema-load",
             "spi-osdu-reference",
+            "spi-osdu-ddms",
         ]
 
     def test_refresh_images_skips_missing_kustomizations(self):
@@ -559,7 +564,7 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_companion_backfills", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
@@ -588,7 +593,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_companion_backfills", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=stalled),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
@@ -634,7 +639,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", return_value=SimpleNamespace(returncode=0, stdout="")),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_companion_backfills", return_value=False),
             patch(
                 "spi.status.resettable_helmreleases",
                 side_effect=StatusError("Could not read Flux HelmReleases: connection refused"),
@@ -663,7 +668,7 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
+            patch("spi.cli.apply_companion_backfills", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[("osdu-flux", "partition")]),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
@@ -671,7 +676,7 @@ class TestReconcileResetsStalledHelmReleases:
         assert result.exit_code == 1
 
 
-class TestSchemaLoadImageLockBackfill:
+class TestCompanionImageLockBackfill:
     """The schema-load Job substitutes its image from `osdu-image-lock` with no
     static fallback. A cluster whose lock predates schema-load's
     inclusion would render an unresolved image, so `spi reconcile` backfills
@@ -697,7 +702,7 @@ class TestSchemaLoadImageLockBackfill:
             patch("spi.cli.get_suspend_status", return_value=False),
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
-            patch("spi.cli.apply_schema_load_backfill", side_effect=_backfill) as backfill,
+            patch("spi.cli.apply_companion_backfills", side_effect=_backfill) as backfill,
             patch("spi.cli.run_command", side_effect=_run_command) as run_command,
             patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
@@ -710,7 +715,7 @@ class TestSchemaLoadImageLockBackfill:
 
         assert result.exit_code == 0, result.output
         backfill.assert_called_once_with(branch="master")
-        assert "updated with schema-load" in result.output
+        assert "updated with companion images" in result.output
 
     def test_current_lock_is_left_alone(self):
         result, backfill, _, _ = self._invoke(False)

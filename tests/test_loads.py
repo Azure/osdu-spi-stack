@@ -16,6 +16,8 @@
 block, the Job manifest, and the `spi load` exit codes."""
 
 import json
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,7 @@ runner = CliRunner()
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REGISTRY_FILE = REPO_ROOT / "software" / "stacks" / "osdu" / "init" / "load-registry.yaml"
 CHART_VALUES = REPO_ROOT / "software" / "charts" / "osdu-spi-init" / "values.yaml"
+CHART_SCRIPTS = REPO_ROOT / "software" / "charts" / "osdu-spi-init" / "templates" / "scripts.yaml"
 STACK = REPO_ROOT / "software" / "stacks" / "osdu" / "profiles" / "core" / "stack.yaml"
 COMMIT = "99f8fc88d8ad838b5738ac5ad92ac643538b5766"
 SOURCE = f"osdu/data/data-definitions@{COMMIT}:ReferenceValues/Manifests/reference-data"
@@ -121,11 +124,14 @@ def _facts(registry, jobs=(), schema_job=None, partitions=("opendes",), outcome_
 
 
 def test_the_shipped_registry_parses(registry):
-    assert [load.name for load in registry.loads] == ["schemas", "reference-data"]
+    assert [load.name for load in registry.loads] == ["schemas", "reference-data", "seismic"]
     reference = registry.get("reference-data")
     assert reference.source.identity == SOURCE
     assert reference.requires == ["schemas"]
     assert loads.job_name(reference, "opendes") == "load-reference-data-opendes-99f8fc88"
+    seismic = registry.get("seismic")
+    assert seismic.source.identity == "stack:load_seismic.py@2"
+    assert loads.job_name(seismic, "opendes") == "load-seismic-opendes-r2"
 
 
 def _registry_with(**overrides) -> str:
@@ -147,6 +153,10 @@ def _registry_with(**overrides) -> str:
             source={"type": "gitlab-archive", "project": "p", "path": "x", "commit": "99f8fc88"}
         ),
         _registry_with(source={"type": "paired-image", "service": "schema"}),
+        _registry_with(
+            loader="records",
+            source={"type": "stack-script", "script": "load_seismic.py", "revision": "1"},
+        ),
         "apiVersion: spi.osdu.dev/v2\nloads: []\n",
         "loads: [",
     ],
@@ -159,6 +169,7 @@ def _registry_with(**overrides) -> str:
         "archive-without-commit",
         "archive-with-short-commit",
         "job-with-image-source",
+        "records-with-stack-source",
         "newer-api-version",
         "not-yaml",
     ],
@@ -236,6 +247,12 @@ def test_facts_name_every_registry_entry_before_anything_ran(registry):
             "state": "absent",
             "source": "osdu/data/data-definitions@99f8fc88d8ad",
             "version": "v0.30.0",
+            "partitions": {"opendes": {"state": "absent"}},
+        },
+        "seismic": {
+            "state": "absent",
+            "source": "stack:load_seismic.py",
+            "version": "2",
             "partitions": {"opendes": {"state": "absent"}},
         },
     }
@@ -352,6 +369,23 @@ def _rendered_job() -> dict:
     )
 
 
+def _rendered_seismic_job() -> dict:
+    return yaml.safe_load(
+        templates.load_job(
+            name="load-seismic-opendes-r2",
+            dataset="seismic",
+            partition="opendes",
+            source="stack:load_seismic.py@2",
+            script="load_seismic.py",
+            env={
+                "PARTITION": "opendes",
+                "LEGAL_TAG": "opendes-demo-legaltag",
+                "ENTITLEMENTS_DOMAIN": "dataservices.energy",
+            },
+        )
+    )
+
+
 def test_load_job_carries_the_labels_and_source_the_cli_reads_back():
     job = _rendered_job()
 
@@ -413,6 +447,64 @@ def test_load_job_follows_the_init_chart_image_placement_and_scripts():
     assert pod["volumes"] == [
         {"name": "scripts", "configMap": {"name": "osdu-spi-init-scripts", "defaultMode": 0o755}}
     ]
+
+
+def test_seismic_load_job_selects_the_declared_script_without_a_shell():
+    container = _rendered_seismic_job()["spec"]["template"]["spec"]["containers"][0]
+
+    assert container["command"] == ["python", "/scripts/load_seismic.py"]
+    assert container["env"] == [
+        {"name": "PYTHONUNBUFFERED", "value": "1"},
+        {"name": "PARTITION", "value": "opendes"},
+        {"name": "LEGAL_TAG", "value": "opendes-demo-legaltag"},
+        {"name": "ENTITLEMENTS_DOMAIN", "value": "dataservices.energy"},
+    ]
+
+
+def _seismic_loader(monkeypatch) -> dict:
+    lines = CHART_SCRIPTS.read_text(encoding="utf-8").splitlines()
+    start = lines.index("  load_seismic.py: |") + 1
+    end = lines.index("  load_records.py: |")
+    source = "\n".join(line[4:] if line.startswith("    ") else line for line in lines[start:end])
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+    namespace: dict[str, object] = {"__name__": "load_seismic_test"}
+    exec(compile(source, "load_seismic.py", "exec"), namespace)
+    return namespace
+
+
+def test_seismic_loader_uses_the_cluster_service_port(monkeypatch):
+    monkeypatch.delenv("SEISMIC_HOST", raising=False)
+
+    assert _seismic_loader(monkeypatch)["API_HOST"] == "http://seismic/seistore-svc/api/v3"
+
+
+@pytest.mark.parametrize(
+    ("responses", "created"),
+    [
+        ([(200, "{}")], False),
+        ([(404, ""), (201, "{}")], True),
+        ([(404, ""), (409, ""), (200, "{}")], False),
+    ],
+    ids=["already-exists", "created", "conflict-reread"],
+)
+def test_seismic_loader_reads_before_create_and_verifies_conflicts(monkeypatch, responses, created):
+    loader = _seismic_loader(monkeypatch)
+    answers = iter(responses)
+    calls = []
+
+    def call(*args, **kwargs):
+        calls.append((args, kwargs))
+        return next(answers)
+
+    loader["call"] = call
+
+    assert loader["ensure"]("tenant", "http://seismic/tenant/p", {}, {}) is created
+    assert len(calls) == len(responses)
 
 
 def test_schema_reconcile_waits_as_long_as_the_kustomization_does():

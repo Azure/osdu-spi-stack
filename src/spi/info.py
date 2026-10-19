@@ -44,7 +44,7 @@ from .deploy_record import (
 )
 from .images import (
     GHCR_HOST,
-    SCHEMA_LOAD_SERVICE_NAME,
+    companion_primary,
     image_lock_key,
     image_lock_names,
     runs_fork_package,
@@ -554,6 +554,9 @@ def _collect_info() -> dict:
         # Observed from the running Deployment; empty until entitlements is deployed.
         "entitlements_domain": entitlements_domain,
         "suspended": suspended,
+        "features": {
+            "seismic_restore": cluster_cfg.get("ENABLE_SEISMIC_RESTORE", "false").lower() == "true",
+        },
         "osdu_versions": versions,
         # Every load the environment's registry names, read from its Jobs
         # (ADR-040); empty when the stack version delivers no registry.
@@ -630,9 +633,9 @@ def _service_versions_table(versions: dict) -> Table | None:
 
 
 def _policy_service(name: str) -> str:
-    """The service whose source policy governs ``name``; the loader follows schema."""
+    """The primary service whose source policy governs ``name``."""
 
-    return "schema" if name == SCHEMA_LOAD_SERVICE_NAME else name
+    return companion_primary(name)
 
 
 def _canonical_source(name: str, image: dict) -> str:

@@ -40,7 +40,8 @@ REVIEWER = "copilot"
 REVIEW_MODEL = "claude-opus-5.5"
 REVIEW_EFFORT = "medium"
 REVIEW_TIMEOUT_SECONDS = 1200
-SOURCE_SUFFIXES = (".java", ".feature")
+SOURCE_SUFFIXES = (".java", ".feature", ".js", ".ts", ".sh", ".json")
+IGNORED_SOURCE_DIRS = ("node_modules", "newman", "coverage", "dist")
 LIST_LIMIT = 8
 CITED_LIMIT = 80
 ROW_LIMIT = 600
@@ -177,6 +178,8 @@ def add_suite(bundle: Path, name: str, suite_dir: Path, facts: dict) -> None:
     into.mkdir(parents=True, exist_ok=True)
     (into / "facts.json").write_text(json.dumps(facts, indent=1), encoding="utf-8")
     for path in suite_sources(suite_dir, SOURCE_SUFFIXES):
+        if set(path.relative_to(suite_dir).parts) & set(IGNORED_SOURCE_DIRS):
+            continue
         copy = into / "src" / path.relative_to(suite_dir)
         copy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, copy)
