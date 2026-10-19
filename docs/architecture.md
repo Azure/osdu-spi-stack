@@ -42,8 +42,8 @@ There are three application namespaces, plus namespaces managed by AKS and Flux.
 | Namespace | Workloads |
 |---|---|
 | `foundation` | ECK and CloudNativePG operators, cert-manager, trust-manager; ExternalDNS in `dns` mode |
-| `platform` | Elasticsearch, Redis, PostgreSQL, Airflow, TLS certificates; Kibana in the TLS ingress profiles |
-| `osdu` | OSDU APIs, partition/entitlements initialization, legal-tag seeding Jobs, schema loader |
+| `platform` | Elasticsearch, Redis, Airflow metadata PostgreSQL, Airflow, TLS certificates; Kibana in the TLS ingress profiles |
+| `osdu` | OSDU APIs including Open ETP, partition/entitlements initialization, legal-tag seeding Jobs, schema loader |
 | `osdu-flux` | SPI-owned Git source, Kustomizations, HelmReleases, bootstrap input ConfigMaps and credential seed |
 | `flux-system` | AKS extension-owned Flux controllers |
 | `aks-istio-system`, `aks-istio-ingress` | Managed mesh control plane; the stack owns nothing in either, and the `spi-gateway` Gateway and its generated Service live in `platform` |
@@ -77,8 +77,9 @@ workloads and Redis volumes, but operator CRDs can remain. See
 
 Azure PaaS holds OSDU operational data: Cosmos DB SQL for records and metadata,
 Cosmos DB Gremlin for the entitlements graph, Storage for blobs and tables, and
-Service Bus for events. Key Vault stores configuration values and credentials
-that services resolve at runtime.
+Service Bus for events. One PostgreSQL Flexible Server per partition holds
+Reservoir DDMS data. Key Vault stores configuration values and passwordless
+PostgreSQL connection metadata that services resolve at runtime.
 
 Elasticsearch, Redis, and Airflow's PostgreSQL database remain in-cluster for
 different reasons. Azure AI Search is not compatible with the Elasticsearch APIs
@@ -98,7 +99,9 @@ Workload-Identity-capable replacement image
 ([ADR-005](decisions/005-workload-identity.md)).
 
 The core service set is partition, entitlements, legal, schema, storage, search,
-indexer, indexer-queue, file, and workflow. The reference APIs are unit,
+indexer, indexer-queue, file, workflow, and Open ETP for Reservoir DDMS. Open ETP
+serves WebSocket traffic at `/api/reservoir-ddms-etp/v2/`; the Gateway API route
+rewrites that prefix to `/` for the server. The reference APIs are unit,
 crs-conversion, and crs-catalog. Their configuration lives in
 [`services/`](../software/stacks/osdu/services/) and
 [`services-reference/`](../software/stacks/osdu/services-reference/).
@@ -115,10 +118,12 @@ which the [Flux guide](design/flux-reconciliation.md#dependency-ordering) owns.
 persisted in the resource group's `spi-name-suffix` tag, so repeat deployments
 reuse the same names.
 
-Each partition gets a Cosmos DB SQL account, Service Bus namespace, and Storage
-account. The environment shares Gremlin, common Storage, Key Vault, and
-in-cluster middleware. The first partition is the primary partition and hosts
-the system database used by schema loading.
+Each partition gets a Cosmos DB SQL account, Service Bus namespace, Storage
+account, and PostgreSQL Flexible Server for Reservoir DDMS. The PostgreSQL
+firewall admits only the AKS NAT gateway public IP, and Entra authentication
+replaces database passwords. The environment shares Gremlin, common Storage,
+Key Vault, and in-cluster middleware. The first partition is the primary
+partition and hosts the system database used by schema loading.
 
 Partition-specific resources do not imply per-service access isolation. OSDU
 workloads share one user-assigned managed identity. Workload Identity avoids

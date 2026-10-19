@@ -56,7 +56,7 @@ from .ingress import (
     resolve_post_deploy_inputs,
 )
 from .paths import INFRA_ROOT
-from .pins import ServicePin, apply_image_lock, apply_schema_load_backfill, describe_pin, read_lock
+from .pins import ServicePin, apply_image_lock, apply_image_lock_backfill, describe_pin, read_lock
 from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, run_command, run_process
 from .templates import (
@@ -116,6 +116,16 @@ def _create_osdu_config(config: Config, infra_outputs: dict) -> None:
         )
         display_yaml(sa_yaml, f"ServiceAccount: workload-identity-sa in {ns}")
         kubectl_apply_yaml(sa_yaml, f"apply workload-identity-sa in {ns}")
+    reservoir_client_id = infra_outputs.get("reservoir_identity_client_id", "")
+    if reservoir_client_id:
+        sa_yaml = workload_identity_sa(
+            namespace="osdu",
+            client_id=reservoir_client_id,
+            tenant_id=infra_outputs.get("tenant_id", ""),
+            name="open-etp-sa",
+        )
+        display_yaml(sa_yaml, "ServiceAccount: open-etp-sa in osdu")
+        kubectl_apply_yaml(sa_yaml, "apply open-etp-sa in osdu")
     for sa_name, output_key in TESTER_SERVICE_ACCOUNTS:
         client_id = infra_outputs.get(output_key, "")
         if not client_id:
@@ -278,7 +288,7 @@ def _ensure_image_lock(
     if refresh_images is not True:
         existing_lock = read_lock(required=False)
         if existing_lock is not None:
-            apply_schema_load_backfill(branch=image_branch)
+            apply_image_lock_backfill(branch=image_branch, sources=sources)
             return {}
         if refresh_images is False:
             raise RuntimeError(

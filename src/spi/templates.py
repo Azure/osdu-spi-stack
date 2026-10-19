@@ -283,7 +283,7 @@ LEGAL_TAG_BASE = "demo-legaltag"
 
 ENTITLEMENTS_MEMBERS_COMPONENT = "entitlements-members"
 # Must equal membersGeneration in the init chart's values.yaml.
-ENTITLEMENTS_MEMBERS_GENERATION = 3
+ENTITLEMENTS_MEMBERS_GENERATION = 4
 
 
 def spi_init_values_configmap(

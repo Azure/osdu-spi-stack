@@ -16,6 +16,10 @@ metadata:
     {{- include "osdu-spi-service.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- with .Values.deploymentStrategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "osdu-spi-service.selectorLabels" . | nindent 6 }}
@@ -39,6 +43,8 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccountName }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
 
       # AKS Deployment Safeguards compliance
       securityContext:
@@ -135,6 +141,14 @@ spec:
         - name: {{ include "osdu-spi-service.name" . }}
           image: "{{ if .Values.image.digest }}{{ .Values.image.repository }}@{{ .Values.image.digest }}{{ else }}{{ .Values.image.repository }}:{{ .Values.image.tag }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.containerPort }}

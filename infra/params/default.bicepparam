@@ -41,5 +41,9 @@ param serviceBusNames = [
 param partitionStorageNames = [
   'osduopendes'
 ]
+param reservoirPostgresNames = [
+  'osdu-opendes-reservoir-pg'
+]
+param aksNatPublicIpAddress = '192.0.2.1'
 
 param oidcIssuerUrl = ''

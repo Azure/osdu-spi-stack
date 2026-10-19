@@ -587,18 +587,16 @@ data:
     entitlements until something adds it, so every acceptance request it
     mints would fail authorization. This Job runs as the workload identity,
     which tenant-provisioning made OWNER of the root groups, and adds each
-    configured member as x-user-id to users, users.datalake.ops,
-    users.datalake.admins, users.data.root, and users.datalake.delegation
-    for the partition. Each configured member user, the test caller who is
-    no data manager, is added to users, to every service.<name>.user group the
-    listing carries, and to the fixed MEMBER_USER_GROUPS, and nothing else.
+    configured member as x-user-id to the root groups and the Reservoir owners
+    group for the partition. Each configured member user, the test caller who
+    is no data manager, is added to users, to every service.<name>.user group
+    the listing carries, and to the fixed MEMBER_USER_GROUPS, and nothing else.
 
     The Azure provider's tenant-provisioning does not create the two
-    impersonation groups the core defines, users.datalake.delegation (who may
-    impersonate) and users.datalake.impersonation (who may be impersonated).
-    The entitlements acceptance suite requires both, so the Job creates them
-    when absent; the creator is their OWNER and ops membership lets any
-    configured member manage them afterwards.
+    impersonation groups the core defines or the Reservoir service groups.
+    The Job creates them when absent; the workload identity is their OWNER,
+    the deploy caller joins Reservoir owners, and the member caller joins
+    Reservoir viewers.
 
     Flow:
       1. Wait for entitlements /info to return 200.
@@ -606,8 +604,8 @@ data:
          was deployed with. With member users, refuse before any write when
          the listing carries more than MAX_USER_GROUPS service.<name>.user
          groups or lacks one of MEMBER_USER_GROUPS.
-      3. POST /groups for each impersonation group the listing lacks.
-      4. Select the five root groups by name, and users, every
+      3. POST /groups for each required core or Reservoir group the listing lacks.
+      4. Select the root and Reservoir owners groups, and users, every
          service.<name>.user group, and MEMBER_USER_GROUPS for the member users.
       5. POST each principal to each of its groups. 200 adds, 409 is
          already a member.
@@ -644,10 +642,23 @@ data:
     CREATED_GROUPS = {
         "users.datalake.delegation": "Users who can impersonate",
         "users.datalake.impersonation": "Users who can be impersonated",
+        "service.reservoir-dms.owners": "Reservoir DDMS owners",
+        "service.reservoir-dms.viewers": "Reservoir DDMS viewers",
     }
+    ADMIN_GROUPS = (
+        "users",
+        "users.datalake.ops",
+        "users.datalake.admins",
+        "users.data.root",
+        "users.datalake.delegation",
+        "service.reservoir-dms.owners",
+    )
     MEMBER_USER_GROUP_RE = re.compile(r"^service\.[a-z0-9-]+\.user$")
     # Storage defines no .user group; its suite declares the member caller with admin.
-    MEMBER_USER_GROUPS = ("service.storage.admin",)
+    MEMBER_USER_GROUPS = (
+        "service.storage.admin",
+        "service.reservoir-dms.viewers",
+    )
     # Azure's tenant provisioning creates 7 service.<name>.user groups and
     # other OSDU services define a further 7; 16 covers that known set with
     # headroom, and bounds REQUEST_BUDGET below.
@@ -661,7 +672,7 @@ data:
     # MAX_USER_GROUPS plus len(MEMBER_USER_GROUPS) more write-and-read pairs
     # plus a users write for the one member user.
     REQUEST_TIMEOUT = 30
-    REQUEST_BUDGET = 1500
+    REQUEST_BUDGET = 1800
     INFO_ATTEMPTS = 30
     WAIT_DELAY = 2.0
     WAIT_SOCKET_TIMEOUT = 5.0
@@ -754,7 +765,11 @@ data:
                 f"{', '.join(member_users)} not seeded",
             )
             return 1
-        absent_user_groups = [name for name in MEMBER_USER_GROUPS if not emails.get(name)]
+        absent_user_groups = [
+            name
+            for name in MEMBER_USER_GROUPS
+            if name not in CREATED_GROUPS and not emails.get(name)
+        ]
         if member_users and absent_user_groups:
             outcome(
                 "group_missing",
@@ -778,7 +793,15 @@ data:
                 return 1
             if not emails.get(name) and emails.get("users", "").startswith("users@"):
                 emails[name] = f"{name}@{emails['users'].split('@', 1)[1]}"
-        absent = [name for name in ROOT_GROUPS if not emails.get(name)]
+        absent_user_groups = [name for name in MEMBER_USER_GROUPS if not emails.get(name)]
+        if member_users and absent_user_groups:
+            outcome(
+                "group_missing",
+                f"member user groups not visible to the owner: {', '.join(absent_user_groups)}; "
+                f"{', '.join(member_users)} not seeded",
+            )
+            return 1
+        absent = [name for name in ADMIN_GROUPS if not emails.get(name)]
         if absent:
             outcome(
                 "group_missing",
@@ -788,7 +811,7 @@ data:
             return 1
 
         user_groups = ["users"] + matched_groups + list(MEMBER_USER_GROUPS)
-        seeds = [(member, name) for member in members for name in ROOT_GROUPS]
+        seeds = [(member, name) for member in members for name in ADMIN_GROUPS]
         seeds += [(member, name) for member in member_users for name in user_groups]
 
         added = False

@@ -101,6 +101,12 @@ def _cosmos_gremlin_name(env: str, suffix: str = "") -> str:
     return _with_suffix(base, f"-{suffix}" if suffix else "", 44)
 
 
+def _reservoir_postgres_name(partition: str, env: str, suffix: str = "") -> str:
+    """PostgreSQL Flexible Server name for one Reservoir DDMS partition."""
+    base = "-".join(part for part in ("osdu", env, partition, "reservoir-pg") if part)
+    return _with_suffix(base, f"-{suffix}" if suffix else "", 63)
+
+
 def create_resource_group(config: Config):
     console.print("\n[bold]Creating resource group...[/bold]")
     # `az group create` on an existing group is an ARM PUT, and omitting
@@ -702,6 +708,7 @@ def _build_bicep_params(
     deployer_principal_id: str,
     deployer_principal_type: str,
     kubelet_object_id: str = "",
+    aks_nat_public_ip: str = "",
 ) -> Dict[str, Any]:
     """Translate Config into the parameter dict consumed by infra/main.bicep."""
     s = config.name_suffix
@@ -712,6 +719,8 @@ def _build_bicep_params(
         "deployIdentityName": config.deploy_identity_name,
         "memberIdentityName": config.member_identity_name,
         "noAccessIdentityName": config.no_access_identity_name,
+        "reservoirIdentityName": config.reservoir_identity_name,
+        "deployReservoir": config.profile.value == "core",
         "clusterName": config.cluster_name,
         "externalDnsIdentityName": config.external_dns_identity_name,
         "keyVaultName": config.keyvault_name,
@@ -725,6 +734,10 @@ def _build_bicep_params(
         "partitionStorageNames": [
             _storage_name("osdu" + config.env + p, "", s) for p in config.data_partitions
         ],
+        "reservoirPostgresNames": [
+            _reservoir_postgres_name(p, config.env, s) for p in config.data_partitions
+        ],
+        "aksNatPublicIpAddress": aks_nat_public_ip,
         "oidcIssuerUrl": oidc_issuer,
         # Empty outside dns mode; main.bicep's conditional modules then no-op.
         "dnsZoneName": config.dns_zone,
@@ -817,6 +830,8 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
         "member_identity_principal_id": bicep_outputs.get("memberIdentityPrincipalId", ""),
         "no_access_identity_client_id": bicep_outputs.get("noAccessIdentityClientId", ""),
         "no_access_identity_principal_id": bicep_outputs.get("noAccessIdentityPrincipalId", ""),
+        "reservoir_identity_client_id": bicep_outputs.get("reservoirIdentityClientId", ""),
+        "reservoir_identity_principal_id": bicep_outputs.get("reservoirIdentityPrincipalId", ""),
         "identity_id": bicep_outputs.get("identityResourceId", ""),
         "keyvault_uri": bicep_outputs.get("keyvaultUri", ""),
         "keyvault_id": bicep_outputs.get("keyvaultId", ""),
@@ -838,6 +853,9 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
     sb_names = bicep_outputs.get("partitionServiceBusNames", []) or []
     storage_ids = bicep_outputs.get("partitionStorageIds", []) or []
     storage_names = bicep_outputs.get("partitionStorageNamesOut", []) or []
+    postgres_ids = bicep_outputs.get("reservoirPostgresIds", []) or []
+    postgres_fqdns = bicep_outputs.get("reservoirPostgresFqdns", []) or []
+    postgres_databases = bicep_outputs.get("reservoirPostgresDatabaseNames", []) or []
 
     for i, partition in enumerate(partition_names):
         if i < len(cosmos_endpoints):
@@ -852,6 +870,12 @@ def _reshape_bicep_outputs(bicep_outputs: Dict[str, Any]) -> Dict[str, Any]:
             out[f"{partition}_storage_id"] = storage_ids[i]
         if i < len(storage_names):
             out[f"{partition}_storage_name"] = storage_names[i]
+        if i < len(postgres_ids):
+            out[f"{partition}_reservoir_postgres_id"] = postgres_ids[i]
+        if i < len(postgres_fqdns):
+            out[f"{partition}_reservoir_postgres_fqdn"] = postgres_fqdns[i]
+        if i < len(postgres_databases):
+            out[f"{partition}_reservoir_postgres_database"] = postgres_databases[i]
 
     return out
 
@@ -912,6 +936,15 @@ def provision_azure_infra(
     )
     oidc_issuer = aks_outputs.get("oidcIssuerUrl", "")
     kubelet_object_id = aks_outputs.get("kubeletIdentityObjectId", "")
+    aks_nat_public_ip = aks_outputs.get("natGatewayPublicIpAddress", "")
+    if dry_run and not aks_nat_public_ip:
+        aks_nat_public_ip = "192.0.2.1"
+    if not dry_run and not aks_nat_public_ip:
+        console.print(
+            "  [error]The cluster reported no NAT gateway public IP; Reservoir PostgreSQL "
+            "cannot be restricted to AKS egress.[/error]"
+        )
+        raise typer.Exit(code=1)
     if not dry_run and not kubelet_object_id:
         console.print(
             "  [warning]The cluster reported no kubelet identity, so it gets no AcrPull on "
@@ -925,7 +958,7 @@ def provision_azure_infra(
     header = "Previewing" if dry_run else "Deploying"
     console.print(f"\n[bold]{header} Azure PaaS resources via Bicep...[/bold]")
     console.print(
-        "  [info]Identity, KeyVault, ACR, CosmosDB, Service Bus, Storage, "
+        "  [info]Identity, KeyVault, ACR, CosmosDB, Service Bus, Storage, PostgreSQL, "
         "and RBAC role assignments are declared in infra/main.bicep.[/info]"
     )
     bicep_params = _build_bicep_params(
@@ -934,6 +967,7 @@ def provision_azure_infra(
         deployer_principal_id,
         deployer_principal_type,
         kubelet_object_id,
+        aks_nat_public_ip,
     )
     bicep_outputs = run_bicep_deployment(
         template_path=str(INFRA_MAIN_BICEP),

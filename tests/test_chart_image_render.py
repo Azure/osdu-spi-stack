@@ -83,6 +83,44 @@ def test_falls_back_to_repository_colon_tag_when_digest_empty():
     assert image == "community.opengroup.org:5555/osdu/partition-master:abc1234"
 
 
+def test_renders_optional_command_and_arguments():
+    deployment = _rendered_deployment(
+        {
+            "command[0]": "openETPServer",
+            "args[0]": "server",
+            "args[1]": "--start",
+        }
+    )
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    assert container["command"] == ["openETPServer"]
+    assert container["args"] == ["server", "--start"]
+
+
+def test_renders_non_identity_service_account_and_shutdown_contract():
+    deployment = _rendered_deployment(
+        {
+            "serviceAccountName": "default",
+            "automountServiceAccountToken": "false",
+            "terminationGracePeriodSeconds": "45",
+            "workloadIdentity": "false",
+        }
+    )
+    pod = deployment["spec"]["template"]["spec"]
+
+    assert pod["serviceAccountName"] == "default"
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["terminationGracePeriodSeconds"] == 45
+    assert "azure.workload.identity/use" not in deployment["spec"]["template"]["metadata"]["labels"]
+
+
+def test_renders_optional_deployment_strategy():
+    default = _rendered_deployment({})
+    recreate = _rendered_deployment({"deploymentStrategy.type": "Recreate"})
+
+    assert "strategy" not in default["spec"]
+    assert recreate["spec"]["strategy"] == {"type": "Recreate"}
+
+
 def test_requests_the_cpu_admission_will_grant_every_container():
     deployment = _rendered_deployment({"redisTls": "true"})
     pod = deployment["spec"]["template"]["spec"]

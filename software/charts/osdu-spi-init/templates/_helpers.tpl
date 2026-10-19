@@ -83,6 +83,10 @@ volumes:
       "sensitive": true,
       "value": "sb-namespace"
     },
+    "reservoir-connection": {
+      "sensitive": true,
+      "value": "reservoir-conn"
+    },
     "storage-account-key": {
       "sensitive": true,
       "value": "storage-account-key"

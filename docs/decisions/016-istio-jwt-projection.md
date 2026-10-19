@@ -20,7 +20,7 @@ Rejected: substituting the OSDU UAMI client id for any management-audience calle
 
 Rejected: `RequestAuthentication` plus `AuthorizationPolicy` keyed on JWT claims. Works for images whose Spring chain reads `RequestPrincipal` directly; the Azure provider's does not.
 
-Rejected: per-service default-deny `AuthorizationPolicy` as defense in depth. The Spring chain already enforces identity, and default-deny on services serving traffic carries a wider blast radius; it remains available as a later hardening pass.
+Rejected: per-service default-deny `AuthorizationPolicy` for Spring Azure-provider services. Their in-process chain already enforces identity, and default-deny carries a wider blast radius. Non-Spring DDMS workloads that lack an equivalent chain require workload-scoped policy under ADR-041.
 
 Rejected: pre-populating entitlements without going through the service API. Bypasses the auth chain but ties bootstrap to schema internals of the entitlements implementation, the burden ADR-013 and ADR-015 removed.
 
@@ -30,3 +30,4 @@ Rejected: pre-populating entitlements without going through the service API. Byp
 - Envoy Lua now sits between deployment and authorization: JWKS reachability failures, RA drift, or sidecar skew manifest as `app-id=` empty rather than a clear auth error; check the EnvoyFilter and RequestAuthentication first when Jobs return 401/403.
 - The Lua is coupled to the claim names Entra emits (`appid`, `azp`, `oid`, `unique_name`, `upn`); an issuer change means revisiting it. The audience list, not the Lua, is what a new caller must satisfy.
 - A human's own token reaches the services as that human, named by `unique_name` on a v1 token. Entitlements refuses it until `spi users add --me` makes that id a member (ADR-039); an app-only token from a seeded identity is the other way to hand-test an entitlements-backed API.
+- Open ETP disables in-process authentication and therefore carries a workload-scoped `AuthorizationPolicy`: `/health` stays anonymous for probes, while every other path requires a principal validated by `spi-osdu-jwt-authn`.

@@ -45,3 +45,5 @@ forks:
   - service: crs-conversion
     repo: Azure/osdu-spi-crs-conversion
     canonicalSource: fork
+  - service: open-etp-client
+    repo: KiranBedre/osdu-spi-reservoir-open-etp-client

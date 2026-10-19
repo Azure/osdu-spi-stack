@@ -212,3 +212,6 @@ output kubeletIdentityObjectId string = aksCluster.properties.?identityProfile.?
 
 @description('Principal ID of the control-plane identity used to reconcile network resources.')
 output clusterPrincipalId string = clusterIdentity.properties.principalId
+
+@description('Fixed AKS egress IP used to restrict Azure PaaS firewalls.')
+output natGatewayPublicIpAddress string = vnetModule.outputs.publicIpAddress

@@ -171,6 +171,7 @@ DELETION_PLAN: Sequence[Wave] = (
         "Microsoft.ContainerService/managedClusters",
         "Microsoft.EventGrid/systemTopics",
         "Microsoft.DocumentDB/databaseAccounts",
+        "Microsoft.DBforPostgreSQL/flexibleServers",
         "Microsoft.ServiceBus/namespaces",
         "Microsoft.Storage/storageAccounts",
         "Microsoft.ContainerRegistry/registries",
