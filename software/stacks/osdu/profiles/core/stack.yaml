@@ -136,8 +136,8 @@ spec:
   path: ./software/stacks/osdu/members
   prune: true
   wait: true
-  # Outlasts the HelmRelease's 35m install timeout.
-  timeout: 40m
+  # Outlasts the HelmRelease's 45m install timeout.
+  timeout: 50m
   healthChecks:
     - apiVersion: helm.toolkit.fluxcd.io/v2
       kind: HelmRelease
