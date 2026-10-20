@@ -16,6 +16,8 @@
 
 from unittest.mock import patch
 
+import yaml
+
 from spi import deploy
 from spi.config import Config
 
@@ -50,3 +52,14 @@ def test_osdu_identity_client_id_is_written_as_the_tenant_service_account():
 
     assert "tenantServiceAccount: osdu-client-id\n" in applied
     assert "tenantServiceAccount" not in _applied({})
+
+
+def test_init_values_are_watched_by_the_releases_that_read_them():
+    """Without the watch label a new partition waits for the HelmRelease interval."""
+    configmap = yaml.safe_load(_applied({"deploy_identity_client_id": "deployer-client-id"}))
+
+    assert (configmap["metadata"]["name"], configmap["metadata"]["namespace"]) == (
+        "spi-init-values",
+        "osdu-flux",
+    )
+    assert configmap["metadata"]["labels"]["reconcile.fluxcd.io/watch"] == "Enabled"
