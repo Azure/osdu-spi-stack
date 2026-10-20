@@ -1,13 +1,7 @@
 # One-shot Job that loads the OSDU shared schemas into the primary
-# partition, authenticating through workload-identity-sa. Two loader images
-# run here. Upstream's community image runs bootstrap.sh from
-# /home/osdu/deployments/scripts/azure, so the ConfigMap with the wrapper and
-# Token.py is mounted as that whole directory rather than overriding
-# `command`; nothing else in it is read at run time. The schema fork's paired
-# image (osdu-spi ADR-042) carries its own entrypoint, which reads SCHEMA_URL
-# and the workload identity variables; the directory mount only creates an
-# empty path it never looks at. The mount and script.yaml stay while an
-# environment can select community as schema's canonical source.
+# partition, authenticating through workload-identity-sa. The loader image's
+# own entrypoint (build/load-entrypoint.sh in the schema repository) reads
+# SCHEMA_URL, WAIT_SECONDS, and the workload identity variables.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -19,7 +13,7 @@ metadata:
 spec:
   backoffLimit: 2
   # Counts from Job activation, before the Pod is scheduled: 1800s for node
-  # provisioning, scheduling, and image pull, 2700s for the script's own
+  # provisioning, scheduling, and image pull, WAIT_SECONDS for the loader's
   # schema-service wait, and the rest for the throttled load of ~1,386
   # schemas. The Flux Kustomization timeout must exceed this.
   activeDeadlineSeconds: 9000
@@ -35,7 +29,7 @@ spec:
       serviceAccountName: workload-identity-sa
       restartPolicy: Never
       # AKS Deployment Safeguards compliance. The loader only needs to read
-      # its image and ConfigMap scripts and write the existing /tmp/load.log.
+      # its image and write /tmp/load.log.
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -47,11 +41,6 @@ spec:
           operator: Equal
           value: "osdu"
           effect: NoSchedule
-      volumes:
-        - name: scripts
-          configMap:
-            name: schema-load-scripts
-            defaultMode: 0755
       containers:
         - name: loader
           # From the osdu-image-lock ConfigMap, on the same SHA as
@@ -70,10 +59,10 @@ spec:
           env:
             - name: NAMESPACE
               value: "osdu"
-            # Read by the fork-built loader's entrypoint; the community wrapper
-            # hardcodes the same service.
             - name: SCHEMA_URL
               value: "http://schema.osdu.svc.cluster.local/api/schema-service/v1"
+            - name: WAIT_SECONDS
+              value: "2700"
             # The loader reads DATA_PARTITION; system-db is primary-only,
             # so it is aliased from PRIMARY_PARTITION.
             - name: DATA_PARTITION
@@ -81,9 +70,6 @@ spec:
                 configMapKeyRef:
                   name: osdu-config
                   key: PRIMARY_PARTITION
-          volumeMounts:
-            - name: scripts
-              mountPath: /home/osdu/deployments/scripts/azure
           resources:
             requests:
               cpu: 100m

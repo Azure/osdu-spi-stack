@@ -167,9 +167,8 @@ canonical loader, and a loader left pinned by an earlier pin or run is
 released to its canonical entry so no mismatched pair runs. `spi service
 reset schema --if-run <id>` releases the loader the run paired and leaves a
 loader owned by anything else standing. The `schema-load` Job passes
-`SCHEMA_URL` and the workload identity to the fork-built image; the wrapper
-ConfigMap mounted at `scripts/azure` serves only the community loader image,
-which no canonical source resolves.
+`SCHEMA_URL`, `WAIT_SECONDS`, and the workload identity to the loader
+image's own entrypoint.
 
 `require_ghcr_repository` in `src/spi/images.py` checks GHCR host, path,
 and digest shape without naming an owner. An ephemeral pin additionally
