@@ -45,3 +45,6 @@ forks:
   - service: crs-conversion
     repo: Azure/osdu-spi-crs-conversion
     canonicalSource: fork
+resources:
+  postgres:
+    walStorage: 8Gi
