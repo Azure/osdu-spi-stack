@@ -32,9 +32,11 @@ HelmReleases can use external chart repositories.
 Suspending Git therefore does not freeze every upstream chart or controller.
 
 The CLI owns several inputs outside Git: `osdu-config` in `osdu`, and
-`spi-cluster-config`, `spi-ingress-config`, `spi-init-values`, and
-`osdu-image-lock` in `osdu-flux`. `spi-cluster-config` carries the detected
-Istio revision used by namespace substitution.
+`spi-cluster-config`, `spi-ingress-config`, `spi-init-values`,
+`spi-partitions`, and `osdu-image-lock` in `osdu-flux`. `spi-cluster-config`
+carries the detected Istio revision used by namespace substitution;
+`spi-partitions` carries the partition list hash that rolls the services
+caching the tenant set per replica (ADR-015).
 The checked-in `osdu-config-placeholder.yaml` is comments only, not a second
 ConfigMap. Editing it does not change live configuration.
 

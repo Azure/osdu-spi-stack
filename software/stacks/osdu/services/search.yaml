@@ -38,6 +38,8 @@ spec:
       digest: "${SEARCH_IMAGE_DIGEST}"
     karpenter:
       doNotDisrupt: "${SEARCH_DO_NOT_DISRUPT:=false}"
+    # Each replica caches the tenant set; a new partition list rolls the pods.
+    partitionsHash: "${DATA_PARTITIONS_HASH:=}"
     elasticTls: true
     redisTls: true
     nodeSelector:

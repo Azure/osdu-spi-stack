@@ -60,10 +60,12 @@ from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, run_command, run_process
 from .sizing import apply_sizing, check_storage
 from .templates import (
+    PARTITIONS_CONFIGMAP,
     TESTER_NAMESPACE,
     TESTER_SERVICE_ACCOUNTS,
     istio_auth_resources,
     osdu_config_configmap,
+    partitions_configmap,
     spi_init_values_configmap,
     workload_identity_sa,
 )
@@ -155,7 +157,8 @@ def _create_istio_auth(config: Config, infra_outputs: dict) -> None:
 
 def _create_spi_init_values(config: Config, infra_outputs: dict) -> None:
     """Apply the spi-init-values ConfigMap that the osdu-spi-init HelmRelease
-    consumes via valuesFrom. Must run before Flux reconciles the HelmRelease.
+    consumes via valuesFrom, and spi-partitions, the partition list hash the
+    service releases substitute. Must run before Flux reconciles the HelmRelease.
     """
     console.print("\n[bold]Creating SPI init values ConfigMap...[/bold]")
     members = [infra_outputs.get("deploy_identity_client_id", "")]
@@ -171,6 +174,10 @@ def _create_spi_init_values(config: Config, infra_outputs: dict) -> None:
     display_result(
         f"spi-init-values ConfigMap created for partitions: {', '.join(config.data_partitions)}"
     )
+    # After spi-init-values, so partition-init starts before the services roll.
+    yaml_content = partitions_configmap(config.data_partitions)
+    display_yaml(yaml_content, f"ConfigMap: {PARTITIONS_CONFIGMAP}")
+    kubectl_apply_yaml(yaml_content, f"apply {PARTITIONS_CONFIGMAP} ConfigMap")
 
 
 def _resolve_image_lock(sources: dict[str, str] | None = None) -> dict[str, ResolvedImage]:

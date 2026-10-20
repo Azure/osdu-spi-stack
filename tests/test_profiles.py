@@ -818,6 +818,27 @@ class TestBorrowedPodDisruptionSubstitution:
         assert {"kind": "ConfigMap", "name": "osdu-image-lock"} in sources
 
 
+class TestPartitionListRoll:
+    """Services that cache the tenant set per replica roll when the partition list changes."""
+
+    ROLLED = ("entitlements", "legal", "storage", "search")
+
+    @pytest.mark.parametrize("service", ROLLED)
+    def test_pod_template_carries_the_partition_list_hash(self, service):
+        from spi.templates import PARTITIONS_HASH_KEY
+
+        doc = yaml.safe_load((STACKS / "services" / f"{service}.yaml").read_text())
+        assert doc["spec"]["values"]["partitionsHash"] == f"${{{PARTITIONS_HASH_KEY}:=}}"
+
+    def test_services_kustomization_substitutes_the_hash_the_cli_writes(self):
+        from spi.templates import PARTITIONS_CONFIGMAP
+
+        item = _kustomization(PROFILES_DIR / "core", "spi-osdu-services")
+        sources = item["spec"]["postBuild"]["substituteFrom"]
+        # Optional, so an environment the CLI has not yet written it for still renders.
+        assert {"kind": "ConfigMap", "name": PARTITIONS_CONFIGMAP, "optional": True} in sources
+
+
 class TestForkRbac:
     """The deploy identity's namespace Roles (ADR-032) ship with the core profile."""
 

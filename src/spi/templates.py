@@ -331,6 +331,45 @@ data:
 {members_block}"""
 
 
+PARTITIONS_CONFIGMAP = "spi-partitions"
+# Must match the ${DATA_PARTITIONS_HASH:=} placeholder in the service HelmReleases.
+PARTITIONS_HASH_KEY = "DATA_PARTITIONS_HASH"
+
+
+def data_partitions_hash(partitions: Sequence[str]) -> str:
+    """A digest of the partition set, independent of order and duplicates.
+
+    The ``sha256:`` prefix keeps the value a string once Flux substitutes it
+    into YAML; a bare hex digest can parse as a number.
+    """
+    seed = ",".join(sorted(set(partitions)))
+    return "sha256:" + hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def partitions_configmap(partitions: Sequence[str]) -> str:
+    """ConfigMap spi-osdu-services substitutes the partition list hash from.
+
+    The services that cache the tenant set per replica stamp the hash on
+    their pod template, so a changed partition list rolls them and each new
+    pod starts with every partition. spi-init-values cannot carry the key:
+    Flux rejects a substitution source whose keys, like ``values.yaml``, are
+    not variable names.
+    """
+    return f"""\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {PARTITIONS_CONFIGMAP}
+  namespace: osdu-flux
+  labels:
+    app.kubernetes.io/managed-by: osdu-spi-stack
+    # kustomize-controller re-reconciles the substituting Kustomization on change.
+    reconcile.fluxcd.io/watch: Enabled
+data:
+  {PARTITIONS_HASH_KEY}: {json.dumps(data_partitions_hash(partitions))}
+"""
+
+
 def parse_init_values(text: str) -> dict:
     """Parse the CLI-written values.yaml blob without a yaml dependency.
 
