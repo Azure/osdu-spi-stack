@@ -154,9 +154,7 @@ def test_osdu_db_has_every_workflow_container():
         re.DOTALL | re.MULTILINE,
     )
     assert block is not None, "osduDbContainers not found in partition.bicep"
-    containers = dict(
-        re.findall(r"name: '([^']+)', partitionKey: '([^']+)'", block.group("body"))
-    )
+    containers = dict(re.findall(r"name: '([^']+)', partitionKey: '([^']+)'", block.group("body")))
 
     assert containers["Workflow"] == "/workflowId"
     assert containers["WorkflowCustomOperatorInfo"] == "/operatorId"
