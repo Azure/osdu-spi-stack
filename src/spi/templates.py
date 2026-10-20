@@ -321,6 +321,8 @@ metadata:
   namespace: osdu-flux
   labels:
     app.kubernetes.io/managed-by: osdu-spi-stack
+    # helm-controller re-reconciles the valuesFrom releases on change.
+    reconcile.fluxcd.io/watch: Enabled
 data:
   values.yaml: |
     partitions:

@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 import typer
+import yaml
 from typer.testing import CliRunner
 
 from spi import cli
@@ -245,6 +246,12 @@ class TestRefreshSpiInitValues:
         applied = apply_yaml.call_args.args[0]
         assert "    - opendes\n    - second\n" in applied
         assert "entitlementsMembers:\n    - id\n" in applied
+
+    def test_refreshed_values_stay_watched_by_the_releases_that_read_them(self):
+        apply_yaml = self._run("partitions:\n  - opendes\nlegalTag: demo-legaltag\n", "id")
+
+        configmap = yaml.safe_load(apply_yaml.call_args.args[0])
+        assert configmap["metadata"]["labels"]["reconcile.fluxcd.io/watch"] == "Enabled"
 
     def test_replaces_a_stale_deploy_identity(self):
         apply_yaml = self._run(
