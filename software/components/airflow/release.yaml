@@ -85,6 +85,8 @@ spec:
     # The admin identity lives only in these args; the chart's defaultUser
     # block is ignored once args are overridden. 'users create' skips an
     # existing user, so 'reset-password' makes the secret's password win.
+    # osdu-workflow is the Workflow service's own login; the CLI copies its
+    # password to osdu/workflow-airflow-credentials.
     createUserJob:
       useHelmHooks: false
       applyCustomEnv: false
@@ -92,8 +94,12 @@ spec:
         - "bash"
         - "-c"
         - |-
+          set -e
           airflow users create "$@" || true
           airflow users reset-password -u admin -p "$AIRFLOW_ADMIN_PW"
+          airflow users create -r User -u osdu-workflow -e workflow@osdu.local \
+            -f OSDU -l Workflow -p "$AIRFLOW_WORKFLOW_PW" || true
+          airflow users reset-password -u osdu-workflow -p "$AIRFLOW_WORKFLOW_PW"
         - --
         - "-r"
         - "Admin"
@@ -113,6 +119,11 @@ spec:
             secretKeyRef:
               name: airflow-api-credentials
               key: password
+        - name: AIRFLOW_WORKFLOW_PW
+          valueFrom:
+            secretKeyRef:
+              name: airflow-api-credentials
+              key: workflow-password
       resources:
         requests:
           cpu: 250m

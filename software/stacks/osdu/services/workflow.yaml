@@ -79,10 +79,24 @@ spec:
         value: http://entitlements/api/entitlements/v2
       - name: OSDU_ENTITLEMENTS_APPKEY
         value: OBSOLETE
-      - name: OSDU_AIRFLOW_URL
+      - name: OSDU_AIRFLOW_VERSION
+        value: airflow3
+      - name: OSDU_AIRFLOW_AIRFLOW3_URL
         value: http://airflow-api-server.platform.svc.cluster.local:8080/airflow
-      - name: OSDU_AIRFLOW_VERSION2_ENABLED
+      # The hop to the Airflow API server is in-cluster HTTP.
+      - name: FEATURE_FLAG_ALLOW_HTTP_AIRFLOW
         value: "true"
+      # Seeded by the CLI; the Airflow create-user job reads the same password.
+      - name: OSDU_AIRFLOW_AIRFLOW3_USERNAME
+        valueFrom:
+          secretKeyRef:
+            name: workflow-airflow-credentials
+            key: username
+      - name: OSDU_AIRFLOW_AIRFLOW3_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: workflow-airflow-credentials
+            key: password
       - name: DP_AIRFLOW_FOR_SYSTEM_DAG
         value: "false"
       - name: IGNORE_DAGCONTENT
