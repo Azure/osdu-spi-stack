@@ -105,7 +105,27 @@ jobs:
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: 'v3.16.2'
+      # The init chart's API tests need a real API server: Job validation and
+      # spec immutability are enforced only there.
+      - name: Create a kind cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          cluster_name: spi-chart
+      # The upgrade test installs the base revision's chart first, so a Job
+      # whose spec changes under the same name fails here, not on a live
+      # environment.
+      - name: Fetch the base revision
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            echo "SPI_PREVIOUS_CHART_REF=$BASE_SHA" >> "$GITHUB_ENV"
+          fi
       - name: pytest with coverage
+        env:
+          SPI_CHART_TEST_CONTEXT: kind-spi-chart
         run: |
           uv run pytest \
             --cov=src/spi \

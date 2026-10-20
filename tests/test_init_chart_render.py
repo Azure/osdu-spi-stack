@@ -92,10 +92,12 @@ def init_scripts() -> dict[str, str]:
 def test_legal_init_renders_one_job_per_partition():
     docs = _render(["opendes", "second"])
     jobs = _jobs(docs, "legal-init")
-    assert [job["metadata"]["name"] for job in jobs] == [
-        "legal-init-opendes",
-        "legal-init-second",
+    assert [job["metadata"]["labels"]["osdu.spi/partition"] for job in jobs] == [
+        "opendes",
+        "second",
     ]
+    assert jobs[0]["metadata"]["name"].startswith("legal-init-opendes-")
+    assert jobs[1]["metadata"]["name"].startswith("legal-init-second-")
 
 
 def partition_init_job_name(docs: list[dict]) -> str:
@@ -157,14 +159,16 @@ def test_component_split_matches_the_three_releases():
     gating = _render(["opendes"], {"legalEnabled": "false", "membersEnabled": "false", **_MEMBERS})
     gating_names = sorted(doc["metadata"]["name"] for doc in gating)
     assert gating_names == [
-        "entitlements-init-opendes",
+        _jobs(gating, "entitlements-init")[0]["metadata"]["name"],
         "osdu-spi-init-partition-records",
         "osdu-spi-init-scripts",
         partition_init_job_name(gating),
     ]
 
     legal = _render(["opendes"], {"coreEnabled": "false", "membersEnabled": "false", **_MEMBERS})
-    assert [doc["metadata"]["name"] for doc in legal] == ["legal-init-opendes"]
+    assert [doc["metadata"]["name"] for doc in legal] == [
+        _jobs(legal, "legal-init")[0]["metadata"]["name"]
+    ]
 
     members = _render(["opendes"], {"coreEnabled": "false", "legalEnabled": "false", **_MEMBERS})
     assert [doc["metadata"]["name"] for doc in members] == [
@@ -325,6 +329,53 @@ def test_jobs_request_the_cpu_admission_will_grant_them():
         for container in pod["containers"] + pod.get("initContainers", []):
             requested = container["resources"]["requests"]["cpu"]
             assert _millicores(requested) >= 100, job["metadata"]["name"]
+
+
+def test_jobs_ignore_the_istio_cni_startup_exit_code():
+    """istio-validation exits 126 while a new node's CNI starts, before the
+    Job's script runs. Istio injects it at admission, so the rule must not
+    name a container: the API server rejects a containerName absent from the
+    pod template. The policy requires restartPolicy Never."""
+    docs = _render(["opendes"], _MEMBERS)
+    jobs = [doc for doc in docs if doc.get("kind") == "Job"]
+    assert len(jobs) == 4
+    for job in jobs:
+        name = job["metadata"]["name"]
+        assert job["spec"]["podFailurePolicy"] == {
+            "rules": [{"action": "Ignore", "onExitCodes": {"operator": "In", "values": [126]}}]
+        }, name
+        assert job["spec"]["template"]["spec"]["restartPolicy"] == "Never", name
+
+
+def test_init_scripts_never_exit_126(init_scripts):
+    """Every init Job ignores exit code 126 from any container, so a script
+    that used it for its own failure would retry until the deadline."""
+    for name, source in init_scripts.items():
+        assert "126" not in source, name
+
+
+def test_job_names_follow_their_spec():
+    """A live Job's spec is immutable, so Helm can only upgrade a changed Job
+    by rendering it under a new name. The core and legal Jobs hash their spec;
+    the members Job keeps the name the CLI computes, so a change to its spec
+    needs a membersGeneration bump instead."""
+    base = _render(["opendes"], _MEMBERS)
+    changed = _render(["opendes"], {**_MEMBERS, "activeDeadlineSeconds": "601"})
+    legal = _render(["opendes"], {**_MEMBERS, "legalActiveDeadlineSeconds": "3601"})
+
+    def name(docs: list[dict], component: str) -> str:
+        return _jobs(docs, component)[0]["metadata"]["name"]
+
+    assert name(changed, "partition-init") != name(base, "partition-init")
+    assert name(changed, "entitlements-init") != name(base, "entitlements-init")
+    assert name(legal, "legal-init") != name(base, "legal-init")
+    assert [job["metadata"]["name"] for job in _jobs(base, "entitlements-members")] == [
+        entitlements_members_job_name("opendes", ["deployer-client-id"])
+    ]
+    again = _render(["opendes"], _MEMBERS)
+    assert sorted(doc["metadata"]["name"] for doc in again) == sorted(
+        doc["metadata"]["name"] for doc in base
+    )
 
 
 def test_legal_init_deadline_covers_its_wait_budget(init_scripts):

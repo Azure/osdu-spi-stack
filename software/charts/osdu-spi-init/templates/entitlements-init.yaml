@@ -5,56 +5,65 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */}}
 
+{{- define "osdu-spi-init.entitlementsInitSpec" -}}
+{{- $root := .root }}
+{{- $partition := .partition -}}
+backoffLimit: {{ $root.Values.backoffLimit }}
+activeDeadlineSeconds: {{ $root.Values.activeDeadlineSeconds }}
+{{ include "osdu-spi-init.podFailurePolicy" $root }}
+template:
+  metadata:
+    labels:
+      {{- include "osdu-spi-init.labels" $root | nindent 6 }}
+      app.kubernetes.io/component: entitlements-init
+      osdu.spi/partition: {{ $partition }}
+      azure.workload.identity/use: "true"
+  spec:
+    {{- include "osdu-spi-init.podSpec" $root | nindent 4 }}
+    containers:
+      - name: init
+        image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag }}"
+        imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+        command:
+          - python
+          - /scripts/init_entitlements.py
+        env:
+          - name: PARTITION
+            value: {{ $partition | quote }}
+        volumeMounts:
+          - name: scripts
+            mountPath: /scripts
+            readOnly: true
+          - name: partition-records
+            mountPath: /partition-records
+            readOnly: true
+        resources:
+          {{- toYaml $root.Values.resources | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsUser: 1000
+          capabilities:
+            drop: [ALL]
+{{- end }}
+
 {{- if .Values.coreEnabled }}
 # One Job per partition. POSTs tenant-provisioning so entitlements creates
 # the root groups with the caller's appid as OWNER, once partition-init has
-# landed the partition record.
+# landed the partition record. A Job's spec is immutable, so the name carries
+# a hash of it and a changed spec renders a new Job.
 {{- range $partition := .Values.partitions }}
+{{- $spec := include "osdu-spi-init.entitlementsInitSpec" (dict "root" $ "partition" $partition) }}
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: entitlements-init-{{ $partition }}
+  name: entitlements-init-{{ $partition }}-{{ $spec | sha256sum | trunc 8 }}
   namespace: {{ $.Values.namespace }}
   labels:
     {{- include "osdu-spi-init.labels" $ | nindent 4 }}
     app.kubernetes.io/component: entitlements-init
     osdu.spi/partition: {{ $partition }}
 spec:
-  backoffLimit: {{ $.Values.backoffLimit }}
-  activeDeadlineSeconds: {{ $.Values.activeDeadlineSeconds }}
-  template:
-    metadata:
-      labels:
-        {{- include "osdu-spi-init.labels" $ | nindent 8 }}
-        app.kubernetes.io/component: entitlements-init
-        osdu.spi/partition: {{ $partition }}
-        azure.workload.identity/use: "true"
-    spec:
-      {{- include "osdu-spi-init.podSpec" $ | nindent 6 }}
-      containers:
-        - name: init
-          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
-          imagePullPolicy: {{ $.Values.image.pullPolicy }}
-          command:
-            - python
-            - /scripts/init_entitlements.py
-          env:
-            - name: PARTITION
-              value: {{ $partition | quote }}
-          volumeMounts:
-            - name: scripts
-              mountPath: /scripts
-              readOnly: true
-            - name: partition-records
-              mountPath: /partition-records
-              readOnly: true
-          resources:
-            {{- toYaml $.Values.resources | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsUser: 1000
-            capabilities:
-              drop: [ALL]
+  {{- $spec | nindent 2 }}
 {{- end }}
 {{- end }}

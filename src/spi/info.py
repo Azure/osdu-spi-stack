@@ -244,10 +244,13 @@ def _legal_tag_seeded(partition: str) -> bool:
 
     Legal seeding is deliberately non-gating, so an environment can
     be ready and deployable with the tag pending, failed, or never attempted;
-    only the Job's own success proves it exists.
+    only the Job's own success proves it exists. The Job name hashes its spec,
+    so the Job is found by its component and partition labels.
     """
-    data = kubectl_json(["get", "job", f"legal-init-{partition}", "-n", "osdu"])
-    return bool(((data or {}).get("status") or {}).get("succeeded"))
+    selector = f"app.kubernetes.io/component=legal-init,osdu.spi/partition={partition}"
+    data = kubectl_json(["get", "jobs", "-n", "osdu", "-l", selector])
+    items = (data or {}).get("items") or []
+    return any((item.get("status") or {}).get("succeeded") for item in items)
 
 
 def _entitlements_seeded(

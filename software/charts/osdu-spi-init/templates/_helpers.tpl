@@ -52,6 +52,23 @@ volumes:
 {{- end }}
 {{- end }}
 
+{{/* Istio's istio-validation init container exits 126 while a new node's CNI
+     is still starting, before the Job's own script runs; that failure must
+     not spend backoffLimit. Istio injects the container at admission, so a
+     rule cannot name it: 126 is ignored from any container, the scripts exit
+     only 0 or 1, and activeDeadlineSeconds bounds a CNI that never comes up.
+     A live Job's spec is immutable, so a change here must rename every Job:
+     the core and legal Jobs hash their spec into their name, and the members
+     Job needs a membersGeneration bump. */}}
+{{- define "osdu-spi-init.podFailurePolicy" -}}
+podFailurePolicy:
+  rules:
+    - action: Ignore
+      onExitCodes:
+        operator: In
+        values: [126]
+{{- end }}
+
 {{/* The partition record every partition-init Job POSTs. Identical for every
      partition: the sensitive values are Key Vault secret suffixes the service
      prefixes with the partition id. partition-init hashes this body into its

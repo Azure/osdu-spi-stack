@@ -7,8 +7,8 @@ you may not use this file except in compliance with the License.
 
 # One Job per partition, adding each member to the root entitlement groups and
 # each member user to users, the service user groups, and service.storage.admin.
-# The name hashes the lists and the seed generation so a changed list or a
-# changed seed renders a new Job, leaving out the member-user list when it is
+# The name hashes the lists and the seed generation so a changed list, a
+# changed seed, or a changed spec renders a new Job, leaving out the member-user list when it is
 # empty so existing Jobs keep their name; templates.entitlements_members_job_name
 # computes the same.
 {{- if and .Values.membersEnabled .Values.entitlementsMembers }}
@@ -33,6 +33,7 @@ metadata:
 spec:
   backoffLimit: {{ $.Values.backoffLimit }}
   activeDeadlineSeconds: {{ $.Values.membersActiveDeadlineSeconds }}
+  {{- include "osdu-spi-init.podFailurePolicy" $ | nindent 2 }}
   template:
     metadata:
       labels:

@@ -54,6 +54,17 @@ uv run pre-commit run --all-files
 If a hook auto-fixes a file, the commit fails so you can review the change and
 re-stage. Skip hooks (rare, last resort) with `git commit --no-verify`.
 
+The init chart's API tests in `tests/test_init_chart_cluster.py` skip unless
+`SPI_CHART_TEST_CONTEXT` names the kube context of a disposable cluster; the
+`test` CI job creates a kind cluster for them. `SPI_PREVIOUS_CHART_REF` names
+the revision the upgrade test installs first. To run them locally:
+
+```bash
+kind create cluster --name spi-chart
+SPI_CHART_TEST_CONTEXT=kind-spi-chart SPI_PREVIOUS_CHART_REF=origin/main \
+  uv run pytest tests/test_init_chart_cluster.py
+```
+
 ## Project Structure
 
 | Directory | Contains |

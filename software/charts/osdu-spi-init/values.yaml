@@ -36,10 +36,11 @@ entitlementsMembers: []
 #    the test caller who passes a service's role check but no data-manager check.
 entitlementsMemberUsers: []
 
-# -- Bumped when entitlements-members seeds something new, so an environment
-#    whose member list is unchanged still renders a fresh Job. Must equal
+# -- Bumped when entitlements-members seeds something new or its Job spec
+#    changes, so an environment whose member list is unchanged still renders
+#    a fresh Job rather than patching an immutable one. Must equal
 #    ENTITLEMENTS_MEMBERS_GENERATION in the CLI, which computes the Job name.
-membersGeneration: 3
+membersGeneration: 4
 
 # -- Namespace where the Jobs run; the CLI bootstrap creates
 #    workload-identity-sa here.
