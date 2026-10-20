@@ -37,6 +37,7 @@ SEED_KEYS = [
     "pg_admin_password",
     "pg_airflow_password",
     "airflow_admin_password",
+    "airflow_workflow_password",
     "airflow_api_secret_key",
     "airflow_jwt_secret",
     "airflow_fernet_key",
@@ -165,11 +166,13 @@ def _create_platform_secrets(s: dict):
         },
     )
     # Key names are fixed by the Airflow chart; 'password' is the admin user.
+    # 'workflow-password' feeds the create-user job in airflow/release.yaml.
     _kubectl_apply_secret(
         "platform",
         "airflow-api-credentials",
         {
             "password": s["airflow_admin_password"],
+            "workflow-password": s["airflow_workflow_password"],
             "api-secret-key": s["airflow_api_secret_key"],
             "jwt-secret": s["airflow_jwt_secret"],
             "fernet-key": s["airflow_fernet_key"],
@@ -178,10 +181,20 @@ def _create_platform_secrets(s: dict):
 
 
 def _create_osdu_secrets(s: dict):
-    """Create the Elasticsearch and Redis credential secrets in osdu.
+    """Create the Elasticsearch and Airflow credential secrets in osdu.
 
     The CA certificates arrive separately through trust-manager Bundles.
     """
+    # Workflow's own Airflow login; the user is created by the Airflow chart's
+    # create-user job, and services/workflow.yaml reads both keys.
+    _kubectl_apply_secret(
+        "osdu",
+        "workflow-airflow-credentials",
+        {
+            "username": "osdu-workflow",
+            "password": s["airflow_workflow_password"],
+        },
+    )
     for svc in ["indexer", "search"]:
         _kubectl_apply_secret(
             "osdu",

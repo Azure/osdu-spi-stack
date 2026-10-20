@@ -57,6 +57,7 @@ resources:
     cpu: "1"
     memory: 1536Mi
 
+# -- Each entry takes a literal `value` or a `valueFrom` source.
 env: []
 
 initContainers: []
