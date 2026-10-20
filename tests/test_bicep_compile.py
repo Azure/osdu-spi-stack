@@ -121,6 +121,28 @@ def test_member_and_no_access_identities_hold_no_role_assignment():
     assert "identityModule.outputs.noAccessIdentityPrincipalId" not in main.split("output ")[0]
 
 
+def test_every_partition_gets_the_storage_record_container():
+    """Storage writes records to one container name, opendes, in every
+    partition's account; a list derived from the partition name would leave
+    a second partition without it."""
+    source = (INFRA_DIR / "modules" / "partition.bicep").read_text()
+    names = re.search(
+        r"^var partitionStorageContainerNames = \[(?P<body>.*?)^\]",
+        source,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert names is not None, "partitionStorageContainerNames not found in partition.bicep"
+    assert "opendes" in re.findall(r"'([^']+)'", names.group("body"))
+
+    loop = re.search(
+        r"^resource storageContainerResources '[^']+' = \[for \w+ in (?P<items>[^:]+):",
+        source,
+        re.MULTILINE,
+    )
+    assert loop is not None, "storageContainerResources not found in partition.bicep"
+    assert loop.group("items") == "partitionStorageContainerNames"
+
+
 def test_flux_bicep_allows_every_profile():
     source = (INFRA_DIR / "flux.bicep").read_text()
     match = re.search(

@@ -100,6 +100,7 @@ var serviceBusSubscriptionDefs = [
 ]
 
 var partitionStorageContainerNames = [
+  'opendes'
   'legal-service-azure-configuration'
   'osdu-wks-mappings'
   'wdms-osdu'
@@ -259,9 +260,11 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01'
   name: 'default'
 }
 
-// Record ingestion writes to a container named after the partition and returns
-// 404 unless it exists.
-resource storageContainerResources 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = [for containerName in union(partitionStorageContainerNames, [partition]): {
+// Every partition's account gets the same fixed names. Storage writes records
+// to the container in azure.blobStore.container, one name for all partitions
+// that the stack leaves at its default, opendes; a write fails ContainerNotFound
+// without it. No service writes to a container named after the partition.
+resource storageContainerResources 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = [for containerName in partitionStorageContainerNames: {
   parent: blobService
   name: containerName
 }]
