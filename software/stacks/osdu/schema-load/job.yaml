@@ -55,8 +55,7 @@ spec:
       containers:
         - name: loader
           # From the osdu-image-lock ConfigMap, on the same SHA as
-          # schema-service. No static default: upstream prunes old tags.
-          # `spi reconcile` backfills a lock that predates this key.
+          # schema-service. No static default: GHCR retention prunes old versions.
           image: ${SCHEMA_LOAD_IMAGE_REF}
           imagePullPolicy: IfNotPresent
           securityContext:

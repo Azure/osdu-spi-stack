@@ -44,6 +44,7 @@ from .images import (
     ImageNotFoundError,
     ImageResolutionError,
     acceptance_digest_key,
+    azure_source,
     fork_package_repositories,
     github_file,
     github_get,
@@ -215,12 +216,11 @@ def _fork_canonical(lock: dict, service: str) -> tuple[tuple[str, str, str] | No
     pin = decode_pins(lock).get(service)
     if pin is not None:
         return None, f"{service} runs a pinned image, not its canonical"
-    source = decode_canonical_sources(lock).get(service, "")
-    if not source:
-        return None, f"{service} follows community images, which ship no acceptance image"
+    mirror = decode_canonical_sources(lock).get(service, "")
+    source = mirror or azure_source(service)
     trusted = decode_trusted_repos(lock).get(service, "")
-    if trusted.lower() != source.lower():
-        return None, f"{service} follows {source} but {trusted or 'no fork'} is trusted"
+    if mirror and trusted.lower() != mirror.lower():
+        return None, f"{service} follows {mirror} but {trusted or 'no fork'} is trusted"
     data = lock.get("data") or {}
     key = image_lock_key(service)
     repository = data.get(f"{key}_IMAGE_REPOSITORY", "")

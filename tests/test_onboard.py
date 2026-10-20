@@ -26,7 +26,7 @@ from spi import onboard
 from spi.environment import Declared, EnvironmentDeclarationError, parse_declaration, parse_locator
 from spi.images import ImageResolutionError
 from spi.onboard import (
-    COMMUNITY_SOURCE,
+    AZURE_SOURCE,
     GITHUB_AUDIENCE,
     GITHUB_ISSUER,
     MAX_CREDENTIALS,
@@ -103,7 +103,7 @@ def make_plan(
     skip_repo=False,
     remove=False,
     canonical_source="",
-    recorded: str | None = COMMUNITY_SOURCE,
+    recorded: str | None = AZURE_SOURCE,
 ) -> Plan:
     """``recorded`` seeds the service's source tag, so trust tests plan no source write."""
 
@@ -151,7 +151,7 @@ class TestPlanning:
         assert verbs(plan)[0] == "gh api --method PUT"
         assert verbs(plan)[1] == "gh secret set AZURE_CLIENT_ID"
         assert verbs(plan)[-5:-2] == ["az identity federated-credential create"] * 3
-        assert plan.steps[-2].argv[5:7] == ["--set", "tags.spi-source-partition=community"]
+        assert plan.steps[-2].argv[5:7] == ["--set", "tags.spi-source-partition=azure"]
         assert [s.argv[s.argv.index("--identity-name") + 1] for s in plan.steps[-5:-2]] == [
             TARGET.identity_name,
             TARGET.member_identity_name,
@@ -282,7 +282,7 @@ class TestPlanning:
 
     def test_a_target_without_mirror_identities_plans_the_deployer_alone(self):
         target = replace(TARGET, no_access_identity_name="", member_identity_name="")
-        state = State((), {}, PROTECTED, sources={"partition": COMMUNITY_SOURCE})
+        state = State((), {}, PROTECTED, sources={"partition": AZURE_SOURCE})
         plan = Plan(target, "partition", REPO, skip_repo=True, state=state)
         plan.steps = plan_steps(plan)
         plan.rows = plan_rows(plan)
@@ -646,7 +646,7 @@ class Live:
     projected: int = 0
     # What gh api repositories/<id> answers; empty means GitHub is unreadable.
     github: dict = field(default_factory=dict)
-    sources: dict = field(default_factory=lambda: {"partition": COMMUNITY_SOURCE})
+    sources: dict = field(default_factory=lambda: {"partition": AZURE_SOURCE})
     source_projection: dict = field(default_factory=dict)
 
     def observed(self, *, values: bool = True) -> State:
@@ -853,7 +853,7 @@ class TestProjection:
         monkeypatch.setattr(
             onboard,
             "read_source_tags",
-            lambda rg: {"partition": REPO, "legal": COMMUNITY_SOURCE},
+            lambda rg: {"partition": REPO, "legal": AZURE_SOURCE},
         )
         monkeypatch.setattr(onboard, "read_source_projection", lambda: {"partition": REPO})
         monkeypatch.setattr(onboard, "project_sources", lambda *a: calls.append(a) or {})
@@ -1004,26 +1004,26 @@ class TestSourcePolicy:
         with pytest.raises(OnboardError, match="follows Old/fork"):
             refuse(plan)
 
-    def test_community_keeps_trust_and_drops_only_this_service_from_the_projection(self):
+    def test_azure_keeps_trust_and_drops_only_this_service_from_the_projection(self):
         forks = {"partition": REPO, "legal": "Acme/osdu-spi-legal"}
         state = trusted_state(sources=forks, source_projection=forks)
 
-        plan = make_plan(state, skip_repo=True, canonical_source="community")
+        plan = make_plan(state, skip_repo=True, canonical_source="azure")
 
         assert verbs(plan) == [
             "az group update --name",
             "kubectl annotate configmap osdu-image-lock",
         ]
-        assert plan.steps[0].argv[6] == "tags.spi-source-partition=community"
+        assert plan.steps[0].argv[6] == "tags.spi-source-partition=azure"
         assert projected_sources(plan) == {"legal": "Acme/osdu-spi-legal"}
 
-    def test_removal_records_community_before_revoking(self):
+    def test_removal_records_azure_before_revoking(self):
         state = trusted_state(sources={"partition": REPO}, source_projection={"partition": REPO})
 
         plan = make_plan(state, repo="", remove=True)
 
         assert [s.phase for s in plan.steps] == ["source"] + ["azure"] * 3 + ["cluster"] * 2
-        assert plan.steps[0].argv[6] == "tags.spi-source-partition=community"
+        assert plan.steps[0].argv[6] == "tags.spi-source-partition=azure"
         assert projected_sources(plan) == {}
 
     def test_apply_writes_the_tag_then_the_projection(self, live):
@@ -1040,7 +1040,7 @@ class TestSourcePolicy:
         assert live.source_projection == {"partition": REPO}
         assert {row.state for row in rows} == {"correct"}
 
-    def test_a_removal_that_cannot_record_community_revokes_nothing(self, live):
+    def test_a_removal_that_cannot_record_azure_revokes_nothing(self, live):
         live.roster = live.member_roster = live.no_access_roster = TRUSTED
         live.sources = {"partition": REPO}
         live.fail["az group update"] = ["AuthorizationFailed"]
@@ -1088,10 +1088,10 @@ class TestPromotionCheck:
     @pytest.mark.parametrize(
         "recorded, option, checked",
         [
-            (COMMUNITY_SOURCE, "fork", True),
+            (AZURE_SOURCE, "fork", True),
             (REPO, "fork", False),
             (REPO, "", False),
-            (COMMUNITY_SOURCE, "", False),
+            (AZURE_SOURCE, "", False),
         ],
     )
     def test_only_a_change_to_the_fork_is_checked(self, monkeypatch, recorded, option, checked):
@@ -1115,17 +1115,22 @@ class TestSourceReads:
     def test_tags_parse_to_service_and_source(self):
         tags = {
             "spi-source-partition": REPO,
-            "spi-source-legal": COMMUNITY_SOURCE,
+            "spi-source-legal": AZURE_SOURCE,
             "spi-name-suffix": "90380",
         }
 
         assert onboard.parse_source_tags(tags) == {
             "partition": REPO,
-            "legal": COMMUNITY_SOURCE,
+            "legal": AZURE_SOURCE,
         }
 
-    def test_an_invalid_tag_is_an_error_not_community(self):
-        with pytest.raises(OnboardError, match="neither community nor <owner>/<name>"):
+    def test_a_legacy_community_tag_reads_as_azure(self):
+        assert onboard.parse_source_tags({"spi-source-legal": "community"}) == {
+            "legal": AZURE_SOURCE
+        }
+
+    def test_an_invalid_tag_is_an_error_not_azure(self):
+        with pytest.raises(OnboardError, match="neither azure nor <owner>/<name>"):
             onboard.parse_source_tags({"spi-source-partition": "upstream"})
 
     def test_a_missing_group_reads_as_no_tags_only_when_tolerated(self, monkeypatch):
@@ -1150,7 +1155,7 @@ class TestSourceReads:
     )
     def test_the_deploy_policy_keeps_a_fork_the_identity_trusts(self, monkeypatch, roster):
         monkeypatch.setattr(
-            onboard, "read_source_tags", lambda *a, **k: {"partition": REPO, "legal": "community"}
+            onboard, "read_source_tags", lambda *a, **k: {"partition": REPO, "legal": "azure"}
         )
         monkeypatch.setattr(onboard, "read_roster", lambda target: roster)
 
@@ -1204,8 +1209,8 @@ class TestSourceReads:
         ):
             onboard.read_source_policy("rg", "deployer")
 
-    def test_a_community_policy_never_reads_the_roster(self, monkeypatch):
-        monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: {"legal": "community"})
+    def test_a_azure_policy_never_reads_the_roster(self, monkeypatch):
+        monkeypatch.setattr(onboard, "read_source_tags", lambda *a, **k: {"legal": "azure"})
         monkeypatch.setattr(onboard, "read_roster", pytest.fail)
 
         assert onboard.read_source_policy("rg", "deployer") == {}
@@ -1223,7 +1228,7 @@ class TestSourceReads:
             ("spi-source-partition", "correct"),
             ("spi-source-storage", "drifted"),
         ]
-        assert rows[0].detail == "Acme/file; projection community"
+        assert rows[0].detail == "Acme/file; projection azure"
         assert rows[3].detail == "follows Acme/storage, which is not trusted for it"
 
 
@@ -1242,7 +1247,7 @@ class TestCli:
             (["partition", "--remove", "--repo", REPO], "takes only the service"),
             (["partition", "--org", "Acme", "--skip-repo"], "stamps GitHub values"),
             (["partition", "--remove", "--canonical-source", "fork"], "takes only the service"),
-            (["partition", "--canonical-source", "upstream"], "expected fork or community"),
+            (["partition", "--canonical-source", "upstream"], "expected fork or azure"),
             ([], "name the service"),
             (["partition", "--reconcile"], "cannot be combined with a service"),
             (["--list", "--reconcile"], "takes no other options"),
@@ -1432,7 +1437,7 @@ def no_gh(argv, **_):
 
 
 def claim_plan(state: State, service: str = "partition") -> Plan:
-    state = replace(state, sources={service: COMMUNITY_SOURCE, **state.sources})
+    state = replace(state, sources={service: AZURE_SOURCE, **state.sources})
     plan = Plan(TARGET, service, REPO, subject=CLAIM_SUBJECT, skip_repo=True, state=state)
     plan.steps = plan_steps(plan)
     plan.rows = plan_rows(plan)
@@ -1765,8 +1770,8 @@ class TestDeclaredEnvironment:
         [
             (("schema", "Acme/osdu-spi-schema", ""), "schema is not declared; add it under forks"),
             (("partition", "Other/partition", ""), f"declared from {REPO}, not Other/partition"),
-            (("partition", REPO, "fork"), "declared with canonicalSource community, not fork"),
-            (("legal", "Acme/osdu-spi-legal", "community"), "canonicalSource fork, not community"),
+            (("partition", REPO, "fork"), "declared with canonicalSource azure, not fork"),
+            (("legal", "Acme/osdu-spi-legal", "azure"), "canonicalSource fork, not azure"),
         ],
     )
     def test_a_request_the_declaration_disagrees_with_names_the_file(self, request_, message):
@@ -1784,7 +1789,7 @@ class TestDeclaredEnvironment:
     @pytest.mark.parametrize(
         ("service", "repo", "source"),
         [
-            ("partition", "acme/OSDU-spi-partition", "community"),
+            ("partition", "acme/OSDU-spi-partition", "azure"),
             ("legal", "Acme/osdu-spi-legal", "fork"),
         ],
     )
@@ -1868,7 +1873,7 @@ class TestDeclaredEnvironment:
         assert rows["legal"] == ("correct", "Acme/osdu-spi-legal, fork")
         assert rows["partition"] == (
             "drifted",
-            f"declares canonicalSource community; the tag records {REPO}",
+            f"declares canonicalSource azure; the tag records {REPO}",
         )
 
     @pytest.mark.parametrize(

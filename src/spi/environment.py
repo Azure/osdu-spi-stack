@@ -10,8 +10,8 @@ the exact stack release, profile, and Azure placement a lifecycle workflow
 strictly validating that file. Workflows read it through
 `scripts/export_environment.py`, never by shell-evaluating YAML directly.
 
-The declaration is seven flat keys plus two optional sections: `forks:`, the
-repositories the environment trusts and whose image each service follows, and
+The declaration is six flat keys plus two optional sections: `forks:`, the
+repositories the environment trusts and the mirrors its services follow, and
 `resources:`, the sizing `spi up` writes to the `spi-sizing` ConfigMap. A stack
 file passed to `spi up -f` carries only `resources:` and always builds on core.
 
@@ -40,7 +40,9 @@ DEFAULT_DECLARATION_PATH = Path("ops/environments/shared.yaml")
 DECLARATION_REF = "main"
 # Twenty federated credentials per identity, one of them the cluster's.
 MAX_FORKS = 19
-COMMUNITY_SOURCE = "community"
+AZURE_SOURCE = "azure"
+# Read as azure: the value environments recorded before community images were dropped.
+LEGACY_COMMUNITY_SOURCE = "community"
 FORK_SOURCE = "fork"
 
 _ENV_RE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -98,8 +100,12 @@ class ForkDeclaration(BaseModel):
 
     service: str
     repo: str
-    canonical_source: Literal["community", "fork"] = Field(
-        COMMUNITY_SOURCE, alias="canonicalSource"
+    canonical_source: Literal["azure", "community", "fork"] = Field(
+        AZURE_SOURCE, alias="canonicalSource"
+    )
+
+    _legacy_source = field_validator("canonical_source", mode="after")(
+        lambda value: AZURE_SOURCE if value == LEGACY_COMMUNITY_SOURCE else value
     )
 
 
@@ -118,7 +124,9 @@ class EnvironmentDeclaration(BaseModel):
     profile: Profile
     location: str
     ingress_mode: IngressMode = Field(alias="ingressMode")
-    image_branch: str = Field(alias="imageBranch")
+    # Accepted and ignored: a lifecycle workflow still hands it to a CLI that predates
+    # Azure images, and the declaration drops it once its stackVersion does not.
+    image_branch: str = Field("", alias="imageBranch")
     name_suffix: str = Field(alias="nameSuffix")
     forks: tuple[ForkDeclaration, ...] = ()
     resources: dict[str, Any] = Field(default_factory=dict)

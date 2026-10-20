@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OSDU community and fork image resolution and image-lock rendering."""
+"""OSDU service image resolution from GHCR and image-lock rendering."""
 
 from __future__ import annotations
 
@@ -26,18 +26,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Mapping
 
-GITLAB_HOST = "https://community.opengroup.org"
 GHCR_HOST = "ghcr.io"
 GITHUB_API_HOST = "https://api.github.com"
-DEFAULT_IMAGE_BRANCH = "master"
 # The template moves this tag to each push build of main.
 FORK_MAIN_TAG = "main-snapshot"
 IMAGE_LOCK_CONFIGMAP = "osdu-image-lock"
 IMAGE_LOCK_NAMESPACE = "osdu-flux"
 SCHEMA_SERVICE_NAME = "schema"
 SCHEMA_LOAD_SERVICE_NAME = "schema-load"
+AZURE_SOURCE_OWNER = "Azure"
 
-_SHA_TAG_RE = re.compile(r"^[0-9a-f]{40}$")
 _FORK_SHA_TAG_RE = re.compile(r"^sha-([0-9a-f]{12})$")
 _NEXT_LINK_RE = re.compile(r'<([^>]+)>;\s*rel="next"')
 _MANIFEST_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -62,10 +60,8 @@ class ImageNotFoundError(ImageResolutionError):
 
 @dataclass(frozen=True)
 class ImageRegistryEntry:
-    """GitLab registry lookup metadata for one OSDU image."""
+    """The stack file carrying one OSDU image's lock placeholders."""
 
-    project_id: int
-    image: str
     file: str
     image_lock: bool = True
 
@@ -87,35 +83,22 @@ class ResolvedImage:
         return f"{self.repository}:{self.tag}"
 
 
-# Service name to community GitLab project ID, image base name, and the stack
-# file carrying the default image reference.
+# Service name to the stack file carrying its image lock placeholders.
 IMAGE_REGISTRY: dict[str, ImageRegistryEntry] = {
-    "partition": ImageRegistryEntry(221, "partition", "services/partition.yaml"),
-    "entitlements": ImageRegistryEntry(400, "entitlements", "services/entitlements.yaml"),
-    "legal": ImageRegistryEntry(74, "legal", "services/legal.yaml"),
-    "schema": ImageRegistryEntry(26, "schema-service", "services/schema.yaml"),
-    "schema-load": ImageRegistryEntry(
-        26,
-        "schema-service-schema-load",
-        "schema-load/job.yaml",
-    ),
-    "storage": ImageRegistryEntry(44, "storage", "services/storage.yaml"),
-    "search": ImageRegistryEntry(19, "search-service", "services/search.yaml"),
-    "indexer": ImageRegistryEntry(25, "indexer-service", "services/indexer.yaml"),
-    "indexer-queue": ImageRegistryEntry(73, "indexer-queue", "services/indexer-queue.yaml"),
-    "file": ImageRegistryEntry(90, "file", "services/file.yaml"),
-    "workflow": ImageRegistryEntry(146, "ingestion-workflow", "services/workflow.yaml"),
-    "crs-conversion": ImageRegistryEntry(
-        22,
-        "crs-conversion-service",
-        "services-reference/crs-conversion.yaml",
-    ),
-    "crs-catalog": ImageRegistryEntry(
-        21,
-        "crs-catalog-service",
-        "services-reference/crs-catalog.yaml",
-    ),
-    "unit": ImageRegistryEntry(5, "unit-service", "services-reference/unit.yaml"),
+    "partition": ImageRegistryEntry("services/partition.yaml"),
+    "entitlements": ImageRegistryEntry("services/entitlements.yaml"),
+    "legal": ImageRegistryEntry("services/legal.yaml"),
+    "schema": ImageRegistryEntry("services/schema.yaml"),
+    "schema-load": ImageRegistryEntry("schema-load/job.yaml"),
+    "storage": ImageRegistryEntry("services/storage.yaml"),
+    "search": ImageRegistryEntry("services/search.yaml"),
+    "indexer": ImageRegistryEntry("services/indexer.yaml"),
+    "indexer-queue": ImageRegistryEntry("services/indexer-queue.yaml"),
+    "file": ImageRegistryEntry("services/file.yaml"),
+    "workflow": ImageRegistryEntry("services/workflow.yaml"),
+    "crs-conversion": ImageRegistryEntry("services-reference/crs-conversion.yaml"),
+    "crs-catalog": ImageRegistryEntry("services-reference/crs-catalog.yaml"),
+    "unit": ImageRegistryEntry("services-reference/unit.yaml"),
 }
 
 
@@ -143,211 +126,38 @@ def do_not_disrupt_key(service_name: str) -> str:
     return f"{image_lock_key(service_name)}_DO_NOT_DISRUPT"
 
 
-def gitlab_get(url: str, attempts: int = 3):
-    """GET a GitLab API URL and return parsed JSON.
-
-    Retries transient network failures (timeouts, connection resets) with a
-    short backoff: the community registry intermittently times out, and a
-    single blip should not abort an entire `spi up` run.
-    """
-
-    req = urllib.request.Request(url, headers={"User-Agent": "spi-stack-resolver"})
-    last_error: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
-                return json.loads(resp.read())
-        except (TimeoutError, urllib.error.URLError, ConnectionError) as exc:
-            # HTTPError is a URLError subclass; only network failures and 5xx
-            # are transient.
-            if isinstance(exc, urllib.error.HTTPError) and exc.code < 500:
-                raise
-            last_error = exc
-            if attempt < attempts:
-                time.sleep(5 * attempt)
-    raise ImageResolutionError(f"GitLab API unreachable after {attempts} attempts: {last_error}")
-
-
-def _registry_repositories(project_id: int, image_name: str) -> list[dict]:
-    repos: list[dict] = []
-    page = 1
-    while True:
-        query = urllib.parse.urlencode(
-            {
-                "per_page": 100,
-                "page": page,
-                "search": image_name,
-            }
-        )
-        chunk = gitlab_get(
-            f"{GITLAB_HOST}/api/v4/projects/{project_id}/registry/repositories?{query}"
-        )
-        if not chunk:
-            break
-        repos.extend(chunk)
-        if len(chunk) < 100:
-            break
-        page += 1
-    return repos
-
-
-def _registry_tags(project_id: int, repo_id: int) -> list[dict]:
-    tags: list[dict] = []
-    page = 1
-    while True:
-        query = urllib.parse.urlencode({"per_page": 100, "page": page})
-        chunk = gitlab_get(
-            f"{GITLAB_HOST}/api/v4/projects/{project_id}/registry/repositories/"
-            f"{repo_id}/tags?{query}"
-        )
-        if not chunk:
-            break
-        tags.extend(chunk)
-        if len(chunk) < 100:
-            break
-        page += 1
-    return tags
-
-
-def _registry_repository(project_id: int, image_name: str) -> dict | None:
-    repos = _registry_repositories(project_id, image_name)
-    return next((repo for repo in repos if repo.get("name") == image_name), None)
-
-
-def _tag_detail(project_id: int, repo_id: int, tag: str) -> dict:
-    quoted_tag = urllib.parse.quote(tag, safe="")
-    return gitlab_get(
-        f"{GITLAB_HOST}/api/v4/projects/{project_id}/registry/repositories/"
-        f"{repo_id}/tags/{quoted_tag}"
-    )
-
-
-def _parse_gitlab_datetime(value: str) -> datetime:
+def _parse_datetime(value: str) -> datetime:
     if not value:
         return datetime.min.replace(tzinfo=timezone.utc)
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def _newest_immutable_tag(project_id: int, repo_id: int, tags: Iterable[dict]) -> dict | None:
-    details = [_tag_detail(project_id, repo_id, tag["name"]) for tag in tags if tag.get("name")]
-    immutable = [tag for tag in details if _SHA_TAG_RE.match(tag.get("name", ""))]
-    candidates = immutable or details
-    if not candidates:
-        return None
-    return max(candidates, key=lambda tag: _parse_gitlab_datetime(tag.get("created_at", "")))
+def azure_source(service: str) -> str:
+    """The Azure repository whose ``main`` image a service follows when no mirror is recorded."""
+
+    base = SCHEMA_SERVICE_NAME if service == SCHEMA_LOAD_SERVICE_NAME else service
+    return f"{AZURE_SOURCE_OWNER}/osdu-spi-{base}"
 
 
-def resolve_image(service_name: str, entry: ImageRegistryEntry, branch: str) -> ResolvedImage:
-    """Resolve the newest immutable image tag for a service."""
+def canonical_repo(service: str, sources: Mapping[str, str] | None = None) -> str:
+    """The repository ``service`` follows: its recorded mirror, else its Azure repository."""
 
-    image_name = f"{entry.image}-{branch}"
-    repo = _registry_repository(entry.project_id, image_name)
-    if not repo:
-        raise ImageResolutionError(f"{service_name}: registry repository {image_name!r} not found")
-
-    tags = _registry_tags(entry.project_id, repo["id"])
-    tag = _newest_immutable_tag(entry.project_id, repo["id"], tags)
-    if not tag:
-        raise ImageResolutionError(f"{service_name}: no tags found in {image_name!r}")
-
-    return ResolvedImage(
-        name=service_name,
-        repository=repo["location"],
-        tag=tag["name"],
-        created_at=tag.get("created_at", ""),
-        digest=tag.get("digest", ""),
-    )
-
-
-def resolve_image_tag(
-    service_name: str,
-    entry: ImageRegistryEntry,
-    branch: str,
-    tag: str,
-) -> ResolvedImage:
-    """Resolve a service image only if the exact tag exists."""
-
-    image_name = f"{entry.image}-{branch}"
-    repo = _registry_repository(entry.project_id, image_name)
-    if not repo:
-        raise ImageResolutionError(f"{service_name}: registry repository {image_name!r} not found")
-
-    try:
-        detail = _tag_detail(entry.project_id, repo["id"], tag)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            raise ImageResolutionError(
-                f"{service_name}: tag {tag!r} not found in {image_name!r}"
-            ) from exc
-        raise
-
-    return ResolvedImage(
-        name=service_name,
-        repository=repo["location"],
-        tag=detail["name"],
-        created_at=detail.get("created_at", ""),
-        digest=detail.get("digest", ""),
-    )
-
-
-def resolve_image_commit(
-    service_name: str,
-    entry: ImageRegistryEntry,
-    branch: str,
-    sha: str,
-) -> ResolvedImage:
-    """Resolve a service image only if a tag matches the given commit.
-
-    Pipeline tags are commit SHAs of varying length (full or CI short SHA),
-    so a tag matches when it equals the commit or is a prefix of it.
-    """
-
-    image_name = f"{entry.image}-{branch}"
-    repo = _registry_repository(entry.project_id, image_name)
-    if not repo:
-        raise ImageNotFoundError(f"{service_name}: registry repository {image_name!r} not found")
-
-    tags = _registry_tags(entry.project_id, repo["id"])
-    matches = [
-        tag["name"]
-        for tag in tags
-        if tag.get("name") and len(tag["name"]) >= 7 and sha.startswith(tag["name"])
-    ]
-    if not matches:
-        raise ImageNotFoundError(f"{service_name}: no tag for commit {sha[:12]} in {image_name!r}")
-
-    tag = max(matches, key=len)
-    try:
-        detail = _tag_detail(entry.project_id, repo["id"], tag)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            raise ImageNotFoundError(
-                f"{service_name}: tag {tag!r} not found in {image_name!r}"
-            ) from exc
-        raise
-    return ResolvedImage(
-        name=service_name,
-        repository=repo["location"],
-        tag=detail["name"],
-        created_at=detail.get("created_at", ""),
-        digest=detail.get("digest", ""),
-    )
+    base = SCHEMA_SERVICE_NAME if service == SCHEMA_LOAD_SERVICE_NAME else service
+    return (sources or {}).get(base) or azure_source(base)
 
 
 def resolve_images(
-    branch: str = DEFAULT_IMAGE_BRANCH,
     names: Iterable[str] | None = None,
     sources: Mapping[str, str] | None = None,
 ) -> dict[str, ResolvedImage]:
     """Resolve all requested images atomically.
 
-    ``sources`` maps a service to the fork repository it follows; every other
-    service resolves from the community registry on ``branch``. Raises
-    ImageResolutionError if any requested image cannot be resolved.
+    ``sources`` maps a service to the mirror repository it follows; every other
+    service follows its Azure repository. Raises ImageResolutionError if any
+    requested image cannot be resolved.
     """
 
     requested = list(names or IMAGE_REGISTRY.keys())
-    forks = dict(sources or {})
     schema_load_requested = SCHEMA_LOAD_SERVICE_NAME in requested
     resolved: dict[str, ResolvedImage] = {}
     errors: list[str] = []
@@ -358,23 +168,14 @@ def resolve_images(
         ):
             continue
         try:
-            if name in forks:
-                resolved[name] = resolve_fork_image(name, forks[name])[0]
-            else:
-                resolved[name] = resolve_image(name, IMAGE_REGISTRY[name], branch)
+            resolved[name] = resolve_fork_image(name, canonical_repo(name, sources))[0]
         except Exception as exc:
             errors.append(str(exc))
 
     if schema_load_requested:
-        fork = forks.get(SCHEMA_SERVICE_NAME)
+        repo = canonical_repo(SCHEMA_SERVICE_NAME, sources)
         try:
-            if fork:
-                schema_image, commit = resolve_fork_image(SCHEMA_SERVICE_NAME, fork)
-            else:
-                schema_image = resolve_image(
-                    SCHEMA_SERVICE_NAME, IMAGE_REGISTRY[SCHEMA_SERVICE_NAME], branch
-                )
-                commit = ""
+            schema_image, commit = resolve_fork_image(SCHEMA_SERVICE_NAME, repo)
         except Exception as exc:
             if SCHEMA_SERVICE_NAME in requested:
                 errors.append(str(exc))
@@ -387,9 +188,7 @@ def resolve_images(
             if SCHEMA_SERVICE_NAME in requested:
                 resolved[SCHEMA_SERVICE_NAME] = schema_image
             try:
-                resolved[SCHEMA_LOAD_SERVICE_NAME] = _resolve_loader(
-                    branch, schema_image, fork, commit
-                )
+                resolved[SCHEMA_LOAD_SERVICE_NAME] = _resolve_loader(schema_image, repo, commit)
             except Exception as exc:
                 errors.append(str(exc))
 
@@ -398,24 +197,15 @@ def resolve_images(
     return {name: resolved[name] for name in requested}
 
 
-def _resolve_loader(
-    branch: str, schema_image: ResolvedImage, fork: str | None, commit: str
-) -> ResolvedImage:
-    """The loader built from the same commit as ``schema_image``, from the same source."""
+def _resolve_loader(schema_image: ResolvedImage, repo: str, commit: str) -> ResolvedImage:
+    """The loader built from the same commit as ``schema_image``, from the same repository."""
 
-    if not fork:
-        return resolve_image_tag(
-            SCHEMA_LOAD_SERVICE_NAME,
-            IMAGE_REGISTRY[SCHEMA_LOAD_SERVICE_NAME],
-            branch,
-            schema_image.tag,
-        )
     loader = resolve_fork_loader(schema_image.repository, commit)
     if loader is None:
         raise ImageResolutionError(
-            f"{SCHEMA_LOAD_SERVICE_NAME}: {fork} published no loader "
-            f"{schema_image.repository}-load:{schema_image.tag}; schema cannot follow the "
-            "fork until it builds one beside the service image"
+            f"{SCHEMA_LOAD_SERVICE_NAME}: {repo} published no loader "
+            f"{schema_image.repository}-load:{schema_image.tag}; schema cannot follow "
+            f"{repo} until it builds one beside the service image"
         )
     repository, digest = loader
     return ResolvedImage(
@@ -423,12 +213,10 @@ def _resolve_loader(
     )
 
 
-def resolve_image_lock(
-    branch: str = DEFAULT_IMAGE_BRANCH, sources: Mapping[str, str] | None = None
-) -> dict[str, ResolvedImage]:
+def resolve_image_lock(sources: Mapping[str, str] | None = None) -> dict[str, ResolvedImage]:
     """Resolve the images controlled by the live Flux image lock."""
 
-    return resolve_images(branch=branch, names=image_lock_names(), sources=sources)
+    return resolve_images(names=image_lock_names(), sources=sources)
 
 
 def parse_image_digest_ref(ref: str) -> tuple[str, str]:
@@ -763,15 +551,15 @@ def resolve_fork_image(service: str, source_repo: str) -> tuple[ResolvedImage, s
         described = " or ".join(f"{r}:{FORK_MAIN_TAG} ({d[:19]})" for r, d in snapshots.items())
         raise ImageResolutionError(f"{service}: {described} matches no sha- tag in its package")
     # Both names can carry main-snapshot after a SERVICE_NAME change; the newest build decides.
-    return max(found, key=lambda pair: _parse_gitlab_datetime(pair[0].created_at))
+    return max(found, key=lambda pair: _parse_datetime(pair[0].created_at))
 
 
 def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> None:
     """Assert the digest's manifest exists in GHCR before it is pinned.
 
     Uses the anonymous pull-token flow (fork packages are public). A missing
-    manifest raises ImageNotFoundError; transient failures retry like
-    ``gitlab_get`` and then raise ImageResolutionError, fail-closed.
+    manifest raises ImageNotFoundError; transient failures retry with a
+    short backoff and then raise ImageResolutionError, fail-closed.
     """
 
     path = repository[len(GHCR_HOST) + 1 :]
@@ -812,93 +600,21 @@ def resolve_ghcr_manifest(repository: str, digest: str, attempts: int = 3) -> No
     )
 
 
-def image_lock_missing_schema_load(lock_data: Mapping[str, str]) -> bool:
-    """Report whether an existing lock predates schema-load's inclusion.
-
-    A lock missing the composed ref counts as missing even when it already
-    carries repository/tag: the schema-load Job substitutes the single
-    ``_IMAGE_REF`` key, so a lock recorded before that key existed
-    still needs backfilling.
-    """
-
-    key = image_lock_key(SCHEMA_LOAD_SERVICE_NAME)
-    return not (
-        lock_data.get(f"{key}_IMAGE_REPOSITORY")
-        and lock_data.get(f"{key}_IMAGE_TAG")
-        and lock_data.get(f"{key}_IMAGE_REF")
-    )
-
-
 def image_ref(repository: str, tag: str, digest: str) -> str:
     """Return the digest-first image reference, falling back to the tag."""
 
     return f"{repository}@{digest}" if digest else f"{repository}:{tag}"
 
 
-def schema_load_lock_patch(
-    lock_data: Mapping[str, str],
-    branch: str = DEFAULT_IMAGE_BRANCH,
-) -> dict[str, str]:
-    """Return the loader entries missing from an existing image lock.
-
-    Locks generated before schema-load joined the live lock carry a schema pin
-    but no loader keys, and the Job requires them. The loader is
-    resolved from the schema tag the lock already records, so the backfill
-    keeps the loader on the running service's commit instead of jumping to the
-    newest master build.
-    """
-
-    key = image_lock_key(SCHEMA_LOAD_SERVICE_NAME)
-    existing_repository = lock_data.get(f"{key}_IMAGE_REPOSITORY", "")
-    existing_tag = lock_data.get(f"{key}_IMAGE_TAG", "")
-    if existing_repository and existing_tag:
-        existing_digest = lock_data.get(f"{key}_IMAGE_DIGEST", "")
-        return {
-            f"{key}_IMAGE_REF": image_ref(
-                existing_repository,
-                existing_tag,
-                existing_digest,
-            )
-        }
-
-    schema_tag = lock_data.get(f"{image_lock_key(SCHEMA_SERVICE_NAME)}_IMAGE_TAG", "")
-    if not schema_tag:
-        raise ImageResolutionError(
-            f"{SCHEMA_LOAD_SERVICE_NAME}: image lock records no schema image tag to match"
-        )
-
-    image = resolve_image_tag(
-        SCHEMA_LOAD_SERVICE_NAME,
-        IMAGE_REGISTRY[SCHEMA_LOAD_SERVICE_NAME],
-        lock_data.get("IMAGE_BRANCH") or branch,
-        schema_tag,
-    )
-
-    patch = {
-        f"{key}_IMAGE": image.image,
-        f"{key}_IMAGE_REPOSITORY": image.repository,
-        f"{key}_IMAGE_TAG": image.tag,
-        f"{key}_IMAGE_CREATED_AT": image.created_at,
-        f"{key}_IMAGE_DIGEST": image.digest,
-        f"{key}_IMAGE_REF": image_ref(image.repository, image.tag, image.digest),
-    }
-    count = lock_data.get("IMAGE_COUNT", "")
-    if count.isdigit() and not existing_repository and not existing_tag:
-        patch["IMAGE_COUNT"] = str(int(count) + 1)
-    return patch
-
-
 def _yaml_string(value: str) -> str:
     return json.dumps(str(value))
 
 
-IMAGE_BRANCH_ANNOTATION = "spi-stack.osdu.dev/image-branch"
 IMAGE_RESOLVED_AT_ANNOTATION = "spi-stack.osdu.dev/resolved-at"
 
 
 def build_lock_data(
     resolved: dict[str, ResolvedImage],
-    branch: str,
     timestamp: str,
     do_not_disrupt: Iterable[str] = (),
 ) -> dict[str, str]:
@@ -912,7 +628,6 @@ def build_lock_data(
 
     protected = frozenset(do_not_disrupt)
     data: dict[str, str] = {
-        "IMAGE_BRANCH": branch,
         "IMAGE_RESOLVED_AT": timestamp,
         "IMAGE_COUNT": str(len(resolved)),
     }
@@ -934,18 +649,14 @@ def build_lock_data(
     return data
 
 
-def build_lock_annotations(branch: str, timestamp: str) -> dict[str, str]:
-    """Return the base image-branch/resolved-at annotations for the lock."""
+def build_lock_annotations(timestamp: str) -> dict[str, str]:
+    """Return the base resolved-at annotation for the lock."""
 
-    return {
-        IMAGE_BRANCH_ANNOTATION: branch,
-        IMAGE_RESOLVED_AT_ANNOTATION: timestamp,
-    }
+    return {IMAGE_RESOLVED_AT_ANNOTATION: timestamp}
 
 
 def render_image_lock_configmap(
     resolved: dict[str, ResolvedImage],
-    branch: str = DEFAULT_IMAGE_BRANCH,
     resolved_at: datetime | None = None,
     extra_annotations: Mapping[str, str] | None = None,
     do_not_disrupt: Iterable[str] = (),
@@ -953,8 +664,8 @@ def render_image_lock_configmap(
     """Render the Flux substitution ConfigMap for service image pins."""
 
     timestamp = (resolved_at or datetime.now(timezone.utc)).isoformat()
-    data = build_lock_data(resolved, branch, timestamp, do_not_disrupt)
-    base_annotations = build_lock_annotations(branch, timestamp)
+    data = build_lock_data(resolved, timestamp, do_not_disrupt)
+    base_annotations = build_lock_annotations(timestamp)
 
     lines = [
         "apiVersion: v1",
@@ -965,7 +676,6 @@ def render_image_lock_configmap(
         "  labels:",
         "    app.kubernetes.io/managed-by: osdu-spi-stack",
         "  annotations:",
-        f"    {IMAGE_BRANCH_ANNOTATION}: {_yaml_string(base_annotations[IMAGE_BRANCH_ANNOTATION])}",
         f"    {IMAGE_RESOLVED_AT_ANNOTATION}: "
         f"{_yaml_string(base_annotations[IMAGE_RESOLVED_AT_ANNOTATION])}",
     ]

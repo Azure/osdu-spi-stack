@@ -201,7 +201,7 @@ class TestPairing:
         ("lock", "reason"),
         [
             (_lock(pin=_pin(ephemeral=False, run_id="")), "runs a pinned image"),
-            (_lock(source=""), "follows community images"),
+            (_lock(source=""), "is not Azure/osdu-spi-partition's canonical yet"),
             (_lock(source="Other/partition"), "but acme/partition is trusted"),
             (_lock(tag="c" * 40), "is not Acme/partition's canonical yet"),
             (_lock(pair=""), "has no recorded acceptance image"),
@@ -219,6 +219,16 @@ class TestPairing:
         assert target is not None
         assert target.acceptance_image == f"ghcr.io/acme/partition-acceptance@{PAIR}"
         assert (target.source_repo, target.commit) == ("Acme/partition", SHA[:12])
+
+    def test_an_azure_canonical_pairs_without_a_trusted_fork(self):
+        lock = _lock(source="")
+        lock["data"]["PARTITION_IMAGE_REPOSITORY"] = "ghcr.io/azure/osdu-spi-partition"
+        del lock["metadata"]["annotations"][pins.TRUSTED_REPOS_ANNOTATION]
+
+        target, why = testing.paired_target(lock, "partition")
+
+        assert target is not None, why
+        assert target.source_repo == "Azure/osdu-spi-partition"
 
 
 class TestPairedRun:
@@ -516,7 +526,7 @@ class TestCheckoutRun:
 
         assert result.label == "matched"
 
-    def test_a_community_service_runs_unpaired(self, cluster, tmp_path):
+    def test_a_service_off_its_canonical_runs_unpaired(self, cluster, tmp_path):
         cluster["locks"] = [_lock(source="")]
 
         result = testing.run_suite("partition", checkout=_checkout(tmp_path))

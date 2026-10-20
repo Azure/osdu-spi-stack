@@ -128,6 +128,8 @@ jobs:
       DECLARED_FORKS_CLI_MIN_VERSION: v0.24.0
       # First release whose CLI has `spi load`.
       LOAD_CLI_MIN_VERSION: v0.27.0
+      # First release whose CLI resolves Azure images and takes no --image-branch.
+      AZURE_IMAGES_CLI_MIN_VERSION: v0.30.0
     steps:
       - name: Refuse a declaration older than the lifecycle CLI
         run: |
@@ -208,7 +210,13 @@ jobs:
 
       - name: spi reconcile
         # No --refresh-images: the pinned source and current image lock stand.
-        run: spi reconcile --image-branch "$IMAGE_BRANCH"
+        run: |
+          set -euo pipefail
+          ARGS=()
+          if [ -n "$IMAGE_BRANCH" ] && [ "$(printf '%s\n' "$AZURE_IMAGES_CLI_MIN_VERSION" "$STACK_VERSION" | sort -V | head -n1)" != "$AZURE_IMAGES_CLI_MIN_VERSION" ]; then
+            ARGS+=(--image-branch "$IMAGE_BRANCH")
+          fi
+          spi reconcile ${ARGS[@]+"${ARGS[@]}"}
 
       - name: Reconcile declared forks
         # Before the refresh, which resolves from the lock projections this repairs.

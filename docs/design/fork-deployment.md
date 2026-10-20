@@ -87,7 +87,7 @@ The pin rides the `spi-stack.osdu.dev/pins` annotation on the
 
 | Field | Content |
 |---|---|
-| `origin` | `gitlab-mr`, `github`, or `local` |
+| `origin` | `github` or `local`; `gitlab-mr` on an older merge-request pin, which still decodes and resets |
 | `repository`, `tag`, `digest` | the pinned image |
 | `source_repo`, `source_sha` | what built it; a local build records the checkout's commit, suffixed `-dirty` when its tree had uncommitted changes or `-prebuilt` when the JAR was not written by Maven in the same run, and no repository |
 | `source_run_url`, `run_id` | the owning workflow run; `run_id` drives ownership checks and the stale-run lookup, `source_run_url` is display-only and never fetched |
@@ -118,8 +118,8 @@ sweep's workflow step is unbuilt; the sweep verb and the refresh step exist):
   display-only and is never fetched. Roster membership replaces the
   `Azure/osdu-spi-*` naming convention for personal and customer forks, but
   does not prove that only onboarded repositories can be lookup targets.
-- `spi service refresh --forks` then advances the unpinned fork-sourced
-  services to the current retained canonical (ADR-033).
+- `spi service refresh --forks` then advances every unpinned service to the
+  current retained canonical (ADR-033).
 
 The post-pin verify detects a replacement observed during that step. There is
 no second verification before each suite, so replacement after verification
@@ -149,7 +149,8 @@ service name publishes `ghcr.io/<lowercase-owner>/partition`, which the
 ephemeral pin check also accepts. The descriptor's `service.name` is the
 stack's service name, `partition`, whatever the package is called. The build publishes
 that public package, the deploy job pins it by digest, and canonical refresh
-resolves its `main` line after promotion. No separate package-path state or
+resolves its `main` line once the repository is the service's canonical
+source: by default for the Azure repository, after promotion for a mirror. No separate package-path state or
 Azure namespace fallback is involved.
 
 Schema's ephemeral pin pairs the loader. The template builds `<image>-load`
@@ -162,14 +163,13 @@ same image name as the service, so `ghcr.io/azure/osdu-spi-schema` pairs only
 `ghcr.io/azure/osdu-spi-schema-load`), resolves the tag to its manifest digest
 (`resolve_fork_loader` in `src/spi/images.py`), and pins `schema-load` under
 the same run id. A fork that published no loader for that commit keeps the
-canonical loader, and a loader left pinned by an earlier MR or run is
+canonical loader, and a loader left pinned by an earlier pin or run is
 released to its canonical entry so no mismatched pair runs. `spi service
 reset schema --if-run <id>` releases the loader the run paired and leaves a
 loader owned by anything else standing. The `schema-load` Job passes
 `SCHEMA_URL` and the workload identity to the fork-built image; the wrapper
-ConfigMap is mounted as the community image's `scripts/azure` directory and
-serves only that image; it stays while an environment can select community
-as schema's canonical source.
+ConfigMap mounted at `scripts/azure` serves only the community loader image,
+which no canonical source resolves.
 
 `require_ghcr_repository` in `src/spi/images.py` checks GHCR host, path,
 and digest shape without naming an owner. An ephemeral pin additionally
@@ -189,11 +189,11 @@ phases; source promotion is separate from enabling trust:
 |---|---|---|
 | 1. Repository protection | Create the `spi-stack` environment, or open one restricted to a branch list, then stamp the five values | repository admin for environment rules; organization admin for organization values with `--org` |
 | 2. Azure trust | Enable `fork-<service>` on `spi-stack-<env>-deployer`, `spi-stack-<env>-member`, and `spi-stack-<env>-noaccess` for the subject GitHub signs for the repository's `spi-stack` environment (`repo:<org>/<fork>:environment:spi-stack` under the default template; ADR-032 lists the forms), after reading back that the environment exists and admits every branch | write on the three identities and read access to repository rules |
-| 3. Source policy | Write `spi-source-<service>` on the RG: the repository after a passing promotion check, `community`, or the recorded value repaired to the repository's casing (ADR-033) | RG tag write |
-| 4. Cluster projection | Project the credential roster into `spi-stack.osdu.dev/trusted-repos` and the fork-sourced services into `spi-stack.osdu.dev/canonical-sources` on `osdu-image-lock`, without changing resolved images or pins | the operator's kube context |
+| 3. Source policy | Write `spi-source-<service>` on the RG: the repository after a passing promotion check, `azure`, or the recorded value repaired to the repository's casing (ADR-033) | RG tag write |
+| 4. Cluster projection | Project the credential roster into `spi-stack.osdu.dev/trusted-repos` and the mirror-sourced services into `spi-stack.osdu.dev/canonical-sources` on `osdu-image-lock`, without changing resolved images or pins | the operator's kube context |
 
 The projection runs last because it copies both durable records. `--remove`
-runs source policy first, recording `community` before any credential is
+runs source policy first, recording `azure` before any credential is
 revoked, so a rebuild between the two writes cannot resolve a fork the
 environment no longer trusts. `--skip-repo` omits phase 1.
 
@@ -237,10 +237,11 @@ Neither onboarding nor the lifecycle ensure path fans out credential writes
 (ADR-032).
 
 On an undeclared environment, onboarding preserves the source tag, or
-records `community` when it is absent, so a trusted repository's
-community state is explicit on the RG. `--canonical-source fork` selects the
-service's trusted fork; `--canonical-source community` selects community
-without removing trust. A recorded fork other than the repository being
+records `azure` when it is absent, so a trusted repository whose service
+follows its Azure repository is explicit on the RG; a legacy `community` tag
+reads as `azure`. `--canonical-source fork` selects the service's trusted
+fork as its mirror; `--canonical-source azure` returns it to its Azure
+repository without removing trust. A recorded fork other than the repository being
 onboarded is refused unless the option names the new choice.
 
 A change to `fork` is checked before anything is written: the fork's GHCR
@@ -260,25 +261,27 @@ and is refused. Schema's promotion additionally requires
 `<package>-load:sha-<12>` at the same commit (`resolve_fork_loader`). A
 refused promotion writes nothing, including trust; re-run without
 `--canonical-source` to trust the repository while the service stays on
-community. A loader published later does not itself trigger promotion.
+its Azure repository. A loader published later does not itself trigger
+promotion.
 
 The policy changes the next resolution, not the running image. `spi service
 refresh <service>...` re-resolves only the named services, reading the
-lock's `canonical-sources` projection and the lock's recorded image branch;
-every other entry, the lock's resolved-at stamp, and active pins stay as
+lock's `canonical-sources` projection, which falls back to each service's
+Azure repository; every other entry, the lock's resolved-at stamp, and active pins stay as
 they are, and schema moves only together with its loader. `spi reconcile
---refresh-images` re-resolves every service the same way, which needs the
-community registry reachable for the services that follow it. `spi up` reads
+--refresh-images` re-resolves every service the same way, which needs GHCR
+reachable. `spi up` reads
 the RG tags directly, before provisioning, and rebuilds both projections at
-bootstrap. Every resolution refuses a fork source that is not the repository
+bootstrap. Every resolution refuses a mirror source that is not the repository
 trusted for that service: `spi up` checks the tags against the deploy
 identity's credentials, and the refresh commands check the lock's
 `canonical-sources` against its `trusted-repos`. `spi info` shows the policy
 beside the running image and marks a policy the running image predates.
 
-`spi service refresh --forks` refreshes every service the projection names,
-with the semantics of naming them, and takes no service arguments. A lock
-with no fork source is nothing to refresh and exits 0. A refresh waits for
+`spi service refresh --forks` refreshes every service, Azure and mirror
+alike, with the semantics of naming them, and takes no service arguments,
+since every canonical is a GHCR image under retention. An environment with
+no image lock is nothing to refresh and exits 0. A refresh waits for
 Flux to reconcile the consumers of each entry it changed, and skips that
 wait for an entry it resolved to the image the lock already records. The
 weekday `env-refresh` workflow runs `--forks` after `spi reconcile` when the
@@ -289,22 +292,22 @@ template's Monday retention job, so the refresh records a newer build before
 retention deletes the image it replaced. An environment with no workflow
 advances only when someone runs a refresh.
 
-A fork canonical left unrefreshed past the 30-day `sha-*` retention while the
-fork keeps building can have its recorded digest deleted (ADR-033). `spi
-info` and `spi status` warn once an unpinned service runs a fork image built
-more than 21 days ago, and name the refresh. `spi info --json` reports it
+A canonical left unrefreshed past the 30-day `sha-*` retention while its
+repository keeps building can have its recorded digest deleted (ADR-033).
+`spi info` and `spi status` warn once an unpinned service runs its canonical
+repository's image built more than 21 days ago, and name the refresh. `spi info --json` reports it
 per service as `refresh_due`; `spi status --json` and the deployable verdict
 do not change. The lock records the image's commit date, which precedes its
-GHCR version date, so the warning errs early. A fork that has built nothing
-newer keeps the warning after a refresh: the refresh resolves the same
-image, which retention does not delete while it is the fork's newest.
+GHCR version date, so the warning errs early. A repository that has built
+nothing newer keeps the warning after a refresh: the refresh resolves the
+same image, which retention does not delete while it is the newest.
 
 ```bash
 spi onboard partition --canonical-source fork           # plan: trust, tag, projection
 spi onboard partition --canonical-source fork --write
 spi service refresh partition                           # partition now runs its fork's main
-spi onboard partition --canonical-source community --write
-spi service refresh partition                           # and back to community master
+spi onboard partition --canonical-source azure --write
+spi service refresh partition                           # and back to Azure/osdu-spi-partition
 ```
 
 The retained `spi-environment-declaration` RG tag identifies a declared
@@ -325,15 +328,15 @@ Onboarding loads that file before any other read and requires the requested
 service, repository, removal, and source to match; an omitted `--repo` or
 source option takes the declared value. Conflicting intent is refused before
 writes, naming the file to change through a reviewed PR. An unreadable
-declaration is an error, not permission to use undeclared mode. Shared
-onboarding first declares a community source, then enables and proves the
-fork jobs; a later reviewed change promotes it.
+declaration is an error, not permission to use undeclared mode. A mirror
+is first declared with the `azure` source, then its fork jobs are enabled
+and proved; a later reviewed change promotes it.
 
 `spi onboard --reconcile` moves the durable records to the declaration
 without naming a service (`src/spi/declared.py`). It plans by default and
 applies with `--write`, in this order:
 
-1. Record `community` for every undeclared service whose tag follows a fork.
+1. Record `azure` for every undeclared service whose tag follows a fork.
 2. Revoke, on the deploy, member, and no-access identities, every
    `fork-<service>` credential the declaration does not list and every
    listed one whose subject is not the one GitHub signs for its declared
@@ -353,7 +356,7 @@ that fork is trusted and its image resolves, under the same check as
 another credential on the identity already holds, or that would be the
 identity's twenty-first. An entry that fails any of these gains nothing:
 its stale credential is still revoked, a tag naming a fork returns to
-`community`, the rest are reconciled, and the command exits nonzero naming
+`azure`, the rest are reconciled, and the command exits nonzero naming
 each one. A replaced repository therefore never keeps its trust while its
 successor waits. When GitHub cannot report a repository's subject, a
 credential that already names the repository stands as `unverified`, and
@@ -368,13 +371,13 @@ side. On an undeclared environment it changes nothing and exits 0.
 ownership, and projection drift separately; the declaration rows mark a
 trusted repository the file does not list, a listed one that is not trusted,
 and a source tag or repository casing that differs from the file.
-`spi onboard --remove <service>` records community, deletes the credential,
+`spi onboard --remove <service>` records `azure`, deletes the credential,
 and updates the lock projections; it requires removal from the declaration
 first when one owns the environment. Interrupted removal reports the
 unfinished phases and can be re-run.
 
 The credentials persist trust; `spi-source-<service>` RG tags persist source
-policy, including community for a trusted repository. Both outlive
+policy, including `azure` for a trusted repository. Both outlive
 `spi down` (ADR-034). Fork CI cannot read these ARM records, so the lock
 carries their separate projections. `spi up` loads authoritative intent
 before resolving images, reconciles its durable records, then rebuilds the
@@ -457,9 +460,10 @@ spi test partition --source ../partition --dry-run --env-file ~/partition.env
 spi test partition --suite all --review           # every declared suite, mapped to the contract
 ```
 
-Paired mode needs a fork canonical with a recorded `<SERVICE>_ACCEPTANCE_DIGEST`
-and pulls that digest; the descriptor, resolver, and verdict script come from
-the fork at the full commit. Checkout mode uses the checkout's own and labels
+Paired mode needs a canonical, Azure or mirror, with a recorded
+`<SERVICE>_ACCEPTANCE_DIGEST` and pulls that digest; the descriptor,
+resolver, and verdict script come from the canonical repository at the full
+commit. Checkout mode uses the checkout's own and labels
 the run `matched`, `unmatched`, or `unpaired` against the deployed commit; it
 removes the suite's earlier Surefire and Failsafe reports before Maven runs.
 A descriptor that names another service is refused in either mode.

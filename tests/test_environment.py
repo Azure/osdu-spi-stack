@@ -165,7 +165,6 @@ def test_rejects_a_snake_case_key_and_names_the_camelcase_key(
         "profile: core\n",
         "location: westus3\n",
         "ingressMode: azure\n",
-        "imageBranch: master\n",
         "nameSuffix: x7k2q\n",
     ],
 )
@@ -174,6 +173,12 @@ def test_rejects_a_missing_required_key(missing_line):
 
     with pytest.raises(EnvironmentDeclarationError):
         parse_declaration(yaml_text)
+
+
+def test_a_declaration_without_an_image_branch_parses():
+    declaration = parse_declaration(VALID_YAML.replace("imageBranch: master\n", ""))
+
+    assert declaration.image_branch == ""
 
 
 def test_rejects_a_duplicated_required_key():
@@ -256,14 +261,22 @@ forks:
 )
 
 
-def test_forks_default_to_the_community_source():
+def test_forks_default_to_the_azure_source():
     declaration = parse_declaration(FORKS_YAML)
 
     assert [(f.service, f.repo, f.canonical_source) for f in declaration.forks] == [
-        ("partition", "Acme/osdu-spi-partition", "community"),
+        ("partition", "Acme/osdu-spi-partition", "azure"),
         ("legal", "Acme/osdu-spi-legal", "fork"),
     ]
     assert declaration.to_github_output()["declares_forks"] == "true"
+
+
+def test_a_community_canonical_source_reads_as_azure():
+    declaration = parse_declaration(
+        FORKS_YAML.replace("    canonicalSource: fork", "    canonicalSource: community")
+    )
+
+    assert [f.canonical_source for f in declaration.forks] == ["azure", "azure"]
 
 
 def _with_forks(*entries: str, profile: str = "core") -> str:
@@ -353,7 +366,7 @@ class TestFetchDeclared:
 
         assert asked == [("Azure/osdu-spi-stack", "ops/environments/shared.yaml", "main")]
         assert declared.locator == self.LOCATOR
-        assert [f.canonical_source for f in declared.declaration.forks] == ["community", "fork"]
+        assert [f.canonical_source for f in declared.declaration.forks] == ["azure", "fork"]
 
     def test_refuses_a_file_whose_env_is_not_its_name(self, monkeypatch):
         monkeypatch.setattr(environment, "github_file", lambda *a: FORKS_YAML.encode())

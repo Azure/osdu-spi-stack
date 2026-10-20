@@ -42,7 +42,7 @@ whole declaration lives in one reviewed file.
   updating or deleting `v*` tags, so a tag names one commit for as long as
   it exists, and the deploy record keeps the resolved commit for audit.
 - `ops/environments/shared.yaml` declares the environment: name,
-  `stackVersion`, profile, location, ingress mode, image branch, and the
+  `stackVersion`, profile, location, ingress mode, and the
   environment's five-character name suffix, plus the `forks:` trust roster
   and each entry's `canonicalSource` policy (ADR-032, ADR-033). It advances
   only through a reviewed PR to `main`; merging a `stackVersion` bump

@@ -330,7 +330,6 @@ class TestReconcileRefreshesClusterConfig:
             # Reads the live lock through pins.run_process, which the
             # spi.cli.run_command patch above does not intercept; without
             # this the default reconcile path shells out to real kubectl.
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile", *args])
@@ -559,7 +558,6 @@ class TestReconcileRefreshesClusterConfig:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[]),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
@@ -588,7 +586,6 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=stalled),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
@@ -634,7 +631,6 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", return_value=SimpleNamespace(returncode=0, stdout="")),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
             patch(
                 "spi.status.resettable_helmreleases",
                 side_effect=StatusError("Could not read Flux HelmReleases: connection refused"),
@@ -663,89 +659,8 @@ class TestReconcileResetsStalledHelmReleases:
             patch("spi.cli.create_istio_revision_configmap"),
             patch("spi.cli.refresh_spi_init_values"),
             patch("spi.cli.run_command", side_effect=_run_command),
-            patch("spi.cli.apply_schema_load_backfill", return_value=False),
             patch("spi.status.resettable_helmreleases", return_value=[("osdu-flux", "partition")]),
         ):
             result = runner.invoke(cli.app, ["reconcile"])
 
         assert result.exit_code == 1
-
-
-class TestSchemaLoadImageLockBackfill:
-    """The schema-load Job substitutes its image from `osdu-image-lock` with no
-    static fallback. A cluster whose lock predates schema-load's
-    inclusion would render an unresolved image, so `spi reconcile` backfills
-    the loader entries before Flux applies the manifest.
-    """
-
-    def _invoke(self, changed: bool, error: Exception | None = None, *args: str):
-        runner = CliRunner()
-        events = []
-
-        def _run_command(cmd_list, **kwargs):
-            events.append(cmd_list)
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        def _backfill(*, branch):
-            events.append(("backfill", branch))
-            if error:
-                raise error
-            return changed
-
-        with (
-            patch("spi.cli.verify_spi_cluster", return_value="spi-test"),
-            patch("spi.cli.get_suspend_status", return_value=False),
-            patch("spi.cli.create_istio_revision_configmap"),
-            patch("spi.cli.refresh_spi_init_values"),
-            patch("spi.cli.apply_schema_load_backfill", side_effect=_backfill) as backfill,
-            patch("spi.cli.run_command", side_effect=_run_command) as run_command,
-            patch("spi.status.resettable_helmreleases", return_value=[]),
-        ):
-            result = runner.invoke(cli.app, ["reconcile", *args])
-
-        return result, backfill, run_command, events
-
-    def test_legacy_lock_is_backfilled(self):
-        result, backfill, _, _ = self._invoke(True)
-
-        assert result.exit_code == 0, result.output
-        backfill.assert_called_once_with(branch="master")
-        assert "updated with schema-load" in result.output
-
-    def test_current_lock_is_left_alone(self):
-        result, backfill, _, _ = self._invoke(False)
-
-        assert result.exit_code == 0, result.output
-        backfill.assert_called_once_with(branch="master")
-        assert "updated with schema-load" not in result.output
-
-    def test_absent_lock_is_skipped(self):
-        """minimal/bare profiles never create the lock."""
-        result, backfill, _, _ = self._invoke(False)
-
-        assert result.exit_code == 0, result.output
-        backfill.assert_called_once_with(branch="master")
-
-    def test_resolution_failure_aborts_before_reconcile(self):
-        result, backfill, run_command, _ = self._invoke(
-            False,
-            cli.ImageResolutionError("schema-load: tag not found"),
-        )
-
-        assert result.exit_code == 1
-        assert "Unable to backfill" in result.output
-        backfill.assert_called_once_with(branch="master")
-        run_command.assert_not_called()
-
-    def test_resume_backfills_before_unsuspending_source(self):
-        result, backfill, _, events = self._invoke(True, None, "--resume")
-
-        assert result.exit_code == 0, result.output
-        backfill.assert_called_once_with(branch="master")
-        backfill_call = events.index(("backfill", "master"))
-        gitrepository_patch = next(
-            index
-            for index, event in enumerate(events)
-            if isinstance(event, list) and event[:3] == ["kubectl", "patch", "gitrepository"]
-        )
-        assert backfill_call < gitrepository_patch

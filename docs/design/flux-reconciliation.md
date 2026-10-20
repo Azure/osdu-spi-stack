@@ -204,9 +204,9 @@ with `-n osdu-flux`; the target namespace reports a missing release.
 
 The first core deployment resolves an image lock; a retry preserves it unless
 `--refresh-images` is explicit. `--no-refresh-images` fails when no lock exists.
-Canonical resolution uses the community GitLab registry, except for a service
-promoted to its fork with `spi onboard --canonical-source fork`, which resolves
-the fork's GHCR `main` image; see [fork deployment](fork-deployment.md).
+Canonical resolution reads each service's GHCR `main` image from its
+`Azure/osdu-spi-<service>` repository, or from the trusted mirror selected with
+`spi onboard --canonical-source fork`; see [fork deployment](fork-deployment.md).
 
 The image lock covers 14 images, including the schema loader. Repository, tag, and digest values
 are substituted into HelmRelease manifests during a service Kustomization
@@ -240,7 +240,7 @@ spi reconcile --refresh-images
 spi status --watch
 ```
 
-It resolves canonical registry tags, preserves active service pins, and applies
+It resolves canonical images, preserves active service pins, and applies
 the image lock. It then reconciles and waits in order for the present core
 Kustomizations: services, schema load, and reference services. Layers absent
 from `bare` or `minimal` are skipped. The command does not rotate credentials
@@ -250,21 +250,18 @@ Each CLI wait uses a 40-minute timeout, shorter than the schema loader's own
 deadline. A CLI wait timeout does not itself stop the Job or Flux reconciliation;
 inspect their conditions before treating it as a failed load.
 
-Canonical schema and schema-load images resolve to the same SHA. If the registry has no matching
-loader image, resolution fails before replacing the lock. `spi-osdu-schema-load`
-substitutes the loader image and uses `force: true` so a changed Job template
-can be recreated. `spi reconcile` attempts to backfill older locks missing
-loader keys before requesting reconciliation. A resolution failure in that
-backfill exits with an error before any reconciliation is requested; the lock
-is left as it was.
+Canonical schema and schema-load images resolve to the same commit. If the
+schema repository published no matching loader image, resolution fails before
+replacing the lock. `spi-osdu-schema-load` substitutes the loader image and uses
+`force: true` so a changed Job template can be recreated.
 
 The lock records the resolved set for one environment. It does not guarantee
 future registry retention or make a fresh resolution choose the same images.
 
 ## Service image pins
 
-`spi service pin --mr` selects an OSDU merge-request pipeline image;
-`--image` accepts an explicit GHCR digest. Pin provenance and the canonical image are recorded in the
+`spi service pin --image` accepts an explicit GHCR digest, and `--source`
+builds a checkout into the environment's registry. Pin provenance and the canonical image are recorded in the
 `spi-stack.osdu.dev/pins` JSON annotation on `osdu-image-lock`. `spi up` and
 image refresh preserve those overrides; unreadable pin state aborts the
 overwrite rather than silently removing a pin.
@@ -276,25 +273,22 @@ spi service list
 ```
 
 The following commands change images and trigger reconciliation. Replace the
-placeholder with a merge-request IID from the schema service's OSDU GitLab
-project, not a GitHub PR number:
+placeholder with a digest a schema repository built:
 
 ```bash
-spi service pin schema --mr <mr-iid>
+spi service pin schema --image ghcr.io/<owner>/<repo>@sha256:<digest>
 spi service reset schema
 ```
 
-Schema pins include the matching loader image when the MR pipeline built it.
-Otherwise the CLI warns and retains or restores the canonical loader; it does
-not silently keep a loader pinned by an older MR. Reset restores the recorded
+Reset restores the recorded
 canonical image; if that record is missing, the CLI reports that a subsequent
 `spi reconcile --refresh-images` is required.
 
 For fork CI, `--ephemeral` records the owning run and source provenance.
 `spi service verify` checks the rollout and running image digest;
 `spi service reset --if-run` restores only a pin still owned by that run.
-The stale-pin sweep, `spi onboard` trust, canonical-source promotion, and
-the weekday refresh of fork-sourced canonicals exist; the scheduled sweep
+The stale-pin sweep, `spi onboard` trust, mirror selection, and the weekday
+refresh of every canonical exist; the scheduled sweep
 remains unbuilt. Ephemeral pins require a
 repository matching the lock's trusted roster and its derived GHCR package.
 Follow [fork deployment](fork-deployment.md) for required metadata, refusal
@@ -311,8 +305,8 @@ source. Do not rely on that command to fetch a new commit while suspended.
 
 | Command | Current behavior |
 |---|---|
-| `spi reconcile` | Refresh cluster configuration, attempt loader-key backfill, reset `RetriesExceeded` HelmReleases, and request reconciliation; leave source suspension unchanged |
-| `spi reconcile --resume` | Refresh cluster configuration, attempt loader-key backfill, then set the source's `spec.suspend` to `false` |
+| `spi reconcile` | Refresh cluster configuration, reset `RetriesExceeded` HelmReleases, and request reconciliation; leave source suspension unchanged |
+| `spi reconcile --resume` | Refresh cluster configuration, then set the source's `spec.suspend` to `false` |
 | `spi reconcile --suspend` | Set the Git source's `spec.suspend` to `true` |
 | `spi reconcile --refresh-images` | Refresh cluster configuration and the image lock, preserve pins, reset `RetriesExceeded` HelmReleases, reconcile dependent layers in order; leave suspension unchanged |
 

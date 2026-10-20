@@ -2,137 +2,31 @@
 
 ## Context
 
-Each service has two plausible canonical image sources: the OSDU community
-GitLab registry, which ADR-017 resolves from upstream `master`, and the
-service's `Azure/osdu-spi-*` fork, which publishes its `main` line to GHCR
-with digest identity, releases, and a 30-day retention on `sha-*` tags. Both
-cannot be canonical at once: the canonical entry is what a pin restores to,
-what refresh re-resolves, and what the environment runs between deploys. The
-choice is independent of the ephemeral pin mechanism (ADR-031); it can change
-per service without touching how deploys work.
+Every OSDU service the stack deploys has an `Azure/osdu-spi-<service>` repository that carries the Azure provider and publishes its `main` line to GHCR, with digest identity and a 30-day retention on `sha-*` versions. The community GitLab registry no longer ships Azure provider code, so its images cannot run on this stack. A service can still need to run some other repository's build for a sustained period, for example a mirror of its Azure repository that an operator develops against, and that choice is environment state, not CLI code. The canonical entry is what a pin restores to, what refresh re-resolves, and what the environment runs between deploys, so each service has exactly one canonical source at a time.
 
 ## Decision
 
-A repository can be trusted for deploys while its service remains on the
-community canonical. Onboarding establishes trust; explicit source promotion
-selects the fork's GHCR `main` image, one service at a time.
+Every service follows its Azure repository unless the environment records a trusted mirror for it, one service at a time.
 
-- Trust and source policy have separate durable records. The deploy
-  identity's `fork-<service>` credential names the trusted repository
-  (ADR-032). The resource-group tag `spi-source-<service>` records
-  `community` or `<org>/<fork>` as that service's canonical source. A missing
-  source tag means community, even when a credential exists. When these tags
-  are authoritative, an unreadable or invalid tag is an error. Both records
-  survive `spi down` (ADR-034). A fork source must match the trusted
-  repository for that service.
-- A source repository `<owner>/<fork>` maps to the public GHCR package
-  `ghcr.io/<lowercase-owner>/<lowercase-fork>`: the template names the image
-  after the repository when the `SERVICE_NAME` variable is unset, and a
-  repository name cannot collide with another repository's package in the
-  same organization. A fork whose `SERVICE_NAME` variable names the service
-  publishes `ghcr.io/<lowercase-owner>/<service>` instead, and the ephemeral
-  pin check accepts either. The canonical resolver
-  uses the same mapping, including non-Azure owners. Schema's paired loader is
-  the schema package's name plus `-load` at the selected schema commit, as
-  the template publishes it.
-  An onboarded fork must publish under this convention; a missing or private
-  package fails resolution rather than falling back to an Azure package.
-- `spi onboard --canonical-source fork` promotes the service's trusted fork;
-  `--canonical-source community` selects community without revoking trust.
-  On an undeclared environment, omitting the option preserves the recorded
-  source, defaulting to community for a new service. Source-policy writes
-  merge only the owned tags and preserve the suffix, declaration locator,
-  and unrelated tags.
-- Declared environments carry `service`, `repo`, and `canonicalSource`
-  (`community` or `fork`, default `community`) in each `forks:` entry.
-  The declaration is authoritative; RG tags and credentials are reconciled
-  copies. An omitted CLI source option takes the declared value, and a
-  conflicting option is refused (ADR-032). Removing an entry selects
-  community and revokes its credential. On an undeclared stack the retained
-  tags and credentials are authoritative instead.
-- `spi up` loads the declaration or retained source tags before resolving
-  images. It does not derive source policy from credential presence, or wait
-  for a post-provision ensure step to replace obsolete sources. The
-  `osdu-image-lock` ConfigMap (`src/spi/pins.py`) carries separate projections
-  of the trusted-repository roster and source policy, rebuilt at bootstrap
-  after their durable records are reconciled. Fork CI can read this
-  ConfigMap but cannot read the identity from ARM (ADR-032).
-- Canonical resolution through `spi reconcile --refresh-images` or
-  `spi service refresh` reads the lock's source projection; lifecycle
-  workflows reconcile it to durable intent before refreshing. Changing the
-  policy alone does not rewrite a resolved image or an active pin. A first
-  provision resolves the desired sources; an existing image changes on the
-  next explicit refresh. A pin's reset restores its captured target (below).
-- On the shared environment promotion follows a successful fork deploy and
-  test run with the required gates active; the reviewed `canonicalSource`
-  change records that promotion. A personal or customer operator selects
-  the source explicitly. Trust-only onboarding does not require promotion.
-- `schema` has a flip precondition its siblings lack: schema-load resolves a
-  loader image at the schema service's exact commit (ADR-017). Promotion is
-  refused unless the fork published that paired loader at the same commit,
-  and schema keeps its community canonical until then. Trust can be enabled
-  without a loader. A refused promotion
-  leaves the durable source as community, so a rebuild cannot infer a flip
-  from the retained credential. Publishing a loader alone does not promote
-  the service.
-- The weekday refresh re-resolves GitHub-origin canonicals (ADR-029), and
-  that cadence matters against GHCR retention: continued fork builds move
-  `main-snapshot` to newer package versions, and the retention job then
-  deletes older `sha-*`-only versions outright, digest included. The refresh
-  extends no version's life; it moves an environment that fell behind up to
-  the current version before its recorded one lands in that deletion bucket.
-  A genuinely quiet fork needs no such protection: its newest version keeps
-  the `main-snapshot` tag and is never selected.
-- A pin's restore target is captured when the pin is written (`canonical_*`,
-  ADR-017), so reset restores the capture and refresh applies the policy: a
-  flip while a pin is active does not retarget the pin, and the restored
-  pre-flip image stands until the next refresh re-resolves under the new
-  source.
-- Push builds deploy as ephemeral pins on both sides of the flip (ADR-031);
-  the refresh then converges the canonical, backward to the community image
-  before the flip and forward to the fork's `main` after it. The transition
-  needs no dedicated mechanism.
+- **Azure is the default.** A service with no recorded source resolves the image `Azure/osdu-spi-<service>`'s `main` last published: the digest `main-snapshot` names, recorded under the `sha-<12>` tag of the commit that built it (`azure_source` and `resolve_images` in `src/spi/images.py`). Schema's loader is `ghcr.io/azure/osdu-spi-schema-load` at the same commit. No trust record is needed; the packages are public.
+- **A mirror is explicit and trusted.** The resource-group tag `spi-source-<service>` records `azure` or `<owner>/<repo>`. A missing tag means `azure`, and a legacy `community` value reads as `azure`. A mirror source must match the repository the deploy identity trusts for that service through its `fork-<service>` credential (ADR-032). Both records survive `spi down` (ADR-034). An unreadable or invalid tag is an error.
+- **Package naming is shared.** A source repository `<owner>/<repo>` publishes `ghcr.io/<lowercase-owner>/<lowercase-repo>`, or `ghcr.io/<lowercase-owner>/<service>` when its `SERVICE_NAME` variable names the service; schema's loader is that package plus `-load` at the schema commit. A missing or private package fails resolution and never falls back to another source.
+- **Selection.** `spi onboard --canonical-source fork` makes the trusted repository the service's mirror; `--canonical-source azure` returns it to Azure without revoking trust. Omitting the option keeps the recorded source. Declared environments carry `canonicalSource` (`azure` or `fork`, default `azure`; `community` is read as `azure`) in each `forks:` entry, and the declaration is authoritative over the tags and credentials it reconciles. Removing an entry records `azure` and revokes its credential.
+- **Projection.** `spi up` loads the declaration or retained tags before resolving images. The `osdu-image-lock` ConfigMap (`src/spi/pins.py`) carries the trusted-repository roster and the mirror policy as separate annotations, rebuilt at bootstrap; `spi service refresh` and `spi reconcile --refresh-images` read them. Changing the policy alone does not rewrite a resolved image or an active pin; the next refresh applies it.
+- **Schema's precondition.** Schema follows a mirror only when the mirror published the paired loader at the same commit; onboarding refuses the promotion otherwise and schema stays on Azure.
+- **Retention.** Every canonical is a GHCR image under retention, so the weekday refresh (`spi service refresh --forks`) re-resolves every service, and `spi status` and `spi info` mark a canonical built more than 21 days ago. A pin's restore target is captured when the pin is written (ADR-017), so a policy change while a pin is active does not retarget it.
 
-Rejected: the flip as a `github_repo` line in `src/spi/images.py`. One
-reviewed line per service, but CLI code ships to every environment, so a
-personal or customer stack could not follow its own fork without a code
-change.
+Rejected: community GitLab images as the default. Tracks upstream with no fork to maintain, but those images no longer carry the Azure provider.
 
-Rejected: community GitLab stays canonical for the fleet permanently. No
-divergence from upstream to track, but the shared environment then never runs
-the image line the forks ship and the deploy gates certify.
+Rejected: Azure as the only source, with no mirror policy. One less durable record, but an operator could not run a mirror's `main` as the canonical without a CLI change.
 
-Rejected: infer canonical source from the credential roster. One durable
-record, but it cannot represent a repository trusted for testing while its
-service remains on the community image.
+Rejected: infer the source from the credential roster. One durable record, but it cannot represent a repository trusted for ephemeral deploys while its service stays on Azure.
 
-Rejected: flip the fleet in one change. Uniform behavior across services, but
-it couples eight promotion schedules to the slowest fork.
-
-Rejected: dual-source fallback per service (GHCR first, GitLab when absent).
-Resilient to a missing fork image, but two possible answers for one canonical
-entry make "what should this service run" a runtime question instead of a
-declaration.
+Rejected: dual-source fallback per service. Resilient to a missing image, but two possible answers for one canonical entry make "what should this service run" a runtime question.
 
 ## Consequences
 
-- Divergence between community `master` and a fork's `main` becomes visible
-  per service: two services can canonically run images from different
-  lineages during the onboarding period, and the lock records which.
-- The environment inherits a retention coupling: if the weekday refresh
-  stalls for longer than the retention window while fork builds continue,
-  the recorded canonical can age into a version the retention job has
-  deleted, and the digest becomes unpullable, not merely untagged.
-- Source reversal is `spi onboard --canonical-source community`; removal
-  also revokes trust. `--remove` records community before deleting the
-  credential, then updates the lock projections. Partial failure is reported
-  and the operation is re-runnable. Declared changes require the matching
-  reviewed declaration first. The next refresh resolves the community image;
-  active pins retain their captured restore targets.
-- Which source is canonical is readable from `spi onboard --list`,
-  `spi info`, and the lock's `canonical-sources` projection, not from operator
-  memory; the running image's repository shows whether a refresh has applied
-  it yet.
-- The credentials show trust and the RG tags show source policy when the
-  cluster is gone, including the trusted-but-community state. Maintaining two
-  durable records requires drift reporting and resumable reconciliation.
+- A bare `spi up` deploys the same image lineage the shared environment runs and the Azure repositories' gates certify; there is no image branch to choose.
+- Every environment inherits the retention coupling: if the weekday refresh stalls past the retention window while builds continue, a recorded canonical can age into a deleted version whose digest is no longer pullable.
+- An environment that recorded `community` before this policy keeps working: the tag reads as `azure`, and `spi info` marks each running community image `azure (next refresh)` until a refresh moves it.
+- Two durable records (credentials for trust, tags for source) need drift reporting and resumable reconciliation; `spi onboard --list` shows both when the cluster is gone.

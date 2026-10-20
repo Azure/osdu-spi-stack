@@ -32,7 +32,7 @@ from rich.syntax import Syntax
 from .console import console
 from .environment import Declared, ForkDeclaration
 from .onboard import (
-    COMMUNITY_SOURCE,
+    AZURE_SOURCE,
     DEPLOY_ENVIRONMENT,
     FORK_SOURCE,
     GITHUB_AUDIENCE,
@@ -254,11 +254,11 @@ def plan(
         return bool(other) and other.lower() != intent.repo.lower()
 
     for service, value in sorted(state.sources.items()):
-        if service in by_service or value == COMMUNITY_SOURCE:
+        if service in by_service or value == AZURE_SOURCE:
             continue
         item = f"{source_tag(service)} on {target.resource_group}"
         rows.append(Row("source", item, "drifted", f"follows {value}; {service} is not declared"))
-        actions.append(Action(record_source_step(target, service, COMMUNITY_SOURCE)))
+        actions.append(Action(record_source_step(target, service, AZURE_SOURCE)))
     revoked: set[tuple[str, str]] = set()
     for identity, roster in identities:
         for cred in roster:
@@ -335,10 +335,10 @@ def plan(
         if intent.follows_fork and trusted and not follows:
             result.blocked.append(f"{intent.service} from {intent.repo}: {intent.unresolvable}")
         # A fork that cannot be followed leaves the tag alone unless it names a fork.
-        desired = intent.repo if follows else COMMUNITY_SOURCE
+        desired = intent.repo if follows else AZURE_SOURCE
         if follows:
             result.sources[intent.service] = desired
-        if intent.follows_fork and not follows and observed in (None, COMMUNITY_SOURCE):
+        if intent.follows_fork and not follows and observed in (None, AZURE_SOURCE):
             rows.append(Row("source", item, "missing", f"records {intent.repo}"))
         elif observed == desired:
             rows.append(Row("source", item, "correct", desired))

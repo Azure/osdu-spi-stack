@@ -21,72 +21,21 @@ import pytest
 
 from spi import images
 from spi.images import (
-    ImageRegistryEntry,
     ImageResolutionError,
     ResolvedImage,
     build_lock_data,
     image_lock_names,
     render_image_lock_configmap,
-    resolve_image,
-    resolve_image_commit,
-    resolve_image_tag,
     resolve_images,
 )
-
-
-def test_resolve_image_selects_newest_immutable_sha(monkeypatch):
-    old_sha = "a" * 40
-    new_sha = "b" * 40
-
-    def fake_gitlab_get(url: str):
-        if "registry/repositories?" in url:
-            return [
-                {
-                    "id": 123,
-                    "name": "partition-master",
-                    "location": "community.opengroup.org:5555/osdu/partition-master",
-                }
-            ]
-        if url.endswith("/tags?per_page=100&page=1"):
-            return [{"name": old_sha}, {"name": "latest"}, {"name": new_sha}]
-        if url.endswith(f"/tags/{old_sha}"):
-            return {
-                "name": old_sha,
-                "created_at": "2026-05-01T00:00:00+00:00",
-                "digest": "sha256:old",
-            }
-        if url.endswith("/tags/latest"):
-            return {
-                "name": "latest",
-                "created_at": "2026-05-22T00:00:00+00:00",
-                "digest": "sha256:latest",
-            }
-        if url.endswith(f"/tags/{new_sha}"):
-            return {
-                "name": new_sha,
-                "created_at": "2026-05-21T00:00:00+00:00",
-                "digest": "sha256:new",
-            }
-        raise AssertionError(f"unexpected URL: {url}")
-
-    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
-
-    resolved = resolve_image(
-        "partition",
-        ImageRegistryEntry(1, "partition", "services/partition.yaml"),
-        "master",
-    )
-
-    assert resolved.tag == new_sha
-    assert resolved.digest == "sha256:new"
 
 
 def test_render_image_lock_contains_schema_load_service_keys():
     resolved = {
         name: ResolvedImage(
             name=name,
-            repository=f"community.opengroup.org:5555/example/{name}",
-            tag="1" * 40,
+            repository=f"ghcr.io/azure/osdu-spi-{name}",
+            tag="sha-" + "1" * 12,
             created_at="2026-05-22T00:00:00+00:00",
             digest=f"sha256:{name}",
         )
@@ -95,12 +44,11 @@ def test_render_image_lock_contains_schema_load_service_keys():
 
     yaml = render_image_lock_configmap(
         resolved,
-        branch="master",
         resolved_at=datetime(2026, 5, 22, tzinfo=timezone.utc),
     )
 
     assert "name: osdu-image-lock" in yaml
-    assert 'IMAGE_BRANCH: "master"' in yaml
+    assert "IMAGE_BRANCH" not in yaml
     assert "PARTITION_IMAGE_REPOSITORY" in yaml
     assert "INDEXER_QUEUE_IMAGE_TAG" in yaml
     assert "SCHEMA_LOAD_IMAGE_REPOSITORY" in yaml
@@ -109,11 +57,11 @@ def test_render_image_lock_contains_schema_load_service_keys():
 
 def test_lock_data_marks_only_named_services_do_not_disrupt():
     resolved = {
-        name: ResolvedImage(name, f"repo/{name}", "1" * 40, "", "") for name in image_lock_names()
+        name: ResolvedImage(name, f"repo/{name}", "sha-1", "", "") for name in image_lock_names()
     }
 
-    data = build_lock_data(resolved, "master", "now", do_not_disrupt={"storage"})
-    default = build_lock_data(resolved, "master", "now")
+    data = build_lock_data(resolved, "now", do_not_disrupt={"storage"})
+    default = build_lock_data(resolved, "now")
 
     assert data["STORAGE_DO_NOT_DISRUPT"] == "true"
     assert data["INDEXER_QUEUE_DO_NOT_DISRUPT"] == "false"
@@ -122,417 +70,55 @@ def test_lock_data_marks_only_named_services_do_not_disrupt():
     }
 
 
-def test_schema_load_resolves_from_selected_schema_tag(monkeypatch):
-    older_sha = "a" * 40
-    schema_sha = "b" * 40
-    loader_newest_sha = "c" * 40
-
-    def fake_gitlab_get(url: str):
-        if "registry/repositories?" in url:
-            if "search=schema-service-schema-load-master" in url:
-                return [
-                    {
-                        "id": 456,
-                        "name": "schema-service-schema-load-master",
-                        "location": "community.opengroup.org:5555/osdu/schema-load-master",
-                    }
-                ]
-            if "search=schema-service-master" in url:
-                return [
-                    {
-                        "id": 123,
-                        "name": "schema-service-master",
-                        "location": "community.opengroup.org:5555/osdu/schema-service-master",
-                    }
-                ]
-        if url.endswith("/registry/repositories/123/tags?per_page=100&page=1"):
-            return [{"name": older_sha}, {"name": schema_sha}]
-        if url.endswith("/registry/repositories/456/tags?per_page=100&page=1"):
-            return [{"name": schema_sha}, {"name": loader_newest_sha}]
-        if url.endswith(f"/registry/repositories/123/tags/{older_sha}"):
-            return {
-                "name": older_sha,
-                "created_at": "2026-05-01T00:00:00+00:00",
-                "digest": "sha256:schema-old",
-            }
-        if url.endswith(f"/registry/repositories/123/tags/{schema_sha}"):
-            return {
-                "name": schema_sha,
-                "created_at": "2026-05-21T00:00:00+00:00",
-                "digest": "sha256:schema-new",
-            }
-        if url.endswith(f"/registry/repositories/456/tags/{schema_sha}"):
-            return {
-                "name": schema_sha,
-                "created_at": "2026-05-20T00:00:00+00:00",
-                "digest": "sha256:loader-matched",
-            }
-        if url.endswith(f"/registry/repositories/456/tags/{loader_newest_sha}"):
-            return {
-                "name": loader_newest_sha,
-                "created_at": "2026-05-22T00:00:00+00:00",
-                "digest": "sha256:loader-newest",
-            }
-        raise AssertionError(f"unexpected URL: {url}")
-
-    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
-
-    resolved = resolve_images(branch="master", names=("schema", "schema-load"))
-
-    assert resolved["schema"].tag == schema_sha
-    assert resolved["schema-load"].tag == schema_sha
-    assert resolved["schema-load"].digest == "sha256:loader-matched"
-
-
 def test_schema_load_dependency_error_is_reported_once(monkeypatch):
-    def fake_gitlab_get(url: str):
-        if "registry/repositories?" in url and "search=schema-service-master" in url:
-            return []
-        raise AssertionError(f"unexpected URL: {url}")
+    def missing(name, repo):
+        raise ImageResolutionError(f"{name}: {repo} publishes no main-snapshot image")
 
-    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+    monkeypatch.setattr(images, "resolve_fork_image", missing)
 
-    try:
-        resolve_images(branch="master", names=("schema", "schema-load"))
-    except ImageResolutionError as exc:
-        message = str(exc)
-    else:
-        raise AssertionError("expected ImageResolutionError")
+    with pytest.raises(ImageResolutionError) as exc_info:
+        resolve_images(names=("schema", "schema-load"))
 
-    assert "schema: registry repository 'schema-service-master' not found" in message
+    message = str(exc_info.value)
+    assert "schema: Azure/osdu-spi-schema publishes no main-snapshot image" in message
     assert message.count("schema-load: unable to resolve matching schema tag") == 1
 
 
-def test_gitlab_get_retries_transient_timeouts(monkeypatch):
-    """Transient network failures retry with backoff; success on a later
-    attempt returns normally instead of aborting the whole resolution."""
-    from spi import images
-
-    calls = {"n": 0}
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return b'{"ok": true}'
-
-    def fake_urlopen(req, timeout=0):
-        calls["n"] += 1
-        if calls["n"] < 3:
-            raise TimeoutError("The read operation timed out")
-        return FakeResponse()
-
-    monkeypatch.setattr(images.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(images.time, "sleep", lambda s: None)
-
-    assert images.gitlab_get("https://example.invalid/api") == {"ok": True}
-    assert calls["n"] == 3
-
-
-def test_gitlab_get_raises_after_exhausting_attempts(monkeypatch):
-    from spi import images
-
-    def always_timeout(req, timeout=0):
-        raise TimeoutError("The read operation timed out")
-
-    monkeypatch.setattr(images.urllib.request, "urlopen", always_timeout)
-    monkeypatch.setattr(images.time, "sleep", lambda s: None)
-
-    try:
-        images.gitlab_get("https://example.invalid/api", attempts=2)
-    except images.ImageResolutionError as exc:
-        assert "2 attempts" in str(exc)
-    else:
-        raise AssertionError("expected ImageResolutionError")
-
-
-def test_resolve_image_tag_missing_tag_raises_resolution_error(monkeypatch):
-    """A schema tag that never reached the loader repository (divergent
-    pipelines/retention) has to fail fast with a clear, service-specific
-    error instead of bubbling up a raw HTTPError."""
-
-    def fake_gitlab_get(url: str):
-        if "registry/repositories?" in url:
-            return [
-                {
-                    "id": 456,
-                    "name": "schema-service-schema-load-master",
-                    "location": "community.opengroup.org:5555/osdu/schema-load-master",
-                }
-            ]
-        raise AssertionError(f"unexpected URL: {url}")
-
-    def fake_tag_detail(project_id, repo_id, tag):
-        raise urllib.error.HTTPError("https://example.invalid", 404, "Not Found", Message(), None)
-
-    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
-    monkeypatch.setattr(images, "_tag_detail", fake_tag_detail)
-
-    entry = ImageRegistryEntry(26, "schema-service-schema-load", "schema-load/job.yaml")
-
-    with pytest.raises(ImageResolutionError, match="tag .* not found"):
-        resolve_image_tag("schema-load", entry, "master", "a" * 40)
-
-
-def test_resolve_image_tag_propagates_non_404_http_error(monkeypatch):
-    """A non-404 HTTPError (e.g. a registry outage) is a transient/unknown
-    failure, not a missing-tag condition, and should not be masked as an
-    ImageResolutionError."""
-
-    def fake_gitlab_get(url: str):
-        if "registry/repositories?" in url:
-            return [
-                {
-                    "id": 456,
-                    "name": "schema-service-schema-load-master",
-                    "location": "community.opengroup.org:5555/osdu/schema-load-master",
-                }
-            ]
-        raise AssertionError(f"unexpected URL: {url}")
-
-    def fake_tag_detail(project_id, repo_id, tag):
-        raise urllib.error.HTTPError(
-            "https://example.invalid", 500, "Internal Server Error", Message(), None
-        )
-
-    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
-    monkeypatch.setattr(images, "_tag_detail", fake_tag_detail)
-
-    entry = ImageRegistryEntry(26, "schema-service-schema-load", "schema-load/job.yaml")
-
-    with pytest.raises(urllib.error.HTTPError) as exc_info:
-        resolve_image_tag("schema-load", entry, "master", "a" * 40)
-    assert exc_info.value.code == 500
-
-
-def test_resolve_image_commit_matches_short_sha_tags(monkeypatch):
-    """OSDU pipelines tag with CI short SHAs, so a tag matches the MR head
-    commit when it is a prefix of the full SHA; unrelated tags never do."""
-    sha = "1f325c1e71be" + "d" * 28
-
-    def fake_gitlab_get(url: str):
-        if "registry/repositories?" in url:
-            return [
-                {
-                    "id": 9,
-                    "name": "schema-service-trusted-fix-x",
-                    "location": "registry/schema-service-trusted-fix-x",
-                }
-            ]
-        if url.endswith("/tags?per_page=100&page=1"):
-            return [{"name": "e" * 12}, {"name": "1f325c1e71be"}]
-        raise AssertionError(f"unexpected URL: {url}")
-
-    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+def test_resolve_images_schema_load_only_omits_schema(monkeypatch):
+    """Requesting only schema-load resolves schema as a dependency without returning it."""
+    schema = ResolvedImage("schema", "ghcr.io/azure/osdu-spi-schema", "sha-b", "d", "sha256:s")
+    monkeypatch.setattr(images, "resolve_fork_image", lambda name, repo: (schema, "b" * 12))
     monkeypatch.setattr(
         images,
-        "_tag_detail",
-        lambda project_id, repo_id, tag: {"name": tag, "created_at": "now", "digest": "sha256:x"},
+        "resolve_fork_loader",
+        lambda repository, commit: (f"{repository}-load", "sha256:loader"),
     )
 
-    entry = ImageRegistryEntry(26, "schema-service", "services/schema.yaml")
-    image = resolve_image_commit("schema", entry, "trusted-fix-x", sha)
-    assert image.tag == "1f325c1e71be"
-
-    with pytest.raises(ImageResolutionError, match="no tag for commit"):
-        resolve_image_commit("schema", entry, "trusted-fix-x", "f" * 40)
-
-
-def test_resolve_image_commit_handles_tag_pruned_after_listing(monkeypatch):
-    sha = "1f325c1e71be" + "d" * 28
-
-    def fake_gitlab_get(url: str):
-        if "registry/repositories?" in url:
-            return [
-                {
-                    "id": 9,
-                    "name": "schema-service-fix-x",
-                    "location": "registry/schema-service-fix-x",
-                }
-            ]
-        if url.endswith("/tags?per_page=100&page=1"):
-            return [{"name": sha[:12]}]
-        raise AssertionError(f"unexpected URL: {url}")
-
-    def fake_tag_detail(project_id, repo_id, tag):
-        raise urllib.error.HTTPError("https://example.invalid", 404, "Not Found", Message(), None)
-
-    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
-    monkeypatch.setattr(images, "_tag_detail", fake_tag_detail)
-
-    entry = ImageRegistryEntry(26, "schema-service", "services/schema.yaml")
-    with pytest.raises(ImageResolutionError, match="tag .* not found"):
-        resolve_image_commit("schema", entry, "fix-x", sha)
-
-
-def test_resolve_images_schema_load_only_omits_schema(monkeypatch):
-    """Requesting only schema-load has to resolve schema as a dependency
-    without returning it, and use the loader-specific error message on
-    lookup failure."""
-    schema_sha = "b" * 40
-    loader_newest_sha = "c" * 40
-
-    def fake_gitlab_get(url: str):
-        if "registry/repositories?" in url:
-            if "search=schema-service-schema-load-master" in url:
-                return [
-                    {
-                        "id": 456,
-                        "name": "schema-service-schema-load-master",
-                        "location": "community.opengroup.org:5555/osdu/schema-load-master",
-                    }
-                ]
-            if "search=schema-service-master" in url:
-                return [
-                    {
-                        "id": 123,
-                        "name": "schema-service-master",
-                        "location": "community.opengroup.org:5555/osdu/schema-service-master",
-                    }
-                ]
-        if url.endswith("/registry/repositories/123/tags?per_page=100&page=1"):
-            return [{"name": schema_sha}]
-        if url.endswith("/registry/repositories/456/tags?per_page=100&page=1"):
-            return [{"name": schema_sha}, {"name": loader_newest_sha}]
-        if url.endswith(f"/registry/repositories/123/tags/{schema_sha}"):
-            return {
-                "name": schema_sha,
-                "created_at": "2026-05-21T00:00:00+00:00",
-                "digest": "sha256:schema-new",
-            }
-        if url.endswith(f"/registry/repositories/456/tags/{schema_sha}"):
-            return {
-                "name": schema_sha,
-                "created_at": "2026-05-20T00:00:00+00:00",
-                "digest": "sha256:loader-matched",
-            }
-        raise AssertionError(f"unexpected URL: {url}")
-
-    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
-
-    resolved = resolve_images(branch="master", names=("schema-load",))
+    resolved = resolve_images(names=("schema-load",))
 
     assert set(resolved) == {"schema-load"}
-    assert resolved["schema-load"].tag == schema_sha
-    assert resolved["schema-load"].digest == "sha256:loader-matched"
+    assert resolved["schema-load"].tag == "sha-b"
+    assert resolved["schema-load"].digest == "sha256:loader"
 
 
 def test_resolve_images_schema_load_only_reports_alternate_error(monkeypatch):
     """When only schema-load is requested and the schema dependency lookup
     fails, the error message should not claim the caller asked for schema."""
 
-    def fake_gitlab_get(url: str):
-        if "registry/repositories?" in url and "search=schema-service-master" in url:
-            return []
-        raise AssertionError(f"unexpected URL: {url}")
+    def missing(name, repo):
+        raise ImageResolutionError(f"{name}: {repo} publishes no main-snapshot image")
 
-    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
+    monkeypatch.setattr(images, "resolve_fork_image", missing)
 
     with pytest.raises(ImageResolutionError) as exc_info:
-        resolve_images(branch="master", names=("schema-load",))
+        resolve_images(names=("schema-load",))
 
     message = str(exc_info.value)
     assert message.count(";") == 0
     assert message == (
         "schema-load: unable to resolve matching schema tag: "
-        "schema: registry repository 'schema-service-master' not found"
+        "schema: Azure/osdu-spi-schema publishes no main-snapshot image"
     )
-
-
-def test_image_lock_missing_schema_load_detects_legacy_lock():
-    legacy = {"SCHEMA_IMAGE_TAG": "a" * 40}
-    missing_ref = {
-        "SCHEMA_IMAGE_TAG": "a" * 40,
-        "SCHEMA_LOAD_IMAGE_REPOSITORY": "registry/schema-load",
-        "SCHEMA_LOAD_IMAGE_TAG": "a" * 40,
-    }
-    current = {
-        "SCHEMA_IMAGE_TAG": "a" * 40,
-        "SCHEMA_LOAD_IMAGE_REPOSITORY": "registry/schema-load",
-        "SCHEMA_LOAD_IMAGE_TAG": "a" * 40,
-        "SCHEMA_LOAD_IMAGE_REF": "registry/schema-load:" + "a" * 40,
-    }
-
-    assert images.image_lock_missing_schema_load(legacy) is True
-    # A lock with repository/tag but no composed ref still needs backfilling:
-    # the Job substitutes the single ref key.
-    assert images.image_lock_missing_schema_load(missing_ref) is True
-    assert images.image_lock_missing_schema_load(current) is False
-
-
-def test_schema_load_lock_patch_resolves_from_recorded_schema_tag(monkeypatch):
-    """Backfilling a legacy lock has to reuse the schema tag it already pins,
-    so the loader matches the running service instead of jumping to master."""
-    schema_sha = "d" * 40
-
-    def fake_gitlab_get(url: str):
-        if "registry/repositories?" in url and "search=schema-service-schema-load-master" in url:
-            return [
-                {
-                    "id": 456,
-                    "name": "schema-service-schema-load-master",
-                    "location": "community.opengroup.org:5555/osdu/schema-load-master",
-                }
-            ]
-        if url.endswith(f"/registry/repositories/456/tags/{schema_sha}"):
-            return {
-                "name": schema_sha,
-                "created_at": "2026-05-20T00:00:00+00:00",
-                "digest": "sha256:loader-matched",
-            }
-        raise AssertionError(f"unexpected URL: {url}")
-
-    monkeypatch.setattr(images, "gitlab_get", fake_gitlab_get)
-
-    patch = images.schema_load_lock_patch(
-        {"IMAGE_BRANCH": "master", "IMAGE_COUNT": "13", "SCHEMA_IMAGE_TAG": schema_sha}
-    )
-
-    assert patch["SCHEMA_LOAD_IMAGE_TAG"] == schema_sha
-    assert patch["SCHEMA_LOAD_IMAGE_REPOSITORY"] == (
-        "community.opengroup.org:5555/osdu/schema-load-master"
-    )
-    assert patch["SCHEMA_LOAD_IMAGE"] == (
-        f"community.opengroup.org:5555/osdu/schema-load-master:{schema_sha}"
-    )
-    assert patch["SCHEMA_LOAD_IMAGE_DIGEST"] == "sha256:loader-matched"
-    assert (
-        patch["SCHEMA_LOAD_IMAGE_REF"]
-        == "community.opengroup.org:5555/osdu/schema-load-master@sha256:loader-matched"
-    )
-    assert patch["IMAGE_COUNT"] == "14"
-
-
-def test_schema_load_lock_patch_composes_missing_ref_without_incrementing_count(monkeypatch):
-    def fail(url: str):
-        raise AssertionError(f"registry must not be queried to compose an existing image: {url}")
-
-    monkeypatch.setattr(images, "gitlab_get", fail)
-    patch = images.schema_load_lock_patch(
-        {
-            "IMAGE_BRANCH": "master",
-            "IMAGE_COUNT": "14",
-            "SCHEMA_LOAD_IMAGE_REPOSITORY": "registry/schema-load",
-            "SCHEMA_LOAD_IMAGE_TAG": "a" * 40,
-            "SCHEMA_LOAD_IMAGE_DIGEST": "sha256:loader",
-        }
-    )
-
-    assert patch == {"SCHEMA_LOAD_IMAGE_REF": "registry/schema-load@sha256:loader"}
-
-
-def test_schema_load_lock_patch_without_schema_tag_raises(monkeypatch):
-    def fail(url: str):
-        raise AssertionError("registry must not be queried without a schema tag")
-
-    monkeypatch.setattr(images, "gitlab_get", fail)
-
-    with pytest.raises(ImageResolutionError, match="no schema image tag"):
-        images.schema_load_lock_patch({"IMAGE_BRANCH": "master"})
 
 
 class TestImageRef:
@@ -553,7 +139,7 @@ class TestLockDataRefRendering:
             "partition", "ghcr.io/acme/partition", "sha-b", "", "sha256:s", "sha256:acc"
         )
 
-        data = images.build_lock_data(resolved, "master", "now")
+        data = images.build_lock_data(resolved, "now")
 
         assert {k: v for k, v in data.items() if k.endswith("_ACCEPTANCE_DIGEST")} == {
             "PARTITION_ACCEPTANCE_DIGEST": "sha256:acc"
@@ -573,7 +159,6 @@ class TestLockDataRefRendering:
 
         yaml = render_image_lock_configmap(
             resolved,
-            branch="master",
             resolved_at=datetime(2026, 5, 22, tzinfo=timezone.utc),
         )
 
@@ -598,7 +183,7 @@ class TestLockDataRefRendering:
             for name in image_lock_names()
         }
 
-        yaml = render_image_lock_configmap(resolved, branch="master")
+        yaml = render_image_lock_configmap(resolved)
 
         assert (
             f'PARTITION_IMAGE_REF: "community.opengroup.org:5555/example/partition:{"1" * 40}"'
@@ -1028,29 +613,44 @@ class TestGhcrPackageReads:
 
 
 class TestResolveImagesUnderASourcePolicy:
-    def test_a_fork_source_resolves_from_the_fork_and_the_rest_from_community(self, monkeypatch):
-        community = []
+    def test_a_service_with_no_recorded_source_follows_its_azure_repository(self, monkeypatch):
+        repos = []
         monkeypatch.setattr(
             images,
-            "resolve_image",
-            lambda name, entry, branch: (
-                community.append(name)
-                or images.ResolvedImage(name, f"registry/{name}", "t", "", "sha256:c")
+            "resolve_fork_image",
+            lambda name, repo: (
+                repos.append(repo)
+                or (images.ResolvedImage(name, "r", "sha-b", "", SNAPSHOT), BUILT)
             ),
         )
-        fork = images.ResolvedImage("legal", "ghcr.io/acme/legal", "sha-b", "", SNAPSHOT)
-        monkeypatch.setattr(images, "resolve_fork_image", lambda name, repo: (fork, BUILT))
 
-        resolved = images.resolve_images(
-            names=("partition", "legal"), sources={"legal": "Acme/legal"}
+        images.resolve_images(names=("partition", "indexer-queue"))
+
+        assert repos == ["Azure/osdu-spi-partition", "Azure/osdu-spi-indexer-queue"]
+
+    def test_a_recorded_mirror_wins_over_azure(self, monkeypatch):
+        repos = {}
+        monkeypatch.setattr(
+            images,
+            "resolve_fork_image",
+            lambda name, repo: (
+                repos.update({name: repo})
+                or (images.ResolvedImage(name, "r", "sha-b", "", SNAPSHOT), BUILT)
+            ),
         )
 
-        assert resolved["legal"] is fork
-        assert community == ["partition"]
+        images.resolve_images(names=("partition", "legal"), sources={"legal": "Acme/legal"})
+
+        assert repos == {"partition": "Azure/osdu-spi-partition", "legal": "Acme/legal"}
 
     def test_a_fork_sourced_schema_pairs_the_fork_loader_at_its_commit(self, monkeypatch):
         schema = images.ResolvedImage("schema", "ghcr.io/acme/schema", "sha-b", "d", SNAPSHOT)
-        monkeypatch.setattr(images, "resolve_fork_image", lambda name, repo: (schema, BUILT))
+        repos = []
+        monkeypatch.setattr(
+            images,
+            "resolve_fork_image",
+            lambda name, repo: repos.append(repo) or (schema, BUILT),
+        )
         loaders = []
         monkeypatch.setattr(
             images,
@@ -1065,15 +665,18 @@ class TestResolveImagesUnderASourcePolicy:
             names=("schema", "schema-load"), sources={"schema": "Acme/schema"}
         )
 
+        assert repos == ["Acme/schema"]
         assert loaders == [("ghcr.io/acme/schema", BUILT)]
         assert resolved["schema-load"] == images.ResolvedImage(
             "schema-load", "ghcr.io/acme/schema-load", "sha-b", "d", "sha256:" + "e" * 64
         )
 
-    def test_a_fork_sourced_schema_without_its_loader_fails_resolution(self, monkeypatch):
+    def test_a_schema_without_its_loader_names_the_repository(self, monkeypatch):
         schema = images.ResolvedImage("schema", "ghcr.io/acme/schema", "sha-b", "d", SNAPSHOT)
         monkeypatch.setattr(images, "resolve_fork_image", lambda name, repo: (schema, BUILT))
         monkeypatch.setattr(images, "resolve_fork_loader", lambda repository, commit: None)
 
-        with pytest.raises(ImageResolutionError, match="ghcr.io/acme/schema-load:sha-b"):
+        with pytest.raises(ImageResolutionError) as exc_info:
             images.resolve_images(names=("schema", "schema-load"), sources={"schema": "Acme/s"})
+
+        assert "Acme/s published no loader ghcr.io/acme/schema-load:sha-b" in str(exc_info.value)

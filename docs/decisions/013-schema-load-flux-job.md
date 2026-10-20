@@ -8,25 +8,24 @@ Running it as a CLI tail reopens the problems ADR-011 already resolved for CA di
 
 ## Decision
 
-Load schemas with a Flux-managed Kubernetes Job, reusing the existing `workload-identity-sa` in the `osdu` namespace (ADR-005). The Job runs the OSDU community `schema-service-schema-load` image against the in-cluster schema-service, POSTing schemas one by one.
+Load schemas with a Flux-managed Kubernetes Job, reusing the existing `workload-identity-sa` in the `osdu` namespace (ADR-005). The Job runs the loader image the schema service's canonical repository builds beside the service (`<package>-load`, for example `ghcr.io/azure/osdu-spi-schema-load`) against the in-cluster schema-service, POSTing schemas one by one.
 
 Shape:
 
 - New Kustomization `spi-osdu-schema-load` at `software/stacks/osdu/schema-load/`, wired into the core profile as Layer 5b (after `spi-osdu-init`, before `spi-osdu-reference`) per ADR-007.
-- Single `Job` with `workload-identity-sa`, the workload-identity pod label, and a mounted ConfigMap that provides `Token.py` and `bootstrap.sh` at the paths the loader image's entrypoint expects.
+- Single `Job` with `workload-identity-sa`, the workload-identity pod label, and the `SCHEMA_URL` and `DATA_PARTITION` values the loader's own entrypoint reads.
 - Kustomization `healthChecks` target the Job's `Complete` condition so `spi status` surfaces the Job alongside every other Flux resource.
-- The loader image tag is resolved through `osdu-image-lock` from the same SHA selected for schema-service.
-- `bootstrap.sh` post-processes the loader's exit code: "already exists" failures are not fatal, so re-runs are idempotent.
+- The loader image is resolved through `osdu-image-lock` from the same commit selected for schema-service, and resolution fails when that repository published no loader for the commit.
 
 Rejected:
 - **A long-running Deployment that loads once then sleeps.** Works, but lies to Kubernetes about what the workload is.
 - **A Terraform `null_resource` with `local-exec`.** Runs at apply time with no cluster-side resource to manage, but re-introduces the CLI-tail problem inside Terraform instead of Python.
-- **A home-grown Python loader that fetches schemas from Git.** Duplicates community CI, and the community image already publishes at the same SHA as the service.
+- **A home-grown Python loader that fetches schemas from Git.** Duplicates the schema repository's CI, which already publishes a loader at the same commit as the service.
 
 ## Consequences
 
 - Fresh deploy reaches a usable schema-service with no CLI post-step.
 - Schema loader upgrades move with the service image via the live image lock.
 - Manual re-run is `spi load --dataset schemas --force` (ADR-040), which runs `kubectl delete job schema-load -n osdu` and then `flux reconcile kustomization spi-osdu-schema-load`. Flux re-applies the Job.
-- The loader tag depends on OSDU community registry retention. Mirroring the image to the SPI ACR (already provisioned) is an available follow-up if retention becomes a problem.
+- The loader digest depends on GHCR retention of the schema repository's `sha-*` versions; the weekday canonical refresh keeps a running environment inside that window (ADR-033).
 - Only the schema-service is seeded here; partition initialization, entitlements root-group provisioning, and the default legal tag run as a separate Flux-managed chart (ADR-015). Reference data loads through `spi load` (ADR-040).

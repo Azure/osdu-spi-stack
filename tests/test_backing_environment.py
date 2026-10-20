@@ -334,18 +334,12 @@ def _resolved_images() -> dict[str, ResolvedImage]:
 
 def test_omitted_image_refresh_preserves_existing_lock(monkeypatch):
     config = Config.from_env("shared", profile=Profile.CORE)
-    backfills = []
     monkeypatch.setattr(deploy, "read_lock", lambda required=False: {"data": {"existing": "lock"}})
-    monkeypatch.setattr(
-        deploy,
-        "apply_schema_load_backfill",
-        lambda branch: backfills.append(branch),
-    )
     resolve = pytest.fail
     monkeypatch.setattr(
         deploy,
         "_resolve_image_lock",
-        lambda _branch: resolve("registry lookup must not run"),
+        lambda sources=None: resolve("registry lookup must not run"),
     )
     monkeypatch.setattr(
         deploy,
@@ -353,8 +347,7 @@ def test_omitted_image_refresh_preserves_existing_lock(monkeypatch):
         lambda *_args, **_kwargs: resolve("lock write must not run"),
     )
 
-    assert deploy._ensure_image_lock(config, None, "master", {}) == {}
-    assert backfills == ["master"]
+    assert deploy._ensure_image_lock(config, None, {}) == {}
 
 
 def test_omitted_image_refresh_creates_missing_lock_under_the_source_policy(monkeypatch):
@@ -365,17 +358,13 @@ def test_omitted_image_refresh_creates_missing_lock_under_the_source_policy(monk
     monkeypatch.setattr(
         deploy,
         "_resolve_image_lock",
-        lambda branch, sources=None: policies.append(sources) or resolved,
+        lambda sources=None: policies.append(sources) or resolved,
     )
-    monkeypatch.setattr(
-        deploy,
-        "apply_image_lock",
-        lambda images, branch: calls.append((images, branch)) or {},
-    )
+    monkeypatch.setattr(deploy, "apply_image_lock", lambda images: calls.append(images) or {})
 
-    deploy._ensure_image_lock(config, None, "master", {}, {"partition": "Acme/partition"})
+    deploy._ensure_image_lock(config, None, {}, {"partition": "Acme/partition"})
 
-    assert calls == [(resolved, "master")]
+    assert calls == [resolved]
     assert policies == [{"partition": "Acme/partition"}]
 
 
@@ -394,7 +383,7 @@ def test_up_resolves_under_the_source_policy_before_provisioning(monkeypatch):
     monkeypatch.setattr(
         deploy,
         "_resolve_image_lock",
-        lambda branch, sources=None: events.append(("resolve", sources)) or {},
+        lambda sources=None: events.append(("resolve", sources)) or {},
     )
     monkeypatch.setattr(deploy, "provision_azure_infra", provision)
 
@@ -424,26 +413,19 @@ def test_explicit_no_refresh_fails_when_core_lock_is_missing(monkeypatch):
     monkeypatch.setattr(deploy, "read_lock", lambda required=False: None)
 
     with pytest.raises(RuntimeError, match="--no-refresh-images"):
-        deploy._ensure_image_lock(config, False, "master", {})
+        deploy._ensure_image_lock(config, False, {})
 
 
 def test_explicit_no_refresh_preserves_existing_core_lock(monkeypatch):
     config = Config.from_env("shared", profile=Profile.CORE)
-    backfills = []
     monkeypatch.setattr(deploy, "read_lock", lambda required=False: {"data": {}})
-    monkeypatch.setattr(
-        deploy,
-        "apply_schema_load_backfill",
-        lambda branch: backfills.append(branch),
-    )
     monkeypatch.setattr(
         deploy,
         "apply_image_lock",
         lambda *_args, **_kwargs: pytest.fail("lock write must not run"),
     )
 
-    assert deploy._ensure_image_lock(config, False, "master", {}) == {}
-    assert backfills == ["master"]
+    assert deploy._ensure_image_lock(config, False, {}) == {}
 
 
 def test_explicit_refresh_uses_pre_resolved_images(monkeypatch):
@@ -455,15 +437,11 @@ def test_explicit_refresh_uses_pre_resolved_images(monkeypatch):
         "read_lock",
         lambda required=False: pytest.fail("explicit refresh must use the CAS helper directly"),
     )
-    monkeypatch.setattr(
-        deploy,
-        "apply_image_lock",
-        lambda images, branch: calls.append((images, branch)) or {},
-    )
+    monkeypatch.setattr(deploy, "apply_image_lock", lambda images: calls.append(images) or {})
 
-    deploy._ensure_image_lock(config, True, "master", resolved)
+    deploy._ensure_image_lock(config, True, resolved)
 
-    assert calls == [(resolved, "master")]
+    assert calls == [resolved]
 
 
 def test_non_core_profile_never_reads_or_writes_image_lock(monkeypatch):
@@ -479,7 +457,7 @@ def test_non_core_profile_never_reads_or_writes_image_lock(monkeypatch):
         lambda *_args, **_kwargs: pytest.fail("non-core deploy must not write the lock"),
     )
 
-    assert deploy._ensure_image_lock(config, None, "master", {}) == {}
+    assert deploy._ensure_image_lock(config, None, {}) == {}
 
 
 DECLARATION = """\
@@ -542,7 +520,7 @@ class TestUpDeclaration:
             "a43c7",
         )
         assert config.declaration_locator == LOCATOR
-        assert seen["image_branch"] == "master"
+        assert "image_branch" not in seen
         assert seen["declared"].declaration.forks[0].service == "partition"
 
     def test_a_declared_release_needs_its_own_wheel(self, up, monkeypatch):
@@ -570,7 +548,6 @@ class TestUpDeclaration:
         [
             ("--location", "eastus2", "westus3"),
             ("--profile", "minimal", "core"),
-            ("--image-branch", "release", "master"),
             ("--name-suffix", "zzzzz", "a43c7"),
             ("--ingress-mode", "dns", "azure"),
             ("--branch", "main", "v0.24.0"),
@@ -692,7 +669,7 @@ class TestDeclaredDeploy:
         monkeypatch.setattr(
             deploy,
             "_resolve_image_lock",
-            lambda branch, sources=None: events.append(("resolve", sources)) or {},
+            lambda sources=None: events.append(("resolve", sources)) or {},
         )
         monkeypatch.setattr(deploy, "provision_azure_infra", provision)
         return events, Provisioned

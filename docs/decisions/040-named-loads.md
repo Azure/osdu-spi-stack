@@ -63,8 +63,8 @@ runs it, and `spi info --json` publishes its state in a `loads` block.
 
 Rejected: build the reference values into the schema fork's loader image. The
 pairing by commit comes free, but the schema build would fetch a second
-upstream and an environment taking schema from the community image would get
-no reference data.
+upstream and an environment taking schema from a mirror that does not bake
+them in would get no reference data.
 
 Rejected: a Flux-managed, non-gating Job, as legal seeding is (ADR-015). It
 runs without the CLI, but a pin change edits an immutable Job template and the

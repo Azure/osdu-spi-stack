@@ -124,7 +124,7 @@ class TestPlan:
         state = everywhere(
             cred("partition", PARTITION),
             cred("legal", LEGAL),
-            sources={"partition": "community", "legal": LEGAL},
+            sources={"partition": "azure", "legal": LEGAL},
             source_projection={"legal": LEGAL},
         )
 
@@ -137,7 +137,7 @@ class TestPlan:
 
     def test_a_credential_removed_by_hand_is_restored_on_that_identity_only(self):
         state = replace(
-            everywhere(cred("partition", PARTITION), sources={"partition": "community"}),
+            everywhere(cred("partition", PARTITION), sources={"partition": "azure"}),
             member_roster=(),
         )
 
@@ -155,21 +155,21 @@ class TestPlan:
         assert commands(result) == [f"tags.spi-source-legal={LEGAL}"]
         assert states(result, "source") == ["missing"]
 
-    def test_undeclared_trust_returns_to_community_and_is_revoked_before_any_trust(self):
+    def test_undeclared_trust_returns_to_azure_and_is_revoked_before_any_trust(self):
         # legal's repository moved to partition: Azure keeps a subject unique on an identity.
         state = everywhere(cred("legal", PARTITION), sources={"legal": PARTITION})
 
         result = reconcile(state, intent("partition", PARTITION))
 
         assert commands(result) == [
-            "tags.spi-source-legal=community",
+            "tags.spi-source-legal=azure",
             f"delete fork-legal on {DEPLOYER}",
             f"delete fork-legal on {MEMBER}",
             f"delete fork-legal on {NO_ACCESS}",
             f"create fork-partition on {DEPLOYER}",
             f"create fork-partition on {MEMBER}",
             f"create fork-partition on {NO_ACCESS}",
-            "tags.spi-source-partition=community",
+            "tags.spi-source-partition=azure",
             TRUSTED_REPOS_ANNOTATION,
         ]
         assert result.trusted == {"partition": PARTITION}
@@ -198,19 +198,19 @@ class TestPlan:
             f"delete fork-legal on {DEPLOYER}",
             f"delete fork-legal on {MEMBER}",
             f"delete fork-legal on {NO_ACCESS}",
-            "tags.spi-source-legal=community",
+            "tags.spi-source-legal=azure",
             TRUSTED_REPOS_ANNOTATION,
             CANONICAL_SOURCES_ANNOTATION,
         ]
         assert result.trusted == {} and result.sources == {}
         assert len(result.blocked) == 1
 
-    def test_a_source_tag_naming_an_untrusted_fork_returns_to_community(self):
+    def test_a_source_tag_naming_an_untrusted_fork_returns_to_azure(self):
         untrusted = intent("legal", LEGAL, follows_fork=True, protection=Protection(exists=False))
 
         result = reconcile(everywhere(sources={"legal": LEGAL}), untrusted)
 
-        assert commands(result) == ["tags.spi-source-legal=community"]
+        assert commands(result) == ["tags.spi-source-legal=azure"]
         assert result.sources == {}
 
     def test_an_unprotected_repository_gets_no_credential_and_no_fork_source(self):
@@ -229,7 +229,7 @@ class TestPlan:
         assert result.trusted == {"partition": PARTITION} and result.sources == {}
 
     def test_a_standing_credential_survives_an_unreadable_github(self):
-        state = everywhere(cred("partition", PARTITION), sources={"partition": "community"})
+        state = everywhere(cred("partition", PARTITION), sources={"partition": "azure"})
         unread = intent("partition", PARTITION, subject="", protection=None, unread="HTTP 403")
 
         result = reconcile(state, unread)
@@ -283,7 +283,7 @@ class TestPlan:
 
     def test_an_unreadable_github_blocks_only_the_write_it_would_need(self):
         state = replace(
-            everywhere(cred("partition", PARTITION), sources={"partition": "community"}),
+            everywhere(cred("partition", PARTITION), sources={"partition": "azure"}),
             no_access_roster=(),
         )
         unread = intent("partition", PARTITION, subject="", protection=None, unread="HTTP 403")
@@ -300,7 +300,7 @@ class TestPlan:
             "legal", LEGAL, follows_fork=True, unresolvable="publishes no main-snapshot"
         )
 
-        result = reconcile(everywhere(sources={"legal": "community"}), unresolved)
+        result = reconcile(everywhere(sources={"legal": "azure"}), unresolved)
 
         assert [c for c in commands(result) if c.startswith("tags.")] == []
         assert f"create fork-legal on {DEPLOYER}" in commands(result)
