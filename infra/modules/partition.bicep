@@ -52,6 +52,7 @@ var osduDbContainers = [
   { name: 'WorkflowRun', partitionKey: '/partitionKey' }
   { name: 'WorkflowRunV2', partitionKey: '/partitionKey' }
   { name: 'WorkflowRunStatus', partitionKey: '/partitionKey' }
+  { name: 'WorkflowTasksSharingInfoV2', partitionKey: '/partitionKey' }
   { name: 'WorkflowV2', partitionKey: '/partitionKey' }
 ]
 

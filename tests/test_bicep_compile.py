@@ -143,6 +143,42 @@ def test_every_partition_gets_the_storage_record_container():
     assert loop.group("items") == "partitionStorageContainerNames"
 
 
+def test_osdu_db_has_every_workflow_container():
+    """Workflow reads and writes these osdu-db containers; a missing one fails
+    at runtime with a Cosmos NotFound, e.g. WorkflowTasksSharingInfoV2 on every
+    terminal run status update."""
+    source = (INFRA_DIR / "modules" / "partition.bicep").read_text()
+    block = re.search(
+        r"^var osduDbContainers = \[(?P<body>.*?)^\]",
+        source,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert block is not None, "osduDbContainers not found in partition.bicep"
+    containers = dict(
+        re.findall(r"name: '([^']+)', partitionKey: '([^']+)'", block.group("body"))
+    )
+
+    assert containers["Workflow"] == "/workflowId"
+    assert containers["WorkflowCustomOperatorInfo"] == "/operatorId"
+    for name in (
+        "WorkflowCustomOperatorV2",
+        "WorkflowRun",
+        "WorkflowRunV2",
+        "WorkflowRunStatus",
+        "WorkflowTasksSharingInfoV2",
+        "WorkflowV2",
+    ):
+        assert containers.get(name) == "/partitionKey", name
+
+    loop = re.search(
+        r"^resource osduDbContainerResources '[^']+' = \[for \w+ in (?P<items>[^:]+):",
+        source,
+        re.MULTILINE,
+    )
+    assert loop is not None, "osduDbContainerResources not found in partition.bicep"
+    assert loop.group("items") == "osduDbContainers"
+
+
 def test_flux_bicep_allows_every_profile():
     source = (INFRA_DIR / "flux.bicep").read_text()
     match = re.search(
