@@ -40,7 +40,6 @@ from .console import console, display_result, error_console
 from .environment import Declared
 from .guard import get_suspend_status, verify_spi_cluster
 from .images import (
-    DEFAULT_IMAGE_BRANCH,
     SCHEMA_LOAD_SERVICE_NAME,
     SCHEMA_SERVICE_NAME,
     ImageResolutionError,
@@ -53,12 +52,10 @@ from .pins import (
     ResetRefusedError,
     VerifyError,
     apply_image_lock,
-    apply_schema_load_backfill,
     await_service_image,
     describe_pin,
     live_pins,
     local_build,
-    pin_service,
     pin_service_image,
     read_lock,
     refresh_command,
@@ -361,17 +358,6 @@ def _reconcile_kustomization(name: str) -> None:
         ],
         description=f"Trigger and wait for Kustomization reconciliation ({name})",
     )
-
-
-def _backfill_schema_load_lock(image_branch: str) -> None:
-    """Backfill schema-load through the shared image-lock CAS primitive."""
-    try:
-        changed = apply_schema_load_backfill(branch=image_branch)
-    except (ImageResolutionError, PinError) as exc:
-        console.print(f"[error]Unable to backfill the schema-load image: {exc}[/error]")
-        raise typer.Exit(code=1)
-    if changed:
-        display_result("osdu-image-lock ConfigMap updated with schema-load")
 
 
 def _build_config(
@@ -684,12 +670,6 @@ def up(
         "--refresh-images/--no-refresh-images",
         help="Refresh canonical service images, or preserve an existing image lock by default.",
     ),
-    image_branch: Optional[str] = typer.Option(
-        None,
-        "--image-branch",
-        help="OSDU image branch suffix to resolve from the community registry; "
-        f"{DEFAULT_IMAGE_BRANCH} by default.",
-    ),
     name_suffix: Optional[str] = typer.Option(
         None,
         "--name-suffix",
@@ -731,13 +711,11 @@ def up(
         profile = _declared_value("--profile", profile, intent.profile)
         tag = _declared_value("--tag", tag, intent.stack_version)
         location = _declared_value("--location", location, intent.location)
-        image_branch = _declared_value("--image-branch", image_branch, intent.image_branch)
         name_suffix = _declared_value("--name-suffix", name_suffix, intent.name_suffix)
         # bare deploys no ingress substrate, so its declared mode is not applied.
         if profile is not Profile.BARE:
             ingress_mode = _declared_value("--ingress-mode", ingress_mode, intent.ingress_mode)
     location = location or "westus3"
-    image_branch = image_branch or DEFAULT_IMAGE_BRANCH
     _check_tag(tag, branch)
     resolved_branch = branch or "main"
 
@@ -802,7 +780,6 @@ def up(
             config,
             dry_run=dry_run,
             refresh_images=refresh_images,
-            image_branch=image_branch,
             azure_account=azure_account,
             deployer_principal=deployer_principal,
             declared=declared,
@@ -1627,8 +1604,8 @@ def onboard(
     canonical_source: Optional[str] = typer.Option(
         None,
         "--canonical-source",
-        help="fork: the next image refresh follows the fork's main; community: it follows "
-        "the community registry. Omitted keeps the recorded source.",
+        help="fork: the next image refresh follows the fork's main as a mirror; azure: it "
+        "follows the service's Azure repository. Omitted keeps the recorded source.",
     ),
     reconcile_declared: bool = typer.Option(
         False,
@@ -1659,9 +1636,9 @@ def onboard(
         raise typer.BadParameter(
             "--remove takes only the service and --write", param_hint="--remove"
         )
-    if canonical_source not in (None, _onboard.FORK_SOURCE, _onboard.COMMUNITY_SOURCE):
+    if canonical_source not in (None, _onboard.FORK_SOURCE, _onboard.AZURE_SOURCE):
         raise typer.BadParameter(
-            f"expected {_onboard.FORK_SOURCE} or {_onboard.COMMUNITY_SOURCE}",
+            f"expected {_onboard.FORK_SOURCE} or {_onboard.AZURE_SOURCE}",
             param_hint="--canonical-source",
         )
     if org and skip_repo:
@@ -2105,13 +2082,8 @@ def reconcile(
     refresh_images: bool = typer.Option(
         False,
         "--refresh-images",
-        help="Resolve current service images, community or the fork each service follows, and "
-        "update osdu-image-lock before reconciling.",
-    ),
-    image_branch: str = typer.Option(
-        DEFAULT_IMAGE_BRANCH,
-        "--image-branch",
-        help="OSDU image branch suffix to resolve from the community registry.",
+        help="Resolve current service images, from Azure or the mirror each service follows, "
+        "and update osdu-image-lock before reconciling.",
     ),
 ):
     """Force Flux to reconcile the git source and stack."""
@@ -2158,9 +2130,6 @@ def reconcile(
     create_istio_revision_configmap()
     refresh_spi_init_values()
 
-    if not refresh_images:
-        _backfill_schema_load_lock(image_branch)
-
     if resume:
         console.print("\n[bold]Resuming GitRepository...[/bold]")
         run_command(
@@ -2185,7 +2154,7 @@ def reconcile(
         try:
             lock = read_lock(required=False)
             sources = trusted_canonical_sources(lock) if lock else {}
-            resolved = resolve_image_lock(branch=image_branch, sources=sources)
+            resolved = resolve_image_lock(sources=sources)
         except (ImageResolutionError, PinError) as exc:
             console.print(f"[error]Unable to resolve OSDU service images: {exc}[/error]")
             raise typer.Exit(code=1)
@@ -2198,7 +2167,6 @@ def reconcile(
         try:
             pins = apply_image_lock(
                 resolved,
-                image_branch,
                 description="Refresh the osdu-image-lock ConfigMap",
             )
         except PinError as exc:
@@ -2286,11 +2254,6 @@ def reconcile(
 @service_app.command("pin")
 def service_pin(
     service: str = typer.Argument(help="Service name, e.g. schema (see 'spi service list')."),
-    mr: Optional[str] = typer.Option(
-        None,
-        "--mr",
-        help="Merge request IID in the service's OSDU GitLab repository.",
-    ),
     image: Optional[str] = typer.Option(
         None,
         "--image",
@@ -2327,9 +2290,9 @@ def service_pin(
         "", "--source-run-url", help="Workflow run URL, recorded for display only."
     ),
 ):
-    """Pin a service to an MR pipeline image, a fork-built GHCR digest, or a local build."""
-    if sum(option is not None for option in (mr, image, source)) != 1:
-        console.print("[error]Provide exactly one of --mr, --image, or --source.[/error]")
+    """Pin a service to a fork-built GHCR digest or a local build."""
+    if sum(option is not None for option in (image, source)) != 1:
+        console.print("[error]Provide exactly one of --image or --source.[/error]")
         raise typer.Exit(code=1)
     provenance = run_id or source_repo or source_sha or source_run_url
     if image is None and (ephemeral or provenance):
@@ -2358,63 +2321,44 @@ def service_pin(
             raise typer.Exit(code=1)
         image, source_sha = built.reference, built.source_sha
 
-    if image is not None:
-        try:
-            applied = pin_service_image(
-                service,
-                image,
-                ephemeral=ephemeral,
-                run_id=run_id,
-                source_repo=source_repo,
-                source_sha=source_sha,
-                source_run_url=source_run_url,
-            )
-        except (PinError, ImageResolutionError) as exc:
-            console.print(f"[error]{exc}[/error]")
-            raise typer.Exit(code=1)
-        pin = dict(applied)[service]
-        marker = f" (ephemeral, run {pin.run_id})" if pin.ephemeral else ""
-        if pin.origin == LOCAL_ORIGIN:
-            marker = f" ({local_build(pin)})"
-        console.print(
-            f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker} "
-            f"on {_environment_label()}"
-        )
-        for name, paired in applied:
-            if name != service:
-                console.print(
-                    f"  [success]{name}[/success] paired to {paired.digest[:19]} "
-                    "from the same commit"
-                )
-        if pin.ephemeral and service == SCHEMA_SERVICE_NAME and len(applied) == 1:
-            console.print(
-                f"  [dim]{SCHEMA_LOAD_SERVICE_NAME} stays canonical: the fork published "
-                "no loader image for this commit[/dim]"
-            )
-        if pin.ephemeral:
-            console.print(
-                f"[dim]Release with: spi service reset {service} --if-run {pin.run_id}[/dim]"
-            )
-        else:
-            console.print(f"[dim]Release with: spi service reset {service}[/dim]")
-        if checkout is not None:
-            _await_local_rollout(service, image, source or "")
-        return
-
-    assert mr is not None
+    assert image is not None
     try:
-        results = pin_service(service, mr)
+        applied = pin_service_image(
+            service,
+            image,
+            ephemeral=ephemeral,
+            run_id=run_id,
+            source_repo=source_repo,
+            source_sha=source_sha,
+            source_run_url=source_run_url,
+        )
     except (PinError, ImageResolutionError) as exc:
         console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
-
-    environment = _environment_label()
-    for name, pin in results:
+    pin = dict(applied)[service]
+    marker = f" (ephemeral, run {pin.run_id})" if pin.ephemeral else ""
+    if pin.origin == LOCAL_ORIGIN:
+        marker = f" ({local_build(pin)})"
+    console.print(
+        f"  [success]{service}[/success] pinned to {pin.digest[:19]}{marker} "
+        f"on {_environment_label()}"
+    )
+    for name, paired in applied:
+        if name != service:
+            console.print(
+                f"  [success]{name}[/success] paired to {paired.digest[:19]} from the same commit"
+            )
+    if pin.ephemeral and service == SCHEMA_SERVICE_NAME and len(applied) == 1:
         console.print(
-            f"  [success]{name}[/success] pinned to MR !{pin.mr} ({pin.branch} @ {pin.tag[:12]}) "
-            f"on {environment}"
+            f"  [dim]{SCHEMA_LOAD_SERVICE_NAME} stays canonical: the fork published "
+            "no loader image for this commit[/dim]"
         )
-    console.print(f"[dim]Release with: spi service reset {service}[/dim]")
+    if pin.ephemeral:
+        console.print(f"[dim]Release with: spi service reset {service} --if-run {pin.run_id}[/dim]")
+    else:
+        console.print(f"[dim]Release with: spi service reset {service}[/dim]")
+    if checkout is not None:
+        _await_local_rollout(service, image, source or "")
 
 
 def _await_local_rollout(service: str, image: str, source: str) -> None:

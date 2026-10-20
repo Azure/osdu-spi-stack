@@ -280,8 +280,8 @@ class TestMaintenanceOrdering:
         assert quiesce_idx < reconcile_idx < wait_idx < assert_idx < clear_idx < deployable_idx
 
         reconcile_step = next(s for s in refresh_steps if s.get("name") == "spi reconcile")
-        # Plain reconcile: fork-sourced canonicals move in their own step.
-        assert reconcile_step["run"].strip() == 'spi reconcile --image-branch "$IMAGE_BRANCH"'
+        # Plain reconcile: canonicals move in their own step.
+        assert "--refresh-images" not in reconcile_step["run"]
 
         clear_step = next(s for s in refresh_steps if s.get("name") == "Clear maintenance")
         assert clear_step["if"] == "steps.verify.outputs.clear == 'true'", (
@@ -492,6 +492,7 @@ class TestDeclaredForks:
             STACK_VERSION=stack_version,
             DECLARES_FORKS=declares_forks,
             DECLARED_FORKS_CLI_MIN_VERSION=job["env"]["DECLARED_FORKS_CLI_MIN_VERSION"],
+            AZURE_IMAGES_CLI_MIN_VERSION=job["env"]["AZURE_IMAGES_CLI_MIN_VERSION"],
             GITHUB_REPOSITORY="Azure/osdu-spi-stack",
             DECLARATION_PATH=workflow["env"]["DECLARATION_PATH"],
         )
@@ -866,3 +867,58 @@ class TestTagRuleset:
         assert rule_types == {"update", "deletion"}
         # Creation must stay allowed so release-please can create new tags.
         assert "creation" not in rule_types
+
+
+class TestImageBranchHandoff:
+    """A declared imageBranch reaches only a CLI that still takes --image-branch."""
+
+    def _run(self, tmp_path, script: str, **env: str):
+        stub = tmp_path / "spi"
+        stub.write_text('#!/usr/bin/env bash\necho "spi $*"\n', encoding="utf-8")
+        stub.chmod(0o755)
+        env["PATH"] = f"{tmp_path}{os.pathsep}{os.environ['PATH']}"
+        return run_process(["bash", "-c", script], env=env, capture_output=True, text=True)
+
+    @pytest.mark.parametrize(
+        ("stack_version", "image_branch", "passed"),
+        [
+            ("v0.29.0", "release-0-30", True),
+            ("v0.30.0", "release-0-30", False),
+            ("v0.29.0", "", False),
+        ],
+    )
+    def test_env_refresh_reconcile(self, tmp_path, stack_version, image_branch, passed):
+        job = _workflow(ENV_REFRESH)["jobs"]["refresh"]
+
+        result = self._run(
+            tmp_path,
+            _steps(job)["spi reconcile"]["run"],
+            STACK_VERSION=stack_version,
+            IMAGE_BRANCH=image_branch,
+            AZURE_IMAGES_CLI_MIN_VERSION=job["env"]["AZURE_IMAGES_CLI_MIN_VERSION"],
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert ("--image-branch release-0-30" in result.stdout) is passed
+
+    @pytest.mark.parametrize(("stack_version", "passed"), [("v0.29.0", True), ("v0.30.0", False)])
+    def test_env_upgrade_up(self, tmp_path, stack_version, passed):
+        job = _workflow(ENV_UPGRADE)["jobs"]["provision"]
+
+        result = self._run(
+            tmp_path,
+            _steps(job)["spi up"]["run"],
+            ENV_NAME="shared",
+            PROFILE="core",
+            LOCATION="westus3",
+            INGRESS_MODE="azure",
+            IMAGE_BRANCH="release-0-30",
+            NAME_SUFFIX="a43c7",
+            STACK_VERSION=stack_version,
+            DECLARES_FORKS="false",
+            DECLARED_FORKS_CLI_MIN_VERSION=job["env"]["DECLARED_FORKS_CLI_MIN_VERSION"],
+            AZURE_IMAGES_CLI_MIN_VERSION=job["env"]["AZURE_IMAGES_CLI_MIN_VERSION"],
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert ("--image-branch release-0-30" in result.stdout) is passed

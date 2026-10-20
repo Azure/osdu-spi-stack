@@ -14,10 +14,9 @@
 
 """Per-service image pins on the live osdu-image-lock ConfigMap.
 
-A pin points one service at a container image other than its canonical:
-either the image built by an OSDU GitLab merge-request pipeline, resolved
-from the MR's source branch at its head commit, or a fork-built GHCR image
-identified by manifest digest. Pins live in the lock itself: the
+A pin points one service at a container image other than its canonical: a
+fork-built GHCR image or a local build, identified by manifest digest. Pins
+live in the lock itself: the
 service's data keys are overwritten and provenance (origin, canonical
 image, owning workflow run, timestamps) is recorded in one JSON
 annotation, so `spi reconcile --refresh-images` and `spi up` can re-render
@@ -49,26 +48,23 @@ from .build import (
 from .console import console, display_yaml
 from .deploy_record import DEPLOY_RECORD_CONFIGMAP, DeployRecordError, read_deploy_record
 from .images import (
-    DEFAULT_IMAGE_BRANCH,
     GHCR_HOST,
-    GITLAB_HOST,
     IMAGE_LOCK_CONFIGMAP,
     IMAGE_LOCK_NAMESPACE,
     IMAGE_REGISTRY,
     SCHEMA_LOAD_SERVICE_NAME,
     SCHEMA_SERVICE_NAME,
-    ImageNotFoundError,
     ImageResolutionError,
     ResolvedImage,
     acceptance_digest_key,
     build_lock_annotations,
     build_lock_data,
+    canonical_repo,
     do_not_disrupt_key,
     fork_package_repositories,
     ghcr_index_child_digests,
-    gitlab_get,
     image_lock_key,
-    image_lock_missing_schema_load,
+    image_lock_names,
     image_ref,
     parse_image_digest_ref,
     render_image_lock_configmap,
@@ -76,10 +72,8 @@ from .images import (
     resolve_fork_loader,
     resolve_ghcr_manifest,
     resolve_ghcr_tag_digest,
-    resolve_image_commit,
     resolve_images,
     runs_fork_package,
-    schema_load_lock_patch,
 )
 from .shell import run_command, run_process
 
@@ -87,13 +81,12 @@ PINS_ANNOTATION = "spi-stack.osdu.dev/pins"
 # Service to trusted repository, projected from the deploy identity's
 # federated credentials by spi onboard and spi up.
 TRUSTED_REPOS_ANNOTATION = "spi-stack.osdu.dev/trusted-repos"
-# Service to the fork repository its canonical image follows, projected from the
-# resource group's spi-source-<service> tags; a service absent here follows community.
+# Service to the mirror repository its canonical image follows, projected from the
+# resource group's spi-source-<service> tags; a service absent here follows Azure.
 CANONICAL_SOURCES_ANNOTATION = "spi-stack.osdu.dev/canonical-sources"
 PROJECTION_ANNOTATIONS = (TRUSTED_REPOS_ANNOTATION, CANONICAL_SOURCES_ANNOTATION)
 
 # Pin origins recorded in the annotation.
-GITLAB_MR_ORIGIN = "gitlab-mr"
 GITHUB_ORIGIN = "github"
 # Built from a checkout into the environment's own registry; never a canonical.
 LOCAL_ORIGIN = "local"
@@ -115,7 +108,7 @@ STALE_EPHEMERAL_PIN_AGE_HOURS = 6
 # The fork template deletes a sha-* image version this long after its build,
 # once the fork has built again.
 FORK_RETENTION_DAYS = 30
-# Age at which a fork canonical is marked, leaving a refresh nine days to run.
+# Age at which a canonical image is marked, leaving a refresh nine days to run.
 FORK_CANONICAL_REFRESH_AGE_DAYS = 21
 
 _RUN_ID_RE = re.compile(r"^[0-9]+$")
@@ -144,10 +137,6 @@ _CONFLICT_MARKERS = (
 
 class PinError(RuntimeError):
     """Raised when a pin cannot be resolved, applied, or reset."""
-
-
-class MissingPipelineImageError(PinError):
-    """Raised when neither MR branch has an image for the MR head commit."""
 
 
 class LockConflictError(PinError):
@@ -257,66 +246,6 @@ class SweepResult:
     swept: tuple[str, ...]
     kept: tuple[tuple[str, str], ...]
     refresh_required: tuple[str, ...]
-
-
-def ref_slug(branch: str) -> str:
-    """Return the branch's CI_COMMIT_REF_SLUG as GitLab CI computes it."""
-
-    slug = re.sub(r"[^a-z0-9]", "-", branch.lower())
-    return slug.strip("-")[:63].rstrip("-")
-
-
-def fetch_merge_request(project_id: int, mr_iid: str) -> dict:
-    """Return the MR metadata needed to resolve its pipeline image."""
-
-    try:
-        mr = gitlab_get(f"{GITLAB_HOST}/api/v4/projects/{project_id}/merge_requests/{mr_iid}")
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            raise PinError(f"MR !{mr_iid} not found in GitLab project {project_id}.") from exc
-        raise PinError(f"MR !{mr_iid}: GitLab API returned HTTP {exc.code}.") from exc
-    except ImageResolutionError as exc:
-        raise PinError(str(exc)) from exc
-    if not isinstance(mr, dict) or "source_branch" not in mr:
-        raise PinError(f"MR {mr_iid}: unexpected GitLab API response")
-    return mr
-
-
-def resolve_mr_image(
-    service: str, mr_iid: str, mr: dict | None = None
-) -> tuple[ResolvedImage, dict]:
-    """Resolve the image an MR's pipeline built for one service.
-
-    OSDU containerizes protected refs only, so an MR's image usually comes
-    from its ``trusted-<branch>`` copy (the ref maintainers create to run the
-    privileged pipeline). Only an image tagged with the MR's head commit is
-    accepted, so a stale trusted copy cannot silently substitute other code.
-    Related services can share a previously fetched MR snapshot.
-    """
-
-    entry = IMAGE_REGISTRY[service]
-    if mr is None:
-        mr = fetch_merge_request(entry.project_id, mr_iid)
-    source_branch = mr.get("source_branch", "")
-    sha = mr.get("sha", "")
-    if not ref_slug(source_branch) or not sha:
-        raise PinError(f"MR {mr_iid}: missing source branch or head commit in API response")
-
-    errors: list[str] = []
-    # GitLab slugs the full ref name, so the trusted copy is slugged whole
-    # rather than prefixed onto an already truncated slug.
-    for branch in (ref_slug(source_branch), ref_slug(f"trusted-{source_branch}")):
-        try:
-            return resolve_image_commit(service, entry, branch, sha), mr
-        except ImageNotFoundError as exc:
-            errors.append(str(exc))
-
-    raise MissingPipelineImageError(
-        f"MR !{mr_iid}: no pipeline image for head commit {sha[:12]} "
-        f"({'; '.join(errors)}). The branch or its trusted- copy must run the "
-        "containerize pipeline at this commit; ask a maintainer to refresh a "
-        "stale trusted- copy before pinning."
-    )
 
 
 def read_lock(required: bool = True) -> dict | None:
@@ -451,7 +380,7 @@ def trusted_canonical_sources(lock: dict) -> dict[str, str]:
         raise PinError(
             f"Untrusted canonical source on {IMAGE_LOCK_CONFIGMAP}: {'; '.join(mismatched)}. "
             "Run 'spi onboard --list' to see the drift, then re-onboard the fork or set "
-            "--canonical-source community."
+            "--canonical-source azure."
         )
     return sources
 
@@ -863,141 +792,6 @@ def _abort_if_maintenance_intervened(mutation: _LockMutation, service: str) -> N
     raise PinError(f"{blocker} while pinning {names}; {outcome}.")
 
 
-def pin_service(service: str, mr_iid: str) -> list[tuple[str, ServicePin]]:
-    """Pin a service (and schema's paired loader) to an MR pipeline image.
-
-    Returns the applied (service, pin) pairs.
-    """
-
-    if service not in IMAGE_REGISTRY:
-        known = ", ".join(sorted(IMAGE_REGISTRY))
-        raise PinError(f"Unknown service {service!r}. Known services: {known}")
-    if service == SCHEMA_LOAD_SERVICE_NAME:
-        raise PinError("Pin 'schema' instead; the loader follows the schema pin.")
-    require_deployable()
-
-    targets = [service]
-    if service == SCHEMA_SERVICE_NAME:
-        targets.append(SCHEMA_LOAD_SERVICE_NAME)
-
-    # Resolved once, outside the mutator, so the network round trip does not
-    # repeat on every CAS retry.
-    resolved: list[tuple[str, ResolvedImage, dict]] = []
-    loader_missing = False
-    mr_snapshots: dict[int, dict] = {}
-    for name in targets:
-        project_id = IMAGE_REGISTRY[name].project_id
-        if project_id not in mr_snapshots:
-            mr_snapshots[project_id] = fetch_merge_request(project_id, mr_iid)
-        try:
-            image, mr = resolve_mr_image(name, mr_iid, mr_snapshots[project_id])
-        except MissingPipelineImageError:
-            if name != SCHEMA_LOAD_SERVICE_NAME:
-                raise
-            # An MR need not rebuild the loader image; the service pin alone
-            # is still valid.
-            loader_missing = True
-            continue
-        resolved.append((name, image, mr))
-
-    applied_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    results: list[tuple[str, ServicePin]] = []
-    released: list[str] = []
-    prior_pins: dict[str, ServicePin | None] = {}
-    prior_entries: dict[str, dict[str, str]] = {}
-
-    def compute(lock: dict | None) -> dict:
-        if lock is None:
-            raise PinError(
-                f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
-                "is this a core-profile cluster?"
-            )
-        nonlocal results, released, prior_pins, prior_entries
-        lock_data = lock.get("data") or {}
-        pins = decode_pins(lock)
-        data = dict(lock_data)
-        results = []
-        released_now: dict[str, ServicePin] = {}
-        prior_pins = {}
-        prior_entries = {}
-
-        def capture(name: str) -> None:
-            prior_pins[name] = pins.get(name)
-            prior_entries[name] = {
-                key: lock_data[key] for key in _lock_entry_keys(name) if key in lock_data
-            }
-
-        if loader_missing:
-            # A loader pinned by an earlier MR must not pair with the new
-            # schema image; release it.
-            stale = pins.get(SCHEMA_LOAD_SERVICE_NAME)
-            if stale:
-                if not stale.canonical_repository or not stale.canonical_tag:
-                    raise PinError(
-                        f"{SCHEMA_LOAD_SERVICE_NAME} is pinned to MR !{stale.mr} with no "
-                        "canonical image recorded; run 'spi service reset schema' to remove "
-                        "the invalid pin, then 'spi reconcile --refresh-images' before re-pinning."
-                    )
-                capture(SCHEMA_LOAD_SERVICE_NAME)
-                pins.pop(SCHEMA_LOAD_SERVICE_NAME)
-                released_now[SCHEMA_LOAD_SERVICE_NAME] = stale
-
-        for name, image, mr in resolved:
-            existing = pins.get(name)
-            capture(name)
-            canonical = _captured_canonical(name, existing, lock_data)
-            pin = ServicePin(
-                mr=str(mr_iid),
-                branch=mr.get("source_branch", ""),
-                repository=image.repository,
-                tag=image.tag,
-                canonical_repository=canonical[0],
-                canonical_tag=canonical[1],
-                canonical_created_at=canonical[2],
-                canonical_digest=canonical[3],
-                applied_at=applied_at,
-                created_at=image.created_at,
-                digest=image.digest,
-                origin=GITLAB_MR_ORIGIN,
-            )
-            pins[name] = pin
-            data.update(
-                _lock_entry_patch(name, image.repository, image.tag, image.created_at, image.digest)
-            )
-            results.append((name, pin))
-
-        for name, stale in released_now.items():
-            data.update(
-                _lock_entry_patch(
-                    name,
-                    stale.canonical_repository,
-                    stale.canonical_tag,
-                    stale.canonical_created_at,
-                    stale.canonical_digest,
-                )
-            )
-        released = sorted(released_now)
-
-        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
-        if pins:
-            annotations[PINS_ANNOTATION] = encode_pins(pins)
-        else:
-            annotations.pop(PINS_ANNOTATION, None)
-        return {"data": data, "metadata": {"annotations": annotations}}
-
-    description_targets = [name for name, _, _ in resolved] if loader_missing else targets
-    description = f"Pin {', '.join(description_targets)} to MR !{mr_iid} image"
-    mutate_lock(compute, description)
-
-    written: dict[str, ServicePin | None] = dict(results)
-    written.update({name: None for name in released})
-    mutation = _LockMutation(written=written, prior_pins=prior_pins, prior_entries=prior_entries)
-    _abort_if_maintenance_intervened(mutation, service)
-
-    reconcile_consumers([name for name, _ in results] + released)
-    return results
-
-
 def _require_trusted_source(lock: dict, service: str, source_repo: str) -> None:
     """An ephemeral pin's claimed source must be the repository trusted for the service.
 
@@ -1384,19 +1178,19 @@ def refresh_services(services: list[str]) -> RefreshResult:
 
 
 def refresh_fork_services() -> RefreshResult:
-    """Refresh every service the lock's source policy points at a fork.
+    """Refresh every service to the newest image its canonical repository built.
 
-    No lock, or a policy naming no fork, is nothing to refresh. A policy that
-    cannot be read or trusted raises, so it never passes for one without forks.
+    Every canonical is a GHCR image under retention, whether it follows Azure or
+    a mirror. No lock is nothing to refresh; a policy that cannot be read or
+    trusted raises rather than refreshing from the wrong repository.
     """
 
     lock = read_lock(required=False)
     if lock is None:
         return RefreshResult({}, ())
     sources = trusted_canonical_sources(lock)
-    if not sources:
-        return RefreshResult({}, ())
-    return _apply_refresh(_refresh_names(sorted(sources)), lock, sources)
+    names = [name for name in image_lock_names() if name != SCHEMA_LOAD_SERVICE_NAME]
+    return _apply_refresh(_refresh_names(names), lock, sources)
 
 
 def _refresh_names(services: Iterable[str]) -> list[str]:
@@ -1412,10 +1206,8 @@ def _refresh_names(services: Iterable[str]) -> list[str]:
 
 
 def _apply_refresh(names: list[str], lock: dict, sources: dict[str, str]) -> RefreshResult:
-    data = lock.get("data") or {}
-    branch = data.get("IMAGE_BRANCH") or DEFAULT_IMAGE_BRANCH
     try:
-        resolved = resolve_images(branch, names, sources)
+        resolved = resolve_images(names, sources)
     except ImageResolutionError as exc:
         raise PinError(str(exc)) from exc
 
@@ -1474,17 +1266,20 @@ def refresh_due_services(
     pinned: Collection[str],
     now: datetime,
 ) -> tuple[str, ...]:
-    """Lock entries running a fork image old enough for retention to delete.
+    """Lock entries running a canonical image old enough for retention to delete.
 
-    Only an unpinned entry running its fork's own package counts, and one
-    whose build date cannot be read stays unmarked.
+    Only an unpinned entry running its canonical repository's own package
+    counts, and one whose build date cannot be read stays unmarked.
     """
 
     cutoff = now - timedelta(days=FORK_CANONICAL_REFRESH_AGE_DAYS)
     due = []
-    for service, repo in sources.items():
+    for service in image_lock_names():
+        if service == SCHEMA_LOAD_SERVICE_NAME:
+            continue
+        repo = canonical_repo(service, sources)
         pair = [service, SCHEMA_LOAD_SERVICE_NAME] if service == SCHEMA_SERVICE_NAME else [service]
-        if service not in IMAGE_REGISTRY or any(name in pinned for name in pair):
+        if any(name in pinned for name in pair):
             continue
         for name in pair:
             key = image_lock_key(name)
@@ -1512,7 +1307,7 @@ def refresh_due_message(services: Collection[str]) -> str:
     )
     one = len(names) == 1
     return (
-        f"{', '.join(names)} {'runs a fork image' if one else 'run fork images'} built over "
+        f"{', '.join(names)} {'runs an image' if one else 'run images'} built over "
         f"{FORK_CANONICAL_REFRESH_AGE_DAYS} days ago; GHCR retention can delete "
         f"{'it' if one else 'them'} at {FORK_RETENTION_DAYS} days. "
         f"Run '{refresh_command(names)}'."
@@ -1911,7 +1706,6 @@ def live_pins() -> dict[str, ServicePin]:
 
 def render_lock_with_pins(
     resolved: dict[str, ResolvedImage],
-    branch: str,
     pins: dict[str, ServicePin],
 ) -> str:
     """Render the image lock with active pins overlaid, as one document.
@@ -1931,7 +1725,6 @@ def render_lock_with_pins(
     extra = {PINS_ANNOTATION: encode_pins(pins)} if pins else None
     return render_image_lock_configmap(
         overlaid,
-        branch=branch,
         extra_annotations=extra,
         do_not_disrupt=_ephemeral_names(pins),
     )
@@ -1939,7 +1732,6 @@ def render_lock_with_pins(
 
 def apply_image_lock(
     resolved: dict[str, ResolvedImage],
-    branch: str,
     description: str = "Update the osdu-image-lock ConfigMap",
     max_attempts: int = LOCK_MUTATION_MAX_ATTEMPTS,
 ) -> dict[str, ServicePin]:
@@ -1964,14 +1756,14 @@ def apply_image_lock(
                     name, pin.repository, pin.tag, pin.created_at, pin.digest
                 )
         timestamp = datetime.now(timezone.utc).isoformat()
-        data = build_lock_data(overlaid, branch, timestamp, _ephemeral_names(active_pins))
+        data = build_lock_data(overlaid, timestamp, _ephemeral_names(active_pins))
         # Pins never write the pair, so the live key still pairs the captured canonical.
         prior = (lock or {}).get("data") or {}
         for name in active_pins:
             key = acceptance_digest_key(name)
             if prior.get(key):
                 data[key] = prior[key]
-        annotations = build_lock_annotations(branch, timestamp)
+        annotations = build_lock_annotations(timestamp)
         if active_pins:
             annotations[PINS_ANNOTATION] = encode_pins(active_pins)
         existing = ((lock or {}).get("metadata") or {}).get("annotations") or {}
@@ -1982,44 +1774,3 @@ def apply_image_lock(
 
     mutate_lock(compute, description, max_attempts=max_attempts)
     return active_pins
-
-
-class _NoBackfillNeeded(Exception):
-    """Internal sentinel: the lock is absent or already carries schema-load."""
-
-
-def apply_schema_load_backfill(
-    branch: str = DEFAULT_IMAGE_BRANCH,
-    description: str = "Backfill schema-load into the osdu-image-lock ConfigMap",
-    max_attempts: int = LOCK_MUTATION_MAX_ATTEMPTS,
-) -> bool:
-    """Add schema-load's lock entries to a lock that predates them.
-
-    Returns False without writing anything when the lock does not exist yet
-    (minimal/bare profiles never create one) or already carries schema-load's
-    keys, including its composed ref. Recomputes the patch from the schema
-    tag the fresh lock records on every retry, so backfilling never races a
-    concurrent schema pin/reset/refresh.
-    """
-
-    backfilled = False
-
-    def compute(lock: dict | None) -> dict:
-        if lock is None:
-            raise _NoBackfillNeeded
-        lock_data = lock.get("data") or {}
-        if not image_lock_missing_schema_load(lock_data):
-            raise _NoBackfillNeeded
-        nonlocal backfilled
-        patch = schema_load_lock_patch(lock_data, branch=branch)
-        data = dict(lock_data)
-        data.update(patch)
-        backfilled = True
-        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
-        return {"data": data, "metadata": {"annotations": annotations}}
-
-    try:
-        mutate_lock(compute, description, max_attempts=max_attempts)
-    except _NoBackfillNeeded:
-        return False
-    return backfilled

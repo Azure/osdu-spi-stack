@@ -38,7 +38,7 @@ above (ADR-028). Canonical service images advance on refresh under each
 service's source policy (ADR-033) and are recorded in the image lock.
 Ephemeral test pins (ADR-031) are transient overlays. `spi status --json`
 reports the running stack version under `environment.running`, the lock's
-branch and resolve time, and the pins; `spi info --json` adds each service's
+resolve time, and the pins; `spi info --json` adds each service's
 image under `osdu_versions`, and `spi service list` details the pins.
 
 ## The pin and the bump flow
@@ -51,7 +51,6 @@ stackVersion: v0.18.0
 profile: core
 location: westus3
 ingressMode: azure
-imageBranch: master
 nameSuffix: a43c7
 ```
 
@@ -106,18 +105,17 @@ tag, and the shared RG carries neither.
 serving: set the `maintenance` flag in a named quiesce step, run plain `spi
 reconcile` (preserving the version-pinned source and the current image
 lock), run `spi onboard --reconcile --write` to restore declared fork trust
-and source policy, run `spi service refresh --forks` to advance fork-sourced
-canonicals (ADR-033), gate on `scripts/wait_for_flux_ready.sh` plus the gateway probes
+and source policy, run `spi service refresh --forks` to advance every
+canonical (ADR-033), gate on `scripts/wait_for_flux_ready.sh` plus the gateway probes
 shared with `smoke.yml` via `scripts/probe_gateway.sh`, assert the deployed
 ref and source suspension are unchanged, and clear the flag only after every
-check passes. Community-sourced canonicals do not advance on this schedule.
-The fork refresh runs when the declared `stackVersion` is v0.22.0 or later,
+check passes. The canonical refresh runs when the declared `stackVersion` is v0.22.0 or later,
 and the reconcile when it is v0.24.0 or later; an older declaration logs a
 notice and skips the step. The reconcile is capped at 5 minutes and changes
 nothing on an environment whose resource group records no declaration. The schedule starts
 an hour before the fork template's retention job (Mondays 05:00 UTC), so a
-canonical moves to a fork's weekend build before retention deletes the image
-that build replaced. A failed step leaves the flag set (ADR-029), so a red
+canonical moves to its repository's weekend build before retention deletes
+the image that build replaced. A failed step leaves the flag set (ADR-029), so a red
 04:00 UTC run blocks the day's fork deploys with a reason instead of letting
 them race a sick environment. The stale-pin sweep
 ([fork-deployment.md](fork-deployment.md)) and the drain insert between the
@@ -141,8 +139,8 @@ source again, then write the deploy record with maintenance still enabled
 (ADR-029). The verification job separately waits for workload convergence
 and clears maintenance only after its probes pass. The `--refresh-images`
 pass moves canonical images during an upgrade, but the bump pins only the
-stack-definition axis. Weekday refreshes preserve community canonicals and
-advance fork-sourced ones (ADR-033).
+stack-definition axis. Weekday refreshes advance every canonical, Azure and
+mirror alike (ADR-033).
 
 After the flag clears, both verbs poll `spi status --json` for up to 5
 minutes until it reports deployable. A Kustomization with `wait: true`
@@ -184,7 +182,7 @@ later `spi up` and refresh reconciles to the file whether or not the
 workflow passes it, including down to an empty list.
 
 Reconciliation runs in one order wherever it runs
-(`src/spi/declared.py`): record `community` for undeclared sources, revoke
+(`src/spi/declared.py`): record `azure` for undeclared sources, revoke
 undeclared and stale credentials, write declared credentials, record
 declared sources, then rebuild the lock's trust and source projections. The ensure path checks
 repository protection before enabling a credential and serializes credential
@@ -275,7 +273,6 @@ spi up \
   --profile "$(yq .profile $decl)" \
   --location "$(yq .location $decl)" \
   --ingress-mode "$(yq .ingressMode $decl)" \
-  --image-branch "$(yq .imageBranch $decl)" \
   --name-suffix "$(yq .nameSuffix $decl)" \
   --tag "$(yq .stackVersion $decl)"
 bash scripts/wait_for_flux_ready.sh --timeout 13800 \
@@ -333,16 +330,15 @@ gh run watch
    `--canonical-source` with its source-policy phase are built, as are
    `forks:`, the declaration locator with pre-resolution intent loading, and
    `spi onboard --reconcile`. `ops/environments/shared.yaml` lists the
-   repositories `shared` trusts, each on a community canonical. The template
+   repositories `shared` trusts, each its service's Azure repository. The template
    implements one `deploy-test` job with borrow, prove, and restore steps;
    `validation-summary` reports its result through the required summary check.
    See [fork deployment](fork-deployment.md#the-sequence).
-5. **Canonical promotions** (partly built): explicit per-service source
-   policy in RG tags and its lock projection are implemented, as is the
-   weekday `spi service refresh --forks` that advances fork-sourced
-   canonicals inside the retention window. Still unbuilt: on the shared
-   environment, a reviewed `canonicalSource: fork` change after the deploy
-   and test gates pass (ADR-033).
+5. **Canonical sources** (built): every service follows its Azure
+   repository unless a retained RG tag or a reviewed `canonicalSource: fork`
+   entry selects a trusted mirror, and the lock projects that policy. The
+   weekday `spi service refresh --forks` advances every canonical inside the
+   retention window (ADR-033).
 
 ## Related ADRs
 

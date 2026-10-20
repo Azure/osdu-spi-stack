@@ -42,9 +42,10 @@ from .deploy_record import (
     environment_facts,
     read_deploy_record,
 )
+from .environment import AZURE_SOURCE
 from .images import (
-    GHCR_HOST,
     SCHEMA_LOAD_SERVICE_NAME,
+    azure_source,
     image_lock_key,
     image_lock_names,
     runs_fork_package,
@@ -203,7 +204,7 @@ def _osdu_versions(lock: dict | None) -> dict:
             "pinned": pin is not None,
             "origin": pin_origin(pin) if pin else "canonical",
             # The policy the next refresh resolves; the repository shows what runs now.
-            "source": sources.get(_policy_service(name), "community"),
+            "source": sources.get(_policy_service(name), AZURE_SOURCE),
             "refresh_due": name in due,
         }
     return {
@@ -638,15 +639,13 @@ def _policy_service(name: str) -> str:
 def _canonical_source(name: str, image: dict) -> str:
     """The source policy, marked when the running image still predates it."""
 
-    source = image.get("source") or "community"
+    source = image.get("source") or AZURE_SOURCE
     repository = image.get("repository", "")
-    if source == "community":
-        current = repository.partition("/")[0] != GHCR_HOST
-    else:
-        current = runs_fork_package(name, repository, source)
-    if current:
-        return source if source != "community" else "[dim]community[/dim]"
-    return f"{source} [dim](next refresh)[/dim]"
+    repo = azure_source(name) if source == AZURE_SOURCE else source
+    shown = f"[dim]{AZURE_SOURCE}[/dim]" if source == AZURE_SOURCE else source
+    if runs_fork_package(name, repository, repo):
+        return shown
+    return f"{shown} [dim](next refresh)[/dim]"
 
 
 def render_info(show_secrets: bool = False, show_apis: bool = False, output_json: bool = False):

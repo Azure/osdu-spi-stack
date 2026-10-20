@@ -2,9 +2,9 @@
 
 ## Context
 
-The OSDU community GitLab registry is the current image source, publishing under tag patterns like `*-master:<sha>` plus a moving `latest`. Two operational realities sit underneath that:
+Each service's image comes from GHCR, published by the repository its canonical source names (ADR-033) under a moving `main-snapshot` tag and per-commit `sha-<12>` tags. Two operational realities sit underneath that:
 
-1. **Tag churn.** Tags get pruned. A chart that names a SHA tag can break on any later reconcile once the upstream registry trims it.
+1. **Tag churn.** Tags move and versions get pruned. A chart that names a moving tag rotates silently, and one that names a `sha-*` tag breaks once retention deletes it.
 2. **Cluster drift over a long-lived deploy.** Without a pin, two `spi up` runs on different days against `main` install different images. Reproducing a bug becomes a moving target.
 
 The simple options both fail. Pinning images inside each service's `HelmRelease.values` ties chart edits to image bumps and produces noisy Git diffs every refresh. Letting Flux follow `latest` is the inverse failure mode: every reconcile risks a silent service rotation mid-test.
@@ -17,18 +17,17 @@ Resolve OSDU images into a single `osdu-image-lock` ConfigMap in `osdu-flux`, an
 
 Shape:
 
-- `src/spi/images.py` resolves each service in `IMAGE_REGISTRY` from its explicit canonical-source policy (ADR-033), not from repository trust. `spi up` loads that policy from the reviewed declaration or retained RG source tags before image resolution; standing-cluster refresh reads its projection, the lock's `spi-stack.osdu.dev/canonical-sources` annotation. With no selected fork the service is GitLab-origin and resolution queries the community registry API for the newest immutable SHA tag on the configured branch (default `master`); a promoted service resolves its fork's GHCR `main` image instead: the digest `main-snapshot` names, recorded under the `sha-<12>` tag of the `main` commit that built it. The schema-load image is resolved from the selected schema-service SHA and fails fast if that exact loader tag is absent.
+- `src/spi/images.py` resolves each service in `IMAGE_REGISTRY` from its canonical-source policy (ADR-033), not from repository trust. `spi up` loads that policy from the reviewed declaration or retained RG source tags before image resolution; standing-cluster refresh reads its projection, the lock's `spi-stack.osdu.dev/canonical-sources` annotation. Each service resolves the GHCR `main` image of its Azure repository, or of its recorded mirror: the digest `main-snapshot` names, recorded under the `sha-<12>` tag of the `main` commit that built it. The schema-load image is the loader built from the same schema commit and fails fast when that loader is absent.
 - The lock is applied during K8s bootstrap before Flux reconciles. Keys are uppercase service names: `PARTITION_IMAGE`, `PARTITION_IMAGE_TAG`, `PARTITION_IMAGE_DIGEST`, etc.
 - Service Kustomizations under `software/stacks/osdu/profiles/core/` reference the ConfigMap with `spec.postBuild.substituteFrom`, so `${PARTITION_IMAGE}` in a YAML expands at apply time. Service Helm chart values stay generic; the lock holds the pin.
 - The digest keys are load-bearing: the `osdu-spi-service` chart accepts `image.digest` and renders `repository@digest` when it is set, `repository:tag` otherwise, and service YAMLs pass `${<SERVICE>_IMAGE_DIGEST}`. An entry without a digest falls back to its tag, so a lock written before digests joined still renders. The schema-load Job is a raw manifest that cannot branch on an empty key, so the lock also carries a composed `SCHEMA_LOAD_IMAGE_REF` (`repository@digest` when a digest is recorded, `repository:tag` otherwise) and the Job consumes that single substitution.
 - `spi reconcile --refresh-images` re-resolves and re-applies the ConfigMap, then reconciles the service Kustomizations and `spi-osdu-schema-load` before `spi-osdu-reference`.
 - The schema-load Job is included in the live lock. Because a completed Kubernetes Job cannot be updated in place, its Flux Kustomization uses `force: true` so a changed image tag replaces the Job and re-runs the loader.
-- The schema-load Job substitutes its image with no static default, so a lock generated before the loader joined would leave the Job unresolvable. `spi reconcile` backfills the missing `SCHEMA_LOAD_*` keys from the schema tag the lock already pins, leaving every other service pin untouched.
-- The registry is a source parameter, not part of the decision. Which source a service's canonical image comes from is environment state (ADR-033), not a field in CLI code, and it reaches only the resolution path in `src/spi/images.py` and the pin flow's provenance checks; the lock, the substitution seam, and the refresh and pin semantics hold whichever source a service follows.
+- Which repository a service's canonical image comes from is environment state (ADR-033), not a field in CLI code, and it reaches only the resolution path in `src/spi/images.py` and the pin flow's provenance checks; the lock, the substitution seam, and the refresh and pin semantics hold whichever repository a service follows.
 
-### Per-service MR pins
+### Per-service pins
 
-Validating an upstream service fix requires running the exact image its merge-request pipeline built, on a live cluster, before the fix merges. Because the lock is the single substitution source and is CLI-owned, pins ride the lock rather than Flux: `spi service pin <service> --mr <iid>` resolves the image tagged with the MR's head commit from the community registry (checking the source branch, then its `trusted-` copy, the protected ref OSDU maintainers create to run the containerize pipeline; an image from a stale `trusted-` copy that no longer matches the MR head is rejected), overwrites the service's lock keys, and records provenance plus the canonical image in a lock annotation. `spi service reset` restores the canonical entries exactly; `spi service list` shows active pins. Both lock re-render paths (`spi reconcile --refresh-images` and a re-run `spi up --refresh-images`) re-assert active pins, digest and created-at included, and name them, so a refresh cannot silently revert a pin or blank its metadata. Pinning `schema` pins the paired loader image when the MR pipeline built one. Fork CI deploys ride the same annotation as GHCR digest pins marked ephemeral (ADR-031).
+Validating a change requires running the exact image it built, on a live cluster, before it merges. Because the lock is the single substitution source and is CLI-owned, pins ride the lock rather than Flux: `spi service pin <service> --image <repository>@<digest>` (a fork-built GHCR digest) or `--source <checkout>` (a local build pushed to the environment's registry) overwrites the service's lock keys and records provenance plus the canonical image in a lock annotation. `spi service reset` restores the canonical entries exactly; `spi service list` shows active pins. Both lock re-render paths (`spi reconcile --refresh-images` and a re-run `spi up --refresh-images`) re-assert active pins, digest and created-at included, and name them, so a refresh cannot silently revert a pin or blank its metadata. Fork CI deploys ride the same annotation as digest pins marked ephemeral (ADR-031).
 
 Rejected:
 
@@ -36,14 +35,13 @@ Rejected:
 - **Follow `latest` and rely on `reconcileStrategy: Revision`.** Works for production GitOps but is the exact "surprise upgrade" failure mode ADR-014 was written to avoid.
 - **Commit a static `osdu-image-lock.yaml`.** Reproducible and reviewable in Git, but refreshes still require N Git edits and the file goes stale between deploys.
 - **A Helm post-renderer or Kustomize patch chain.** Moves the pin from a flat ConfigMap to template logic the operator has to debug at render time. The flat ConfigMap is debuggable with `kubectl get cm osdu-image-lock -o yaml`.
-- **MR pins via a suspended Kustomization and a patched HelmRelease.** Freezes every sibling service under the same owner and leaves drift correction off.
-- **MR pins via `--image-branch`.** Moves every service to one branch; validation needs one service moved and thirteen held.
+- **Pins via a suspended Kustomization and a patched HelmRelease.** Freezes every sibling service under the same owner and leaves drift correction off.
 
 ## Consequences
 
 - A `spi up` deploys exactly one resolved image set. The set is reproducible from the ConfigMap; `spi info` surfaces the lock's resolution timestamp and per-service tags.
 - Canonical refreshes are deliberate, not ambient. `--refresh-images` is the supported path; nothing else moves the canonical entries (pins move a single service through their own flow), and a re-run `spi up` without it leaves an existing lock as it stands.
 - Adding a new OSDU service to the stack is one entry in `IMAGE_REGISTRY` plus one service YAML that consumes `${SERVICE_IMAGE}`. No template changes.
-- The image lock depends on the configured source registry being reachable from the CLI host. `spi check` covers tool prerequisites and Azure permissions; registry reachability surfaces as a hard error during K8s bootstrap.
+- The image lock depends on GHCR being reachable from the CLI host. `spi check` covers tool prerequisites and Azure permissions; registry reachability surfaces as a hard error during K8s bootstrap.
 - Adding a one-shot image to the live lock requires its Kustomization to tolerate immutable resource updates, for example `force: true` on Jobs whose Pod templates include lock substitutions.
-- MR validation uses only pipeline-built, provenance-clean images, and pin state is declared on the cluster in the lock annotation.
+- Validation uses only digest-identified images, and pin state is declared on the cluster in the lock annotation.

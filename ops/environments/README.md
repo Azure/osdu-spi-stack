@@ -17,7 +17,6 @@ stackVersion: v0.18.0
 profile: core
 location: westus3
 ingressMode: azure
-imageBranch: master
 nameSuffix: a43c7
 forks:
   - service: partition
@@ -39,18 +38,19 @@ resources:
 | `profile` | `core`, `minimal`, or `bare` (see `docs/architecture.md`). |
 | `location` | Azure region, e.g. `westus3`. |
 | `ingressMode` | `azure` or `dns` (see `docs/design/gateway-ingress.md`). |
-| `imageBranch` | OSDU community registry branch canonical images resolve from. |
+| `imageBranch` | Optional, accepted and ignored by the CLI; the lifecycle workflows pass it only to a `stackVersion` CLI older than v0.30.0, which still requires it. Drop it once `stackVersion` names v0.30.0 or later. |
 | `nameSuffix` | The five-character lowercase alphanumeric suffix that keeps Azure resource names, and the environment's hostname, stable across an upgrade or a future reset. |
 
 `forks` is optional. Each entry trusts one repository to deploy one service
-against the environment and says which image that service's canonical entry
-follows:
+against the environment and says whether that service's canonical entry
+follows the repository as a mirror or stays on its `Azure/osdu-spi-<service>`
+repository:
 
 | Entry field | Meaning |
 |---|---|
 | `service` | The service the repository builds; unique within the list. `forks` is valid only with `profile: core`. |
 | `repo` | The `<org>/<fork>` the service's `fork-<service>` credential trusts; unique within the list, compared without case, at most nineteen entries (ADR-032). |
-| `canonicalSource` | `community` or `fork`, default `community`; a fork is trusted first and promoted by a later reviewed change (ADR-033). |
+| `canonicalSource` | `azure` or `fork`, default `azure`; `community` is read as `azure`. A mirror is trusted first and promoted by a later reviewed change (ADR-033). |
 
 `resources` is optional and valid only with `profile: core` and a `forks`
 list, since `env-upgrade` hands the environment to a declaration only when it
@@ -73,7 +73,7 @@ workflow step shell-evaluates the YAML directly).
 A stack becomes declared when `spi up --declaration <owner>/<repo>:<path>`
 runs against it, for example with the locator
 `Azure/osdu-spi-stack:ops/environments/shared.yaml`. The CLI reads the file
-on `main`, takes the seven keys as its provisioning options, refuses an
+on `main`, takes the six provisioning keys as its options, refuses an
 explicit option that disagrees, and records the locator in the resource-group
 tag `spi-environment-declaration`. Later runs reuse the tag when the option is
 omitted and refuse a different locator or a file they cannot load.

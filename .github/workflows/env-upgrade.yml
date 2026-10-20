@@ -300,6 +300,8 @@ jobs:
       DECLARES_FORKS: ${{ needs.declare.outputs.declares_forks }}
       # First release whose CLI has `spi up --declaration`.
       DECLARED_FORKS_CLI_MIN_VERSION: v0.24.0
+      # First release whose CLI resolves Azure images and takes no --image-branch.
+      AZURE_IMAGES_CLI_MIN_VERSION: v0.30.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -379,11 +381,13 @@ jobs:
             --env "$ENV_NAME"
             --profile "$PROFILE"
             --location "$LOCATION"
-            --image-branch "$IMAGE_BRANCH"
             --name-suffix "$NAME_SUFFIX"
             --tag "$STACK_VERSION"
             --refresh-images
           )
+          if [ -n "$IMAGE_BRANCH" ] && [ "$(printf '%s\n' "$AZURE_IMAGES_CLI_MIN_VERSION" "$STACK_VERSION" | sort -V | head -n1)" != "$AZURE_IMAGES_CLI_MIN_VERSION" ]; then
+            ARGS+=(--image-branch "$IMAGE_BRANCH")
+          fi
           # bare deploys no ingress substrate and spi up rejects the option.
           if [ "$PROFILE" != "bare" ]; then
             ARGS+=(--ingress-mode "$INGRESS_MODE")

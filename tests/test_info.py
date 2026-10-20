@@ -611,7 +611,7 @@ def test_info_json_lists_each_service_image_from_the_lock(monkeypatch):
         "created_at": "2026-09-16T14:00:00Z",
         "pinned": False,
         "origin": "canonical",
-        "source": "community",
+        "source": "azure",
         "refresh_due": False,
     }
 
@@ -736,11 +736,12 @@ def test_info_lists_lock_services_this_cli_does_not_know(monkeypatch):
 @pytest.mark.parametrize(
     "name, repository, source, shown",
     [
+        ("partition", "ghcr.io/azure/osdu-spi-partition", "azure", "azure"),
         (
             "partition",
             "community.opengroup.org:5555/osdu/partition-master",
-            "community",
-            "community",
+            "azure",
+            "azure (next refresh)",
         ),
         ("partition", "ghcr.io/acme/partition", "Acme/partition", "Acme/partition"),
         (
@@ -749,7 +750,7 @@ def test_info_lists_lock_services_this_cli_does_not_know(monkeypatch):
             "Acme/partition",
             "Acme/partition (next refresh)",
         ),
-        ("partition", "ghcr.io/acme/partition", "community", "community (next refresh)"),
+        ("partition", "ghcr.io/acme/partition", "azure", "azure (next refresh)"),
         ("partition", "ghcr.io/other/partition", "Acme/partition", "Acme/partition (next refresh)"),
         (
             "partition",
@@ -758,6 +759,7 @@ def test_info_lists_lock_services_this_cli_does_not_know(monkeypatch):
             "Acme/partition (next refresh)",
         ),
         ("schema-load", "ghcr.io/acme/schema-load", "Acme/schema", "Acme/schema"),
+        ("schema-load", "ghcr.io/azure/osdu-spi-schema-load", "azure", "azure"),
     ],
 )
 def test_the_versions_table_marks_a_source_the_running_image_predates(
@@ -776,7 +778,7 @@ def _fork_lock(age_days: int, pins: dict | None = None) -> dict:
     built = datetime.now(timezone.utc) - timedelta(days=age_days)
     lock["data"]["PARTITION_IMAGE_REPOSITORY"] = "ghcr.io/acme/partition"
     lock["data"]["PARTITION_IMAGE_CREATED_AT"] = built.strftime("%Y-%m-%dT%H:%M:%SZ")
-    # storage stays community on a build older than any threshold.
+    # storage runs a registry image no canonical repository publishes, so it is never due.
     lock["data"]["STORAGE_IMAGE_CREATED_AT"] = "2025-01-01T00:00:00Z"
     lock["metadata"]["annotations"]["spi-stack.osdu.dev/canonical-sources"] = json.dumps(
         {"partition": "Acme/partition"}

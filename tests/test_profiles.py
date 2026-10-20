@@ -283,14 +283,6 @@ class TestSchemaLoadImageSubstitution:
             "capabilities": {"drop": ["ALL"]},
         }
 
-    def test_schema_load_script_keeps_its_shell_references(self):
-        doc = yaml.safe_load((STACKS / "schema-load" / "script.yaml").read_text(encoding="utf-8"))
-        script = doc["data"]["bootstrap.sh"]
-
-        assert _opts_out_of_substitution(doc)
-        assert "${SCHEMA_INFO_URL}" in script
-        assert "${DATA_PARTITION}" in script
-
 
 class TestSchemaLoadDeadline:
     def test_flux_timeout_exceeds_job_deadline(self):
@@ -313,8 +305,8 @@ class TestSchemaLoadDeadline:
         )
 
     # activeDeadlineSeconds counts from Job activation, so it includes node
-    # provisioning, scheduling, and image pull; WAIT_DEADLINE_SECONDS counts
-    # from inside bootstrap.sh once the Pod runs. Must match the 1800s
+    # provisioning, scheduling, and image pull; WAIT_SECONDS counts from
+    # inside the loader's entrypoint once the Pod runs. Must match the 1800s
     # pod-startup allowance in software/stacks/osdu/schema-load/job.yaml.
     POD_STARTUP_ALLOWANCE_SECONDS = 1800
 
@@ -326,17 +318,17 @@ class TestSchemaLoadDeadline:
         ]
         assert len(jobs) == 1
         deadline = jobs[0]["spec"]["activeDeadlineSeconds"]
-
-        doc = yaml.safe_load((STACKS / "schema-load" / "script.yaml").read_text(encoding="utf-8"))
-        match = re.search(r"^\s*WAIT_DEADLINE_SECONDS=(\d+)$", doc["data"]["bootstrap.sh"], re.M)
-        assert match, "bootstrap.sh must set a literal WAIT_DEADLINE_SECONDS"
-        wait_deadline = int(match.group(1))
+        env = {
+            e["name"]: e.get("value")
+            for e in jobs[0]["spec"]["template"]["spec"]["containers"][0]["env"]
+        }
+        wait_deadline = int(env["WAIT_SECONDS"])
 
         # After the pod-startup allowance and the service wait, at least an
         # hour of the Job deadline must remain for the throttled schema load.
         headroom = deadline - self.POD_STARTUP_ALLOWANCE_SECONDS - wait_deadline
         assert headroom >= 3600, (
-            "WAIT_DEADLINE_SECONDS plus the pod-startup allowance must leave at "
+            "WAIT_SECONDS plus the pod-startup allowance must leave at "
             "least 3600s of the Job deadline for the schema load itself"
         )
 

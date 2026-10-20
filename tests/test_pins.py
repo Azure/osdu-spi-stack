@@ -29,16 +29,15 @@ from spi import cli, pins, status
 from spi.build import BuildError, BuiltImage, Registry
 from spi.deploy_record import DeployRecord, DeployRecordError
 from spi.images import (
-    ImageNotFoundError,
     ImageResolutionError,
     ResolvedImage,
+    image_lock_names,
     parse_image_digest_ref,
     require_ghcr_repository,
 )
 from spi.pins import (
     LOCK_MUTATION_MAX_ATTEMPTS,
     LockConflictError,
-    MissingPipelineImageError,
     PinError,
     ResetRefusedError,
     ResetResult,
@@ -48,9 +47,7 @@ from spi.pins import (
     decode_pins,
     describe_pin,
     encode_pins,
-    pin_service,
     pin_service_image,
-    ref_slug,
     reset_service,
     sweep_stale_ephemeral_pins,
     verify_service_image,
@@ -271,16 +268,6 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     return calls
 
 
-class TestRefSlug:
-    def test_matches_gitlab_ci_commit_ref_slug_rules(self):
-        assert ref_slug("fix/Upgrade_Core-Lib") == "fix-upgrade-core-lib"
-        assert ref_slug("--weird--") == "weird"
-        assert len(ref_slug("x" * 100)) == 63
-
-    def test_truncation_strips_trailing_hyphen(self):
-        assert not ref_slug("a" * 62 + "/b").endswith("-")
-
-
 class TestPinCodec:
     def test_round_trip(self):
         original = {"schema": _pin()}
@@ -312,7 +299,7 @@ class TestPinCodec:
 
 
 class TestDescribePin:
-    def test_mr_pin_shows_branch_and_tag(self):
+    def test_a_legacy_mr_pin_still_renders(self):
         assert describe_pin(_pin()) == "MR !847 (fix/upgrade-core-lib @ " + "a" * 12 + ")"
 
     def test_ephemeral_github_pin_shows_run_and_digest_without_mr(self):
@@ -327,134 +314,12 @@ class TestDescribePin:
         assert "MR !" not in description
 
 
-class TestResolveMrImage:
-    def test_resolves_source_branch_slug_at_head_sha(self, monkeypatch):
-        sha = "b" * 40
-        monkeypatch.setattr(
-            pins, "fetch_merge_request", lambda pid, iid: {"source_branch": "fix/x", "sha": sha}
-        )
-        captured = {}
+class TestRequireDeployable:
+    def _wire(self, monkeypatch):
+        return _wire_lock(monkeypatch, _lock(data=_canonical_data("storage")))
 
-        def fake_resolve(service, entry, branch, sha):
-            captured.update(service=service, branch=branch, sha=sha)
-            return ResolvedImage(service, "repo/schema-service-fix-x", sha[:12], "", "")
-
-        monkeypatch.setattr(pins, "resolve_image_commit", fake_resolve)
-        image, _mr = pins.resolve_mr_image("schema", "847")
-        assert captured == {"service": "schema", "branch": "fix-x", "sha": sha}
-        assert image.tag == sha[:12]
-
-    def test_falls_back_to_trusted_branch_copy(self, monkeypatch):
-        sha = "b" * 40
-        monkeypatch.setattr(
-            pins, "fetch_merge_request", lambda pid, iid: {"source_branch": "fix/x", "sha": sha}
-        )
-        attempts = []
-
-        def fake_resolve(service, entry, branch, sha):
-            attempts.append(branch)
-            if branch != "trusted-fix-x":
-                raise ImageNotFoundError(f"{service}: repository not found")
-            return ResolvedImage(service, "repo/schema-service-trusted-fix-x", sha, "", "")
-
-        monkeypatch.setattr(pins, "resolve_image_commit", fake_resolve)
-        image, _mr = pins.resolve_mr_image("schema", "847")
-        assert attempts == ["fix-x", "trusted-fix-x"]
-        assert image.repository.endswith("trusted-fix-x")
-
-    def test_trusted_slug_truncates_after_prefix(self, monkeypatch):
-        branch = "x" * 100
-        monkeypatch.setattr(
-            pins, "fetch_merge_request", lambda pid, iid: {"source_branch": branch, "sha": "b" * 40}
-        )
-        attempts = []
-
-        def fake_resolve(service, entry, branch, sha):
-            attempts.append(branch)
-            raise ImageNotFoundError("nope")
-
-        monkeypatch.setattr(pins, "resolve_image_commit", fake_resolve)
-        with pytest.raises(PinError):
-            pins.resolve_mr_image("schema", "847")
-        assert attempts == ["x" * 63, "trusted-" + "x" * 55]
-        assert all(len(candidate) <= 63 for candidate in attempts)
-
-    def test_missing_pipeline_image_names_the_mr(self, monkeypatch):
-        monkeypatch.setattr(
-            pins,
-            "fetch_merge_request",
-            lambda pid, iid: {"source_branch": "fix/x", "sha": "b" * 40},
-        )
-
-        def raise_missing(service, entry, branch, sha):
-            raise ImageNotFoundError(f"{service}: no tag for commit")
-
-        monkeypatch.setattr(pins, "resolve_image_commit", raise_missing)
-        with pytest.raises(PinError, match="containerize pipeline"):
-            pins.resolve_mr_image("schema", "847")
-
-    def test_registry_lookup_failure_is_not_reported_as_missing(self, monkeypatch):
-        monkeypatch.setattr(
-            pins,
-            "fetch_merge_request",
-            lambda pid, iid: {"source_branch": "fix/x", "sha": "b" * 40},
-        )
-        attempts = []
-
-        def raise_lookup_failure(service, entry, branch, sha):
-            attempts.append(branch)
-            raise ImageResolutionError("GitLab API unreachable")
-
-        monkeypatch.setattr(pins, "resolve_image_commit", raise_lookup_failure)
-        with pytest.raises(ImageResolutionError, match="unreachable"):
-            pins.resolve_mr_image("schema", "847")
-        assert attempts == ["fix-x"]
-
-    def test_nonexistent_mr_becomes_pin_error(self, monkeypatch):
-        import urllib.error
-        from email.message import Message
-
-        def raise_404(url):
-            raise urllib.error.HTTPError(url, 404, "Not Found", Message(), None)
-
-        monkeypatch.setattr(pins, "gitlab_get", raise_404)
-        with pytest.raises(PinError, match="not found"):
-            pins.fetch_merge_request(26, "99999")
-
-
-class TestPinService:
-    def _wire(self, monkeypatch, lock, resolved_names, conflicts: int = 0):
-        calls = _wire_lock(monkeypatch, lock, conflicts=conflicts)
-        calls["fetches"] = 0
-        mr = {"source_branch": "fix/x", "sha": "b" * 40}
-
-        def fake_fetch(project_id, mr_iid):
-            calls["fetches"] += 1
-            return mr
-
-        def fake_resolve(service, mr_iid, mr_snapshot=None):
-            assert mr_snapshot is mr
-            if service not in resolved_names:
-                raise MissingPipelineImageError(f"{service}: no image")
-            return (
-                ResolvedImage(service, f"repo/{service}-fix-x", "b" * 40, "now", "sha256:new"),
-                mr_snapshot,
-            )
-
-        monkeypatch.setattr(pins, "fetch_merge_request", fake_fetch)
-        monkeypatch.setattr(pins, "resolve_mr_image", fake_resolve)
-        return calls
-
-    def test_unknown_service_rejected(self, monkeypatch):
-        with pytest.raises(PinError, match="Unknown service"):
-            pin_service("nope", "1")
-
-    def test_schema_load_direct_pin_rejected(self):
-        with pytest.raises(PinError, match="Pin 'schema'"):
-            pin_service("schema-load", "1")
-
-    def test_pin_refused_while_maintenance_set(self, monkeypatch):
-        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+    def test_refused_while_maintenance_set(self, monkeypatch):
+        self._wire(monkeypatch)
         monkeypatch.setattr(
             pins,
             "read_deploy_record",
@@ -462,13 +327,10 @@ class TestPinService:
         )
 
         with pytest.raises(PinError, match="maintenance"):
-            pin_service("storage", "42")
+            pins.require_deployable()
 
-        assert calls["fetches"] == 0
-        assert calls["patch"] is None
-
-    def test_pin_refused_while_not_ready(self, monkeypatch):
-        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+    def test_refused_while_not_ready(self, monkeypatch):
+        self._wire(monkeypatch)
         monkeypatch.setattr(
             status,
             "collect_kustomization_readiness",
@@ -476,13 +338,10 @@ class TestPinService:
         )
 
         with pytest.raises(PinError, match="spi-osdu-services: Progressing"):
-            pin_service("storage", "42")
+            pins.require_deployable()
 
-        assert calls["fetches"] == 0
-        assert calls["patch"] is None
-
-    def test_pin_readiness_check_failure_becomes_pin_error(self, monkeypatch):
-        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+    def test_readiness_check_failure_becomes_pin_error(self, monkeypatch):
+        self._wire(monkeypatch)
 
         def raise_unreachable():
             raise StatusError("Could not read Flux Kustomizations: connection refused")
@@ -490,16 +349,13 @@ class TestPinService:
         monkeypatch.setattr(status, "collect_kustomization_readiness", raise_unreachable)
 
         with pytest.raises(PinError, match="connection refused"):
-            pin_service("storage", "42")
+            pins.require_deployable()
 
-        assert calls["fetches"] == 0
-        assert calls["patch"] is None
-
-    def test_pin_refused_while_bootstrap_failed(self, monkeypatch):
+    def test_refused_while_bootstrap_failed(self, monkeypatch):
         """A failed members Job means the deploy identity cannot call the
         services, so a pin would be untestable; the guard applies the same
         rule `spi status` reports."""
-        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+        self._wire(monkeypatch)
         monkeypatch.setattr(
             status,
             "collect_bootstrap_blocker",
@@ -511,13 +367,10 @@ class TestPinService:
         )
 
         with pytest.raises(PinError, match="bootstrap failed .*entitlements-members-opendes"):
-            pin_service("storage", "42")
+            pins.require_deployable()
 
-        assert calls["fetches"] == 0
-        assert calls["patch"] is None
-
-    def test_pin_refused_while_bootstrap_pending(self, monkeypatch):
-        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+    def test_refused_while_bootstrap_pending(self, monkeypatch):
+        self._wire(monkeypatch)
         monkeypatch.setattr(
             status,
             "collect_bootstrap_blocker",
@@ -529,12 +382,10 @@ class TestPinService:
         )
 
         with pytest.raises(PinError, match="bootstrap is not complete .*still running"):
-            pin_service("storage", "ghcr.io/azure/storage@sha256:" + "a" * 64)
+            pins.require_deployable()
 
-        assert calls["patch"] is None
-
-    def test_pin_bootstrap_read_failure_becomes_pin_error(self, monkeypatch):
-        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+    def test_bootstrap_read_failure_becomes_pin_error(self, monkeypatch):
+        self._wire(monkeypatch)
 
         def raise_unreachable():
             raise StatusError("Could not read the entitlements-members Jobs: connection refused")
@@ -542,23 +393,17 @@ class TestPinService:
         monkeypatch.setattr(status, "collect_bootstrap_blocker", raise_unreachable)
 
         with pytest.raises(PinError, match="entitlements-members Jobs: connection refused"):
-            pin_service("storage", "42")
+            pins.require_deployable()
 
-        assert calls["fetches"] == 0
-        assert calls["patch"] is None
-
-    def test_pin_refused_without_deploy_record(self, monkeypatch):
-        calls = self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+    def test_refused_without_deploy_record(self, monkeypatch):
+        self._wire(monkeypatch)
         monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: None)
 
         with pytest.raises(PinError, match="deploy record"):
-            pin_service("storage", "42")
+            pins.require_deployable()
 
-        assert calls["fetches"] == 0
-        assert calls["patch"] is None
-
-    def test_pin_record_read_failure_becomes_pin_error(self, monkeypatch):
-        self._wire(monkeypatch, _lock(data=_canonical_data("storage")), {"storage"})
+    def test_record_read_failure_becomes_pin_error(self, monkeypatch):
+        self._wire(monkeypatch)
 
         def raise_unreachable(required=False):
             raise DeployRecordError("Could not read spi-deploy-record: connection refused")
@@ -566,146 +411,24 @@ class TestPinService:
         monkeypatch.setattr(pins, "read_deploy_record", raise_unreachable)
 
         with pytest.raises(PinError, match="connection refused"):
-            pin_service("storage", "42")
-
-    def test_first_pin_captures_canonical_from_lock(self, monkeypatch):
-        lock = _lock(
-            data={
-                "STORAGE_IMAGE_REPOSITORY": "repo/storage-master",
-                "STORAGE_IMAGE_TAG": "c" * 40,
-                "STORAGE_IMAGE_CREATED_AT": "then",
-                "STORAGE_IMAGE_DIGEST": "sha256:old",
-            }
-        )
-        calls = self._wire(monkeypatch, lock, {"storage"})
-        results = pin_service("storage", "42")
-
-        assert [name for name, _ in results] == ["storage"]
-        data, saved = calls["patch"]
-        assert data["STORAGE_IMAGE_TAG"] == "b" * 40
-        assert data["STORAGE_DO_NOT_DISRUPT"] == "false"
-        assert saved["storage"].canonical_repository == "repo/storage-master"
-        assert saved["storage"].canonical_tag == "c" * 40
-        assert calls["reconciled"] == ["storage"]
-
-    def test_repin_keeps_original_canonical(self, monkeypatch):
-        existing = _pin(mr="1", canonical_repository="repo/storage-master")
-        lock = _lock(
-            data={"STORAGE_IMAGE_REPOSITORY": "repo/storage-fix-x"},
-            pins_annotation=encode_pins({"storage": existing}),
-        )
-        calls = self._wire(monkeypatch, lock, {"storage"})
-        pin_service("storage", "2")
-
-        _, saved = calls["patch"]
-        assert saved["storage"].mr == "2"
-        assert saved["storage"].canonical_repository == "repo/storage-master"
-
-    def test_first_pin_rejects_missing_canonical_lock_data(self, monkeypatch):
-        calls = self._wire(monkeypatch, _lock(), {"storage"})
-
-        with pytest.raises(PinError, match="refresh-images"):
-            pin_service("storage", "42")
-
-        assert calls["patch"] is None
-        assert calls["reconciled"] is None
-
-    def test_schema_pin_pairs_the_loader_from_one_mr_snapshot(self, monkeypatch):
-        lock = _lock(data=_canonical_data("schema", "schema-load"))
-        calls = self._wire(monkeypatch, lock, {"schema", "schema-load"})
-        results = pin_service("schema", "847")
-        assert [name for name, _ in results] == ["schema", "schema-load"]
-        assert calls["description"] == "Pin schema, schema-load to MR !847 image"
-        assert calls["fetches"] == 1
-        assert calls["reconciled"] == ["schema", "schema-load"]
-
-    def test_schema_pin_tolerates_missing_loader_image(self, monkeypatch):
-        calls = self._wire(monkeypatch, _lock(data=_canonical_data("schema")), {"schema"})
-        results = pin_service("schema", "847")
-        assert [name for name, _ in results] == ["schema"]
-        assert calls["description"] == "Pin schema to MR !847 image"
-        assert calls["reconciled"] == ["schema"]
-
-    def test_schema_pin_propagates_loader_lookup_failure(self, monkeypatch):
-        lock = _lock(pins_annotation=encode_pins({"schema-load": _pin(mr="1")}))
-        calls = self._wire(monkeypatch, lock, {"schema", "schema-load"})
-
-        def fake_resolve(service, mr_iid, mr_snapshot=None):
-            if service == "schema-load":
-                raise PinError("MR 847: unexpected GitLab API response")
-            return (
-                ResolvedImage(service, f"repo/{service}-fix-x", "b" * 40, "now", "sha256:new"),
-                mr_snapshot,
-            )
-
-        monkeypatch.setattr(pins, "resolve_mr_image", fake_resolve)
-        with pytest.raises(PinError, match="unexpected GitLab API response"):
-            pin_service("schema", "847")
-        assert calls["patch"] is None
-
-    def test_schema_repin_releases_stale_loader_pin(self, monkeypatch):
-        stale = _pin(mr="1", canonical_repository="repo/loader-master", canonical_tag="c" * 40)
-        lock = _lock(pins_annotation=encode_pins({"schema": _pin(mr="1"), "schema-load": stale}))
-        calls = self._wire(monkeypatch, lock, {"schema"})
-        results = pin_service("schema", "2")
-
-        assert [name for name, _ in results] == ["schema"]
-        data, saved = calls["patch"]
-        assert data["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "repo/loader-master"
-        assert data["SCHEMA_LOAD_IMAGE_TAG"] == "c" * 40
-        assert "schema-load" not in saved
-        assert calls["reconciled"] == ["schema", "schema-load"]
-
-    def test_schema_repin_directs_invalid_loader_through_reset_and_refresh(self, monkeypatch):
-        stale = _pin(mr="1", canonical_repository="", canonical_tag="")
-        lock = _lock(pins_annotation=encode_pins({"schema": _pin(mr="1"), "schema-load": stale}))
-        self._wire(monkeypatch, lock, {"schema"})
-        with pytest.raises(PinError, match="service reset schema.*reconcile --refresh-images"):
-            pin_service("schema", "2")
+            pins.require_deployable()
 
 
 class TestPinServicePostWriteRecheck:
     """A lifecycle run can set `maintenance` between the pre-write refusal and
     the lock's CAS write; the post-write recheck closes that window."""
 
-    def _wire(self, monkeypatch, lock, resolved_names):
+    def _wire(self, monkeypatch, lock):
         calls = _wire_lock(monkeypatch, lock)
-        mr = {"source_branch": "fix/x", "sha": "b" * 40}
-        monkeypatch.setattr(pins, "fetch_merge_request", lambda project_id, mr_iid: mr)
-
-        def fake_resolve(service, mr_iid, mr_snapshot=None):
-            assert mr_snapshot is mr
-            if service not in resolved_names:
-                raise MissingPipelineImageError(f"{service}: no image")
-            return (
-                ResolvedImage(service, f"repo/{service}-fix-x", "b" * 40, "now", "sha256:new"),
-                mr_snapshot,
-            )
-
-        monkeypatch.setattr(pins, "resolve_mr_image", fake_resolve)
+        monkeypatch.setattr(pins, "resolve_ghcr_manifest", lambda repository, digest: None)
         return calls
-
-    def test_reverts_pin_when_maintenance_appears_after_write(self, monkeypatch):
-        lock = _lock(data=_canonical_data("storage"))
-        calls = self._wire(monkeypatch, lock, {"storage"})
-        records = iter([_deploy_record(), _deploy_record(maintenance=True)])
-        monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
-
-        with pytest.raises(PinError, match="maintenance"):
-            pin_service("storage", "42")
-
-        data, saved = calls["patch"]
-        assert data["STORAGE_IMAGE_TAG"] == "c" * 40
-        assert data["STORAGE_IMAGE_REPOSITORY"] == "repo/storage-master"
-        assert "storage" not in saved
-        assert calls["reconciled"] is None
 
     def test_leaves_a_replaced_pin_alone(self, monkeypatch):
         """If another `spi service pin` lands on the same service in the
         post-write window, that newer pin is left standing rather than
         reverted."""
         lock = _lock(data=_canonical_data("storage"))
-        calls = self._wire(monkeypatch, lock, {"storage"})
+        calls = self._wire(monkeypatch, lock)
 
         def fake_read_deploy_record(required=False):
             if calls["patch"] is None:
@@ -724,7 +447,7 @@ class TestPinServicePostWriteRecheck:
         monkeypatch.setattr(pins, "read_deploy_record", fake_read_deploy_record)
 
         with pytest.raises(PinError, match="maintenance"):
-            pin_service("storage", "42")
+            pin_service_image("storage", _GHCR_IMAGE)
 
         final_pins = decode_pins(calls["box"][0])
         assert final_pins["storage"].mr == "99"
@@ -745,12 +468,12 @@ class TestPinServicePostWriteRecheck:
             data=_pinned_data("storage", earlier),
             pins_annotation=encode_pins({"storage": earlier}),
         )
-        calls = self._wire(monkeypatch, lock, {"storage"})
+        calls = self._wire(monkeypatch, lock)
         records = iter([_deploy_record(), _deploy_record(maintenance=True)])
         monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
 
         with pytest.raises(PinError, match="maintenance"):
-            pin_service("storage", "42")
+            pin_service_image("storage", _GHCR_IMAGE)
 
         data, saved = calls["patch"]
         assert saved["storage"] == earlier
@@ -769,12 +492,12 @@ class TestPinServicePostWriteRecheck:
         live["STORAGE_IMAGE_CREATED_AT"] = "then"
         live["STORAGE_IMAGE_REF"] = "repo/storage-fix-earlier@sha256:live"
         lock = _lock(data=live, pins_annotation=encode_pins({"storage": legacy}))
-        calls = self._wire(monkeypatch, lock, {"storage"})
+        calls = self._wire(monkeypatch, lock)
         records = iter([_deploy_record(), _deploy_record(maintenance=True)])
         monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
 
         with pytest.raises(PinError, match="maintenance"):
-            pin_service("storage", "42")
+            pin_service_image("storage", _GHCR_IMAGE)
 
         data, _ = calls["patch"]
         assert data["STORAGE_IMAGE_DIGEST"] == "sha256:live"
@@ -782,19 +505,19 @@ class TestPinServicePostWriteRecheck:
         assert data["STORAGE_IMAGE_REF"] == "repo/storage-fix-earlier@sha256:live"
 
     def test_reinstates_a_loader_pin_released_by_the_same_write(self, monkeypatch):
-        """Pinning schema from an MR that never rebuilt the loader releases a
-        stale loader pin; the rollback owes that release an undo too."""
+        """Pinning schema without a paired loader releases a stale loader pin;
+        the rollback owes that release an undo too."""
         loader = _pin(mr="7", repository="repo/schema-load-fix-earlier", tag="e" * 40)
         lock = _lock(
             data={**_canonical_data("schema"), **_pinned_data("schema-load", loader)},
             pins_annotation=encode_pins({"schema-load": loader}),
         )
-        calls = self._wire(monkeypatch, lock, {"schema"})
+        calls = self._wire(monkeypatch, lock)
         records = iter([_deploy_record(), _deploy_record(maintenance=True)])
         monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
 
         with pytest.raises(PinError, match="maintenance"):
-            pin_service("schema", "42")
+            pin_service_image("schema", f"ghcr.io/azure/schema@{_GHCR_DIGEST}")
 
         data, saved = calls["patch"]
         assert saved["schema-load"] == loader
@@ -813,7 +536,7 @@ class TestPinServicePostWriteRecheck:
             data={**_canonical_data("schema"), **_pinned_data("schema-load", loader)},
             pins_annotation=encode_pins({"schema-load": loader}),
         )
-        calls = self._wire(monkeypatch, lock, {"schema"})
+        calls = self._wire(monkeypatch, lock)
 
         def fake_read_deploy_record(required=False):
             if calls["patch"] is None:
@@ -832,7 +555,7 @@ class TestPinServicePostWriteRecheck:
         monkeypatch.setattr(pins, "read_deploy_record", fake_read_deploy_record)
 
         with pytest.raises(PinError, match="nothing was reverted"):
-            pin_service("schema", "42")
+            pin_service_image("schema", f"ghcr.io/azure/schema@{_GHCR_DIGEST}")
 
         final_pins = decode_pins(calls["box"][0])
         assert final_pins["schema"].mr == "99"
@@ -841,7 +564,7 @@ class TestPinServicePostWriteRecheck:
 
     def test_reports_pin_still_live_when_revert_fails(self, monkeypatch):
         lock = _lock(data=_canonical_data("storage"))
-        calls = self._wire(monkeypatch, lock, {"storage"})
+        calls = self._wire(monkeypatch, lock)
 
         def fake_read_lock(required=True):
             if calls["patch"] is not None:
@@ -853,14 +576,14 @@ class TestPinServicePostWriteRecheck:
         monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: next(records))
 
         with pytest.raises(PinError, match="spi service reset storage"):
-            pin_service("storage", "42")
+            pin_service_image("storage", _GHCR_IMAGE)
 
     def test_happy_path_still_reconciles_when_maintenance_never_appears(self, monkeypatch):
         lock = _lock(data=_canonical_data("storage"))
-        calls = self._wire(monkeypatch, lock, {"storage"})
+        calls = self._wire(monkeypatch, lock)
         monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: _deploy_record())
 
-        results = pin_service("storage", "42")
+        results = pin_service_image("storage", _GHCR_IMAGE)
 
         assert [name for name, _ in results] == ["storage"]
         assert calls["reconciled"] == ["storage"]
@@ -979,7 +702,7 @@ class TestRefreshSurvival:
             }
         )
         active = {"schema": _pin()}
-        rendered = pins.render_lock_with_pins(resolved, "master", active)
+        rendered = pins.render_lock_with_pins(resolved, active)
         assert f"SCHEMA_IMAGE_TAG: {'a' * 40!r}".replace("'", '"') in rendered
         assert "registry/schema-service-fix-upgrade-core-lib" in rendered
         assert pins.PINS_ANNOTATION in rendered
@@ -1000,7 +723,7 @@ class TestRefreshSurvival:
             name: ResolvedImage(name, f"repo/{name}-master", "e" * 40, "then", "sha256:canon")
             for name in pins.IMAGE_REGISTRY
         }
-        rendered = pins.render_lock_with_pins(resolved, "master", {"schema": pin})
+        rendered = pins.render_lock_with_pins(resolved, {"schema": pin})
 
         assert 'SCHEMA_IMAGE_CREATED_AT: "2026-08-26T00:00:00Z"' in rendered
         assert 'SCHEMA_IMAGE_DIGEST: "sha256:pinned"' in rendered
@@ -1011,9 +734,7 @@ class TestRefreshSurvival:
             name: ResolvedImage(name, f"repo/{name}-master", "e" * 40, "", "")
             for name in pins.IMAGE_REGISTRY
         }
-        rendered = pins.render_lock_with_pins(
-            resolved, "master", {"storage": _image_pin(), "schema": _pin()}
-        )
+        rendered = pins.render_lock_with_pins(resolved, {"storage": _image_pin(), "schema": _pin()})
         assert 'STORAGE_DO_NOT_DISRUPT: "true"' in rendered
         assert 'SCHEMA_DO_NOT_DISRUPT: "false"' in rendered
 
@@ -1022,7 +743,7 @@ class TestRefreshSurvival:
             name: ResolvedImage(name, f"repo/{name}-master", "e" * 40, "", "")
             for name in pins.IMAGE_REGISTRY
         }
-        rendered = pins.render_lock_with_pins(resolved, "master", {})
+        rendered = pins.render_lock_with_pins(resolved, {})
         assert pins.PINS_ANNOTATION not in rendered
 
     def test_live_pins_empty_when_lock_absent(self, monkeypatch):
@@ -1079,7 +800,7 @@ class TestApplyImageLock:
         monkeypatch.setattr(pins, "read_lock", lambda required=True: None)
         monkeypatch.setattr(pins, "run_process", fake_run_process)
 
-        active_pins = pins.apply_image_lock(self._resolved(), "master")
+        active_pins = pins.apply_image_lock(self._resolved())
 
         assert active_pins == {}
         assert created["document"]["data"]["PARTITION_IMAGE_TAG"] == "e" * 40
@@ -1092,7 +813,7 @@ class TestApplyImageLock:
         next write, restoring label-driven reconciliation for fork pins."""
         calls = _wire_lock(monkeypatch, _lock())
 
-        pins.apply_image_lock(self._resolved(), "master")
+        pins.apply_image_lock(self._resolved())
 
         assert calls["labels"]["reconcile.fluxcd.io/watch"] == "Enabled"
 
@@ -1100,7 +821,7 @@ class TestApplyImageLock:
         lock = _lock(pins_annotation=encode_pins({"storage": _pin()}))
         calls = _wire_lock(monkeypatch, lock)
 
-        active_pins = pins.apply_image_lock(self._resolved(), "master")
+        active_pins = pins.apply_image_lock(self._resolved())
 
         assert set(active_pins) == {"storage"}
         data, saved = calls["patch"]
@@ -1118,7 +839,7 @@ class TestApplyImageLock:
         }
         calls = _wire_lock(monkeypatch, _lock(pins_annotation=encode_pins(active)))
 
-        pins.apply_image_lock(self._resolved(), "master")
+        pins.apply_image_lock(self._resolved())
 
         data, _ = calls["patch"]
         assert data["STORAGE_DO_NOT_DISRUPT"] == "true"
@@ -1132,7 +853,7 @@ class TestApplyImageLock:
         )
         calls = _wire_lock(monkeypatch, lock)
 
-        pins.apply_image_lock(self._resolved(), "master")
+        pins.apply_image_lock(self._resolved())
 
         data, _ = calls["patch"]
         assert data["STORAGE_ACCEPTANCE_DIGEST"] == "sha256:acc"
@@ -1143,7 +864,7 @@ class TestApplyImageLock:
         lock["metadata"]["annotations"][pins.CANONICAL_SOURCES_ANNOTATION] = json.dumps(sources)
         calls = _wire_lock(monkeypatch, lock)
 
-        pins.apply_image_lock(self._resolved(), "master")
+        pins.apply_image_lock(self._resolved())
 
         assert pins.decode_trusted_repos(calls["box"][0]) == _TRUSTED
         assert pins.decode_canonical_sources(calls["box"][0]) == sources
@@ -1155,75 +876,15 @@ class TestApplyImageLock:
         lock = _lock(pins_annotation=encode_pins({"storage": _pin()}))
         calls = _wire_lock(monkeypatch, lock, conflicts=1)
 
-        pins.apply_image_lock(self._resolved(), "master")
+        pins.apply_image_lock(self._resolved())
 
         assert calls["attempts"] == 2
         _data, saved = calls["patch"]
         assert set(saved) == {"storage", "_concurrent"}
 
 
-class TestApplySchemaLoadBackfill:
-    def test_returns_false_when_lock_absent(self, monkeypatch):
-        monkeypatch.setattr(pins, "read_lock", lambda required=True: None)
-        assert pins.apply_schema_load_backfill("master") is False
-
-    def test_returns_false_when_already_backfilled(self, monkeypatch):
-        data = _canonical_data("schema")
-        data.update(_canonical_data("schema-load"))
-        data["SCHEMA_LOAD_IMAGE_REF"] = "repo/schema-load-master@sha256:old"
-        lock = _lock(data=data)
-        monkeypatch.setattr(pins, "read_lock", lambda required=True: lock)
-
-        def fail_run_command(*args, **kwargs):
-            pytest.fail("a lock that already carries schema-load must not be patched")
-
-        monkeypatch.setattr(pins, "run_command", fail_run_command)
-        assert pins.apply_schema_load_backfill("master") is False
-
-    def test_backfills_legacy_lock(self, monkeypatch):
-        lock = _lock(data=_canonical_data("schema"))
-        calls = _wire_lock(monkeypatch, lock)
-        monkeypatch.setattr(
-            pins,
-            "schema_load_lock_patch",
-            lambda lock_data, branch=None: {
-                "SCHEMA_LOAD_IMAGE_REPOSITORY": "repo/schema-load-master",
-                "SCHEMA_LOAD_IMAGE_TAG": lock_data["SCHEMA_IMAGE_TAG"],
-                "SCHEMA_LOAD_IMAGE_REF": f"repo/schema-load-master:{lock_data['SCHEMA_IMAGE_TAG']}",
-            },
-        )
-
-        assert pins.apply_schema_load_backfill("master") is True
-        data, _saved = calls["patch"]
-        assert data["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "repo/schema-load-master"
-        assert data["SCHEMA_LOAD_IMAGE_TAG"] == "c" * 40
-
-
 class TestLockMutationConflicts:
     """Bounded resourceVersion compare-and-retry under concurrent writers."""
-
-    def test_pin_service_retries_through_a_concurrent_pin(self, monkeypatch):
-        lock = _lock(data=_canonical_data("storage"))
-        mr = {"source_branch": "fix/x", "sha": "b" * 40}
-        calls = _wire_lock(monkeypatch, lock, conflicts=2)
-        monkeypatch.setattr(pins, "fetch_merge_request", lambda project_id, mr_iid: mr)
-        monkeypatch.setattr(
-            pins,
-            "resolve_mr_image",
-            lambda service, mr_iid, mr_snapshot=None: (
-                ResolvedImage(service, f"repo/{service}-fix-x", "b" * 40, "now", "sha256:new"),
-                mr_snapshot,
-            ),
-        )
-
-        results = pin_service("storage", "42")
-
-        assert [name for name, _ in results] == ["storage"]
-        assert calls["attempts"] == 3
-        _data, saved = calls["patch"]
-        # The concurrent writer's unrelated pin survives the retry alongside
-        # the newly applied one.
-        assert set(saved) == {"storage", "_concurrent"}
 
     def test_reset_service_retries_and_preserves_concurrent_pin(self, monkeypatch):
         lock = _lock(pins_annotation=encode_pins({"storage": _pin()}))
@@ -2569,10 +2230,11 @@ class TestSweepStaleEphemeralPins:
 
 
 class TestServicePinCli:
-    def test_mr_and_image_are_mutually_exclusive(self, monkeypatch):
+    def test_image_and_source_are_mutually_exclusive(self, monkeypatch, tmp_path):
         monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
         result = CliRunner().invoke(
-            cli.app, ["service", "pin", "storage", "--mr", "1", "--image", _GHCR_IMAGE]
+            cli.app,
+            ["service", "pin", "storage", "--source", str(tmp_path), "--image", _GHCR_IMAGE],
         )
         assert result.exit_code == 1
         assert "exactly one" in result.output
@@ -2581,10 +2243,15 @@ class TestServicePinCli:
         assert result.exit_code == 1
         assert "exactly one" in result.output
 
-    def test_provenance_flags_require_image_and_ephemeral(self, monkeypatch):
+    def test_merge_request_pins_are_gone(self):
+        result = CliRunner().invoke(cli.app, ["service", "pin", "storage", "--mr", "1"])
+        assert result.exit_code == 2
+        assert "No such option" in _plain(result.output)
+
+    def test_provenance_flags_require_image_and_ephemeral(self, monkeypatch, tmp_path):
         monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
         result = CliRunner().invoke(
-            cli.app, ["service", "pin", "storage", "--mr", "1", "--ephemeral"]
+            cli.app, ["service", "pin", "storage", "--source", str(tmp_path), "--ephemeral"]
         )
         assert result.exit_code == 1
         assert "--image" in result.output
@@ -2644,16 +2311,6 @@ class TestServicePinCli:
 
         assert result.exit_code == 0
         assert "Release with: spi service reset storage" in _plain(result.output)
-        assert "--if-run" not in result.output
-
-    def test_mr_pin_keeps_unconditional_reset_hint(self, monkeypatch):
-        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
-        monkeypatch.setattr(cli, "pin_service", lambda service, mr_iid: [(service, _pin())])
-
-        result = CliRunner().invoke(cli.app, ["service", "pin", "schema", "--mr", "847"])
-
-        assert result.exit_code == 0
-        assert "Release with: spi service reset schema" in _plain(result.output)
         assert "--if-run" not in result.output
 
 
@@ -2997,25 +2654,6 @@ class TestPinCodecProvenance:
         assert decoded["schema"].run_id == ""
         assert decoded["schema"].origin == ""
 
-    def test_mr_pins_now_record_their_origin(self, monkeypatch):
-        calls = _wire_lock(monkeypatch, _lock(data=_canonical_data("storage")))
-        mr = {"source_branch": "fix/x", "sha": "b" * 40}
-        monkeypatch.setattr(pins, "fetch_merge_request", lambda project_id, mr_iid: mr)
-        monkeypatch.setattr(
-            pins,
-            "resolve_mr_image",
-            lambda service, mr_iid, mr_snapshot=None: (
-                ResolvedImage(service, f"repo/{service}-fix-x", "b" * 40, "now", "sha256:new"),
-                mr_snapshot,
-            ),
-        )
-
-        pin_service("storage", "42")
-
-        _, saved = calls["patch"]
-        assert saved["storage"].origin == "gitlab-mr"
-        assert saved["storage"].ephemeral is False
-
 
 class TestConfirmationsNameTheEnvironment:
     """Pinning into the wrong environment is the costly mistake; every
@@ -3032,15 +2670,6 @@ class TestConfirmationsNameTheEnvironment:
         )
 
         result = CliRunner().invoke(cli.app, ["service", "pin", "storage", "--image", _GHCR_IMAGE])
-
-        assert result.exit_code == 0
-        assert "on test v0.0.0" in _plain(result.output)
-
-    def test_mr_pin_confirmation_names_the_environment(self, monkeypatch):
-        monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
-        monkeypatch.setattr(cli, "pin_service", lambda service, mr_iid: [(service, _pin())])
-
-        result = CliRunner().invoke(cli.app, ["service", "pin", "schema", "--mr", "847"])
 
         assert result.exit_code == 0
         assert "on test v0.0.0" in _plain(result.output)
@@ -3133,7 +2762,6 @@ class TestRefreshServices:
         lock = _lock(
             data={
                 **_canonical_data("partition", "legal", "schema", "schema-load"),
-                "IMAGE_BRANCH": "release-0-30",
                 "IMAGE_RESOLVED_AT": "earlier",
             },
             **kwargs,
@@ -3144,8 +2772,8 @@ class TestRefreshServices:
         return lock
 
     def _resolver(self, monkeypatch, calls: list):
-        def resolve(branch, names, sources):
-            calls.append((branch, list(names), sources))
+        def resolve(names, sources):
+            calls.append((list(names), sources))
             return {
                 name: self.FORK
                 if name == "partition"
@@ -3163,7 +2791,7 @@ class TestRefreshServices:
         result = pins.refresh_services(["partition"])
 
         data, _ = calls["patch"]
-        assert resolved == [("release-0-30", ["partition"], {"partition": "Acme/partition"})]
+        assert resolved == [(["partition"], {"partition": "Acme/partition"})]
         assert data["PARTITION_IMAGE_REF"] == "ghcr.io/acme/partition@sha256:" + "f" * 64
         assert data["LEGAL_IMAGE_DIGEST"] == "sha256:old"
         assert data["IMAGE_RESOLVED_AT"] == "earlier"
@@ -3200,7 +2828,7 @@ class TestRefreshServices:
             "partition": replace(self.FORK, acceptance_digest="sha256:acc"),
             "legal": ResolvedImage("legal", "repo/legal", "d" * 40, "now", "sha256:new"),
         }
-        monkeypatch.setattr(pins, "resolve_images", lambda branch, names, sources: refreshed)
+        monkeypatch.setattr(pins, "resolve_images", lambda names, sources: refreshed)
         lock = self._lock()
         lock["data"]["LEGAL_ACCEPTANCE_DIGEST"] = "sha256:stale"
         calls = _wire_lock(monkeypatch, lock)
@@ -3245,7 +2873,7 @@ class TestRefreshServices:
         assert outcome["refreshed"] == {"partition": "ghcr.io/acme/partition@sha256:" + "f" * 64}
         assert outcome["pinned"] == ["schema"]
 
-    def test_forks_moves_only_the_services_the_policy_names(self, monkeypatch):
+    def test_forks_moves_every_service_azure_and_mirror_alike(self, monkeypatch):
         resolved = []
         self._resolver(monkeypatch, resolved)
         calls = _wire_lock(monkeypatch, self._lock())
@@ -3253,15 +2881,29 @@ class TestRefreshServices:
         result = pins.refresh_fork_services()
 
         data, _ = calls["patch"]
-        assert resolved == [("release-0-30", ["partition"], {"partition": "Acme/partition"})]
-        assert data["LEGAL_IMAGE_DIGEST"] == "sha256:old"
-        assert result.refreshed == {"partition": self.FORK}
-        assert calls["reconciled"] == ["partition"]
+        [(names, sources)] = resolved
+        assert set(names) == set(image_lock_names())
+        assert names.index("schema-load") == names.index("schema") + 1
+        assert sources == {"partition": "Acme/partition"}
+        assert data["LEGAL_IMAGE_DIGEST"] == "sha256:new"
+        assert result.refreshed["partition"] == self.FORK
 
-    @pytest.mark.parametrize("data", [None, _canonical_data("partition")])
-    def test_forks_without_a_fork_source_writes_nothing(self, monkeypatch, data):
+    def test_forks_refreshes_a_service_with_no_mirror_recorded(self, monkeypatch):
+        resolved = []
+        self._resolver(monkeypatch, resolved)
+        calls = _wire_lock(monkeypatch, _lock(data=_canonical_data("legal"), trusted={}))
+
+        pins.refresh_fork_services()
+
+        data, _ = calls["patch"]
+        [(names, sources)] = resolved
+        assert "legal" in names
+        assert sources == {}
+        assert data["LEGAL_IMAGE_DIGEST"] == "sha256:new"
+
+    def test_forks_without_a_lock_writes_nothing(self, monkeypatch):
         monkeypatch.setattr(pins, "resolve_images", pytest.fail)
-        calls = _wire_lock(monkeypatch, _lock(data=data) if data else None)
+        calls = _wire_lock(monkeypatch, None)
 
         result = pins.refresh_fork_services()
 
@@ -3273,11 +2915,6 @@ class TestRefreshServices:
         [
             ("{not json", {"partition": "acme/partition"}, "Corrupt"),
             (json.dumps({"partition": "Acme/partition"}), {}, "no fork is trusted"),
-            (
-                json.dumps({"nonesuch": "Acme/nonesuch"}),
-                {"nonesuch": "acme/nonesuch"},
-                "Unknown service",
-            ),
         ],
     )
     def test_forks_refuses_a_policy_it_cannot_use(self, monkeypatch, sources, trusted, message):
@@ -3342,7 +2979,15 @@ class TestRefreshDue:
             pytest.param(PACKAGE, "2026-09-10T00:00:00Z", FORK, (), (), id="21-days"),
             pytest.param(PACKAGE, "2026-09-11T00:00:00Z", FORK, (), (), id="20-days"),
             pytest.param(PACKAGE, "2026-09-09T00:00:00", FORK, (), ("partition",), id="naive"),
-            pytest.param(PACKAGE, "2025-01-01T00:00:00Z", {}, (), (), id="community-policy"),
+            pytest.param(PACKAGE, "2025-01-01T00:00:00Z", {}, (), (), id="not-its-azure-package"),
+            pytest.param(
+                "ghcr.io/azure/osdu-spi-partition",
+                "2026-09-09T00:00:00Z",
+                {},
+                (),
+                ("partition",),
+                id="azure-canonical",
+            ),
             pytest.param(
                 "repo/partition-master",
                 "2025-01-01T00:00:00Z",
@@ -3365,7 +3010,7 @@ class TestRefreshDue:
             ),
         ],
     )
-    def test_only_an_aged_unpinned_fork_image_is_due(
+    def test_only_an_aged_unpinned_canonical_image_is_due(
         self, repository, created_at, sources, pinned, due
     ):
         service = next(iter(sources), "partition")
@@ -3380,7 +3025,7 @@ class TestRefreshDue:
             (
                 (),
                 ("schema", "schema-load"),
-                "schema runs a fork image built over 21 days ago; GHCR retention can delete it "
+                "schema runs an image built over 21 days ago; GHCR retention can delete it "
                 "at 30 days. Run 'spi service refresh schema'.",
             ),
             (("schema-load",), (), ""),
@@ -3700,16 +3345,10 @@ class TestServicePinSourceCli:
         assert "pinned but does not run the build (pod_mismatch)" in output
         assert "Release with: spi service reset storage" in output
 
-    def test_source_is_exclusive_with_the_other_pin_kinds(self, monkeypatch, tmp_path):
+    def test_build_flags_need_a_source(self, monkeypatch):
         monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
         result = CliRunner().invoke(
-            cli.app, ["service", "pin", "storage", "--source", str(tmp_path), "--mr", "1"]
-        )
-        assert result.exit_code == 1
-        assert "exactly one" in result.output
-
-        result = CliRunner().invoke(
-            cli.app, ["service", "pin", "storage", "--mr", "1", "--skip-maven"]
+            cli.app, ["service", "pin", "storage", "--image", _GHCR_IMAGE, "--skip-maven"]
         )
         assert result.exit_code == 1
         assert "--source" in result.output

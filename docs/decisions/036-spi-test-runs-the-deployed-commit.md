@@ -9,7 +9,7 @@ borrow (template ADR-041). The template builds `<package>-acceptance:sha-<12>`
 from the same commit as the service image, amd64 only, with the descriptor
 baked in and the resolver left out. Running a suite against a standing
 environment outside that lane needs one answer only the stack holds: which
-commit each service runs. For a fork canonical the image lock records it as
+commit each service runs. For every canonical the image lock records it as
 the `sha-<12>` tag (ADR-033). Three constraints shape the command. The
 template keeps resolution out of the CLI, because a descriptor and an
 installed CLI release drift apart. GHCR retention prunes `sha-*` versions
@@ -37,19 +37,22 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   write the key.
 - **Paired mode is the default.** The suite image is the lock's repository
   with `-acceptance` appended, pulled by the recorded digest for
-  `linux/amd64` and run with `docker run`. Pairing needs a fork canonical,
-  the only lock entry that is both unborrowed and tied to a fork commit; a
-  community canonical, an operator digest pin, and a fork canonical with no
-  recorded acceptance digest refuse with `unpaired`, naming `--source`.
+  `linux/amd64` and run with `docker run`. Pairing needs a canonical, from
+  the service's Azure repository or its trusted mirror, the only lock entry
+  that is both unborrowed and tied to that repository's commit; an operator
+  digest pin, an entry its canonical repository did not build, and a
+  canonical with no recorded acceptance digest refuse with `unpaired`,
+  naming `--source`.
 - **The commit's own machinery.** The CLI resolves the lock's short SHA to
   the full commit through the GitHub commits API and refuses unless the
   returned SHA starts with those 12 characters, since that endpoint also
   accepts a branch or tag of the same name. It then fetches
   `.spi/service.yaml`, `.github/actions/acceptance-resolver/resolve.py`, and
   `.github/actions/acceptance-image/suite-verdict.py` at the full SHA. The
-  source repository is the service's entry in the `canonical-sources`
-  projection, read through the same check against the trusted roster that
-  canonical resolution applies (ADR-033). The resolver runs under the CLI's
+  source repository is the service's `Azure/osdu-spi-<service>` repository,
+  or its mirror in the `canonical-sources` projection, read through the same
+  check against the trusted roster that canonical resolution applies
+  (ADR-033). The resolver runs under the CLI's
   own interpreter, since it is standard library only, in `run` mode with the
   facts from `spi info`. The CLI reads the resolver's report
   (`report_schema` 1) for `test_dir`, `maven_arguments`, and
@@ -60,10 +63,10 @@ The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
   <path>/.mvn/community-maven.settings.xml` when that file exists, the same
   invocation as the image's entrypoint. The run is labelled `matched` when
   the checkout's HEAD equals the deployed commit and the tree is clean,
-  `unmatched` otherwise, and `unpaired` when the environment runs a
-  community image. In either mode a descriptor whose `service.name` is not
-  the named service refuses the run. Checkout mode is the only mode for a community-sourced
-  service and the native-speed loop on arm64.
+  `unmatched` otherwise, and `unpaired` when the service runs no canonical
+  build it can pair with. In either mode a descriptor whose `service.name` is
+  not the named service refuses the run. Checkout mode is the only mode for
+  such a service and the native-speed loop on arm64.
 - **Allowlisted environment.** The resolver process receives `PATH`, the
   three `RESOLVER_*` bearers, and each `--set NAME=VALUE` override, nothing
   else, so a variable exported for another environment never wins over a

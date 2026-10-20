@@ -17,8 +17,8 @@
 A repository earns deploy access when the environment's deploy identity
 carries a federated credential for the repository's protected ``spi-stack``
 GitHub environment. Separately, the resource group's ``spi-source-<service>``
-tag records whether the service's canonical image follows that fork or the
-community registry. Onboarding observes the repository, the identity, the
+tag records whether the service's canonical image follows that fork, as a
+mirror, or its Azure repository. Onboarding observes the repository, the identity, the
 tags, and the image lock once, derives the commands that move each from
 observed to desired, prints them, and runs them only with ``--write``.
 """
@@ -39,8 +39,9 @@ from rich.table import Table
 from .config import RG_DECLARATION_TAG
 from .console import console
 from .environment import (
-    COMMUNITY_SOURCE,
+    AZURE_SOURCE,
     FORK_SOURCE,
+    LEGACY_COMMUNITY_SOURCE,
     Declared,
     EnvironmentDeclarationError,
     fetch_declared,
@@ -86,7 +87,7 @@ CONFLICT_BACKOFF_SECONDS = (5, 15, 30)
 SOURCE_TAG_PREFIX = "spi-source-"
 # The projection copies both durable records, so it runs after either is written.
 PHASES = ("repository", "azure", "source", "cluster")
-# Removal records community before revoking, so no rebuild can promote a revoked fork.
+# Removal records azure before revoking, so no rebuild can promote a revoked fork.
 REMOVE_PHASES = ("source", "azure", "cluster")
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$)[A-Za-z0-9_.-]+$")
@@ -221,7 +222,7 @@ class State:
     values: dict[str, Optional[str]] = field(default_factory=dict)
     no_access_roster: tuple[Credential, ...] = ()
     member_roster: tuple[Credential, ...] = ()
-    # Service to its spi-source-<service> tag value, community or <owner>/<name>.
+    # Service to its spi-source-<service> tag value, azure or <owner>/<name>.
     sources: dict[str, str] = field(default_factory=dict)
     source_projection: dict[str, str] = field(default_factory=dict)
 
@@ -259,7 +260,7 @@ class Plan:
     org: str = ""
     skip_repo: bool = False
     remove: bool = False
-    # fork, community, or "" to keep the recorded source.
+    # fork, azure, or "" to keep the recorded source.
     canonical_source: str = ""
     # The image a promotion resolves to now, shown in the plan.
     promotion: str = ""
@@ -287,9 +288,9 @@ def source_tag(service: str) -> str:
 
 
 def fork_sources(sources: dict[str, str]) -> dict[str, str]:
-    """Service to fork repository for the services that do not follow community."""
+    """Service to mirror repository for the services that do not follow Azure."""
 
-    return {service: value for service, value in sources.items() if value != COMMUNITY_SOURCE}
+    return {service: value for service, value in sources.items() if value != AZURE_SOURCE}
 
 
 def parse_source_tags(tags: dict) -> dict[str, str]:
@@ -300,9 +301,11 @@ def parse_source_tags(tags: dict) -> dict[str, str]:
         if not str(key).lower().startswith(SOURCE_TAG_PREFIX):
             continue
         service, value = str(key)[len(SOURCE_TAG_PREFIX) :].lower(), str(value)
-        if value != COMMUNITY_SOURCE and not _REPO_RE.match(value):
+        if value == LEGACY_COMMUNITY_SOURCE:
+            value = AZURE_SOURCE
+        if value != AZURE_SOURCE and not _REPO_RE.match(value):
             raise OnboardError(
-                f"Resource-group tag {key}={value!r} is neither {COMMUNITY_SOURCE} nor "
+                f"Resource-group tag {key}={value!r} is neither {AZURE_SOURCE} nor "
                 f"<owner>/<name>; correct the tag before changing images."
             )
         sources[service] = value
@@ -668,7 +671,7 @@ def read_group_tags(
 
     ``missing_ok`` reads a group that does not exist yet as no tags, for a
     first provision; any other failure raises, because an unread policy must
-    not resolve as community, nor an unread locator as undeclared.
+    not resolve as Azure, nor an unread locator as undeclared.
     """
 
     argv = ["az", "group", "show", "--name", resource_group, "--query", "tags", "-o", "json"]
@@ -811,7 +814,7 @@ def read_source_policy(resource_group: str, identity_name: str) -> dict[str, str
         )
         raise OnboardError(
             f"Untrusted canonical source on {resource_group}: {'; '.join(mismatched)}. "
-            "Re-onboard the fork, or set --canonical-source community, before deploying." + hint
+            "Re-onboard the fork, or set --canonical-source azure, before deploying." + hint
         )
     return forks
 
@@ -989,22 +992,22 @@ def desired_projection(plan: Plan) -> dict[str, str]:
 
 
 def desired_source(plan: Plan) -> str:
-    """The tag value the plan records: community or the onboarded repository."""
+    """The tag value the plan records: azure or the onboarded repository."""
 
-    if plan.remove or plan.canonical_source == COMMUNITY_SOURCE:
-        return COMMUNITY_SOURCE
+    if plan.remove or plan.canonical_source == AZURE_SOURCE:
+        return AZURE_SOURCE
     if plan.canonical_source == FORK_SOURCE:
         return plan.repo
-    recorded = plan.state.sources.get(plan.service, COMMUNITY_SOURCE)
+    recorded = plan.state.sources.get(plan.service, AZURE_SOURCE)
     # refuse() stops a recorded fork other than this repository; this repairs casing only.
-    return COMMUNITY_SOURCE if recorded == COMMUNITY_SOURCE else plan.repo
+    return AZURE_SOURCE if recorded == AZURE_SOURCE else plan.repo
 
 
 def observed_source(plan: Plan) -> Optional[str]:
-    """The recorded tag value; removal reads an absent tag as the community it means."""
+    """The recorded tag value; removal reads an absent tag as the azure it means."""
 
     recorded = plan.state.sources.get(plan.service)
-    return COMMUNITY_SOURCE if recorded is None and plan.remove else recorded
+    return AZURE_SOURCE if recorded is None and plan.remove else recorded
 
 
 def desired_source_projection(plan: Plan) -> dict[str, str]:
@@ -1210,15 +1213,15 @@ def refuse(plan: Plan) -> None:
                 f"{target.identity_name} already holds {MAX_CREDENTIALS} federated "
                 "credentials, the Azure maximum; a larger roster is a new decision."
             )
-    recorded = plan.state.sources.get(plan.service, COMMUNITY_SOURCE)
+    recorded = plan.state.sources.get(plan.service, AZURE_SOURCE)
     if (
         not plan.canonical_source
-        and recorded != COMMUNITY_SOURCE
+        and recorded != AZURE_SOURCE
         and recorded.lower() != plan.repo.lower()
     ):
         raise OnboardError(
             f"{plan.service} follows {recorded}, not {plan.repo}; pass --canonical-source "
-            f"{FORK_SOURCE} to follow {plan.repo} or --canonical-source {COMMUNITY_SOURCE}."
+            f"{FORK_SOURCE} to follow {plan.repo} or --canonical-source {AZURE_SOURCE}."
         )
 
 
@@ -1231,7 +1234,7 @@ def check_promotion(service: str, repo: str) -> str:
             raise OnboardError(
                 f"schema cannot follow {repo}: it published no loader "
                 f"{image.repository}-load:{image.tag} beside the service image. Onboard "
-                "without --canonical-source to trust the fork while schema stays on community."
+                "without --canonical-source to trust the fork while schema stays on Azure."
             )
     except ImageResolutionError as exc:
         raise OnboardError(f"{service} cannot follow {repo}: {exc}") from None
@@ -1280,9 +1283,9 @@ def plan_onboard(
     plan.state = observe(target, repo, org, values=not skip_repo, roster=roster)
     refuse(plan)
     desired = desired_source(plan)
-    recorded = plan.state.sources.get(service, COMMUNITY_SOURCE)
+    recorded = plan.state.sources.get(service, AZURE_SOURCE)
     # Only a change of source is a promotion; an existing one is proved by each refresh.
-    if desired != COMMUNITY_SOURCE and desired.lower() != recorded.lower():
+    if desired != AZURE_SOURCE and desired.lower() != recorded.lower():
         plan.promotion = check_promotion(service, repo)
     plan.steps = plan_steps(plan)
     plan.rows = plan_rows(plan)
@@ -1671,8 +1674,8 @@ def declaration_rows(
         if repo is None:
             rows.append(Row("declaration", item, "missing", f"declares {entry.repo}; not trusted"))
             continue
-        want = repo if entry.canonical_source == FORK_SOURCE else COMMUNITY_SOURCE
-        recorded = sources.get(service, COMMUNITY_SOURCE)
+        want = repo if entry.canonical_source == FORK_SOURCE else AZURE_SOURCE
+        recorded = sources.get(service, AZURE_SOURCE)
         if repo.lower() != entry.repo.lower():
             rows.append(
                 Row("declaration", item, "drifted", f"declares {entry.repo}; {repo} is trusted")
@@ -1703,16 +1706,16 @@ def source_rows(
     rows = []
     for service in sorted(set(trusted) | set(sources) | set(projection)):
         item = source_tag(service)
-        value = sources.get(service, COMMUNITY_SOURCE)
-        projected = projection.get(service, COMMUNITY_SOURCE)
-        if value != COMMUNITY_SOURCE and value.lower() != trusted.get(service, "").lower():
+        value = sources.get(service, AZURE_SOURCE)
+        projected = projection.get(service, AZURE_SOURCE)
+        if value != AZURE_SOURCE and value.lower() != trusted.get(service, "").lower():
             rows.append(
                 Row("source", item, "drifted", f"follows {value}, which is not trusted for it")
             )
         elif value != projected:
             rows.append(Row("source", item, "drifted", f"{value}; projection {projected}"))
         elif service not in sources:
-            rows.append(Row("source", item, "missing", f"{COMMUNITY_SOURCE} by default"))
+            rows.append(Row("source", item, "missing", f"{AZURE_SOURCE} by default"))
         else:
             rows.append(Row("source", item, "correct", value))
     return rows

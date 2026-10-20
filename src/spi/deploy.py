@@ -44,7 +44,6 @@ from .console import console, display_result, display_yaml
 from .deploy_record import upsert_deploy_record
 from .environment import Declared
 from .images import (
-    DEFAULT_IMAGE_BRANCH,
     ImageResolutionError,
     ResolvedImage,
     resolve_image_lock,
@@ -56,7 +55,7 @@ from .ingress import (
     resolve_post_deploy_inputs,
 )
 from .paths import INFRA_ROOT
-from .pins import ServicePin, apply_image_lock, apply_schema_load_backfill, describe_pin, read_lock
+from .pins import ServicePin, apply_image_lock, describe_pin, read_lock
 from .secrets import ensure_secrets, get_or_create_seed
 from .shell import kubectl_apply_yaml, run_command, run_process
 from .sizing import apply_sizing, check_storage
@@ -174,14 +173,12 @@ def _create_spi_init_values(config: Config, infra_outputs: dict) -> None:
     )
 
 
-def _resolve_image_lock(
-    image_branch: str, sources: dict[str, str] | None = None
-) -> dict[str, ResolvedImage]:
+def _resolve_image_lock(sources: dict[str, str] | None = None) -> dict[str, ResolvedImage]:
     """Resolve the current OSDU service images for the Flux image lock."""
 
     console.print("\n[bold]Resolving OSDU service images...[/bold]")
     try:
-        resolved = resolve_image_lock(branch=image_branch, sources=sources)
+        resolved = resolve_image_lock(sources=sources)
     except ImageResolutionError as exc:
         console.print(f"[error]Unable to resolve OSDU service images: {exc}[/error]")
         raise
@@ -267,7 +264,6 @@ def _reconcile_declared(config: Config, declared: Declared, *, write: bool) -> d
 def _ensure_image_lock(
     config: Config,
     refresh_images: bool | None,
-    image_branch: str,
     resolved_images: dict[str, ResolvedImage],
     sources: dict[str, str] | None = None,
 ) -> dict[str, ServicePin]:
@@ -279,17 +275,16 @@ def _ensure_image_lock(
     if refresh_images is not True:
         existing_lock = read_lock(required=False)
         if existing_lock is not None:
-            apply_schema_load_backfill(branch=image_branch)
             return {}
         if refresh_images is False:
             raise RuntimeError(
                 "The core image lock is missing and --no-refresh-images was specified. "
                 "Rerun with --refresh-images or omit the image option to create it."
             )
-        resolved_images = _resolve_image_lock(image_branch, sources=sources)
+        resolved_images = _resolve_image_lock(sources=sources)
 
     console.print("\n[bold]Updating OSDU image lock...[/bold]")
-    pins = apply_image_lock(resolved_images, image_branch)
+    pins = apply_image_lock(resolved_images)
     display_result("osdu-image-lock ConfigMap updated")
     if pins:
         console.print(
@@ -581,7 +576,6 @@ def deploy_azure(
     config: Config,
     dry_run: bool = False,
     refresh_images: bool | None = None,
-    image_branch: str = DEFAULT_IMAGE_BRANCH,
     azure_account: Optional[Dict[str, Any]] = None,
     deployer_principal: Optional[Tuple[str, str]] = None,
     declared: Optional[Declared] = None,
@@ -605,7 +599,7 @@ def deploy_azure(
         else:
             sources = _source_policy(config)
         if refresh_images:
-            resolved_images = _resolve_image_lock(image_branch, sources=sources)
+            resolved_images = _resolve_image_lock(sources=sources)
 
     # main.bicep's ExternalDNS identity and role modules need the zone's
     # name and resource group as parameters.
@@ -635,7 +629,7 @@ def deploy_azure(
     ensure_secrets()
     create_storage_classes()
     install_gateway_api_crds()
-    _ensure_image_lock(config, refresh_images, image_branch, resolved_images, sources)
+    _ensure_image_lock(config, refresh_images, resolved_images, sources)
     if sizes:
         apply_sizing(sizing)
     _project_trusted_repos(config, declared)
