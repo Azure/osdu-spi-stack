@@ -601,7 +601,10 @@ data:
     configured member manage them afterwards.
 
     Flow:
-      1. Wait for entitlements /info to return 200.
+      1. Wait for entitlements /info to return 200. Any later call that a
+         replica answers with 403 "Invalid data partition id" is retried for
+         up to PARTITION_WAIT seconds across the run, as init_entitlements.py
+         does, since each replica's partition cache converges on its own.
       2. GET /groups as the owner; the email domain is whatever entitlements
          was deployed with. With member users, refuse before any write when
          the listing carries more than MAX_USER_GROUPS service.<name>.user
@@ -627,6 +630,7 @@ data:
     import os
     import re
     import sys
+    import time
     import urllib.error
     import urllib.request
 
@@ -659,15 +663,19 @@ data:
     # thirteen 30 s calls for the one member the CLI seeds (one listing, two
     # creates, then a write and a read per root group), and up to
     # MAX_USER_GROUPS plus len(MEMBER_USER_GROUPS) more write-and-read pairs
-    # plus a users write for the one member user.
+    # plus a users write for the one member user. Partition retries add at most
+    # PARTITION_WAIT plus one delay and one more call.
     REQUEST_TIMEOUT = 30
     REQUEST_BUDGET = 1500
+    PARTITION_WAIT = 600
+    PARTITION_RETRY_DELAY = 5.0
     INFO_ATTEMPTS = 30
     WAIT_DELAY = 2.0
     WAIT_SOCKET_TIMEOUT = 5.0
     TERMINATION_MESSAGE_PATH = os.environ.get(
         "TERMINATION_MESSAGE_PATH", "/dev/termination-log"
     )
+    partition_deadline = None
 
 
     def outcome(code: str, detail: str = "") -> None:
@@ -683,15 +691,24 @@ data:
 
 
     def request(url: str, headers: dict, method: str = "GET", body: dict | None = None):
+        global partition_deadline
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(url, data=data, method=method, headers=headers)
-        try:
-            resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT)
-            code, payload = resp.getcode(), resp.read().decode(errors="replace")
-        except urllib.error.HTTPError as e:
-            code, payload = e.code, e.read().decode(errors="replace")
-        print(f"  {method} {url} -> {code}")
-        return code, payload
+        while True:
+            req = urllib.request.Request(url, data=data, method=method, headers=headers)
+            try:
+                resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT)
+                code, payload = resp.getcode(), resp.read().decode(errors="replace")
+            except urllib.error.HTTPError as e:
+                code, payload = e.code, e.read().decode(errors="replace")
+            print(f"  {method} {url} -> {code}")
+            if code != 403 or "Invalid data partition id" not in payload:
+                return code, payload
+            if partition_deadline is None:
+                partition_deadline = time.monotonic() + PARTITION_WAIT
+            if time.monotonic() >= partition_deadline:
+                return code, payload
+            print("  Partition is not visible to this entitlements replica yet; retrying...")
+            time.sleep(PARTITION_RETRY_DELAY)
 
 
     def parse(payload: str) -> dict:
