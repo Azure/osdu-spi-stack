@@ -239,22 +239,35 @@ def test_legal_tag_empty_until_seeding_is_observed(monkeypatch):
 
 def test_legal_tag_seeded_reads_the_job_outcome(monkeypatch):
     """Only the Job's own success proves the tag exists; a Job that is absent,
-    still running, or failed must not read as seeded."""
+    still running, or failed must not read as seeded. The Job name hashes its
+    spec, so the read selects it by component and partition labels."""
     seen = []
 
     def fake_kubectl_json(args):
         seen.append(args)
+        if args[1] == "jobs":
+            return {"items": [{"status": {"failed": 1}}, {"status": {"succeeded": 1}}]}
         return {"status": {"succeeded": 1}}
 
     monkeypatch.setattr(info, "kubectl_json", fake_kubectl_json)
     assert info._legal_tag_seeded("opendes") is True
-    assert seen[0] == ["get", "job", "legal-init-opendes", "-n", "osdu"]
+    assert seen[0] == [
+        "get",
+        "jobs",
+        "-n",
+        "osdu",
+        "-l",
+        "app.kubernetes.io/component=legal-init,osdu.spi/partition=opendes",
+    ]
 
     seen.clear()
     assert info._entitlements_seeded("opendes", ["new-id"], ["member-id"]) is True
     assert seen[0][2] == entitlements_members_job_name("opendes", ["new-id"], ["member-id"])
 
-    monkeypatch.setattr(info, "kubectl_json", lambda args: {"status": {"failed": 2}})
+    monkeypatch.setattr(info, "kubectl_json", lambda args: {"items": [{"status": {"failed": 2}}]})
+    assert info._legal_tag_seeded("opendes") is False
+
+    monkeypatch.setattr(info, "kubectl_json", lambda args: {"items": []})
     assert info._legal_tag_seeded("opendes") is False
 
     monkeypatch.setattr(info, "kubectl_json", lambda args: None)

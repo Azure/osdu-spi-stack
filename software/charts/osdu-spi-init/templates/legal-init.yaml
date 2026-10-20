@@ -5,62 +5,72 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */}}
 
+{{- define "osdu-spi-init.legalInitSpec" -}}
+{{- $root := .root }}
+{{- $partition := .partition -}}
+backoffLimit: {{ $root.Values.backoffLimit }}
+activeDeadlineSeconds: {{ $root.Values.legalActiveDeadlineSeconds }}
+{{ include "osdu-spi-init.podFailurePolicy" $root }}
+template:
+  metadata:
+    labels:
+      {{- include "osdu-spi-init.labels" $root | nindent 6 }}
+      app.kubernetes.io/component: legal-init
+      osdu.spi/partition: {{ $partition }}
+      azure.workload.identity/use: "true"
+  spec:
+    {{- include "osdu-spi-init.podSpec" $root | nindent 4 }}
+    containers:
+      - name: init
+        image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag }}"
+        imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+        command:
+          - python
+          - /scripts/init_legal.py
+        env:
+          - name: PARTITION
+            value: {{ $partition | quote }}
+          - name: LEGAL_TAG
+            value: {{ printf "%s-%s" $partition $root.Values.legalTag | quote }}
+          - name: KEYVAULT_NAME
+            valueFrom:
+              configMapKeyRef:
+                name: osdu-config
+                key: KEYVAULT_NAME
+        volumeMounts:
+          - name: scripts
+            mountPath: /scripts
+            readOnly: true
+        resources:
+          {{- toYaml $root.Values.resources | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsUser: 1000
+          capabilities:
+            drop: [ALL]
+{{- end }}
+
 # One Job per partition. Stages the legal COO catalog into the partition's
 # configuration container and POSTs the default legal tag
 # "{partition}-{legalTag}"; a 409 succeeds only when the existing tag matches.
 # Rendered by the non-gating osdu-spi-legal release, whose Kustomization
-# depends on spi-osdu-init so the scripts ConfigMap exists first.
+# depends on spi-osdu-init so the scripts ConfigMap exists first. The name
+# carries a hash of the immutable spec, so a changed spec renders a new Job;
+# spi info finds it by its labels.
 {{- if .Values.legalEnabled }}
 {{- range $partition := .Values.partitions }}
+{{- $spec := include "osdu-spi-init.legalInitSpec" (dict "root" $ "partition" $partition) }}
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: legal-init-{{ $partition }}
+  name: legal-init-{{ $partition }}-{{ $spec | sha256sum | trunc 8 }}
   namespace: {{ $.Values.namespace }}
   labels:
     {{- include "osdu-spi-init.labels" $ | nindent 4 }}
     app.kubernetes.io/component: legal-init
     osdu.spi/partition: {{ $partition }}
 spec:
-  backoffLimit: {{ $.Values.backoffLimit }}
-  activeDeadlineSeconds: {{ $.Values.legalActiveDeadlineSeconds }}
-  template:
-    metadata:
-      labels:
-        {{- include "osdu-spi-init.labels" $ | nindent 8 }}
-        app.kubernetes.io/component: legal-init
-        osdu.spi/partition: {{ $partition }}
-        azure.workload.identity/use: "true"
-    spec:
-      {{- include "osdu-spi-init.podSpec" $ | nindent 6 }}
-      containers:
-        - name: init
-          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
-          imagePullPolicy: {{ $.Values.image.pullPolicy }}
-          command:
-            - python
-            - /scripts/init_legal.py
-          env:
-            - name: PARTITION
-              value: {{ $partition | quote }}
-            - name: LEGAL_TAG
-              value: {{ printf "%s-%s" $partition $.Values.legalTag | quote }}
-            - name: KEYVAULT_NAME
-              valueFrom:
-                configMapKeyRef:
-                  name: osdu-config
-                  key: KEYVAULT_NAME
-          volumeMounts:
-            - name: scripts
-              mountPath: /scripts
-              readOnly: true
-          resources:
-            {{- toYaml $.Values.resources | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsUser: 1000
-            capabilities:
-              drop: [ALL]
+  {{- $spec | nindent 2 }}
 {{- end }}
 {{- end }}

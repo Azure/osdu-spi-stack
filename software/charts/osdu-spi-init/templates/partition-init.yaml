@@ -5,58 +5,67 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */}}
 
+{{- define "osdu-spi-init.partitionInitSpec" -}}
+{{- $root := .root }}
+{{- $partition := .partition -}}
+backoffLimit: {{ $root.Values.backoffLimit }}
+activeDeadlineSeconds: {{ $root.Values.activeDeadlineSeconds }}
+{{ include "osdu-spi-init.podFailurePolicy" $root }}
+template:
+  metadata:
+    labels:
+      {{- include "osdu-spi-init.labels" $root | nindent 6 }}
+      app.kubernetes.io/component: partition-init
+      osdu.spi/partition: {{ $partition }}
+      azure.workload.identity/use: "true"
+  spec:
+    {{- include "osdu-spi-init.podSpec" $root | nindent 4 }}
+    containers:
+      - name: init
+        image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag }}"
+        imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+        command:
+          - python
+          - /scripts/init_partition.py
+        env:
+          - name: PARTITION
+            value: {{ $partition | quote }}
+        volumeMounts:
+          - name: scripts
+            mountPath: /scripts
+            readOnly: true
+          - name: partition-records
+            mountPath: /partition-records
+            readOnly: true
+        resources:
+          {{- toYaml $root.Values.resources | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsUser: 1000
+          capabilities:
+            drop: [ALL]
+{{- end }}
+
 {{- if .Values.coreEnabled }}
 # One Job per partition. POSTs the partition record from
 # osdu-spi-init-partition-records, or PATCHes it onto a record that already
-# exists. The name carries a hash of the record so a changed record reruns
-# the Job; the CLI does not compute this name, status finds it by label.
-{{- $recordHash := include "osdu-spi-init.partitionRecord" . | sha256sum | trunc 8 }}
+# exists. The name carries a hash of the record and of the immutable Job spec,
+# so a changed record or spec reruns the Job; the CLI does not compute this
+# name, status finds it by label.
+{{- $record := include "osdu-spi-init.partitionRecord" . }}
 {{- range $partition := .Values.partitions }}
+{{- $spec := include "osdu-spi-init.partitionInitSpec" (dict "root" $ "partition" $partition) }}
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: partition-init-{{ $partition }}-{{ $recordHash }}
+  name: partition-init-{{ $partition }}-{{ printf "%s\n%s" $record $spec | sha256sum | trunc 8 }}
   namespace: {{ $.Values.namespace }}
   labels:
     {{- include "osdu-spi-init.labels" $ | nindent 4 }}
     app.kubernetes.io/component: partition-init
     osdu.spi/partition: {{ $partition }}
 spec:
-  backoffLimit: {{ $.Values.backoffLimit }}
-  activeDeadlineSeconds: {{ $.Values.activeDeadlineSeconds }}
-  template:
-    metadata:
-      labels:
-        {{- include "osdu-spi-init.labels" $ | nindent 8 }}
-        app.kubernetes.io/component: partition-init
-        osdu.spi/partition: {{ $partition }}
-        azure.workload.identity/use: "true"
-    spec:
-      {{- include "osdu-spi-init.podSpec" $ | nindent 6 }}
-      containers:
-        - name: init
-          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
-          imagePullPolicy: {{ $.Values.image.pullPolicy }}
-          command:
-            - python
-            - /scripts/init_partition.py
-          env:
-            - name: PARTITION
-              value: {{ $partition | quote }}
-          volumeMounts:
-            - name: scripts
-              mountPath: /scripts
-              readOnly: true
-            - name: partition-records
-              mountPath: /partition-records
-              readOnly: true
-          resources:
-            {{- toYaml $.Values.resources | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsUser: 1000
-            capabilities:
-              drop: [ALL]
+  {{- $spec | nindent 2 }}
 {{- end }}
 {{- end }}
