@@ -34,7 +34,7 @@ import types
 import urllib.error
 import urllib.request
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, cast
 
@@ -372,6 +372,7 @@ def test_members_deadline_covers_its_wait_budget(init_scripts):
         + 2 * len(const["MEMBER_USER_GROUPS"])
     )
     assert const["REQUEST_BUDGET"] >= _TOKEN_TIMEOUT + calls * const["REQUEST_TIMEOUT"]
+    budget += const["PARTITION_WAIT"] + const["PARTITION_RETRY_DELAY"] + const["REQUEST_TIMEOUT"]
 
     docs = _render(["opendes"], _MEMBERS)
     job = _jobs(docs, "entitlements-members")[0]
@@ -440,6 +441,7 @@ class _Result:
     stdout: str
     calls: list[_Call]
     termination_message: str = ""
+    sleeps: list[float] = field(default_factory=list)
 
     def routed(self, route: str) -> list[_Call]:
         return [call for call in self.calls if call.route == route]
@@ -611,6 +613,14 @@ def _run_members(
 
     namespace: dict[str, object] = {"__name__": "init_members_test"}
     exec(init_scripts["init_members.py"], namespace)
+    clock = [0.0]
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    namespace["time"] = types.SimpleNamespace(sleep=sleep, monotonic=lambda: clock[0])
     calls: list[_Call] = []
     member_lists = {email: set() for email in _ALL_GROUPS.values()}
 
@@ -648,7 +658,7 @@ def _run_members(
     main = cast(Callable[[], int], namespace["main"])
     rc = main()
     message = termination_log.read_text() if termination_log.exists() else ""
-    return _Result(rc, capsys.readouterr().out, calls, message)
+    return _Result(rc, capsys.readouterr().out, calls, message, sleeps)
 
 
 def test_members_seeds_every_root_group_and_verifies(init_scripts, monkeypatch, capsys):
@@ -854,6 +864,51 @@ def test_members_times_out_waiting_for_entitlements(init_scripts, monkeypatch, c
     assert result.exit_code == 1
     assert "entitlements-members outcome: service_timeout" in result.stdout
     assert result.calls == []
+
+
+_STALE_PARTITION = b'{"code":403,"message":"Invalid data partition id"}'
+
+
+def _stale_then(count: int, then):
+    remaining = [count]
+
+    def handler(url):
+        if remaining[0]:
+            remaining[0] -= 1
+            return _http_error(403, _STALE_PARTITION)(url)
+        return then(url)
+
+    return handler
+
+
+def test_members_retries_a_replica_that_does_not_know_the_partition_yet(
+    init_scripts, monkeypatch, capsys
+):
+    result = _run_members(
+        init_scripts,
+        monkeypatch,
+        capsys,
+        groups=_stale_then(2, _responds(200, _groups_listing())),
+        post=_stale_then(1, _responds(200)),
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "entitlements-members outcome: seeded" in result.stdout
+    assert len(result.routed("groups")) == 3
+    assert len(result.sleeps) == 3
+
+
+def test_members_stops_retrying_the_partition_after_the_wait(init_scripts, monkeypatch, capsys):
+    const = _script_constants(init_scripts["init_members.py"])
+    result = _run_members(
+        init_scripts, monkeypatch, capsys, groups=_http_error(403, _STALE_PARTITION)
+    )
+
+    assert result.exit_code == 1
+    assert result.termination_message == (
+        "entitlements-members outcome: group_missing: GET /groups returned 403 for the owner"
+    )
+    assert sum(result.sleeps) == const["PARTITION_WAIT"]
 
 
 def test_members_fails_on_transport_error(init_scripts, monkeypatch, capsys):

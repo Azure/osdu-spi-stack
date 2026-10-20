@@ -284,6 +284,30 @@ class TestSchemaLoadImageSubstitution:
         }
 
 
+def _minutes(duration: str) -> int:
+    match = re.fullmatch(r"(\d+)m", duration)
+    assert match, f"timeout is not in minutes: {duration}"
+    return int(match.group(1))
+
+
+@pytest.mark.parametrize(
+    ("component", "deadline_key"),
+    [("legal", "legalActiveDeadlineSeconds"), ("members", "membersActiveDeadlineSeconds")],
+)
+def test_init_release_timeouts_outlast_the_job_deadline(component, deadline_key):
+    """Helm must wait out the Job before remediating, and the Kustomization
+    must wait out Helm before reporting the layer failed."""
+    values = yaml.safe_load(
+        (REPO_ROOT / "software" / "charts" / "osdu-spi-init" / "values.yaml").read_text()
+    )
+    release = yaml.safe_load((STACKS / component / "release.yaml").read_text(encoding="utf-8"))
+    item = _kustomization(PROFILES_DIR / Profile.CORE.value, f"spi-osdu-{component}")
+
+    helm = [_minutes(release["spec"][phase]["timeout"]) * 60 for phase in ("install", "upgrade")]
+    assert min(helm) > values[deadline_key]
+    assert _minutes(item["spec"]["timeout"]) * 60 > max(helm)
+
+
 class TestSchemaLoadDeadline:
     def test_flux_timeout_exceeds_job_deadline(self):
         item = _kustomization(PROFILES_DIR / Profile.CORE.value, "spi-osdu-schema-load")
