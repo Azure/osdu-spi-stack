@@ -127,3 +127,19 @@ def test_do_not_disrupt_annotation_renders_only_for_the_string_true(value, istio
     deployment = _rendered_deployment({"istioProxyPin.enabled": istio}, strings)
     annotations = deployment["spec"]["template"]["metadata"].get("annotations") or {}
     assert annotations == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("sha256:" + "0" * 64, {"osdu.spi/partitions-hash": "sha256:" + "0" * 64}),
+        ("", {}),
+        (None, {}),
+    ],
+)
+def test_partitions_hash_annotation_renders_only_when_set(value, expected):
+    """A changed partition list changes the pod template, so the Deployment rolls."""
+    strings = {"partitionsHash": value} if value is not None else {}
+    deployment = _rendered_deployment({}, strings)
+    annotations = deployment["spec"]["template"]["metadata"].get("annotations") or {}
+    assert annotations == expected

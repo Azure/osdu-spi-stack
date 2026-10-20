@@ -20,17 +20,32 @@ import yaml
 
 from spi import deploy
 from spi.config import Config
+from spi.templates import PARTITIONS_CONFIGMAP, PARTITIONS_HASH_KEY
 
 
-def _applied(infra_outputs: dict) -> str:
+def _applied_all(infra_outputs: dict, partitions: list[str]) -> list[str]:
     with (
         patch("spi.deploy.display_yaml"),
         patch("spi.deploy.kubectl_apply_yaml") as apply_yaml,
     ):
         deploy._create_spi_init_values(
-            Config.from_env("dev1", data_partitions=["opendes", "second"]), infra_outputs
+            Config.from_env("dev1", data_partitions=partitions), infra_outputs
         )
-    return apply_yaml.call_args.args[0]
+    return [call.args[0] for call in apply_yaml.call_args_list]
+
+
+def _applied(infra_outputs: dict) -> str:
+    return _applied_all(infra_outputs, ["opendes", "second"])[0]
+
+
+def _partitions_hash(partitions: list[str]) -> str:
+    applied = _applied_all({}, partitions)
+    configmap = yaml.safe_load(applied[-1])
+    assert (configmap["metadata"]["name"], configmap["metadata"]["namespace"]) == (
+        PARTITIONS_CONFIGMAP,
+        "osdu-flux",
+    )
+    return configmap["data"][PARTITIONS_HASH_KEY]
 
 
 def test_deploy_identity_client_id_is_written_as_the_member():
@@ -62,4 +77,29 @@ def test_init_values_are_watched_by_the_releases_that_read_them():
         "spi-init-values",
         "osdu-flux",
     )
+    assert configmap["metadata"]["labels"]["reconcile.fluxcd.io/watch"] == "Enabled"
+
+
+def test_the_partition_list_hash_is_written_after_the_init_values():
+    """partition-init starts first, and the services roll only on a new partition set."""
+    applied = _applied_all({}, ["opendes", "second"])
+
+    assert [yaml.safe_load(doc)["metadata"]["name"] for doc in applied] == [
+        "spi-init-values",
+        PARTITIONS_CONFIGMAP,
+    ]
+    assert _partitions_hash(["second", "opendes"]) == _partitions_hash(["opendes", "second"])
+    assert _partitions_hash(["opendes", "third"]) != _partitions_hash(["opendes", "second"])
+
+
+def test_the_partition_list_hash_stays_a_string_once_substituted():
+    """Flux substitutes into re-serialized YAML, where a bare hex digest can parse as a number."""
+    value = _partitions_hash(["opendes"])
+
+    assert isinstance(yaml.safe_load(f"partitionsHash: {value}")["partitionsHash"], str)
+
+
+def test_the_partition_list_hash_is_watched_by_the_kustomization_that_reads_it():
+    configmap = yaml.safe_load(_applied_all({}, ["opendes"])[-1])
+
     assert configmap["metadata"]["labels"]["reconcile.fluxcd.io/watch"] == "Enabled"

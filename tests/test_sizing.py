@@ -26,6 +26,7 @@ import yaml
 from spi import sizing
 from spi.images import IMAGE_REGISTRY
 from spi.sizing import SIZING_CONFIGMAP, sizing_defaults, sizing_services
+from spi.templates import PARTITIONS_HASH_KEY
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STACKS = REPO_ROOT / "software" / "stacks" / "osdu"
@@ -50,7 +51,7 @@ def _manifest(component: str) -> Path:
 def _sizing_placeholders(path: Path) -> dict:
     found: dict = {}
     for key, default in PLACEHOLDER.findall(path.read_text(encoding="utf-8")):
-        if key.endswith("_DO_NOT_DISRUPT"):
+        if key.endswith("_DO_NOT_DISRUPT") or key == PARTITIONS_HASH_KEY:
             continue
         assert found.setdefault(key, default) == default, f"{path.name}: {key} has two defaults"
     return found

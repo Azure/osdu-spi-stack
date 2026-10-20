@@ -53,6 +53,10 @@ spec:
       - kind: ConfigMap
         name: spi-sizing
         optional: true
+      # The partition list hash; spi up writes it beside spi-init-values.
+      - kind: ConfigMap
+        name: spi-partitions
+        optional: true
   prune: true
   wait: true
   timeout: 30m

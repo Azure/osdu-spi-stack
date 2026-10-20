@@ -93,6 +93,10 @@ tolerations: []
 karpenter:
   doNotDisrupt: "false"
 
+# -- Stamped as the osdu.spi/partitions-hash pod annotation, so a changed partition
+# list rolls the pods of services that cache the tenant set per replica.
+partitionsHash: ""
+
 istioProxyPin:
   enabled: false
   image: mcr.microsoft.com/oss/v2/istio/proxyv2:v1.28.3-2

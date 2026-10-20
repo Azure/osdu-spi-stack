@@ -41,6 +41,8 @@ spec:
       digest: "${ENTITLEMENTS_IMAGE_DIGEST}"
     karpenter:
       doNotDisrupt: "${ENTITLEMENTS_DO_NOT_DISRUPT:=false}"
+    # Each replica caches the tenant set; a new partition list rolls the pods.
+    partitionsHash: "${DATA_PARTITIONS_HASH:=}"
     redisTls: true
     nodeSelector:
       spi-pool: osdu
