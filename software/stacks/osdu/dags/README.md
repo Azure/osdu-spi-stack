@@ -127,9 +127,11 @@ run ingestion. The check never enrolls a caller or changes an existing role.
 
 Preflight reads both Workflow registrations, the Manifest and UnitOfMeasure
 schemas, and the default legal tag observed by `spi info`. It refuses a
-missing prerequisite rather than creating it. Registration, legal and
-members are non-gating, so those prerequisites can still be missing after
-the environment becomes Deployable.
+missing prerequisite rather than creating it. Registration and legal are
+non-gating, so those prerequisites can still be missing after the environment
+becomes Deployable. A failed members seed still follows the existing
+`bootstrap_failed` deployability rule; each caller's impersonation membership
+is also checked directly.
 
 Echo runs first through the Workflow API. Only after it succeeds does the
 check submit `Osdu_ingest`, with a one-record
