@@ -49,6 +49,14 @@ class Caller:
     user_id: str
     token: str = field(repr=False)
 
+    def matches(self, user_id: object) -> bool:
+        if not isinstance(user_id, str):
+            return False
+        # Entitlements normalizes person IDs even when the token retains UPN case.
+        if self.name == "me":
+            return user_id.casefold() == self.user_id.casefold()
+        return user_id == self.user_id
+
 
 @dataclass
 class DagCheck:
@@ -287,7 +295,7 @@ def _preflight(api: Api, record: dict) -> None:
 
 
 def _submitted_by(api: Api, body: dict, dag: str) -> None:
-    if body.get("submittedBy") != api.caller.user_id:
+    if not api.caller.matches(body.get("submittedBy")):
         raise CheckFailed(
             "caller_mismatch",
             f"{dag}: submittedBy={body.get('submittedBy')!r}, expected {api.caller.user_id!r}",
@@ -359,7 +367,7 @@ def _verify_record(api: Api, record: dict, timeout: int) -> str:
                 raise CheckFailed(
                     "record_mismatch", f"{record['id']}: stored record differs from the manifest."
                 )
-            if body.get("createUser") != api.caller.user_id:
+            if not api.caller.matches(body.get("createUser")):
                 raise CheckFailed(
                     "caller_mismatch",
                     f"{record['id']}: createUser={body.get('createUser')!r}, expected {api.caller.user_id!r}",

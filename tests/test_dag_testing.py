@@ -265,6 +265,31 @@ def test_default_partition_is_the_primary(environment):
 
 
 @pytest.mark.parametrize(
+    "normalized_fields",
+    [("submitted_by",), ("owner",), ("submitted_by", "owner")],
+)
+def test_mixed_case_person_matches_lowercased_workflow_and_storage_ids(
+    environment, monkeypatch, normalized_fields
+):
+    user_id = "Alice@Example.COM"
+    monkeypatch.setattr(
+        dag_testing,
+        "person_token",
+        lambda: PersonToken(jwt(user_id), "9999999999", "audience", user_id, "unique_name"),
+    )
+    environment["submitted_by"] = environment["owner"] = user_id
+    for field in normalized_fields:
+        environment[field] = user_id.casefold()
+
+    result = dag_testing.run_dags(caller="me", timeout=10)
+
+    assert result.outcome == "passed" and result.exit_code == 0
+    assert result.user_id == user_id
+    assert [check.state for check in result.checks] == ["passed", "passed"]
+    assert result.checks[1].create_user == environment["owner"]
+
+
+@pytest.mark.parametrize(
     "path,body,code",
     [
         ("/groups", {"groups": None}, "caller_not_authorized"),
