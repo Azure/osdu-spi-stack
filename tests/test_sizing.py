@@ -24,6 +24,7 @@ import pytest
 import yaml
 
 from spi import sizing
+from spi.bootstrap import OSDU_AUDIENCE_KEY
 from spi.images import IMAGE_REGISTRY
 from spi.sizing import SIZING_CONFIGMAP, sizing_defaults, sizing_services
 from spi.templates import PARTITIONS_HASH_KEY
@@ -51,7 +52,7 @@ def _manifest(component: str) -> Path:
 def _sizing_placeholders(path: Path) -> dict:
     found: dict = {}
     for key, default in PLACEHOLDER.findall(path.read_text(encoding="utf-8")):
-        if key.endswith("_DO_NOT_DISRUPT") or key == PARTITIONS_HASH_KEY:
+        if key.endswith("_DO_NOT_DISRUPT") or key in (PARTITIONS_HASH_KEY, OSDU_AUDIENCE_KEY):
             continue
         assert found.setdefault(key, default) == default, f"{path.name}: {key} has two defaults"
     return found
@@ -59,7 +60,26 @@ def _sizing_placeholders(path: Path) -> dict:
 
 @pytest.mark.parametrize("component", sorted(sizing_defaults()))
 def test_manifest_carries_every_key_with_its_default(component):
-    assert _sizing_placeholders(_manifest(component)) == sizing_defaults()[component]
+    defaults = _sizing_placeholders(_manifest(component))
+    if component == "airflow":
+        defaults.update(_sizing_placeholders(STACKS / "airflow" / "release-patch.yaml"))
+    assert defaults == sizing_defaults()[component]
+
+
+def test_airflow_fit_checks_use_core_defaults_not_the_middleware_profile():
+    values = sizing.effective({})
+    assert (
+        values["AIRFLOW_SCHEDULER_CPU_REQUEST"],
+        values["AIRFLOW_SCHEDULER_CPU_LIMIT"],
+        values["AIRFLOW_SCHEDULER_MEMORY_REQUEST"],
+        values["AIRFLOW_SCHEDULER_MEMORY_LIMIT"],
+    ) == ("1", "2", "2Gi", "4Gi")
+    assert (
+        values["AIRFLOW_DAG_PROCESSOR_CPU_REQUEST"],
+        values["AIRFLOW_DAG_PROCESSOR_CPU_LIMIT"],
+        values["AIRFLOW_DAG_PROCESSOR_MEMORY_REQUEST"],
+        values["AIRFLOW_DAG_PROCESSOR_MEMORY_LIMIT"],
+    ) == ("250m", "1", "512Mi", "2Gi")
 
 
 @pytest.mark.parametrize("service", sorted(sizing_services()))

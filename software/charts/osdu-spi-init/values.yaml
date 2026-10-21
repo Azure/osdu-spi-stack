@@ -40,7 +40,7 @@ entitlementsMemberUsers: []
 #    changes, so an environment whose member list is unchanged still renders
 #    a fresh Job rather than patching an immutable one. Must equal
 #    ENTITLEMENTS_MEMBERS_GENERATION in the CLI, which computes the Job name.
-membersGeneration: 4
+membersGeneration: 5
 
 # -- Namespace where the Jobs run; the CLI bootstrap creates
 #    workload-identity-sa here.
@@ -86,8 +86,8 @@ activeDeadlineSeconds: 600
 legalActiveDeadlineSeconds: 3600
 
 # -- activeDeadlineSeconds for the members Jobs. init_members.py's worst case
-#    is 2345 s; test_members_deadline_covers_its_wait_budget recomputes it.
-membersActiveDeadlineSeconds: 2400
+#    is 2405 s; test_members_deadline_covers_its_wait_budget recomputes it.
+membersActiveDeadlineSeconds: 2460
 
 # -- The scripts treat 409 as success, so a retried failure is a real error.
 backoffLimit: 2

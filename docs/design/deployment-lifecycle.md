@@ -70,7 +70,9 @@ trust-manager must be ready before the CA-bundle bootstrap layer. Core OSDU
 services follow that layer, then partition and entitlements initialization,
 schema loading, and reference services. Legal-tag seeding follows initialization
 on a separate, non-gating branch. Airflow follows PostgreSQL on a
-separate branch. Ingress has its own certificate and route dependencies.
+separate branch. Core's DAG registration joins Airflow and initialization
+at non-gating layer 6; it does not wait on entitlements-member seeding and
+does not block Deployable. Ingress has its own certificate and route dependencies.
 
 That sequence describes `core`. `minimal` stops before OSDU services; `bare`
 activates trees with no workloads. Neither profile skips Azure PaaS provisioning

@@ -57,6 +57,9 @@ end of `spi up` records how the environment was last provisioned.
   `spi-stack.gating: "false"` (seeding work such as `spi-osdu-legal`) stay
   visible in `kustomizations.notReady` with their typed reason but never
   flip `ready`: "ready" and "seeded" are separate signals (ADR-015).
+  Core DAG registration uses the same label at layer 6 (ADR-044). Its
+  failure is visible but never becomes a deployability blocker; the row
+  proves registration, not an ingestion run.
   `kustomizations.total` and `kustomizations.ready` count every
   Kustomization, gating or not, so `ready` is not
   `kustomizations.ready == kustomizations.total`; read the boolean.

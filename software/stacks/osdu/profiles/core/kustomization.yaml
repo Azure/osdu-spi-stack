@@ -3,3 +3,19 @@ kind: Kustomization
 resources:
   - ../minimal
   - stack.yaml
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: spi-airflow
+      namespace: osdu-flux
+    patch: |-
+      - op: replace
+        path: /spec/path
+        value: ./software/stacks/osdu/airflow
+      - op: add
+        path: /spec/postBuild/substituteFrom/-
+        value:
+          kind: ConfigMap
+          name: spi-cluster-config
+          optional: false

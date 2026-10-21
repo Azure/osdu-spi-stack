@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../components/airflow
+  - ../dags
+patches:
+  - path: release-patch.yaml
+replacements:
+  - source:
+      kind: ConfigMap
+      name: spi-osdu-dag-files-source
+      fieldPath: data
+    targets:
+      - select:
+          kind: HelmRelease
+          name: airflow
+        fieldPaths:
+          - spec.values.spiDagFiles
+        options:
+          create: true

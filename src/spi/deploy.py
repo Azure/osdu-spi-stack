@@ -33,6 +33,7 @@ from . import __version__
 from .azure_infra import provision_azure_infra
 from .bicep import run_bicep_deployment
 from .bootstrap import (
+    OSDU_AUDIENCE_KEY,
     create_istio_revision_configmap,
     create_storage_classes,
     deploy_identity_facts,
@@ -628,10 +629,18 @@ def deploy_azure(
     sizes = sizing is not None and config.profile is Profile.CORE
     if sizes:
         check_storage(sizing)
+    from .info import token_audience
+
+    identity_client_id = infra_outputs.get("identity_client_id", "")
     istio_revision = ensure_namespaces()
     create_istio_revision_configmap(
         istio_revision,
-        deploy_identity_facts(infra_outputs, config.cluster_name, config.resource_group),
+        {
+            **deploy_identity_facts(infra_outputs, config.cluster_name, config.resource_group),
+            OSDU_AUDIENCE_KEY: token_audience(
+                _resolve_aad_client_id(identity_client_id), identity_client_id
+            ),
+        },
     )
     ensure_secrets()
     create_storage_classes()

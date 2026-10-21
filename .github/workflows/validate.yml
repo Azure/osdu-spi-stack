@@ -95,6 +95,8 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    env:
+      KUSTOMIZE_VERSION: "5.4.3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -105,6 +107,16 @@ jobs:
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: 'v3.16.2'
+      - name: Fetch the pinned Airflow chart for core render tests
+        run: helm pull airflow --repo https://airflow.apache.org --version 1.22.0 --untar --untardir .airflow-chart
+      # The minimal golden render uses the same version as manifest validation.
+      - name: Install kustomize for render tests
+        run: |
+          mkdir -p .kustomize-bin
+          curl -fsSL -o .kustomize-bin/kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf .kustomize-bin/kustomize.tar.gz -C .kustomize-bin kustomize
+          echo "$PWD/.kustomize-bin" >> "$GITHUB_PATH"
       # The init chart's API tests need a real API server: Job validation and
       # spec immutability are enforced only there.
       - name: Create a kind cluster
@@ -126,6 +138,7 @@ jobs:
       - name: pytest with coverage
         env:
           SPI_CHART_TEST_CONTEXT: kind-spi-chart
+          SPI_AIRFLOW_CHART: ${{ github.workspace }}/.airflow-chart/airflow
         run: |
           uv run pytest \
             --cov=src/spi \

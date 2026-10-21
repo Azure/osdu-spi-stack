@@ -35,14 +35,15 @@ from .info import collect_endpoint, read_entitlements_domain
 from .templates import parse_init_values
 
 ELEMENTARY_GROUP = "users"
+IMPERSONATION_GROUP = "users.datalake.impersonation"
 
 ROLE_PRESETS = {
     "viewer": (ELEMENTARY_GROUP, "users.datalake.viewers"),
-    "editor": (ELEMENTARY_GROUP, "users.datalake.editors"),
+    "editor": (ELEMENTARY_GROUP, "users.datalake.editors", IMPERSONATION_GROUP),
     # Only the ops group reaches legal and schema admin and lets a caller manage members.
-    "admin": (ELEMENTARY_GROUP, "users.datalake.admins", "users.datalake.ops"),
+    "admin": (ELEMENTARY_GROUP, "users.datalake.admins", "users.datalake.ops", IMPERSONATION_GROUP),
     # The data root is what lets ops create and reassign data groups.
-    "ops": (ELEMENTARY_GROUP, "users.data.root", "users.datalake.ops"),
+    "ops": (ELEMENTARY_GROUP, "users.data.root", "users.datalake.ops", IMPERSONATION_GROUP),
 }
 DEFAULT_ROLE = "admin"
 ROLE_GROUPS = tuple(
@@ -363,8 +364,11 @@ def remove_user(
         # Entitlements answers 204 for a stranger too, so membership is read first.
         current = group_members(env, token, partition, ELEMENTARY_GROUP) or []
         if member.lower() not in {entry.lower() for entry in current}:
-            outcome[partition] = "absent"
-            continue
+            # A failed rollback can leave impersonation after dropping the roster entry.
+            impersonated = group_members(env, token, partition, IMPERSONATION_GROUP) or []
+            if member.lower() not in {entry.lower() for entry in impersonated}:
+                outcome[partition] = "absent"
+                continue
         status, body = _request("DELETE", f"{env.base}/members/{_quote(member)}", token, partition)
         if status not in (200, 204):
             raise _refused(f"removing {member}", partition, status, body)

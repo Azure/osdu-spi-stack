@@ -211,3 +211,28 @@ spec:
   prune: true
   wait: true
   timeout: 30m
+
+---
+# Layer 6: DAG registration is observable but never gates Deployable.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: spi-osdu-dag-registration
+  namespace: osdu-flux
+  labels:
+    spi-stack.layer: "6"
+    spi-stack.gating: "false"
+spec:
+  interval: 10m
+  dependsOn:
+    - name: spi-airflow
+    - name: spi-osdu-init
+  sourceRef:
+    kind: GitRepository
+    name: osdu-spi-stack-system
+  path: ./software/stacks/osdu/dag-registration
+  # A script change replaces the immutable pod template even when the catalog is unchanged.
+  force: true
+  prune: true
+  wait: true
+  timeout: 35m

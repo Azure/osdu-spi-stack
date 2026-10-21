@@ -139,6 +139,12 @@ The dependency graph brings up operators and middleware before OSDU services,
 then runs partition/entitlements initialization and schema loading. Airflow
 follows its own PostgreSQL dependency.
 
+Core patches that Airflow owner's path, not its release identity. The
+overlay runs LocalExecutor on the OSDU Workload Identity with parallelism 2
+and larger scheduler and DAG processor defaults. Minimal keeps its
+middleware-only Airflow configuration. [ADR-044](decisions/044-core-profile-dags.md)
+owns DAG delivery, system registration and caller impersonation.
+
 Once the Git source is suspended, workloads and controllers keep running.
 Suspension is not a full environment snapshot: live ConfigMaps can change, and
 Helm repositories and other controllers have their own reconciliation behavior.
@@ -172,7 +178,10 @@ deploy identity and namespace Roles are provisioned. `spi onboard` plans and
 applies repository protection, federation, per-service canonical-source policy,
 and both lock projections. `spi test` runs a service's suite from the
 acceptance image paired with its deployed commit, or from a checkout
-(ADR-036), and reports what the suites prove (ADR-037). `spi load` loads
+(ADR-036), and reports what the suites prove (ADR-037). Its built-in `dags`
+target checks core's Workflow-to-Storage path as the deploy identity or a
+person, proving that ingestion retains the caller's `createUser` (ADR-044).
+This stack-owned smoke is not a paired service suite. `spi load` loads
 reference data from the release the environment's registry pins and publishes
 each load's state in `spi info --json` (ADR-040). Declaration enforcement and the reset and teardown workflows remain
 unbuilt. See

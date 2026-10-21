@@ -1107,6 +1107,11 @@ def _parse_overrides(values: List[str]) -> Dict[str, str]:
 ALL_SUITES = "all"
 
 
+class DagCaller(str, Enum):
+    deploy = "deploy"
+    me = "me"
+
+
 def _inspect_suite(
     reports: Path,
     secrets: Collection[str],
@@ -1250,7 +1255,9 @@ def _write_suite_report(
 )
 def spi_test(
     ctx: typer.Context,
-    service: str = typer.Argument(help="Service whose suite runs against this environment."),
+    service: str = typer.Argument(
+        help="Service whose suite runs, or 'dags' for core Workflow and ingestion smoke."
+    ),
     suites: List[str] = typer.Option(
         ["acceptance"],
         "--suite",
@@ -1288,6 +1295,18 @@ def spi_test(
     output_json: bool = typer.Option(
         False, "--json", help="Emit the outcome as a final machine-readable JSON line."
     ),
+    caller: Optional[DagCaller] = typer.Option(
+        None, "--as", help="With 'dags', use deploy (default) or your own signed-in token (me)."
+    ),
+    partition: Optional[str] = typer.Option(
+        None, "--partition", help="With 'dags', select a declared partition; defaults to primary."
+    ),
+    timeout: Optional[int] = typer.Option(
+        None,
+        "--timeout",
+        min=1,
+        help="With 'dags', seconds to wait per Workflow run (default 900).",
+    ),
 ):
     """Run a service's suite as the commit this environment runs shipped it.
 
@@ -1297,10 +1316,36 @@ def spi_test(
     passed, 3 failed, 2 not run or discarded because the environment or
     service was not in a state to test, 1 not run for any other reason.
     --dry-run exits 0 once the suite is bound and gives no verdict.
+    'spi test dags' runs Echo_DAG and Osdu_ingest through Workflow, then
+    checks the ingested record's createUser. It retains the smoke record.
     """
     import tempfile
 
     from .testing import SuiteNotRun, run_suite
+
+    if service == "dags":
+        if (
+            source
+            or overrides
+            or report
+            or review
+            or env_file
+            or ctx.args
+            or suites != ["acceptance"]
+        ):
+            raise _usage_error(
+                "'spi test dags' takes --as, --partition, --timeout, --dry-run and --json; "
+                "descriptor, Maven and report options apply to service suites.",
+                output_json,
+            )
+        _test_core_dags(
+            caller.value if caller else "deploy", partition, timeout or 900, dry_run, output_json
+        )
+        return
+    if caller is not None or partition is not None or timeout is not None:
+        raise _usage_error(
+            "--as, --partition and --timeout apply only to 'spi test dags'.", output_json
+        )
 
     wanted = list(dict.fromkeys(suites))
     every = ALL_SUITES in wanted
@@ -1421,6 +1466,50 @@ def spi_test(
             **extra,
         )
     raise typer.Exit(code=failed[0].exit_code if failed else 0)
+
+
+def _test_core_dags(
+    caller: str, partition: Optional[str], timeout: int, dry_run: bool, output_json: bool
+) -> None:
+    from rich.text import Text
+
+    from .dag_testing import run_dags
+    from .testing import SuiteNotRun
+
+    ctx_name = _guarded_context(output_json)
+    if not output_json:
+        console.print(Text(f"  Cluster context: {ctx_name}"))
+
+    def progress(message: str) -> None:
+        (error_console if output_json else console).print(Text("  " + message))
+
+    try:
+        result = run_dags(
+            caller=caller, partition=partition, timeout=timeout, dry_run=dry_run, progress=progress
+        )
+    except SuiteNotRun as exc:
+        if output_json:
+            _emit_outcome(
+                "refused" if exc.exit_code == 2 else "error", exc.code, str(exc), check="core-dags"
+            )
+        else:
+            console.print(Text(f"DAG smoke not run ({exc.code}): {exc}", style="error"))
+        raise typer.Exit(code=exc.exit_code)
+    if output_json:
+        _emit_outcome(result.outcome, result.code, result.detail, **result.facts())
+    else:
+        table = Table(title=Text(f"Core DAG smoke: {result.partition} as {result.user_id}"))
+        table.add_column("DAG")
+        table.add_column("Outcome")
+        table.add_column("Run")
+        table.add_column("Record / detail", overflow="fold")
+        for check in result.checks:
+            table.add_row(
+                check.dag, check.state, check.run_id or "-", Text(check.record_id or check.detail)
+            )
+        console.print(table)
+        console.print(Text(result.detail))
+    raise typer.Exit(code=result.exit_code)
 
 
 def _plan_suites(

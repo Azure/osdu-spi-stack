@@ -41,6 +41,7 @@ DEPLOY_IDENTITY_KEYS = (
     "AZURE_RESOURCE_GROUP",
     "AKS_CLUSTER_NAME",
 )
+OSDU_AUDIENCE_KEY = "OSDU_TOKEN_AUDIENCE"
 
 
 def deploy_identity_facts(
@@ -63,10 +64,10 @@ class ClusterConfigError(RuntimeError):
     """The live spi-cluster-config could not be read, as opposed to not existing."""
 
 
-def _read_configmap_data(name: str) -> dict[str, str]:
-    """A ConfigMap's data in osdu-flux; empty when absent, an error on any other failure."""
+def _read_configmap_data(name: str, namespace: str = ISTIO_REVISION_NAMESPACE) -> dict[str, str]:
+    """A ConfigMap's data; empty when absent, an error on any other failure."""
     result = run_process(
-        ["kubectl", "get", "configmap", name, "-n", ISTIO_REVISION_NAMESPACE]
+        ["kubectl", "get", "configmap", name, "-n", namespace]
         + ["--ignore-not-found", "-o", "json"],
         capture_output=True,
         text=True,
@@ -135,7 +136,7 @@ metadata:
 def render_istio_revision_configmap(
     istio_revision: str, extra: dict[str, str] | None = None
 ) -> str:
-    """Render the Flux substitution ConfigMap: the Istio revision plus deploy identity facts."""
+    """Render the Istio revision, deploy identities and OSDU token audience for Flux."""
 
     lines = [
         "apiVersion: v1",
@@ -145,12 +146,13 @@ def render_istio_revision_configmap(
         f"  namespace: {ISTIO_REVISION_NAMESPACE}",
         "  labels:",
         "    app.kubernetes.io/managed-by: osdu-spi-stack",
+        "    reconcile.fluxcd.io/watch: Enabled",
         "data:",
         f"  {ISTIO_REVISION_KEY}: {json.dumps(istio_revision)}",
     ]
     # An absent key lets fork-rbac's ${...:=default} bind nobody; an empty
     # value would substitute to "" and make the RoleBinding subject invalid.
-    for key in DEPLOY_IDENTITY_KEYS:
+    for key in (*DEPLOY_IDENTITY_KEYS, OSDU_AUDIENCE_KEY):
         value = (extra or {}).get(key, "")
         if value:
             lines.append(f"  {key}: {json.dumps(value)}")
@@ -162,8 +164,8 @@ def create_istio_revision_configmap(
 ) -> None:
     """Apply the ConfigMap that carries the Istio revision and deploy identity facts for Flux.
 
-    A refresh without ``extra`` keeps the identity facts already on the
-    cluster, since ``kubectl apply`` would otherwise drop the omitted keys.
+    A refresh without ``extra`` keeps live identity facts and resolves the
+    mintable audience from osdu-config, including on v0.30.x environments.
     """
 
     if extra is None:
@@ -175,6 +177,16 @@ def create_istio_revision_configmap(
                 "ConfigMap unchanged.[/warning]"
             )
             return
+        try:
+            from .info import token_audience
+
+            application = _read_configmap_data("osdu-config", "osdu").get("AAD_CLIENT_ID", "")
+            if application:
+                extra[OSDU_AUDIENCE_KEY] = token_audience(
+                    application, read_workload_identity_client_id()
+                )
+        except ClusterConfigError as exc:
+            console.print(f"[warning]{exc}; keeping the existing OSDU audience.[/warning]")
     if not istio_revision:
         detected = _detect_istio_revision()
         if not detected:

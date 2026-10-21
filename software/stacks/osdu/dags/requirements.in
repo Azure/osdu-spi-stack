@@ -1,0 +1,8 @@
+# Airflow 3.2.2, Python 3.13. No extras: the image already provides Airflow and Azure SDKs.
+--find-links https://community.opengroup.org/api/v4/projects/148/packages/pypi/simple/osdu-api/
+--find-links https://community.opengroup.org/api/v4/projects/668/packages/pypi/simple/osdu-airflow/
+--find-links https://community.opengroup.org/api/v4/projects/823/packages/pypi/simple/osdu-ingestion/
+
+osdu-api==1.2.4
+osdu-airflow==0.30.9
+osdu-ingestion==0.30.2
