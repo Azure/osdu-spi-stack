@@ -37,7 +37,16 @@ SIZING_CONFIGMAP = "spi-sizing"
 _RESOURCE_FIELDS = ("CPU_REQUEST", "CPU_LIMIT", "MEMORY_REQUEST", "MEMORY_LIMIT")
 
 _SERVICE_RESOURCES = ("300m", "1", "896Mi", "1536Mi")
-_SERVICE_REPLICAS = {"partition": "2", "entitlements": "2", "legal": "2"}
+# The tier every suite depends on; a lone replica drops for a node repack or spot reclaim.
+_SERVICE_REPLICAS = {
+    "partition": "2",
+    "entitlements": "2",
+    "legal": "2",
+    "storage": "2",
+    "schema": "2",
+    "indexer": "2",
+    "search": "2",
+}
 
 
 def _resources(prefix: str, values: tuple[str, str, str, str]) -> dict[str, str]:

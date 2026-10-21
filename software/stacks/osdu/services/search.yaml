@@ -24,7 +24,7 @@ spec:
         kind: GitRepository
         name: osdu-spi-stack-system
   values:
-    replicaCount: ${SEARCH_REPLICAS:=1}
+    replicaCount: ${SEARCH_REPLICAS:=2}
     resources:
       requests:
         cpu: "${SEARCH_CPU_REQUEST:=300m}"
@@ -32,6 +32,8 @@ spec:
       limits:
         cpu: "${SEARCH_CPU_LIMIT:=1}"
         memory: "${SEARCH_MEMORY_LIMIT:=1536Mi}"
+    podDisruptionBudget:
+      enabled: true
     image:
       repository: ${SEARCH_IMAGE_REPOSITORY}
       tag: "${SEARCH_IMAGE_TAG}"
