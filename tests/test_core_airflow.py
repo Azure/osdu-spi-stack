@@ -129,6 +129,27 @@ def test_chart_renders_scheduler_as_deployment_with_only_scheduler_federated(tmp
     assert result.returncode == 0, result.stderr
     docs = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
     deployments = {d["metadata"]["name"]: d for d in docs if d.get("kind") == "Deployment"}
+    chart_defaults = yaml.safe_load((Path(chart) / "values.yaml").read_text(encoding="utf-8"))
+    for component, job_type, probes in (
+        ("scheduler", "SchedulerJob", ("startupProbe", "livenessProbe")),
+        ("dagProcessor", "DagProcessorJob", ("livenessProbe",)),
+    ):
+        name = "airflow-scheduler" if component == "scheduler" else "airflow-dag-processor"
+        container = deployments[name]["spec"]["template"]["spec"]["containers"][0]
+        for probe_name in probes:
+            probe = container[probe_name]
+            assert "/entrypoint" not in " ".join(probe["exec"]["command"])
+            assert probe["exec"]["command"] == [
+                "bash",
+                "-c",
+                f"airflow jobs check --job-type {job_type} --local",
+            ]
+            settings = chart_defaults[component][probe_name] | release(CORE)["spec"]["values"][
+                component
+            ].get(probe_name, {})
+            assert {k: v for k, v in probe.items() if k != "exec"} == {
+                k: v for k, v in settings.items() if k != "command"
+            }
     scheduler = deployments["airflow-scheduler"]["spec"]["template"]
     assert scheduler["spec"]["serviceAccountName"] == "workload-identity-sa"
     assert scheduler["metadata"]["labels"]["azure.workload.identity/use"] == "true"
@@ -230,6 +251,7 @@ def test_airflow_service_urls_match_the_core_service_routes():
         )
     assert values["scheduler"]["startupProbe"]["failureThreshold"] == 18
     assert values["dagProcessor"]["livenessProbe"]["initialDelaySeconds"] >= 180
+    assert values["dagProcessor"]["livenessProbe"]["failureThreshold"] == 10
 
 
 @pytest.mark.parametrize(

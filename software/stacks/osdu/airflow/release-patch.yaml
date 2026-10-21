@@ -43,8 +43,18 @@ spec:
         dags_are_paused_at_creation: "true"
         hostname_callable: airflow.utils.net.get_host_ip_address
     scheduler:
+      # Probes must not re-enter the image's dependency-installing entrypoint.
       startupProbe:
         failureThreshold: 18
+        command:
+          - bash
+          - -c
+          - airflow jobs check --job-type SchedulerJob --local
+      livenessProbe:
+        command:
+          - bash
+          - -c
+          - airflow jobs check --job-type SchedulerJob --local
       env: &osduEnv
         - name: _PIP_ADDITIONAL_REQUIREMENTS
           value: "-r /opt/spi/osdu/requirements.txt --require-hashes --only-binary :all:"
@@ -130,6 +140,10 @@ spec:
       livenessProbe:
         initialDelaySeconds: 180
         failureThreshold: 10
+        command:
+          - bash
+          - -c
+          - airflow jobs check --job-type DagProcessorJob --local
       serviceAccount:
         create: true
       strategy:
