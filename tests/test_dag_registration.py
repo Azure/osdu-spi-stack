@@ -22,6 +22,7 @@ import time
 from datetime import datetime, timezone
 from http.client import HTTPMessage
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import HTTPRedirectHandler
@@ -298,6 +299,139 @@ def test_expired_airflow_login_refreshes_once(registration, monkeypatch):
     api = registration.Api("http://airflow/airflow", token, time.monotonic() + 60)
     assert api.request("GET", "/api/v2/dags")[0] == 200
     assert len(tokens) == 2
+
+
+@pytest.fixture
+def retry_clock(registration, monkeypatch):
+    clock = [0.0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(
+        registration, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep)
+    )
+    return clock
+
+
+@pytest.mark.parametrize("service", ["Workflow", "Partition"])
+@pytest.mark.parametrize(
+    "statuses", [(403, 200), (403, 403, 200), (401, 401, 200), (403, 401, 401, 200)]
+)
+def test_post_init_authorization_eventually_succeeds(
+    registration, monkeypatch, retry_clock, capsys, service, statuses
+):
+    responses = iter(statuses)
+    tokens = []
+
+    def token():
+        tokens.append("mint")
+        return "private-token"
+
+    monkeypatch.setattr(
+        registration, "send", lambda *args: (next(responses), {"message": "cache warming"})
+    )
+    api = registration.Api("http://service", token, 30)
+    api.service = service
+    assert api.request("GET", "/read")[0] == 200
+    assert retry_clock[0] > 0
+    assert len(tokens) == (2 if 401 in statuses else 1)
+    waiting_statuses = (403, 401) if statuses == (403, 401, 401, 200) else (statuses[0],)
+    assert capsys.readouterr().out.splitlines() == [
+        f"Waiting for {service} authorization: GET /read HTTP {status}"
+        for status in waiting_statuses
+    ]
+
+
+def test_persistent_authorization_fails_at_shared_deadline_with_last_response(
+    registration, monkeypatch, retry_clock, capsys
+):
+    calls = []
+
+    def send(*args):
+        calls.append(args)
+        return 403, {"message": "denied private-token\n" + "x" * 500}
+
+    monkeypatch.setattr(registration, "send", send)
+    api = registration.Api("http://workflow", lambda: "private-token", 12)
+    api.service = "Workflow"
+    with pytest.raises(registration.RegistrationError) as error:
+        api.request("GET", "/workflow/Echo_DAG")
+    assert error.value.code == "request_failed"
+    assert retry_clock[0] == 12
+    assert len(calls) == 3
+    assert "HTTP 403" in str(error.value) and "denied" in str(error.value)
+    assert "private-token" not in str(error.value)
+    assert len(str(error.value)) < 350 and "\n" not in str(error.value)
+    assert capsys.readouterr().out.count("Waiting for Workflow authorization:") == 1
+
+    with pytest.raises(registration.RegistrationError):
+        api.request("GET", "/another")
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("status", [400, 404, 409, 422])
+def test_other_client_errors_are_not_retried(registration, monkeypatch, retry_clock, status):
+    calls = []
+
+    def send(*args):
+        calls.append(args)
+        return status, {"message": "not retryable"}
+
+    monkeypatch.setattr(registration, "send", send)
+    api = registration.Api("http://workflow", lambda: "token", 30)
+    api.service = "Workflow"
+    with pytest.raises(registration.RegistrationError) as error:
+        api.request("GET", "/read")
+    assert error.value.code == "request_failed"
+    assert retry_clock[0] == 0 and len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_airflow_authorization_is_not_given_the_osdu_cache_grace_period(
+    registration, monkeypatch, retry_clock, status
+):
+    monkeypatch.setattr(registration, "send", lambda *args: (status, {}))
+    api = registration.Api("http://airflow", lambda: "token", 30, service="Airflow")
+    with pytest.raises(registration.RegistrationError):
+        api.request("GET", "/api/v2/dags")
+    assert retry_clock[0] == 0
+
+
+def test_token_exchange_cannot_start_another_call_after_the_deadline(
+    registration, monkeypatch, retry_clock
+):
+    def token():
+        retry_clock[0] += registration.HTTP_TIMEOUT
+        return "token"
+
+    def unexpected(*args):
+        pytest.fail("service call started after the shared deadline")
+
+    monkeypatch.setattr(registration, "send", unexpected)
+    api = registration.Api("http://workflow", token, 1, service="Workflow")
+    with pytest.raises(registration.RegistrationError, match="deadline"):
+        api.request("GET", "/read")
+
+
+def test_main_labels_services_and_shares_one_wait_budget(registration, monkeypatch, retry_clock):
+    monkeypatch.setattr(sys, "argv", ["register.py", "--catalog", str(DAGS / "catalog.yaml")])
+    monkeypatch.setenv("WAIT_SECONDS", "900")
+    for name in ("AIRFLOW_URL", "WORKFLOW_URL", "PARTITION_URL"):
+        monkeypatch.setenv(name, "http://service")
+    clients = []
+    original = registration.Api
+
+    def api(*args, **kwargs):
+        client = original(*args, **kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(registration, "Api", api)
+    monkeypatch.setattr(registration, "register", lambda *args, **kwargs: None)
+    assert registration.main() == 0
+    assert [client.service for client in clients] == ["Airflow", "Workflow", "Partition"]
+    assert {client.deadline for client in clients} == {900}
 
 
 def test_airflow_login_accepts_the_created_status(registration, monkeypatch):

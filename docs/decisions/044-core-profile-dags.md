@@ -68,6 +68,11 @@ key is introduced.
   are never deleted. Airflow creates new DAGs paused.
   A fresh `last_parsed_time` for each declared ID prevents an old catalog's
   parse from satisfying a new registration Job.
+  Workflow and Partition authorization can lag init while tenant caches
+  warm. Their 403s and 401s after one token refresh retry within the shared
+  900-second request budget, with status-change progress and a bounded
+  response excerpt on failure. This does not reset the 1800-second Job
+  deadline or make other client errors retryable.
 - **Caller provenance.** Tasks use the OSDU identity's token with the run's
   `userId` in `on-behalf-of`. `AZURE_RESOURCE_ID` uses
   `spi-cluster-config/OSDU_TOKEN_AUDIENCE`, resolved as for `spi token`

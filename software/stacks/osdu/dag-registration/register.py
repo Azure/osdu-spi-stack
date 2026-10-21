@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -102,12 +103,24 @@ def airflow_token(base_url: str) -> str:
     return access_token(status, payload, "Airflow")
 
 
+def response_excerpt(payload: object, bearer: str) -> str:
+    text = payload if isinstance(payload, str) else json.dumps(payload)
+    if bearer:
+        text = text.replace(bearer, "[redacted]")
+    text = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [redacted]", text)
+    text = re.sub(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+\b", "[redacted]", text)
+    return " ".join(text.split())[:200]
+
+
 class Api:
-    def __init__(self, base_url: str, token: Callable[[], str], deadline: float):
+    def __init__(
+        self, base_url: str, token: Callable[[], str], deadline: float, *, service: str = "API"
+    ):
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.bearer = ""
         self.deadline = deadline
+        self.service = service
 
     def request(
         self,
@@ -120,10 +133,17 @@ class Api:
     ) -> tuple[int, object]:
         url = self.base_url + path
         refreshed = False
+        previous = ""
+        last_response = ""
+        detail = f"{method} {url}: request deadline exceeded"
         while True:
+            if time.monotonic() >= self.deadline:
+                raise RegistrationError("request_failed", detail)
             try:
                 if not self.bearer:
                     self.bearer = self.token()
+                    if time.monotonic() >= self.deadline:
+                        raise RegistrationError("request_failed", detail)
                 headers = {
                     "Authorization": "Bearer " + self.bearer,
                     "Content-Type": "application/json",
@@ -134,23 +154,38 @@ class Api:
                 status, payload = send(method, url, headers, body)
                 if status in expected:
                     return status, payload
+                detail = (
+                    f"{method} {url} returned HTTP {status}: "
+                    f"{response_excerpt(payload, self.bearer)}"
+                )
+                last_response = detail
                 if status == 401 and not refreshed:
                     self.bearer = ""
                     refreshed = True
                     continue
-                retryable = (
-                    status == 429
-                    or status >= 500
-                    or (status == 403 and "invalid data partition" in str(payload).lower())
+                authorization_wait = self.service in ("Workflow", "Partition") and status in (
+                    401,
+                    403,
                 )
-                detail = f"{method} {url} returned HTTP {status}"
-                if not retryable:
+                if not (authorization_wait or status == 429 or status >= 500):
                     raise RegistrationError("request_failed", detail)
+                waiting = (
+                    f"Waiting for {self.service} authorization: {method} {path} HTTP {status}"
+                    if authorization_wait
+                    else ""
+                )
+                if waiting and waiting != previous:
+                    print(waiting, flush=True)
+                previous = waiting
             except (OSError, URLError) as exc:
                 detail = f"{method} {url}: {type(exc).__name__}"
-            if time.monotonic() + POLL_SECONDS >= self.deadline:
+                if last_response:
+                    detail += f"; last response: {last_response}"
+                previous = ""
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
                 raise RegistrationError("request_failed", detail)
-            time.sleep(POLL_SECONDS)
+            time.sleep(min(POLL_SECONDS, remaining))
 
 
 def collection(api: Api, path: str, field: str, **query: str) -> list[dict]:
@@ -335,9 +370,9 @@ def main() -> int:
         since = datetime.now(timezone.utc)
         deadline = time.monotonic() + timeout
         airflow_url = os.environ["AIRFLOW_URL"].rstrip("/")
-        airflow = Api(airflow_url, lambda: airflow_token(airflow_url), deadline)
-        workflow = Api(os.environ["WORKFLOW_URL"], osdu_token, deadline)
-        partition = Api(os.environ["PARTITION_URL"], osdu_token, deadline)
+        airflow = Api(airflow_url, lambda: airflow_token(airflow_url), deadline, service="Airflow")
+        workflow = Api(os.environ["WORKFLOW_URL"], osdu_token, deadline, service="Workflow")
+        partition = Api(os.environ["PARTITION_URL"], osdu_token, deadline, service="Partition")
         catalog = yaml.safe_load(args.catalog.read_text(encoding="utf-8"))
         register(catalog, airflow, workflow, partition, timeout=timeout, since=since)
     except RegistrationError as exc:

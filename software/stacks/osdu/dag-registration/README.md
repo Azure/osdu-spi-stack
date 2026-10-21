@@ -55,9 +55,19 @@ through the same 409 path.
 ## Retry and diagnosis
 
 Requests use finite timeouts and bounded retries for network failures,
-429, server errors and the known partition-cache-lag response. A 401
-refreshes a bearer once. The 900-second script wait fits within the Job
-deadline with pod-start allowance; Flux waits 35 minutes.
+429 and server errors. A 401 refreshes a bearer once per request. Workflow
+and Partition 403s, and 401s after that refresh, wait for post-init
+authorization caches until the shared `WAIT_SECONDS` deadline. A waiting
+line names the service, method, path and status when that state changes.
+Other client errors, including unexpected 400, 404 and 409, fail immediately.
+The final failure includes the last HTTP status and a bounded, redacted
+response excerpt.
+
+All clients share the same 900-second budget, checked before each token
+exchange and service call; it does not restart for each request. At most
+one in-flight 20-second HTTP operation can overrun that budget. The Job's
+1800-second deadline caps all pod attempts, including startup and backoff;
+Flux waits 35 minutes.
 
 Read the current Job name from `kubectl get jobs -n platform -l
 app.kubernetes.io/name=osdu-spi-dag-registration`, then its `register`
