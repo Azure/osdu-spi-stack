@@ -14,8 +14,8 @@
 
 """Sizing keys Flux substitutes into the service and middleware manifests.
 
-Each manifest carries `${KEY:=default}` for every value here, and the defaults
-must match: the CLI checks overrides against them without reading the stack.
+Each core manifest carries `${KEY:=default}` for every value here, and the
+defaults must match: the CLI checks overrides without reading the stack.
 A declaration's or stack file's `resources:` section becomes those keys here,
 and `spi up` writes them to the `spi-sizing` ConfigMap once they pass the checks.
 """
@@ -81,8 +81,8 @@ MIDDLEWARE_DEFAULTS: dict[str, dict[str, str]] = {
     },
     "airflow": {
         **_resources("AIRFLOW_API_SERVER", ("250m", "1", "512Mi", "2Gi")),
-        **_resources("AIRFLOW_SCHEDULER", ("250m", "1", "512Mi", "1Gi")),
-        **_resources("AIRFLOW_DAG_PROCESSOR", ("100m", "500m", "256Mi", "512Mi")),
+        **_resources("AIRFLOW_SCHEDULER", ("1", "2", "2Gi", "4Gi")),
+        **_resources("AIRFLOW_DAG_PROCESSOR", ("250m", "1", "512Mi", "2Gi")),
         **_resources("AIRFLOW_TRIGGERER", ("100m", "500m", "256Mi", "512Mi")),
     },
 }

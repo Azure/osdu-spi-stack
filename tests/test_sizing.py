@@ -59,7 +59,26 @@ def _sizing_placeholders(path: Path) -> dict:
 
 @pytest.mark.parametrize("component", sorted(sizing_defaults()))
 def test_manifest_carries_every_key_with_its_default(component):
-    assert _sizing_placeholders(_manifest(component)) == sizing_defaults()[component]
+    defaults = _sizing_placeholders(_manifest(component))
+    if component == "airflow":
+        defaults.update(_sizing_placeholders(STACKS / "airflow" / "release-patch.yaml"))
+    assert defaults == sizing_defaults()[component]
+
+
+def test_airflow_fit_checks_use_core_defaults_not_the_middleware_profile():
+    values = sizing.effective({})
+    assert (
+        values["AIRFLOW_SCHEDULER_CPU_REQUEST"],
+        values["AIRFLOW_SCHEDULER_CPU_LIMIT"],
+        values["AIRFLOW_SCHEDULER_MEMORY_REQUEST"],
+        values["AIRFLOW_SCHEDULER_MEMORY_LIMIT"],
+    ) == ("1", "2", "2Gi", "4Gi")
+    assert (
+        values["AIRFLOW_DAG_PROCESSOR_CPU_REQUEST"],
+        values["AIRFLOW_DAG_PROCESSOR_CPU_LIMIT"],
+        values["AIRFLOW_DAG_PROCESSOR_MEMORY_REQUEST"],
+        values["AIRFLOW_DAG_PROCESSOR_MEMORY_LIMIT"],
+    ) == ("250m", "1", "512Mi", "2Gi")
 
 
 def test_every_kustomization_applying_a_sized_manifest_reads_the_sizing_configmap():

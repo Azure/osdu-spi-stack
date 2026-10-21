@@ -139,6 +139,12 @@ The dependency graph brings up operators and middleware before OSDU services,
 then runs partition/entitlements initialization and schema loading. Airflow
 follows its own PostgreSQL dependency.
 
+Core patches that Airflow owner's path, not its release identity. The
+overlay runs LocalExecutor on the OSDU Workload Identity with parallelism 2
+and larger scheduler and DAG processor defaults. Minimal keeps its
+middleware-only Airflow configuration. [ADR-044](decisions/044-core-profile-dags.md)
+owns DAG delivery, system registration and caller impersonation.
+
 Once the Git source is suspended, workloads and controllers keep running.
 Suspension is not a full environment snapshot: live ConfigMaps can change, and
 Helm repositories and other controllers have their own reconciliation behavior.

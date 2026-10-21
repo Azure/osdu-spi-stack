@@ -422,8 +422,8 @@ class TestMinimalProfileScope:
                 "the profile is defined to stop below layer 5"
             )
 
-    def test_core_runs_every_minimal_layer_unchanged(self):
-        """What is validated on minimal is what core runs."""
+    def test_core_includes_minimal_definitions_and_patches_only_airflow(self):
+        """The rendered Airflow exception is covered by test_core_airflow."""
         minimal = {
             k["metadata"]["name"]: k
             for k in _flux_kustomizations(PROFILES_DIR / Profile.MINIMAL.value)
@@ -433,6 +433,10 @@ class TestMinimalProfileScope:
             for k in _flux_kustomizations(PROFILES_DIR / Profile.CORE.value)
         }
         assert {name: core.get(name) for name in minimal} == minimal
+        overlay = yaml.safe_load(
+            (PROFILES_DIR / "core" / "kustomization.yaml").read_text(encoding="utf-8")
+        )
+        assert {patch["target"]["name"] for patch in overlay["patches"]} == {"spi-airflow"}
 
 
 class TestBareProfileScope:
