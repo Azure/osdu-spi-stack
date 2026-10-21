@@ -228,9 +228,10 @@ def test_successful_retry_replaces_interrupted_contents(loader, catalog, sources
     assert len(list(destination.rglob("*.py"))) == 4
 
 
-def test_invalid_catalog_exits_one_without_creating_destination(tmp_path):
+@pytest.mark.parametrize("content", ["families: []", "families: ["])
+def test_invalid_catalog_exits_one_without_creating_destination(tmp_path, content):
     path = tmp_path / "catalog.yaml"
-    path.write_text("families: []", encoding="utf-8")
+    path.write_text(content, encoding="utf-8")
     result = run_process(
         [
             sys.executable,
@@ -245,6 +246,7 @@ def test_invalid_catalog_exits_one_without_creating_destination(tmp_path):
     )
     assert result.returncode == 1
     assert "DAG load failed" in result.stderr
+    assert str(path) in result.stderr
     assert not (tmp_path / "dags").exists()
 
 

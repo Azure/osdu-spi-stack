@@ -45,7 +45,12 @@ def send(method: str, url: str, headers: dict, body: object = None) -> tuple[int
     data = (
         body if isinstance(body, bytes) else json.dumps(body).encode() if body is not None else None
     )
-    request = Request(url, data=data, headers=headers, method=method)
+    request = Request(url, data=data, method=method)
+    for name, value in headers.items():
+        if name.lower() == "authorization":
+            request.add_unredirected_header(name, value)
+        else:
+            request.add_header(name, value)
     try:
         with urlopen(request, timeout=HTTP_TIMEOUT) as response:
             status, raw = response.status, response.read()

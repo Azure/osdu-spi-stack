@@ -275,7 +275,7 @@ def _preflight(api: Api, record: dict) -> None:
         )
         if status != 200 or not isinstance(schema, dict):
             raise _refuse(
-                "schema_missing", f"{kind}: {api.detail(status, schema)}; wait for schema-load."
+                "schema_missing", f"{kind}: {api.detail(status, schema)}; inspect schema-load."
             )
     status, body = api.request(
         "storage", "GET", "/records/" + urllib.parse.quote(record["id"], safe="")

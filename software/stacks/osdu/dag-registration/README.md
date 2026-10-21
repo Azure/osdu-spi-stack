@@ -22,6 +22,7 @@ The script obtains an Airflow JWT at `/airflow/auth/token` using
 It exchanges the projected Workload Identity assertion at Entra's v1
 endpoint for the management audience, matching the init chart's `auth.py`.
 No password or token is logged.
+Bearer headers are not forwarded on an HTTP redirect.
 
 Airflow 3.2.2 returns `is_stale`, not Airflow 2's `is_active`.
 `GET /api/v2/dags?exclude_stale=false` includes retired metadata so the Job

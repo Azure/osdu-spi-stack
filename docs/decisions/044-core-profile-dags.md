@@ -129,6 +129,10 @@ inline Helm values override it; kustomize patches do not (ADR-043).
   unpaused, and the changed members values rerun the impersonation seed.
   The CLI must populate the OSDU audience in `spi-cluster-config` before
   reconciliation; old environments cannot substitute an empty audience.
+- Existing explicit `spi-sizing` overrides remain in effect. Revalidate
+  partial Airflow overrides against the larger defaults: an old limit
+  override can be below a new default request. The upgrade does not erase
+  an operator's resource choices.
 - A catalog update restarts the scheduler. Tasks still running when the
   old pod terminates stop with it; logs are not durable. Parallelism bounds
   task processes, not memory or simultaneous workflow runs.

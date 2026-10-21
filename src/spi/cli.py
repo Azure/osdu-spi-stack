@@ -1498,7 +1498,7 @@ def _test_core_dags(
     if output_json:
         _emit_outcome(result.outcome, result.code, result.detail, **result.facts())
     else:
-        table = Table(title=f"Core DAG smoke: {result.partition} as {result.user_id}")
+        table = Table(title=Text(f"Core DAG smoke: {result.partition} as {result.user_id}"))
         table.add_column("DAG")
         table.add_column("Outcome")
         table.add_column("Run")

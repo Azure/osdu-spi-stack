@@ -260,7 +260,7 @@ def main() -> int:
         catalog = yaml.safe_load(args.catalog.read_text(encoding="utf-8"))
         load(catalog, args.local_dir, args.destination)
     except Exception as exc:
-        print(f"DAG load failed: {exc}", file=sys.stderr, flush=True)
+        print(f"DAG load failed: {args.catalog}: {exc}", file=sys.stderr, flush=True)
         return 1
     return 0
 

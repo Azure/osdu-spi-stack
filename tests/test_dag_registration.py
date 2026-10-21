@@ -15,13 +15,16 @@
 """System records are read back per partition before any DAG activation."""
 
 import importlib.util
+import io
 import shutil
 import sys
 import time
 from datetime import datetime, timezone
+from http.client import HTTPMessage
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+from urllib.request import HTTPRedirectHandler
 
 import pytest
 import yaml
@@ -33,6 +36,28 @@ STACK = ROOT / "software" / "stacks" / "osdu"
 REGISTRATION = STACK / "dag-registration"
 DAGS = STACK / "dags"
 IDS = {"Echo_DAG", "airflow_monitoring", "Osdu_ingest", "manifest_ingestion"}
+
+
+@pytest.mark.parametrize("header", ["Authorization", "authorization"])
+def test_registration_bearers_are_not_forwarded_on_redirect(registration, monkeypatch, header):
+    captured = []
+
+    class Response(io.BytesIO):
+        status = 200
+
+    def open_request(request, **kwargs):
+        captured.append(request)
+        return Response(b"{}")
+
+    monkeypatch.setattr(registration, "urlopen", open_request)
+    registration.send("GET", "https://workflow.example/workflow", {header: "Bearer private"})
+    request = captured[0]
+    assert request.get_header("Authorization") == "Bearer private"
+    redirected = HTTPRedirectHandler().redirect_request(
+        request, io.BytesIO(), 302, "Moved", HTTPMessage(), "https://another.example/"
+    )
+    assert redirected is not None
+    assert redirected.get_header("Authorization") is None
 
 
 @pytest.fixture

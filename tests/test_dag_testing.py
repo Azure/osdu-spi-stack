@@ -21,6 +21,7 @@ import json
 import urllib.error
 import urllib.parse
 import uuid
+from dataclasses import replace
 from email.message import Message
 from types import SimpleNamespace
 from typing import Any
@@ -472,6 +473,19 @@ def test_cli_selects_the_builtin_dag_check_and_its_caller(invoke):
     assert payload["outcome"] == "passed" and payload["mode"] == "stack"
     assert payload["caller"] == {"as": "me", "id": PERSON}
     assert payload["checks"][1]["createUser"] == PERSON
+
+
+def test_cli_prints_the_caller_as_literal_text(invoke, monkeypatch):
+    runner, _ = invoke
+    original = dag_testing.run_dags
+
+    def run(**kwargs):
+        return replace(original(**kwargs), user_id="[bold]caller[/bold]")
+
+    monkeypatch.setattr(dag_testing, "run_dags", run)
+    result = runner.invoke(cli.app, ["test", "dags"])
+    assert result.exit_code == 0, result.output
+    assert "[bold]caller[/bold]" in result.output
 
 
 @pytest.mark.parametrize(

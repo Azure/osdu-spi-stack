@@ -22,6 +22,7 @@ Both SHA-256 values match the raw files at that commit.
 every member without extracting it, and verifies the selected file hashes.
 Only cataloged files reach `dags/<family>/`. Paths, links, duplicate members,
 missing files and hash failures are rejected before any destination writes.
+Failures name the catalog; fetch and hash failures also name the selected files.
 A successful retry replaces an interrupted load in the pod's own emptyDir.
 Download, member-count and file-size limits bound archive processing.
 
@@ -80,8 +81,8 @@ using the same policy as `spi token`: an application override from
 names the OSDU managed identity. A managed identity cannot itself be a
 token audience (AADSTS100040, ADR-030). `spi reconcile` resolves it from the
 running configuration and ServiceAccount before requesting reconciliation,
-including on v0.30.x upgrades. Read failure retains the previous value. An absent key
-uses `https://management.azure.com`, the existing bootstrap audience
+including on v0.30.x upgrades. An osdu-config read failure retains the
+previous value. An absent key uses `https://management.azure.com`, the existing bootstrap audience
 accepted by the mesh (ADR-016), not an empty substitution. An explicitly
 configured application audience is preserved.
 
@@ -126,8 +127,9 @@ run ingestion. The check never enrolls a caller or changes an existing role.
 
 Preflight reads both Workflow registrations, the Manifest and UnitOfMeasure
 schemas, and the default legal tag observed by `spi info`. It refuses a
-missing prerequisite rather than creating it. Registration is non-gating,
-and schema-load may still be running after the environment is Deployable.
+missing prerequisite rather than creating it. Registration, legal and
+members are non-gating, so those prerequisites can still be missing after
+the environment becomes Deployable.
 
 Echo runs first through the Workflow API. Only after it succeeds does the
 check submit `Osdu_ingest`, with a one-record
