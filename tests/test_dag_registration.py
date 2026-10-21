@@ -300,6 +300,22 @@ def test_expired_airflow_login_refreshes_once(registration, monkeypatch):
     assert len(tokens) == 2
 
 
+def test_airflow_login_accepts_the_created_status(registration, monkeypatch):
+    monkeypatch.setenv("AIRFLOW_USERNAME", "osdu-workflow")
+    monkeypatch.setenv("AIRFLOW_PASSWORD", "test-password")
+    seen = []
+
+    def send(*args):
+        seen.append(args)
+        return 201, {"access_token": "airflow-token"}
+
+    monkeypatch.setattr(registration, "send", send)
+    assert registration.airflow_token("http://airflow/airflow") == "airflow-token"
+    method, url, _, body = seen[0]
+    assert method == "POST" and url == "http://airflow/airflow/auth/token"
+    assert body == {"username": "osdu-workflow", "password": "test-password"}
+
+
 def test_osdu_identity_exchange_matches_the_init_jobs(registration, monkeypatch, tmp_path):
     assertion = tmp_path / "assertion"
     assertion.write_text("projected-assertion", encoding="utf-8")

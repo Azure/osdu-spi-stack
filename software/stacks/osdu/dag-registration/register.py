@@ -64,7 +64,8 @@ def send(method: str, url: str, headers: dict, body: object = None) -> tuple[int
 
 
 def access_token(status: int, payload: object, service: str) -> str:
-    if status != 200 or not isinstance(payload, dict) or not payload.get("access_token"):
+    # Airflow 3's POST /auth/token answers 201 Created; Entra answers 200.
+    if status not in (200, 201) or not isinstance(payload, dict) or not payload.get("access_token"):
         raise RegistrationError(
             "authentication_failed", f"{service} token endpoint returned HTTP {status}"
         )
