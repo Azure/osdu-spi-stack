@@ -105,6 +105,8 @@ jobs:
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: 'v3.16.2'
+      - name: Fetch the pinned Airflow chart for core render tests
+        run: helm pull airflow --repo https://airflow.apache.org --version 1.22.0 --untar --untardir .airflow-chart
       # The init chart's API tests need a real API server: Job validation and
       # spec immutability are enforced only there.
       - name: Create a kind cluster
@@ -126,6 +128,7 @@ jobs:
       - name: pytest with coverage
         env:
           SPI_CHART_TEST_CONTEXT: kind-spi-chart
+          SPI_AIRFLOW_CHART: ${{ github.workspace }}/.airflow-chart/airflow
         run: |
           uv run pytest \
             --cov=src/spi \

@@ -934,3 +934,18 @@ class TestDeploySizing:
         )
 
         assert written == []
+
+    @pytest.mark.parametrize("audience", ["", "application-audience"])
+    def test_up_writes_the_effective_osdu_audience_for_airflow(
+        self, written, monkeypatch, audience
+    ):
+        seen = []
+        monkeypatch.setenv("AAD_CLIENT_ID", audience)
+        monkeypatch.setattr(
+            deploy, "provision_azure_infra", lambda *a, **k: {"identity_client_id": "osdu-identity"}
+        )
+        monkeypatch.setattr(
+            deploy, "create_istio_revision_configmap", lambda revision, extra: seen.append(extra)
+        )
+        deploy.deploy_azure(Config.from_env("shared", profile=Profile.CORE))
+        assert seen[0]["AAD_CLIENT_ID"] == (audience or "osdu-identity")

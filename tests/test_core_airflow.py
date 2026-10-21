@@ -66,6 +66,9 @@ def test_core_changes_one_existing_flux_owner_not_the_release_identity():
     core = {d["metadata"]["name"]: d for d in documents(PROFILES / "core")}
     expected = minimal.pop("spi-airflow")
     expected["spec"]["path"] = "./software/stacks/osdu/airflow"
+    expected["spec"]["postBuild"]["substituteFrom"].append(
+        {"kind": "ConfigMap", "name": "spi-cluster-config", "optional": False}
+    )
     assert core["spi-airflow"] == expected
     assert all(core[name] == doc for name, doc in minimal.items())
     assert release(CORE)["metadata"] == release(MINIMAL)["metadata"]
@@ -101,7 +104,9 @@ def test_core_executor_identity_and_fixed_parallelism():
 
 def test_rendered_core_sizing_matches_the_cli_and_has_no_empty_defaults():
     defaults = dict(PLACEHOLDER.findall(build(CORE)))
-    assert defaults == sizing_defaults()["airflow"]
+    assert {k: v for k, v in defaults.items() if k.startswith("AIRFLOW_")} == sizing_defaults()[
+        "airflow"
+    ]
     assert all(defaults.values())
     minimal = release(MINIMAL)["spec"]["values"]
     core = release(CORE)["spec"]["values"]
@@ -148,3 +153,116 @@ def test_chart_renders_scheduler_as_deployment_with_only_scheduler_federated(tmp
         if doc["kind"] == "RoleBinding"
         for subject in doc["subjects"]
     )
+    embedded = next(
+        d
+        for d in docs
+        if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "spi-osdu-dag-files"
+    )
+    assert embedded["data"] == release(CORE)["spec"]["values"]["spiDagFiles"]
+    assert "helm.sh/hook" not in embedded["metadata"].get("annotations", {})
+    for name in ("airflow-scheduler", "airflow-dag-processor"):
+        pod = deployments[name]["spec"]["template"]
+        assert pod["metadata"]["annotations"]["checksum/extra-configmaps"]
+        loader = next(c for c in pod["spec"]["initContainers"] if c["name"] == "load-osdu-dags")
+        assert loader["image"] == "apache/airflow:3.2.2"
+        assert loader["securityContext"]["allowPrivilegeEscalation"] is False
+        assert loader["securityContext"]["capabilities"]["drop"] == ["ALL"]
+        container = pod["spec"]["containers"][0]
+        env = {e["name"]: e.get("value") for e in container["env"]}
+        assert env["_PIP_ADDITIONAL_REQUIREMENTS"] == (
+            "-r /opt/spi/osdu/requirements.txt --require-hashes --only-binary :all:"
+        )
+        assert env["AZURE_RESOURCE_ID"] == "https://management.azure.com"
+    rendered = tmp_path / "rendered.yaml"
+    rendered.write_text(result.stdout, encoding="utf-8")
+    (tmp_path / "kustomization.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "resources": ["rendered.yaml"],
+                "patches": release(CORE)["spec"]["postRenderers"][0]["kustomize"]["patches"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    processor = next(
+        d
+        for d in documents(tmp_path)
+        if d["metadata"]["name"] == "airflow-dag-processor" and d["kind"] == "Deployment"
+    )
+    probe = processor["spec"]["template"]["spec"]["containers"][0]["readinessProbe"]
+    assert "DagProcessorJob" in probe["exec"]["command"][-1]
+
+
+def test_generator_is_local_only_and_every_embedded_file_survives_replacements():
+    assert documents(CORE / ".." / "dags") == []
+    assert not any(doc["kind"] == "ConfigMap" for doc in documents(CORE))
+    files = release(CORE)["spec"]["values"]["spiDagFiles"]
+    source = CORE / ".." / "dags"
+    assert set(files) == {
+        "catalog.yaml",
+        "requirements.txt",
+        "load.py",
+        "echo_dag.py",
+        "airflow_monitoring.py",
+    }
+    for name, content in files.items():
+        path = source / ("smoke" if name in ("echo_dag.py", "airflow_monitoring.py") else "") / name
+        assert content == path.read_bytes().decode("utf-8")
+        assert "${" not in content, name
+
+
+def test_airflow_service_urls_match_the_core_service_routes():
+    values = release(CORE)["spec"]["values"]
+    env = {e["name"]: e["value"] for e in values["scheduler"]["env"]}
+    assert values["dagProcessor"]["env"] == values["scheduler"]["env"]
+    endpoints = {
+        "storage": "/api/storage/v2",
+        "search": "/api/search/v2",
+        "schema": "/api/schema-service/v1",
+        "workflow": "/api/workflow/v1",
+        "entitlements": "/api/entitlements/v2",
+        "partition": "/api/partition/v1",
+        "file": "/api/file/v2",
+    }
+    for service, path in endpoints.items():
+        assert env[f"AIRFLOW_VAR_CORE__SERVICE__{service.upper()}__URL"] == (
+            f"http://{service}.osdu.svc.cluster.local{path}"
+        )
+    assert values["scheduler"]["startupProbe"]["failureThreshold"] == 18
+    assert values["dagProcessor"]["livenessProbe"]["initialDelaySeconds"] >= 180
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["catalog.yaml", "requirements.txt", "load.py", "echo_dag.py", "airflow_monitoring.py"],
+)
+def test_any_embedded_file_change_rolls_both_deployments(tmp_path, filename):
+    chart = os.environ.get("SPI_AIRFLOW_CHART")
+    if not chart or not shutil.which("helm"):
+        pytest.skip("set SPI_AIRFLOW_CHART to the unpacked Apache Airflow 1.22 chart")
+    values = release(CORE)["spec"]["values"]
+
+    def checksums():
+        path = tmp_path / "values.yaml"
+        path.write_text(PLACEHOLDER.sub(r"\2", yaml.safe_dump(values)), encoding="utf-8")
+        rendered = run_process(
+            ["helm", "template", "airflow", chart, "-f", str(path)],
+            capture_output=True,
+            text=True,
+        )
+        assert rendered.returncode == 0, rendered.stderr
+        return {
+            doc["metadata"]["name"]: doc["spec"]["template"]["metadata"]["annotations"][
+                "checksum/extra-configmaps"
+            ]
+            for doc in yaml.safe_load_all(rendered.stdout)
+            if doc
+            and doc["kind"] == "Deployment"
+            and doc["metadata"]["name"] in ("airflow-scheduler", "airflow-dag-processor")
+        }
+
+    original = checksums()
+    values["spiDagFiles"][filename] += "\n# changed input\n"
+    changed = checksums()
+    assert set(changed) == {"airflow-scheduler", "airflow-dag-processor"}
+    assert all(changed[name] != digest for name, digest in original.items())

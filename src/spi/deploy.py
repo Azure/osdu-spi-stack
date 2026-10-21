@@ -631,7 +631,10 @@ def deploy_azure(
     istio_revision = ensure_namespaces()
     create_istio_revision_configmap(
         istio_revision,
-        deploy_identity_facts(infra_outputs, config.cluster_name, config.resource_group),
+        {
+            **deploy_identity_facts(infra_outputs, config.cluster_name, config.resource_group),
+            "AAD_CLIENT_ID": _resolve_aad_client_id(infra_outputs.get("identity_client_id", "")),
+        },
     )
     ensure_secrets()
     create_storage_classes()

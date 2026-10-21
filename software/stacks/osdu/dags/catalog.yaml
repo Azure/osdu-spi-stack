@@ -1,0 +1,21 @@
+families:
+  - name: spi-smoke
+    source:
+      type: local
+    files:
+      - path: echo_dag.py
+      - path: airflow_monitoring.py
+    dags: [Echo_DAG, airflow_monitoring]
+  - name: core-ingestion
+    source:
+      type: gitlab
+      url: https://community.opengroup.org
+      project: osdu/platform/data-flow/ingestion/ingestion-dags
+      commit: 193f921e377c4ec769ca20051f4a6c6a5ed3da20
+      strip_prefix: src/osdu_dags
+    files:
+      - path: src/osdu_dags/osdu-ingest-r3.py
+        sha256: 1126389b8bac1037bdb7aece7a1dff1229e4024088d0e9704ba9b2a699d89006
+      - path: src/osdu_dags/manifest_ingestion.py
+        sha256: 482c802e3fbdcb42e2b57ecb8217c1404f219a86ede82b05b9814894584ae003
+    dags: [Osdu_ingest, manifest_ingestion]

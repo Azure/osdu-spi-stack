@@ -69,6 +69,17 @@ Middleware passwords and Airflow signing material remain stored in Kubernetes
 Secrets; the Redis and Elasticsearch passwords are also mirrored into Key Vault. [Secret lifecycle](secret-lifecycle.md) describes those
 values separately from Azure token exchange.
 
+Core's Airflow scheduler also uses `platform/workload-identity-sa`; its
+LocalExecutor tasks share that identity. The DAG processor and API server
+use chart-created accounts without federation, and the chart grants no
+pod-launch rights to the scheduler. `AZURE_RESOURCE_ID` comes from
+`spi-cluster-config/AAD_CLIENT_ID`, copied from the service audience on
+`spi up` and refreshed from `osdu-config` by `spi reconcile`. An absent key
+uses the management audience already accepted by the mesh, not an empty
+resource. The core DAG inputs and pinned library source links are in
+[`software/stacks/osdu/dags`](../../software/stacks/osdu/dags/README.md);
+[ADR-044](../decisions/044-core-profile-dags.md) owns the shared-authority boundary.
+
 ## Environment deploy identity
 
 `spi up` also provisions `spi-stack-<env>-deployer`, separate from the OSDU

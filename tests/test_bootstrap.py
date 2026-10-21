@@ -126,6 +126,42 @@ def test_refresh_treats_an_absent_configmap_as_empty_facts():
     assert "DEPLOY_IDENTITY" not in applied
 
 
+def test_reconcile_copies_the_existing_osdu_audience_for_v0_30_upgrades():
+    cluster = {"data": {"ISTIO_REVISION": "asm-1-30", "DEPLOY_IDENTITY_CLIENT_ID": "deploy"}}
+    osdu = {"data": {"AAD_CLIENT_ID": "application-audience"}}
+    with (
+        patch(
+            "spi.bootstrap.run_process",
+            side_effect=[_proc(0, json.dumps(cluster)), _proc(0, json.dumps(osdu))],
+        ) as reads,
+        patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
+    ):
+        create_istio_revision_configmap("asm-1-30")
+    assert reads.call_args_list[-1].args[0][3:6] == ["osdu-config", "-n", "osdu"]
+    content = yaml.safe_load(apply_yaml.call_args.args[0])
+    assert content["data"]["AAD_CLIENT_ID"] == "application-audience"
+    assert content["data"]["DEPLOY_IDENTITY_CLIENT_ID"] == "deploy"
+    assert content["metadata"]["labels"]["reconcile.fluxcd.io/watch"] == "Enabled"
+
+
+def test_reconcile_retains_the_audience_when_osdu_config_cannot_be_read():
+    live = {"data": {"AAD_CLIENT_ID": "kept"}}
+    with (
+        patch(
+            "spi.bootstrap.run_process",
+            side_effect=[_proc(0, json.dumps(live)), _proc(1, "", "Forbidden")],
+        ),
+        patch("spi.bootstrap.kubectl_apply_yaml") as apply_yaml,
+    ):
+        create_istio_revision_configmap("asm-1-30")
+    assert yaml.safe_load(apply_yaml.call_args.args[0])["data"]["AAD_CLIENT_ID"] == "kept"
+
+
+def test_missing_audience_is_omitted_not_written_empty():
+    content = yaml.safe_load(render_istio_revision_configmap("asm-1-30", {"AAD_CLIENT_ID": ""}))
+    assert "AAD_CLIENT_ID" not in content["data"]
+
+
 class TestDetectIstioRevision:
     def test_reads_revision_from_istiod_deployment_name(self):
         with patch(

@@ -134,11 +134,18 @@ and [pull request #343](https://github.com/Azure/osdu-spi-stack/pull/343).
 
 | Profile | Deploys | Use when |
 |---------|---------|----------|
-| `core` (default) | Middleware and OSDU services | Evaluating the full stack |
+| `core` (default) | Middleware, OSDU services, and core ingestion DAGs | Evaluating the full stack |
 | `minimal` | Operators and middleware only | Developing or validating the platform layer |
 | `bare` | Azure infrastructure and activated GitOps | Iterating on infrastructure, identity, or custom workloads |
 
 See [Stack profiles](docs/architecture.md#stack-profiles) for the exact layer boundaries.
+
+Core's Airflow runs `Echo_DAG`, `airflow_monitoring`, `Osdu_ingest` and
+`manifest_ingestion` with LocalExecutor and parallelism 2. A reviewed
+catalog pins remote files by commit and SHA-256; libraries install from a
+binary-only hash lock at pod start. Minimal loads no OSDU DAGs and retains
+its middleware sizing. See [core DAG inputs](software/stacks/osdu/dags/README.md)
+and [ADR-044](docs/decisions/044-core-profile-dags.md).
 
 ## Deployment Options
 

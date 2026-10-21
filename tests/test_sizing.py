@@ -24,6 +24,7 @@ import pytest
 import yaml
 
 from spi import sizing
+from spi.bootstrap import OSDU_AUDIENCE_KEY
 from spi.images import IMAGE_REGISTRY
 from spi.sizing import SIZING_CONFIGMAP, sizing_defaults, sizing_services
 from spi.templates import PARTITIONS_HASH_KEY
@@ -51,7 +52,7 @@ def _manifest(component: str) -> Path:
 def _sizing_placeholders(path: Path) -> dict:
     found: dict = {}
     for key, default in PLACEHOLDER.findall(path.read_text(encoding="utf-8")):
-        if key.endswith("_DO_NOT_DISRUPT") or key == PARTITIONS_HASH_KEY:
+        if key.endswith("_DO_NOT_DISRUPT") or key in (PARTITIONS_HASH_KEY, OSDU_AUDIENCE_KEY):
             continue
         assert found.setdefault(key, default) == default, f"{path.name}: {key} has two defaults"
     return found

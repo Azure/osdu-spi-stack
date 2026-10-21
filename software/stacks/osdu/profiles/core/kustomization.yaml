@@ -13,3 +13,9 @@ patches:
       - op: replace
         path: /spec/path
         value: ./software/stacks/osdu/airflow
+      - op: add
+        path: /spec/postBuild/substituteFrom/-
+        value:
+          kind: ConfigMap
+          name: spi-cluster-config
+          optional: false
