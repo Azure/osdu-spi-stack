@@ -102,3 +102,61 @@ Caller propagation is in the pinned sources:
   neither acceptance caller is excluded.
 
 No token, client secret, operator enrollment or remote log store is added.
+
+## Smoke checks
+
+In a Deployable core environment, run:
+
+```sh
+spi test dags
+spi test dags --as me
+spi test dags --as me --partition tenant1 --json
+```
+
+The first command uses the deploy identity and primary partition. `--as me`
+uses the signed-in person's own Azure CLI token, as `spi token --me` does.
+Choose a partition listed by `spi info`; `tenant1` above is an example, not
+a partition created by the check.
+
+The caller needs `users.datalake.impersonation` in that partition. The
+members seed grants it to the deploy identity. A person needs an editor,
+admin or ops preset, not viewer. For people added before this upgrade,
+reapply their intended `spi users` role in each partition where they will
+run ingestion. The check never enrolls a caller or changes an existing role.
+
+Preflight reads both Workflow registrations, the Manifest and UnitOfMeasure
+schemas, and the default legal tag observed by `spi info`. It refuses a
+missing prerequisite rather than creating it. Registration is non-gating,
+and schema-load may still be running after the environment is Deployable.
+
+Echo runs first through the Workflow API. Only after it succeeds does the
+check submit `Osdu_ingest`, with a one-record
+`osdu:wks:Manifest:1.0.0`. The record uses
+`osdu:wks:reference-data--UnitOfMeasure:1.0.0`, the partition's default
+owner/viewer groups, its seeded legal tag, and a new `spi-dag-smoke-*` ID.
+The payload has no `userId`, token, `on-behalf-of` or `createUser`. The check
+verifies Workflow's `submittedBy`, waits for completion, then reads Storage
+and requires the same record data and `createUser` equal to the authenticated
+caller. It never writes directly to Storage.
+
+`--timeout` is the seconds to wait for each Workflow run, 900 by default.
+Storage read-back waits at most another 60 seconds. Each HTTP request has a
+30-second timeout. A timeout stops waiting; it does not cancel the run.
+Both Workflow runs and the smoke record are retained as evidence, and their
+IDs are printed. Repeated checks create new records rather than overwrite
+or delete earlier evidence.
+
+`--dry-run` performs the guards, token mint and read-only preflight, then
+reports the planned checks without executing either DAG. `--json` uses the
+standard final-line envelope with `mode: stack`, `check: core-dags`, caller,
+partition, environment revision, run IDs and per-check provenance. Exit
+codes are 0 for passed/planned, 3 for a check that ran and failed, 2 for a
+refused or discarded run, and 1 for another setup error. Workflow and
+Storage cannot be borrowed; a changed image, rollout or environment
+revision during the check discards its verdict.
+
+This is a stack-owned integration smoke, not a descriptor suite.
+`--suite`, `--source`, Maven arguments, `--set`, `--env-file`, `--report`
+and `--review` apply only to service suites and are refused for `dags`.
+The DAG-only `--as`, `--partition` and `--timeout` options likewise do not
+override the identity or binding rules of service suites.

@@ -148,6 +148,11 @@ its middleware sizing. See [core DAG inputs](software/stacks/osdu/dags/README.md
 and [ADR-044](docs/decisions/044-core-profile-dags.md).
 `spi status` shows system registration at layer 6; a failed registration
 does not block Deployable, but ingestion remains unavailable.
+`spi test dags` runs Echo, then a manifest ingestion through Workflow and
+checks that Storage recorded the caller as `createUser`. It defaults to the
+deploy identity and primary partition; `--as me` uses your own token, and
+`--partition <name>` selects another declared partition. See
+[DAG smoke checks](software/stacks/osdu/dags/README.md#smoke-checks).
 
 ## Deployment Options
 
@@ -204,7 +209,8 @@ See [Ingress modes](docs/architecture.md#ingress-profiles) and
 | `spi token` | Mint an app-only bearer as the deploy identity for acceptance suites; `--member` for the suites' `NO_ACCESS_USER` caller, `--no-access` for 401 tests, `--me` for your own `az` token |
 | `spi users` | Let a person call the OSDU APIs with their own token: `add --me` sets your role (`viewer`, `editor`, `admin`, `ops`) and verifies it, `add <id>` sets a colleague's, `list` shows members and roles, `remove` drops one |
 | `spi load` | Load the data the environment's registry names: reports the schema load and loads reference data from its pinned release, one Job per partition; `--status` shows each load's state, `--force` runs one again |
-| `spi test` | Run a service's suite as its deployed commit shipped it, from the paired acceptance image or natively with `--source <checkout>`; `--dry-run` shows the command and variables a run would use and `--env-file` writes them for an IDE; `--report` writes a page of what ran, `--review` adds which contract rows each test proves |
+| `spi test <service>` | Run a service's suite as its deployed commit shipped it, from the paired acceptance image or natively with `--source <checkout>`; `--dry-run` shows the command and variables a run would use and `--env-file` writes them for an IDE; `--report` writes a page of what ran, `--review` adds which contract rows each test proves |
+| `spi test dags` | Run core's Echo and manifest ingestion checks through Workflow, then verify Storage's `createUser`; `--as deploy` (default) or `--as me`, `--partition <name>`, `--dry-run`, and `--json` |
 | `spi update` | Check for and install a newer CLI release |
 | `spi maintenance` | Set or clear the deploy-blocking maintenance flag |
 | `spi down` | Delete the environment's Azure resources; `--purge` removes the group and its identities |

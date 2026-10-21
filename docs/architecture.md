@@ -178,7 +178,10 @@ deploy identity and namespace Roles are provisioned. `spi onboard` plans and
 applies repository protection, federation, per-service canonical-source policy,
 and both lock projections. `spi test` runs a service's suite from the
 acceptance image paired with its deployed commit, or from a checkout
-(ADR-036), and reports what the suites prove (ADR-037). `spi load` loads
+(ADR-036), and reports what the suites prove (ADR-037). Its built-in `dags`
+target checks core's Workflow-to-Storage path as the deploy identity or a
+person, proving that ingestion retains the caller's `createUser` (ADR-044).
+This stack-owned smoke is not a paired service suite. `spi load` loads
 reference data from the release the environment's registry pins and publishes
 each load's state in `spi info --json` (ADR-040). Declaration enforcement and the reset and teardown workflows remain
 unbuilt. See

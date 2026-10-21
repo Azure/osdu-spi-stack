@@ -23,6 +23,13 @@ with the descriptor, resolver, and verdict script that commit shipped. The CLI
 supplies facts, bearers, and the target; it never reads the descriptor itself.
 The command lives in `src/spi/cli.py` with its engine in `src/spi/testing.py`.
 
+ADR-044 adds the reserved `dags` target, a stack-owned integration smoke in
+`src/spi/dag_testing.py`, not a service descriptor suite. It uses the same
+Deployable and before/after target guards, exit codes and JSON envelope,
+but calls Workflow and Storage directly. Its `--as` and `--partition` options
+do not change the callers or bindings of service suites. Descriptor,
+Maven, checkout and report options do not apply to that target.
+
 - **The pair is captured at resolution.** When canonical resolution records
   a fork image (ADR-033), it also reads the digest of
   `<package>-acceptance:sha-<12>` at the same commit and records it as

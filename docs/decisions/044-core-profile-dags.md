@@ -80,10 +80,18 @@ key is introduced.
   it away. Existing people must have their intended preset reapplied;
   upgrading does not enumerate and enroll people. No operator is enrolled
   by running `spi up`.
-- **Acceptance.** `spi test` exercises Echo through Workflow, then manifest
-  ingestion and the stored record's `createUser`, using either the deploy
-  identity or the signed-in person's own token, in the selected partition.
-  Registration readiness is not proof of ingestion.
+- **Acceptance.** `spi test dags` exercises Echo through Workflow, then
+  submits a Manifest containing one new UnitOfMeasure reference record.
+  Storage must return that record with its unique data marker and
+  `createUser` equal to the caller. `--as deploy` is the default; `--as me`
+  uses the signed-in person's own token. `--partition` selects any declared
+  partition, defaulting to the primary. The CLI supplies neither `userId`
+  nor `createUser`; Workflow and Storage must derive them. The command
+  reuses the Deployable and Workflow/Storage target guards from ADR-036,
+  but is stack-owned, not a paired descriptor suite. It neither grants a
+  role nor seeds a schema or legal tag. `--dry-run` performs read-only
+  preflight without starting a Workflow run. Runs and the record remain
+  as evidence. Registration readiness is not proof of ingestion.
 
 Rejected: a stack-built Airflow image. It removes package resolution from
 pod startup, but adds a repository, release and image lifecycle before the

@@ -553,7 +553,7 @@ def _collect_info() -> dict:
             for i, (_label, cosmos, sb, storage) in enumerate(partition_rows)
         ],
         # Observed from the members Job: true only once the deploy
-        # identity holds the four root groups for that partition.
+        # identity holds the required groups for that partition.
         "entitlements_seeded": {name: bool(members_seeded[i]) for i, name in enumerate(partitions)},
         # Observed from the running Deployment; empty until entitlements is deployed.
         "entitlements_domain": entitlements_domain,
