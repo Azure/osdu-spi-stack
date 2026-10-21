@@ -126,7 +126,7 @@ def validate_catalog(catalog: object) -> list[dict]:
         if not isinstance(family["dags"], list) or not family["dags"]:
             raise CatalogError(f"{name}: dags must be a non-empty list")
         for dag_id in family["dags"]:
-            if not isinstance(dag_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,250}", dag_id):
+            if not isinstance(dag_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", dag_id):
                 raise CatalogError(f"{name}: invalid DAG ID {dag_id!r}")
             if dag_id in dag_ids:
                 raise CatalogError(f"duplicate DAG ID: {dag_id}")

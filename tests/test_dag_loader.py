@@ -115,6 +115,12 @@ def test_duplicate_dag_id_is_refused_across_families(loader, catalog):
         loader.validate_catalog(catalog)
 
 
+def test_dag_id_must_also_fit_workflows_name_contract(loader, catalog):
+    catalog["families"][0]["dags"][0] = "x" * 65
+    with pytest.raises(loader.CatalogError, match="invalid DAG ID"):
+        loader.validate_catalog(catalog)
+
+
 @pytest.mark.parametrize(
     "path",
     [

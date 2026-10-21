@@ -146,6 +146,8 @@ catalog pins remote files by commit and SHA-256; libraries install from a
 binary-only hash lock at pod start. Minimal loads no OSDU DAGs and retains
 its middleware sizing. See [core DAG inputs](software/stacks/osdu/dags/README.md)
 and [ADR-044](docs/decisions/044-core-profile-dags.md).
+`spi status` shows system registration at layer 6; a failed registration
+does not block Deployable, but ingestion remains unavailable.
 
 ## Deployment Options
 

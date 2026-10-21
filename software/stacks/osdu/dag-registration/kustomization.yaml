@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../dags
+  - job.yaml
+configMapGenerator:
+  - name: dag-registration
+    namespace: platform
+    literals:
+      - catalog.yaml=
+  - name: dag-registration-scripts
+    namespace: platform
+    files:
+      - register.py
+    literals:
+      - load.py=
+replacements:
+  - source:
+      kind: ConfigMap
+      name: spi-osdu-dag-files-source
+      fieldPath: data.[catalog.yaml]
+    targets:
+      - select:
+          kind: ConfigMap
+          name: dag-registration
+        fieldPaths:
+          - data.[catalog.yaml]
+  - source:
+      kind: ConfigMap
+      name: spi-osdu-dag-files-source
+      fieldPath: data.[load.py]
+    targets:
+      - select:
+          kind: ConfigMap
+          name: dag-registration-scripts
+        fieldPaths:
+          - data.[load.py]
+configurations:
+  - name-reference.yaml

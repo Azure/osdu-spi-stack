@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dag-registration
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: osdu-spi-dag-registration
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: osdu-spi-dag-registration
+        azure.workload.identity/use: "true"
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: workload-identity-sa
+      restartPolicy: Never
+      nodeSelector:
+        spi-pool: platform
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: platform
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 50000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: register
+          image: apache/airflow:3.2.2
+          command: [python, /opt/spi/registration/register.py]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          env:
+            - name: AIRFLOW_URL
+              value: http://airflow-api-server.platform.svc.cluster.local:8080/airflow
+            - name: AIRFLOW_USERNAME
+              value: osdu-workflow
+            - name: AIRFLOW_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: airflow-api-credentials
+                  key: workflow-password
+            - name: WORKFLOW_URL
+              value: http://workflow.osdu.svc.cluster.local/api/workflow/v1
+            - name: PARTITION_URL
+              value: http://partition.osdu.svc.cluster.local/api/partition/v1
+            - name: WAIT_SECONDS
+              value: "900"
+          volumeMounts:
+            - name: catalog
+              mountPath: /opt/spi/catalog
+              readOnly: true
+            - name: scripts
+              mountPath: /opt/spi/registration
+              readOnly: true
+      volumes:
+        - name: catalog
+          configMap:
+            name: dag-registration
+        - name: scripts
+          configMap:
+            name: dag-registration-scripts

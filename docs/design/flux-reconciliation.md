@@ -34,7 +34,8 @@ Suspending Git therefore does not freeze every upstream chart or controller.
 The CLI owns several inputs outside Git: `osdu-config` in `osdu`, and
 `spi-cluster-config`, `spi-ingress-config`, `spi-init-values`,
 `spi-partitions`, and `osdu-image-lock` in `osdu-flux`. `spi-cluster-config`
-carries the detected Istio revision used by namespace substitution;
+carries the detected Istio revision used by namespace substitution and
+`OSDU_TOKEN_AUDIENCE` used by core's Airflow tasks;
 `spi-partitions` carries the partition list hash that rolls the services
 caching the tenant set per replica (ADR-015).
 The checked-in `osdu-config-placeholder.yaml` is comments only, not a second
@@ -64,6 +65,7 @@ additional ordering.
 | `spi-osdu-init` | Core services |
 | `spi-osdu-schema-load`, `spi-osdu-legal`, `spi-osdu-members` | Initialization |
 | `spi-osdu-reference` | Core services, schema load |
+| `spi-osdu-dag-registration` | Airflow, initialization |
 
 Names are shortened in the dependency column; the full definitions are in
 the [minimal](../../software/stacks/osdu/profiles/minimal/stack.yaml) stack,
@@ -72,10 +74,18 @@ adds dependencies defined in its selected mode: middleware routes wait on
 Airflow and Kibana, while OSDU routes wait only on the Gateway, so the same
 tree reconciles under `minimal`.
 
-Legal-tag and entitlements-member seeding are non-gating branches:
+Legal-tag, entitlements-member seeding and DAG registration are non-gating branches:
 reference services wait for schema load, without depending on
 `spi-osdu-legal` or `spi-osdu-members`. Fork RBAC is also independent of
 the middleware and service readiness chain.
+
+Core changes `spi-airflow`'s path to the OSDU Airflow overlay while retaining
+its name and inventory. Its catalog-hashed registration Job waits for a
+fresh, exact parse, verifies system Workflow records in each partition,
+then unpauses the declared IDs and pauses retired IDs. It never waits on
+members or deletes a Workflow record. Registration failure appears at L6
+without changing Deployable; [registration](../../software/stacks/osdu/dag-registration/README.md)
+describes its conflict and shadow diagnostics.
 
 A downstream error may name only its direct dependency. Follow that dependency
 upstream rather than assuming the last blocked service is the root cause.

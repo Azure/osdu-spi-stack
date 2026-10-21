@@ -59,10 +59,15 @@ key is introduced.
   Through the `osdu-workflow` login it waits for exactly the declared DAG
   set and zero import errors before any registration or unpause.
   System POSTs omit `data-partition-id`. A 409 requires a matching system
-  record read back in each partition. Conflicting DAG names fail with
+  record read back in each partition. Workflow hides its system flag, so
+  a partition's combined workflow list must also contain exactly one
+  exact-name match equal to the read-back. A second match is a shadow.
+  Conflicting DAG names fail with
   `registration_conflict`; partition shadows are reported, never deleted
   or adopted. Declared IDs are unpaused; removed IDs are paused, and records
   are never deleted. Airflow creates new DAGs paused.
+  A fresh `last_parsed_time` for each declared ID prevents an old catalog's
+  parse from satisfying a new registration Job.
 - **Caller provenance.** Tasks use the OSDU identity's token with the run's
   `userId` in `on-behalf-of`. `AZURE_RESOURCE_ID` uses
   `spi-cluster-config/OSDU_TOKEN_AUDIENCE`, resolved as for `spi token`

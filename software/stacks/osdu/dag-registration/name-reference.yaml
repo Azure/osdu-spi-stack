@@ -1,0 +1,7 @@
+# Use the catalog ConfigMap's content hash for the Job name as well as its volume.
+nameReference:
+  - kind: ConfigMap
+    version: v1
+    fieldSpecs:
+      - kind: Job
+        path: metadata/name

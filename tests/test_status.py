@@ -244,6 +244,43 @@ def test_only_non_gating_kustomizations_is_not_ready(monkeypatch):
     assert payload["reason"]["code"] == "no_kustomizations"
 
 
+def test_failed_dag_registration_is_visible_at_layer_six_without_blocking_deployable(monkeypatch):
+    _wire(monkeypatch)
+    registration = {
+        "metadata": {
+            "name": "spi-osdu-dag-registration",
+            "labels": {"spi-stack.layer": "6", "spi-stack.gating": "false"},
+        },
+        "status": {
+            "conditions": [
+                {
+                    "type": "Ready",
+                    "status": "False",
+                    "reason": "HealthCheckFailed",
+                    "message": "Job dag-registration-hash failed",
+                }
+            ]
+        },
+    }
+    items = _kustomizations()["items"] + [registration]
+    monkeypatch.setattr(
+        status,
+        "_required_kubectl_json",
+        lambda args, _: (
+            {"items": items} if "kustomizations" in args else {"spec": {"suspend": True}}
+        ),
+    )
+    snapshot = status.collect_status()
+    assert snapshot.ready and snapshot.deployable
+    assert (
+        snapshot.to_dict()["kustomizations"]["notReady"][0]["name"] == "spi-osdu-dag-registration"
+    )
+    output = Console(record=True, width=180)
+    output.print(status.get_kustomization_table(tuple(items)))
+    text = output.export_text()
+    assert "spi-osdu-dag-registration" in text and "L6" in text
+
+
 def test_non_ready_kustomization_precedes_maintenance(monkeypatch):
     _wire(monkeypatch, ready=False, record=_record(maintenance=True))
 
