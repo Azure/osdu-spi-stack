@@ -261,6 +261,22 @@ def test_members_generation_agrees_between_chart_and_cli():
     assert values["membersGeneration"] == ENTITLEMENTS_MEMBERS_GENERATION
 
 
+def test_impersonation_seed_reruns_the_job_on_a_v0_30_upgrade():
+    previous = _jobs(
+        _render(["opendes"], {**_MEMBERS, "membersGeneration": "4"}), "entitlements-members"
+    )[0]
+    current = _jobs(_render(["opendes"], _MEMBERS), "entitlements-members")[0]
+    assert current["metadata"]["name"] != previous["metadata"]["name"]
+    assert current["metadata"]["name"] == entitlements_members_job_name(
+        "opendes", ["deployer-client-id"]
+    )
+    pod = current["spec"]["template"]
+    assert pod["spec"]["serviceAccountName"] == "workload-identity-sa"
+    assert pod["metadata"]["labels"]["azure.workload.identity/use"] == "true"
+    assert pod["spec"]["containers"][0]["resources"]["requests"]["cpu"] == "100m"
+    assert "ttlSecondsAfterFinished" not in current["spec"]
+
+
 def test_members_job_never_renders_without_members():
     """A values ConfigMap written before the CLI carried a deploy identity
     must render nothing, not a Job that seeds nobody."""
@@ -616,8 +632,9 @@ _GROUPS = {
     "users.datalake.admins": "users.datalake.admins@opendes.dataservices.energy",
     "users.data.root": "users.data.root@opendes.dataservices.energy",
     "users.datalake.delegation": "users.datalake.delegation@opendes.dataservices.energy",
+    "users.datalake.impersonation": "users.datalake.impersonation@opendes.dataservices.energy",
 }
-# Created by the Job when the listing lacks them; only delegation takes members.
+# Created by the OSDU identity when absent; the deploy identity joins both.
 _CREATED_GROUPS = {
     "users.datalake.delegation": _GROUPS["users.datalake.delegation"],
     "users.datalake.impersonation": "users.datalake.impersonation@opendes.dataservices.energy",
@@ -719,14 +736,14 @@ def test_members_seeds_every_root_group_and_verifies(init_scripts, monkeypatch, 
     assert "entitlements-members outcome: seeded" in result.stdout
     assert result.routed("create") == []
     posts = result.routed("post")
-    assert len(posts) == 10
+    assert len(posts) == 12
     assert {json.loads(p.body)["email"] for p in posts} == {"a-id", "b-id"}
     assert {json.loads(p.body)["role"] for p in posts} == {"MEMBER"}
     assert {p.url.rsplit("/groups/", 1)[1].removesuffix("/members") for p in posts} == set(
         _GROUPS.values()
     )
     assert all(p.headers["Data-partition-id"] == "opendes" for p in posts)
-    assert len(result.routed("get")) == 5
+    assert len(result.routed("get")) == 6
 
 
 def test_members_seeds_member_users_into_the_user_groups_and_storage_admin_only(
@@ -799,7 +816,7 @@ def test_members_creates_the_impersonation_groups_the_bootstrap_lacks(
         p.url.rsplit("/groups/", 1)[1].removesuffix("/members") for p in result.routed("post")
     }
     assert _CREATED_GROUPS["users.datalake.delegation"] in posted_to
-    assert _CREATED_GROUPS["users.datalake.impersonation"] not in posted_to
+    assert _CREATED_GROUPS["users.datalake.impersonation"] in posted_to
 
 
 def test_members_derives_the_created_group_email_when_the_service_omits_it(

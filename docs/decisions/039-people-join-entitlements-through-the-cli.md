@@ -25,13 +25,16 @@ from the CLI, and `spi token --me` prints the person's own bearer.
 - **An id for someone else is stored as typed.** `spi users add <id>` makes no
   directory lookup and verifies nothing; only the person holding the token
   can prove the id, by running `add --me`.
-- **A role is one of four presets and is set, not accumulated.** `viewer` and
-  `editor` are `users` plus `users.datalake.viewers` or `.editors`. `admin` is
-  `users`, `users.datalake.admins`, and `users.datalake.ops`: entitlements
+- **A role is one of four presets and is set, not accumulated.** `viewer` is
+  `users` plus `users.datalake.viewers`. `editor` adds `users.datalake.editors`
+  and `users.datalake.impersonation` to `users`. `admin` is
+  `users`, `users.datalake.admins`, `users.datalake.ops`, and
+  `users.datalake.impersonation`: entitlements
   puts only the ops group in `service.legal.admin` and
   `service.schema-service.admin` and lets only its members manage other
   groups' members, so an admin without it cannot delete a legal tag or add a
-  colleague. `ops` is `users`, `users.data.root`, and `users.datalake.ops`.
+  colleague. `ops` is `users`, `users.data.root`, `users.datalake.ops`, and
+  `users.datalake.impersonation`.
   The default is `admin`. Running `add` again with another role removes the
   other presets' groups, then adds that preset's groups; `users` stays. When
   an addition fails, the preset's groups the person did not hold before the
@@ -40,6 +43,9 @@ from the CLI, and `spi token --me` prints the person's own bearer.
   When a removal fails, the run stops before adding anything and the person
   keeps what is left of the old role. A rerun finishes either case. Partitions
   written before the failure stay written, and those after it are not touched.
+  Impersonation lets the OSDU identity act for a Workflow caller (ADR-044);
+  no preset makes a person a delegator. Viewer downgrade or removal revokes
+  impersonation, including a residual grant after a failed preset rollback.
 - **The deploy identity writes.** `src/spi/users.py` calls the public
   entitlements API with the bearer `spi token` mints. The deploy identity sits
   in `users.datalake.ops`, which entitlements lets manage any group and which
@@ -80,6 +86,9 @@ one command can write and verify.
 
 - Membership lives only in entitlements. An environment reset or a new
   partition drops it, and each person runs `spi users add --me` again.
+- Existing editors, admins and ops members are not enrolled in impersonation
+  by an upgrade. Their incomplete preset appears as `custom` until its
+  intended role is reapplied with `spi users add`; `spi up` enrolls no people.
 - The id belongs to one token shape. A person added with a v1 token is not a
   member when they present a v2 token, for which the filter writes `oid`;
   changing `AAD_CLIENT_ID` to an app registration means running `add --me`

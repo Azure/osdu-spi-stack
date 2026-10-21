@@ -178,9 +178,9 @@ person's token until it answers 200, for up to a minute.
 | Role | Groups |
 |---|---|
 | `viewer` | `users`, `users.datalake.viewers` |
-| `editor` | `users`, `users.datalake.editors` |
-| `admin` (default) | `users`, `users.datalake.admins`, `users.datalake.ops` |
-| `ops` | `users`, `users.data.root`, `users.datalake.ops` |
+| `editor` | `users`, `users.datalake.editors`, `users.datalake.impersonation` |
+| `admin` (default) | `users`, `users.datalake.admins`, `users.datalake.ops`, `users.datalake.impersonation` |
+| `ops` | `users`, `users.data.root`, `users.datalake.ops`, `users.datalake.impersonation` |
 
 Running `add` with another role replaces the role. `spi users add <id>` writes
 the same groups for an id typed for someone else and verifies nothing.
@@ -188,6 +188,19 @@ the same groups for an id typed for someone else and verifies nothing.
 `spi users remove` deletes a member from every group, refusing the three
 seeded identities. `spi token --me` prints the person's bearer for use with
 `curl`. Membership is not declared anywhere, so a reset removes it.
+
+The impersonation group permits the OSDU identity to call services on the
+person's behalf during a DAG run. The scheduler's token supplies the
+identity and the run's `userId` supplies `on-behalf-of`; Storage records
+that caller as `createUser`. The identity already owns the delegation group
+it creates in the members Job. People gain no delegation rights, and
+record ACLs still apply. Downgrading to viewer or removing a person revokes
+impersonation.
+
+People added before the DAG upgrade retain their existing memberships.
+Their old editor, admin or ops preset appears as `custom` until they
+reapply the intended role with `spi users add --me --role <role>`, or an
+operator reapplies it for their stored ID. No `spi up` run enrolls a person.
 
 ## Audiences used by OSDU callers
 
@@ -200,6 +213,7 @@ scope.
 | Bootstrap Jobs | Management audience, accepted by the template's Entra v1 issuer rule with or without a trailing slash |
 | Acceptance callers (deploy, member, and no-access identities) | `azure.token_audience` from `spi info --json`; the management audience unless an operator overrides `AAD_CLIENT_ID` |
 | OSDU service-to-service calls | `${aadClientId}/.default` scope; application audience accepted by the v1 and v2 issuer rules |
+| Core Airflow tasks | `spi-cluster-config/OSDU_TOKEN_AUDIENCE`, resolved with the same policy as acceptance callers, plus the run's caller in `on-behalf-of` |
 
 A managed identity cannot be a token audience (Entra answers
 `AADSTS100040`), so on a default environment the UAMI client id in

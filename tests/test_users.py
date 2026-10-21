@@ -57,6 +57,7 @@ class Entitlements:
                 "users.datalake.editors",
                 "users.datalake.admins",
                 "users.datalake.ops",
+                "users.datalake.impersonation",
             )
         }
         for group, members in (groups or {}).items():
@@ -153,9 +154,11 @@ def admin_groups(member):
     [
         (["users"], "none"),
         (["users", "users.datalake.viewers"], "viewer"),
-        (["users.datalake.admins", "users.datalake.ops", "service.legal.user"], "admin"),
+        (["users.datalake.admins", "users.datalake.ops", "service.legal.user"], "custom"),
+        (["users.datalake.admins", "users.datalake.ops", "users.datalake.impersonation"], "admin"),
         (["users.datalake.admins"], "custom"),
-        (["users.data.root", "users.datalake.ops"], "ops"),
+        (["users.data.root", "users.datalake.ops"], "custom"),
+        (["users.data.root", "users.datalake.ops", "users.datalake.impersonation"], "ops"),
         (["users.datalake.ops"], "custom"),
         (["users.datalake.viewers", "users.datalake.admins"], "custom"),
     ],
@@ -175,9 +178,31 @@ def test_add_writes_the_role_preset_for_a_new_member(served):
             "users": "added",
             "users.datalake.admins": "added",
             "users.datalake.ops": "added",
+            "users.datalake.impersonation": "added",
         }
     }
     assert all(ALICE in server.groups[group] for group in result["partitions"]["opendes"])
+
+
+@pytest.mark.parametrize("role", ["viewer", "editor", "admin", "ops"])
+def test_only_workflow_callers_gain_impersonation_and_none_gain_delegation(served, role):
+    server = served()
+    users.add_user(ENV, "deploy", ALICE, role, ENV.partitions)
+    assert (ALICE in server.groups[users.IMPERSONATION_GROUP]) is (role != "viewer")
+    assert "users.datalake.delegation" not in users.ROLE_PRESETS[role]
+
+
+def test_existing_person_needs_the_preset_reapplied_after_upgrade(served):
+    old_admin = {
+        group: {ALICE} for group in ("users", "users.datalake.admins", "users.datalake.ops")
+    }
+    server = served(groups=old_admin)
+    assert users.list_users(ENV, "deploy")["opendes"][0]["role"] == "custom"
+    assert ALICE not in server.groups[users.IMPERSONATION_GROUP]
+    result = users.add_user(ENV, "deploy", ALICE, "admin", ENV.partitions)
+    assert result["previousRole"] == "custom"
+    assert result["partitions"]["opendes"][users.IMPERSONATION_GROUP] == "added"
+    assert ALICE in server.groups[users.IMPERSONATION_GROUP]
 
 
 def test_add_with_another_role_replaces_the_role_and_keeps_users(served):
@@ -191,9 +216,19 @@ def test_add_with_another_role_replaces_the_role_and_keeps_users(served):
         "users.datalake.viewers": "added",
         "users.datalake.admins": "removed",
         "users.datalake.ops": "removed",
+        "users.datalake.impersonation": "removed",
     }
     assert ALICE in server.groups["users"]
     assert ALICE not in server.groups["users.datalake.admins"]
+    assert ALICE not in server.groups[users.IMPERSONATION_GROUP]
+
+
+def test_viewer_downgrade_cannot_succeed_when_impersonation_removal_fails(served):
+    server = served(groups=admin_groups(ALICE))
+    server.failing = {("DELETE", users.IMPERSONATION_GROUP)}
+    with pytest.raises(users.UsersError, match="removing from users.datalake.impersonation"):
+        users.add_user(ENV, "deploy", ALICE, "viewer", ENV.partitions)
+    assert not any(method == "POST" for method, _ in server.writes())
 
 
 def test_add_with_the_role_already_held_changes_nothing(served):
@@ -206,6 +241,7 @@ def test_add_with_the_role_already_held_changes_nothing(served):
         "users": "already",
         "users.datalake.admins": "already",
         "users.datalake.ops": "already",
+        "users.datalake.impersonation": "already",
     }
     assert ALICE in server.groups["users.datalake.admins"]
 
@@ -250,9 +286,23 @@ def test_a_failed_add_takes_back_a_group_whose_answer_was_lost(served):
     assert not [group for group, members in server.groups.items() if BOB in members]
 
 
+def test_a_lost_impersonation_grant_is_rolled_back_with_the_preset(served):
+    server = served()
+    server.lost = {("POST", users.IMPERSONATION_GROUP)}
+    with pytest.raises(users.UsersError, match="groups this run added were removed"):
+        users.add_user(ENV, "deploy", BOB, "editor", ENV.partitions)
+    assert not [group for group, members in server.groups.items() if BOB in members]
+
+
 def test_previous_role_is_mixed_when_partitions_disagree(served):
     server = served(groups=admin_groups(ALICE))
-    server.elsewhere = {"second": {"users": {ALICE}, "users.datalake.editors": {ALICE}}}
+    server.elsewhere = {
+        "second": {
+            "users": {ALICE},
+            "users.datalake.editors": {ALICE},
+            "users.datalake.impersonation": {ALICE},
+        }
+    }
     two = users.Environment(BASE, ("opendes", "second"), DOMAIN, ENV.seeded)
 
     result = users.add_user(two, "deploy", ALICE, "viewer", two.partitions)
@@ -327,7 +377,14 @@ def test_member_ids_and_group_addresses_are_percent_encoded(served):
 
 
 @pytest.mark.parametrize(
-    "role, missing", [("admin", "users.datalake.admins"), ("ops", "users.datalake.ops")]
+    "role, missing",
+    [
+        ("admin", "users.datalake.admins"),
+        ("ops", "users.datalake.ops"),
+        ("editor", users.IMPERSONATION_GROUP),
+        ("admin", users.IMPERSONATION_GROUP),
+        ("ops", users.IMPERSONATION_GROUP),
+    ],
 )
 def test_add_writes_nothing_when_the_partition_lacks_a_group_of_the_role(served, role, missing):
     server = served()
@@ -406,6 +463,13 @@ def test_remove_deletes_a_member_and_reports_a_stranger_as_absent(served):
 
     assert [url for method, url in server.writes()] == [f"{BASE}/members/alice%40contoso.com"]
     assert ALICE not in server.groups["users"]
+    assert ALICE not in server.groups[users.IMPERSONATION_GROUP]
+
+
+def test_remove_revokes_impersonation_even_if_a_rollback_removed_the_roster_entry(served):
+    server = served(groups={users.IMPERSONATION_GROUP: {ALICE}})
+    assert users.remove_user(ENV, "deploy", ALICE, ENV.partitions) == {"opendes": "removed"}
+    assert ALICE not in server.groups[users.IMPERSONATION_GROUP]
 
 
 def test_an_unknown_partition_is_refused():
@@ -470,6 +534,7 @@ def test_add_for_someone_else_is_reported_as_not_verified(invoke):
         "users": "added",
         "users.data.root": "added",
         "users.datalake.ops": "added",
+        "users.datalake.impersonation": "added",
     }
     assert not [url for method, url in server.calls if url.endswith("/groups")]
 
