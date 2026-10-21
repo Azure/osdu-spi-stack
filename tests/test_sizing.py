@@ -62,6 +62,20 @@ def test_manifest_carries_every_key_with_its_default(component):
     assert _sizing_placeholders(_manifest(component)) == sizing_defaults()[component]
 
 
+@pytest.mark.parametrize("service", sorted(sizing_services()))
+def test_a_service_defaulting_to_two_replicas_guards_them_with_a_budget(service):
+    """The chart renders the budget only at two replicas, so the pair must agree."""
+    text = _manifest(service).read_text(encoding="utf-8")
+    values = next(doc for doc in yaml.safe_load_all(text) if doc.get("kind") == "HelmRelease")[
+        "spec"
+    ]["values"]
+    two_replicas = (
+        sizing.sizing_defaults()[service][f"{sizing.image_lock_key(service)}_REPLICAS"] == "2"
+    )
+    budget = (values.get("podDisruptionBudget") or {}).get("enabled") is True
+    assert budget == two_replicas, service
+
+
 def test_every_kustomization_applying_a_sized_manifest_reads_the_sizing_configmap():
     """Optional, so an environment that never wrote the ConfigMap keeps its defaults."""
     sized = {_manifest(component).parent for component in sizing_defaults()}
