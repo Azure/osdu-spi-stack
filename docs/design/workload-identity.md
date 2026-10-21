@@ -73,8 +73,10 @@ Core's Airflow scheduler also uses `platform/workload-identity-sa`; its
 LocalExecutor tasks share that identity. The DAG processor and API server
 use chart-created accounts without federation, and the chart grants no
 pod-launch rights to the scheduler. `AZURE_RESOURCE_ID` comes from
-`spi-cluster-config/AAD_CLIENT_ID`, copied from the service audience on
-`spi up` and refreshed from `osdu-config` by `spi reconcile`. An absent key
+`spi-cluster-config/OSDU_TOKEN_AUDIENCE`, resolved with `spi token`'s policy
+on `spi up` and refreshed from `osdu-config` by `spi reconcile`. A managed
+identity is not a mintable audience (ADR-030), so the default uses the
+management audience; an application-registration override is retained. An absent key
 uses the management audience already accepted by the mesh, not an empty
 resource. The core DAG inputs and pinned library source links are in
 [`software/stacks/osdu/dags`](../../software/stacks/osdu/dags/README.md);

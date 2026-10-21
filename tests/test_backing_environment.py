@@ -948,4 +948,4 @@ class TestDeploySizing:
             deploy, "create_istio_revision_configmap", lambda revision, extra: seen.append(extra)
         )
         deploy.deploy_azure(Config.from_env("shared", profile=Profile.CORE))
-        assert seen[0]["AAD_CLIENT_ID"] == (audience or "osdu-identity")
+        assert seen[0]["OSDU_TOKEN_AUDIENCE"] == (audience or "https://management.azure.com")

@@ -53,7 +53,7 @@ spec:
         - name: AZURE_ENABLE_WORKLOAD_IDENTITY
           value: "true"
         - name: AZURE_RESOURCE_ID
-          value: "${AAD_CLIENT_ID:=https://management.azure.com}"
+          value: "${OSDU_TOKEN_AUDIENCE:=https://management.azure.com}"
         - name: AIRFLOW_VAR_CORE__SERVICE__STORAGE__URL
           value: http://storage.osdu.svc.cluster.local/api/storage/v2
         - name: AIRFLOW_VAR_CORE__SERVICE__SEARCH__URL

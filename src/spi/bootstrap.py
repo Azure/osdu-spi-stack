@@ -41,7 +41,7 @@ DEPLOY_IDENTITY_KEYS = (
     "AZURE_RESOURCE_GROUP",
     "AKS_CLUSTER_NAME",
 )
-OSDU_AUDIENCE_KEY = "AAD_CLIENT_ID"
+OSDU_AUDIENCE_KEY = "OSDU_TOKEN_AUDIENCE"
 
 
 def deploy_identity_facts(
@@ -164,8 +164,8 @@ def create_istio_revision_configmap(
 ) -> None:
     """Apply the ConfigMap that carries the Istio revision and deploy identity facts for Flux.
 
-    A refresh without ``extra`` keeps live identity facts and copies the
-    audience from osdu-config, including on v0.30.x environments.
+    A refresh without ``extra`` keeps live identity facts and resolves the
+    mintable audience from osdu-config, including on v0.30.x environments.
     """
 
     if extra is None:
@@ -178,9 +178,13 @@ def create_istio_revision_configmap(
             )
             return
         try:
-            audience = _read_configmap_data("osdu-config", "osdu").get(OSDU_AUDIENCE_KEY, "")
-            if audience:
-                extra[OSDU_AUDIENCE_KEY] = audience
+            from .info import token_audience
+
+            application = _read_configmap_data("osdu-config", "osdu").get("AAD_CLIENT_ID", "")
+            if application:
+                extra[OSDU_AUDIENCE_KEY] = token_audience(
+                    application, read_workload_identity_client_id()
+                )
         except ClusterConfigError as exc:
             console.print(f"[warning]{exc}; keeping the existing OSDU audience.[/warning]")
     if not istio_revision:

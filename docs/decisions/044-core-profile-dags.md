@@ -64,7 +64,11 @@ key is introduced.
   or adopted. Declared IDs are unpaused; removed IDs are paused, and records
   are never deleted. Airflow creates new DAGs paused.
 - **Caller provenance.** Tasks use the OSDU identity's token with the run's
-  `userId` in `on-behalf-of`. The identity already owns
+  `userId` in `on-behalf-of`. `AZURE_RESOURCE_ID` uses
+  `spi-cluster-config/OSDU_TOKEN_AUDIENCE`, resolved as for `spi token`
+  (ADR-030): an application override, or the management audience when
+  `osdu-config/AAD_CLIENT_ID` names the managed identity. Copying that
+  managed-identity ID verbatim would fail with AADSTS100040. The identity already owns
   `users.datalake.delegation`; the members Job adds the deploy identity to
   `users.datalake.impersonation`. People gain impersonation through
   `spi users` editor, admin or ops, not viewer. Downgrade or removal takes

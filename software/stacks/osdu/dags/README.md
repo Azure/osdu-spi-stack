@@ -74,10 +74,13 @@ and federated token file. `CLOUD_PROVIDER=azure` and
 Identity path. `AZURE_RESOURCE_ID` is the service audience, not the
 identity's Azure resource path.
 
-`spi up` copies the effective `osdu-config/AAD_CLIENT_ID` into
-`osdu-flux/spi-cluster-config`. `spi reconcile` also copies it from the
-running environment before requesting reconciliation, including on
-v0.30.x upgrades. Read failure retains the previous value. An absent key
+`spi up` writes `OSDU_TOKEN_AUDIENCE` into `osdu-flux/spi-cluster-config`,
+using the same policy as `spi token`: an application override from
+`osdu-config/AAD_CLIENT_ID`, or the management audience when that value
+names the OSDU managed identity. A managed identity cannot itself be a
+token audience (AADSTS100040, ADR-030). `spi reconcile` resolves it from the
+running configuration and ServiceAccount before requesting reconciliation,
+including on v0.30.x upgrades. Read failure retains the previous value. An absent key
 uses `https://management.azure.com`, the existing bootstrap audience
 accepted by the mesh (ADR-016), not an empty substitution. An explicitly
 configured application audience is preserved.
