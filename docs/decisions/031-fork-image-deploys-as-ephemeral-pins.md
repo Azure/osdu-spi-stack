@@ -101,6 +101,16 @@ services under the same owner, the mechanism ADR-017 already declined.
   behaviorally broken can also fail a concurrently running sibling suite;
   the exposure lasts until the pin's restore or sweep, and the accepted
   recovery is that sibling's re-run, not isolation.
+- The borrow's own rollout disturbs the pool. The surge pod of a service
+  whose node has no room brings a node, the old pod's exit leaves slack, and
+  the `osdu` pool's underutilization consolidation repacks a node a few
+  minutes later, on every borrow and every restore. A single-replica
+  dependency on the repacked node drops for its image pull and startup, long
+  enough to fail the suite that depends on it, and a re-run meets the same
+  repack. The services every suite writes through or reads back from
+  (storage, schema, indexer, search, with partition, entitlements, and
+  legal) run two replicas behind a PodDisruptionBudget by default (ADR-018),
+  so a repack takes one replica while the other serves.
 - The `ephemeral` marker plus the recorded owner are the boundary automation
   respects: restore and sweep act only on pins they can prove theirs or
   stale, and an operator's investigation pin survives the night.
