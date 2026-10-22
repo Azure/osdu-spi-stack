@@ -94,8 +94,11 @@ key is introduced.
   nor `createUser`; Workflow and Storage must derive them. The command
   reuses the Deployable and Workflow/Storage target guards from ADR-036,
   but is stack-owned, not a paired descriptor suite. It neither grants a
-  role nor seeds a schema or legal tag. `--dry-run` performs read-only
-  preflight without starting a Workflow run. Runs and the record remain
+  role nor seeds a schema or legal tag. Preflight refuses a legal tag
+  Legal's `legaltags:validate` rejects and an ACL outside the caller's group
+  domain, the two rejections Osdu_ingest records as skips while its run
+  still succeeds. `--dry-run` performs read-only preflight without starting
+  a Workflow run. Runs and the record remain
   as evidence. Registration readiness is not proof of ingestion.
 
 Rejected: a stack-built Airflow image. It removes package resolution from

@@ -127,7 +127,12 @@ run ingestion. The check never enrolls a caller or changes an existing role.
 
 Preflight reads both Workflow registrations, the Manifest and UnitOfMeasure
 schemas, and the default legal tag observed by `spi info`. It refuses a
-missing prerequisite rather than creating it. Registration and legal are
+missing prerequisite rather than creating it. It also refuses the two causes
+that make Storage skip the record while the run still succeeds: a legal tag
+Legal's `legaltags:validate` rejects (its reason is shown), and an ACL whose
+domain differs from the caller's first group email, which is the comparison
+Storage makes. When Legal won't validate for the caller, that check is marked
+not checked and the smoke goes on. Registration and legal are
 non-gating, so those prerequisites can still be missing after the environment
 becomes Deployable. A failed members seed still follows the existing
 `bootstrap_failed` deployability rule; each caller's impersonation membership
