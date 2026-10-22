@@ -708,4 +708,5 @@ def test_an_acl_outside_the_callers_domain_is_refused(environment):
     with pytest.raises(SuiteNotRun) as error:
         dag_testing.run_dags(timeout=10)
     assert error.value.code == "acl_domain_mismatch"
-    assert "first.contoso.com" in str(error.value) and not environment["runs"]
+    named = str(error.value).split("group domain ")[1].split(";")[0]
+    assert named == "first.contoso.com" and not environment["runs"]
