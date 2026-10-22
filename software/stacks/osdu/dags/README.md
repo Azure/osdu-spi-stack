@@ -160,10 +160,11 @@ Storage cannot be borrowed; a changed image, rollout or environment
 revision during the check discards its verdict.
 
 `--report` writes `spi-test-dags-<partition>.html` beside the suite reports
-and opens it: each check with its evidence, each run's queued and running
-time, the submitted record beside the stored one, and the images the smoke
-ran against. A refused check still gets a page once its partition is known.
-`--json` adds the page's path to the envelope as `report`.
+and, without `--json`, opens it: each check with its evidence, when each run
+was first seen running and ended, the submitted record beside the stored one,
+and the images the smoke ran against. A refused check still gets a page once
+its partition is known. The `--json` envelope carries the same `steps`,
+`submitted`, `stored` and `targets`, plus the page's path as `report`.
 
 This is a stack-owned integration smoke, not a descriptor suite.
 `--suite`, `--source`, Maven arguments, `--set`, `--env-file` and

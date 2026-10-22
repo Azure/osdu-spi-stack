@@ -1512,22 +1512,21 @@ def _test_core_dags(
         outcome = "refused" if exc.exit_code == 2 else "error"
         if not output_json:
             console.print(Text(f"DAG smoke not run ({exc.code}): {exc}", style="error"))
-        extra = {}
+        facts: Dict[str, Any] = {}
+        extra: Dict[str, Any] = {}
         if trace.partition:
-            extra = written(
-                {
-                    "outcome": outcome,
-                    "code": exc.code,
-                    "detail": str(exc),
-                    "caller": {"as": trace.caller, "id": trace.user_id} if trace.caller else {},
-                    "partition": trace.partition,
-                    "environment": trace.environment,
-                    "checks": [],
-                    "trace": trace.facts(),
-                }
-            )
+            facts = {
+                "caller": {"as": trace.caller, "id": trace.user_id} if trace.caller else None,
+                "partition": trace.partition,
+                "environment": trace.environment,
+                "checks": [],
+                **trace.facts(),
+            }
+            extra = written({**facts, "outcome": outcome, "code": exc.code, "detail": str(exc)})
+        elif report:
+            _report_warning("No report", "the smoke was refused before a partition was selected")
         if output_json:
-            _emit_outcome(outcome, exc.code, str(exc), check="core-dags", **extra)
+            _emit_outcome(outcome, exc.code, str(exc), check="core-dags", **facts, **extra)
         raise typer.Exit(code=exc.exit_code)
     if not output_json:
         table = Table(title=Text(f"Core DAG smoke: {result.partition} as {result.user_id}"))
@@ -1543,13 +1542,7 @@ def _test_core_dags(
         console.print(Text(result.detail))
     facts = result.facts()
     extra = written(
-        {
-            **facts,
-            "outcome": result.outcome,
-            "code": result.code,
-            "detail": result.detail,
-            "trace": result.trace.facts(),
-        }
+        {**facts, "outcome": result.outcome, "code": result.code, "detail": result.detail}
     )
     if output_json:
         _emit_outcome(result.outcome, result.code, result.detail, **facts, **extra)

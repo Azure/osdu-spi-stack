@@ -21,7 +21,6 @@ scoreboard passes over it.
 from __future__ import annotations
 
 import json
-import math
 from datetime import datetime, timedelta
 from typing import Iterable, Mapping
 
@@ -31,8 +30,8 @@ PAGE_KIND = "dags"
 DAG_PAGE_SCHEMA = 1
 PHASES = (("before", "Before the runs"), ("runs", "The runs"), ("after", "After the runs"))
 STEP_CHIPS = {"held": "passed", "failed": "failed", "refused": "failed", "not reached": "skipped"}
-QUEUED = {"submitted", "queued", "scheduled"}
 FINISHED = {"success", "finished"}
+ENDED = FINISHED | {"failed", "timeout"}
 # Provenance leads the stored record so it shows above the pane's fold.
 LEADING = ("id", "kind", "version", "createUser", "createTime")
 
@@ -44,54 +43,43 @@ tr.quiet td{color:var(--muted)}
 td.ev{font-family:var(--mono);font-size:12.5px;color:var(--muted);overflow-wrap:anywhere}
 td.step i{font-style:normal;color:var(--muted);font-variant-numeric:tabular-nums;font-size:12px;
 display:inline-block;min-width:1.8em}
-.gantt{background:var(--surface);border:1px solid var(--line);border-radius:12px;
-padding:16px 18px 10px;margin-bottom:12px}
-.lane,.axis{display:grid;grid-template-columns:110px minmax(0,1fr);gap:12px;align-items:center}
-.lane{margin-bottom:12px}
-.lane .name{font-family:var(--mono);font-size:13px}
-.track{position:relative;height:22px;background:var(--bg);border-radius:5px}
-.seg{position:absolute;top:0;bottom:0;border-radius:4px;min-width:2px}
-.seg.queued{background:var(--none)}.seg.running{background:var(--pass)}
-.seg.reading{background:var(--note)}
-.seg.wait{background:repeating-linear-gradient(45deg,var(--fail) 0 6px,var(--fail-bg) 6px 10px)}
-.ticks{position:relative;height:18px;font-size:11px;color:var(--muted);
-font-variant-numeric:tabular-nums;border-top:1px solid var(--line)}
-.ticks span{position:absolute;top:2px;transform:translateX(-50%);white-space:nowrap}
-.ticks span:first-child{transform:none}.ticks span:last-child{transform:translateX(-100%)}
 .pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
 .pane{background:var(--surface);border:1px solid var(--line);border-radius:12px;
 padding:14px 16px;min-width:0}
 .pane h3{margin:0 0 2px;font-size:14px}.pane p{font-size:12px;color:var(--muted)}
 .pane pre{white-space:pre}
 pre .hl{background:var(--pass-bg);color:var(--pass)}pre .bad{background:var(--fail-bg);color:var(--fail)}
-@media (max-width:640px){.lane,.axis{grid-template-columns:84px minmax(0,1fr)}}
 """
 
 
 def _steps(smoke: Mapping) -> list[dict]:
-    return list((smoke.get("trace") or {}).get("steps") or ())
+    return list(smoke.get("steps") or ())
 
 
 def _step_state(smoke: Mapping, name: str) -> str:
     return next((step["state"] for step in _steps(smoke) if step["name"] == name), "")
 
 
-def segments(events: Iterable[Mapping]) -> list[tuple[str, float, float]]:
-    """The spans between what the smoke observed, each named for what it was doing."""
+def timing(events: Iterable[Mapping]) -> dict[str, float | None]:
+    """When the smoke submitted a run, first saw it running, saw it end, and last answered.
+
+    Workflow refreshes a run's status from Airflow only when it is read, so a
+    short run can end between two polls without ever being seen running.
+    """
 
     events = list(events)
-    spans = []
-    for event, after in zip(events, events[1:]):
-        if event["event"] in QUEUED:
-            kind = "queued"
-        elif event["event"] == "running":
-            kind = "running"
-        elif event["event"] in FINISHED:
-            kind = "reading" if after["event"] == "stored" else "wait"
-        else:
-            continue
-        spans.append((kind, event["at"], after["at"]))
-    return spans
+    if not events:
+        return {"submitted": None, "running": None, "ended": None, "last": None}
+
+    def first(names: set[str]) -> float | None:
+        return next((event["at"] for event in events if event["event"] in names), None)
+
+    return {
+        "submitted": events[0]["at"],
+        "running": first({"running"}),
+        "ended": first(ENDED),
+        "last": events[-1]["at"],
+    }
 
 
 def _verdicts(smoke: Mapping) -> str:
@@ -131,7 +119,7 @@ def _tiles(smoke: Mapping) -> str:
     ]
     tiles = [
         (
-            "passed" if held == len(steps) else "failed",
+            "passed" if steps and held == len(steps) else "failed",
             "checks held" + (", " + ", ".join(missed) if missed else ""),
             f"{held} of {len(steps)}",
         )
@@ -141,20 +129,16 @@ def _tiles(smoke: Mapping) -> str:
             any(event["event"] in FINISHED for event in check.get("events") or ())
             for check in checks
         )
-        spans = [span for check in checks for span in segments(check.get("events") or ())]
         last = max((event["at"] for c in checks for event in c.get("events") or ()), default=0)
-        queued = sum(end - start for kind, start, end in spans if kind == "queued")
-        tiles[:0] = [
+        tiles.insert(
+            0,
             (
                 "passed" if succeeded == len(checks) else "failed",
                 "Workflow runs succeeded",
                 f"{succeeded} of {len(checks)}",
-            )
-        ]
-        tiles += [
-            ("", "from the first submit to the last answer", duration(last)),
-            ("", "of that spent submitted or queued", duration(queued)),
-        ]
+            ),
+        )
+        tiles.append(("", "from the first submit to the last answer", duration(last)))
     return (
         '<section class="tiles">'
         + "".join(
@@ -189,15 +173,6 @@ def _proof(smoke: Mapping) -> str:
     )
 
 
-def _ticks(last: float) -> tuple[float, list[int]]:
-    """The axis length in seconds and its minute marks, at most six of them."""
-
-    minutes = max(1, math.ceil(last / 60))
-    step = math.ceil(minutes / 5)
-    marks = list(range(0, minutes + step, step))
-    return float(marks[-1] * 60), marks
-
-
 def _clock(started: str, at: float) -> str:
     try:
         return (datetime.fromisoformat(started) + timedelta(seconds=at)).strftime("%H:%M:%S")
@@ -205,58 +180,41 @@ def _clock(started: str, at: float) -> str:
         return f"+{duration(at)}"
 
 
+def _span(start: float | None, end: float | None) -> str:
+    return duration(end - start) if start is not None and end is not None else "-"
+
+
 def _timeline(smoke: Mapping) -> str:
     checks = [check for check in smoke.get("checks") or () if check.get("events")]
     if not checks:
         return ""
-    started = (smoke.get("trace") or {}).get("started") or ""
-    last = max(event["at"] for check in checks for event in check["events"])
-    scale, marks = _ticks(last)
-    lanes, rows = "", ""
+    started = smoke.get("started") or ""
+    rows = ""
     for check in checks:
-        events = check["events"]
-        spans = segments(events)
-        bars = "".join(
-            f'<i class="seg {kind}" style="left:{100 * start / scale:.2f}%;'
-            f'width:{100 * (end - start) / scale:.2f}%" '
-            f'title="{kind} {_e(duration(end - start))}"></i>'
-            for kind, start, end in spans
+        held = timing(check["events"])
+        submitted, running, ended, last = (
+            held["submitted"],
+            held["running"],
+            held["ended"],
+            held["last"],
         )
-        lanes += (
-            f'<div class="lane"><span class="name">{_e(check["dag"])}</span>'
-            f'<div class="track">{bars}</div></div>'
-        )
-        queued = sum(end - start for kind, start, end in spans if kind == "queued")
-        ran = sum(end - start for kind, start, end in spans if kind == "running")
-        ended = next(
-            (event["at"] for event in events if event["event"] in FINISHED | {"failed"}), None
-        )
+        seen = "not seen" if running is None else _clock(started, running)
+        answered = last if last is not None and ended is not None and last > ended else None
         rows += (
             f'<tr><td class="test">{_e(check["dag"])}</td>'
-            f'<td class="mono">{_e(_clock(started, events[0]["at"]))}</td>'
+            f'<td class="mono">{_e(_clock(started, submitted or 0))}</td>'
+            f'<td class="mono">{_e(seen)}</td>'
             f'<td class="mono">{_e(_clock(started, ended) if ended is not None else "-")}</td>'
-            f"<td class=n>{_e(duration(queued))}</td><td class=n>{_e(duration(ran))}</td>"
-            f"<td class=n>{_e(duration(events[-1]['at'] - events[0]['at']))}</td></tr>"
+            f"<td class=n>{_e(_span(submitted, running if running is not None else ended))}</td>"
+            f"<td class=n>{_e(_span(running, ended))}</td>"
+            f"<td class=n>{_e(_span(ended, answered))}</td>"
+            f"<td class=n>{_e(_span(submitted, last))}</td></tr>"
         )
-    ticks = "".join(
-        f'<span style="left:{100 * mark * 60 / scale:g}%">{f"{mark} m" if mark else "0"}</span>'
-        for mark in marks
-    )
-    legend = "".join(
-        f'<span><i style="background:var(--{color})"></i>{label}</span>'
-        for color, label in (
-            ("none", "submitted or queued"),
-            ("pass", "running in Airflow"),
-            ("note", "reading the record back from Storage"),
-            ("fail", "waiting for a record that did not arrive"),
-        )
-    )
     return (
-        '<h2>Where the time went</h2><div class="gantt">'
-        f'{lanes}<div class="axis"><span></span><div class="ticks">{ticks}</div></div>'
-        f'<div class="legend">{legend}</div></div>'
-        '<div class="sheet"><table><thead><tr><th>DAG</th><th>Submitted</th><th>Finished</th>'
-        '<th class="n">Queued</th><th class="n">Ran</th><th class="n">Total</th></tr></thead>'
+        '<h2>Where the time went</h2><div class="sheet"><table><thead><tr><th>DAG</th>'
+        "<th>Submitted</th><th>Seen running</th><th>Seen ended</th>"
+        '<th class="n">Until seen running</th><th class="n">Seen running for</th>'
+        '<th class="n">Record read back</th><th class="n">Total</th></tr></thead>'
         f"<tbody>{rows}</tbody></table></div>"
     )
 
@@ -272,8 +230,7 @@ def _json(value: object, mark: str = "") -> str:
 
 
 def _record(smoke: Mapping) -> str:
-    trace = smoke.get("trace") or {}
-    submitted, stored = trace.get("submitted"), trace.get("stored")
+    submitted, stored = smoke.get("submitted"), smoke.get("stored")
     ingested = any(
         check["dag"] == "Osdu_ingest" and check.get("events") for check in smoke.get("checks") or ()
     )
@@ -296,8 +253,7 @@ def _record(smoke: Mapping) -> str:
 
 
 def _targets(smoke: Mapping, run: Mapping) -> str:
-    trace = smoke.get("trace") or {}
-    targets = trace.get("targets") or {}
+    targets = smoke.get("targets") or {}
     if not targets:
         return ""
     after = _step_state(smoke, "Target unchanged")
@@ -350,7 +306,9 @@ def render(facts: Mapping) -> str:
         f"{_tiles(smoke)}{summary}"
         f"{_proof(smoke)}{_timeline(smoke)}{_record(smoke)}{_targets(smoke, run)}"
         "<footer><p>The verdict is the smoke's own. Times are what the CLI observed while "
-        "polling Workflow and Storage every few seconds, so each is accurate to one poll. "
+        "polling Workflow and Storage every 5 seconds, so each is accurate to one poll. "
+        "Workflow reads a run's status from Airflow only when asked, so a short run can end "
+        "without being seen running. "
         "The smoke record stays in its partition. Nothing on this page holds a token.</p>"
         f"<p>Written by spi {_e(run.get('cli'))}.</p></footer>"
     )

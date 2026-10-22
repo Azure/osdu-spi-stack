@@ -154,6 +154,7 @@ class DagSmokeResult:
             "partition": self.partition,
             "environment": self.environment,
             "checks": [check.as_dict() for check in self.checks],
+            **self.trace.facts(),
             "tests": {
                 "passed": sum(c.state == "passed" for c in self.checks),
                 "failed": sum(c.state == "failed" for c in self.checks),

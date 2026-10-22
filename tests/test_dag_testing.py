@@ -656,3 +656,18 @@ def test_dry_run_refuses_a_report(invoke):
     result = runner.invoke(cli.app, ["test", "dags", "--dry-run", "--report"])
     assert result.exit_code == 1 and calls == []
     assert "nothing to report" in result.output
+
+
+def test_json_carries_what_the_page_draws(environment, reports):
+    result = CliRunner().invoke(cli.app, ["test", "dags", "--json"])
+    payload = json.loads(result.stdout.splitlines()[-1])
+    assert [step["state"] for step in payload["steps"]] == ["held"] * 11
+    assert payload["stored"]["createUser"] == DEPLOY and payload["submitted"]["id"]
+    assert set(payload["targets"]) == {"workflow", "storage"}
+
+
+def test_a_report_refused_before_a_partition_says_so(environment, reports):
+    environment["facts"]["environment"]["profile"] = "minimal"
+    result = CliRunner().invoke(cli.app, ["test", "dags", "--report"])
+    assert result.exit_code == 2
+    assert "No report" in result.output and list(reports.glob("*.html")) == []
