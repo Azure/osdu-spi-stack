@@ -29,7 +29,13 @@ from .suite_page import _document, _e, duration
 PAGE_KIND = "dags"
 DAG_PAGE_SCHEMA = 1
 PHASES = (("before", "Before the runs"), ("runs", "The runs"), ("after", "After the runs"))
-STEP_CHIPS = {"held": "passed", "failed": "failed", "refused": "failed", "not reached": "skipped"}
+STEP_CHIPS = {
+    "held": "passed",
+    "failed": "failed",
+    "refused": "failed",
+    "not reached": "skipped",
+    "not checked": "skipped",
+}
 FINISHED = {"success", "finished"}
 ENDED = FINISHED | {"failed", "timeout"}
 # Provenance leads the stored record so it shows above the pane's fold.
@@ -114,12 +120,16 @@ def _tiles(smoke: Mapping) -> str:
     held = sum(step["state"] == "held" for step in steps)
     missed = [
         f"{count} {state}"
-        for state in ("failed", "refused", "not reached")
+        for state in ("failed", "refused", "not reached", "not checked")
         if (count := sum(step["state"] == state for step in steps))
     ]
     tiles = [
         (
-            "passed" if steps and held == len(steps) else "failed",
+            "passed"
+            if steps and held == len(steps)
+            else "failed"
+            if not steps or any(step["state"] in ("failed", "refused") for step in steps)
+            else "",
             "checks held" + (", " + ", ".join(missed) if missed else ""),
             f"{held} of {len(steps)}",
         )

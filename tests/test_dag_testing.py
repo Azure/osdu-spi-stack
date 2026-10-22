@@ -43,6 +43,7 @@ ENDPOINTS = {
     "storage": BASE + "/api/storage/v2/",
     "schema": BASE + "/api/schema-service/v1/",
     "entitlements": BASE + "/api/entitlements/v2/",
+    "legal": BASE + "/api/legal/v1/",
 }
 FACTS: dict[str, Any] = {
     "environment": {"name": "dev", "profile": "core", "running": {"commit": "a" * 40}},
@@ -53,6 +54,10 @@ FACTS: dict[str, Any] = {
         {"name": "second", "primary": False, "legal_tag": "second-demo-legaltag"},
     ],
 }
+
+
+def started_run(request) -> bool:
+    return request.get_method() == "POST" and request.full_url.endswith("/workflowRun")
 
 
 def jwt(user: str) -> str:
@@ -95,6 +100,9 @@ def environment(monkeypatch):
         "submit_status": 200,
         "http_failure": False,
         "fact_reads": 0,
+        "invalid_tags": [],
+        "legal_status": 200,
+        "group_domain": "first.dataservices.energy",
     }
 
     def guard():
@@ -140,10 +148,15 @@ def environment(monkeypatch):
         method = request.get_method()
         who = PERSON if request.get_header("Authorization") == "Bearer " + jwt(PERSON) else DEPLOY
         if path == "/api/entitlements/v2/groups":
-            groups = [{"name": "users"}]
+            partition = request.get_header("Data-partition-id")
+            domain = state["group_domain"].replace("first", partition, 1)
+            groups = [{"name": "users", "email": f"users@{domain}"}]
             if state["impersonation"]:
                 groups.append({"name": "users.datalake.impersonation"})
             return answer(request, 200, {"groups": groups})
+        if path == "/api/legal/v1/legaltags:validate":
+            body = {"invalidLegalTags": state["invalid_tags"]}
+            return answer(request, state["legal_status"], body)
         if path.startswith("/api/schema-service/v1/schema/"):
             return answer(request, state["schema_status"], {"type": "object"})
         if path.startswith("/api/storage/v2/records/"):
@@ -241,7 +254,7 @@ def test_echo_then_ingestion_runs_as_the_selected_caller_in_any_partition(
         req.get_header("Authorization") == "Bearer " + jwt(user) for req in environment["calls"]
     )
     assert all(req.get_header("Data-partition-id") == partition for req in environment["calls"])
-    posts = [req for req in environment["calls"] if req.get_method() == "POST"]
+    posts = [req for req in environment["calls"] if started_run(req)]
     assert [urllib.parse.urlsplit(req.full_url).path for req in posts] == [
         "/api/workflow/v1/workflow/Echo_DAG/workflowRun",
         "/api/workflow/v1/workflow/Osdu_ingest/workflowRun",
@@ -368,7 +381,7 @@ def test_failed_prerequisite_starts_no_workflow(environment, setting, value, cod
     with pytest.raises(SuiteNotRun) as error:
         dag_testing.run_dags(timeout=10)
     assert error.value.code == code and error.value.exit_code == 2
-    assert not any(req.get_method() == "POST" for req in environment["calls"])
+    assert not any(started_run(req) for req in environment["calls"])
 
 
 def test_unknown_partition_is_refused_before_minting(environment):
@@ -425,7 +438,8 @@ def test_dry_run_only_reads_and_does_not_return_a_verdict(environment):
     result = dag_testing.run_dags(caller="me", partition="second", dry_run=True)
     assert result.outcome == "planned" and result.exit_code == 0
     assert all(check.state == "planned" for check in result.checks)
-    assert all(req.get_method() == "GET" for req in environment["calls"])
+    writes = [req for req in environment["calls"] if req.get_method() != "GET"]
+    assert [req.full_url for req in writes] == [BASE + "/api/legal/v1/legaltags:validate"]
     assert environment["record"] is None
     assert result.checks[1].record_id
 
@@ -559,14 +573,14 @@ def _names(result):
 def test_trace_records_every_check_in_order_with_its_evidence(environment):
     environment["read_delay"] = 2
     result = dag_testing.run_dags(timeout=10)
-    assert [state for state, _ in _names(result)] == ["held"] * 11
-    assert [step.phase for step in result.trace.steps] == ["before"] * 6 + ["runs"] * 4 + ["after"]
+    assert [state for state, _ in _names(result)] == ["held"] * 13
+    assert [step.phase for step in result.trace.steps] == ["before"] * 8 + ["runs"] * 4 + ["after"]
     stored, submitted = result.trace.stored, result.trace.submitted
     assert stored is not None and submitted is not None
     assert stored["createUser"] == DEPLOY and submitted["id"] == result.checks[1].record_id
     ingest = [event for event, _ in result.checks[1].events]
     assert ingest[0] == "submitted" and ingest[-2:] == ["finished", "stored"]
-    assert "read back after 10 s" in result.trace.steps[8].evidence
+    assert "read back after 10 s" in result.trace.steps[10].evidence
 
 
 def test_a_missing_record_fails_its_check_and_leaves_provenance_unreached(environment, monkeypatch):
@@ -594,7 +608,7 @@ def test_a_refused_preflight_keeps_the_checks_that_held_and_the_refusal(environm
     trace = dag_testing.Trace()
     with pytest.raises(SuiteNotRun):
         dag_testing.run_dags(timeout=10, trace=trace)
-    assert [step.state for step in trace.steps] == ["held"] * 3 + ["refused"]
+    assert [step.state for step in trace.steps] == ["held"] * 4 + ["refused"]
     assert trace.partition == "first" and trace.user_id == DEPLOY
 
 
@@ -661,7 +675,7 @@ def test_dry_run_refuses_a_report(invoke):
 def test_json_carries_what_the_page_draws(environment, reports):
     result = CliRunner().invoke(cli.app, ["test", "dags", "--json"])
     payload = json.loads(result.stdout.splitlines()[-1])
-    assert [step["state"] for step in payload["steps"]] == ["held"] * 11
+    assert [step["state"] for step in payload["steps"]] == ["held"] * 13
     assert payload["stored"]["createUser"] == DEPLOY and payload["submitted"]["id"]
     assert set(payload["targets"]) == {"workflow", "storage"}
 
@@ -671,3 +685,27 @@ def test_a_report_refused_before_a_partition_says_so(environment, reports):
     result = CliRunner().invoke(cli.app, ["test", "dags", "--report"])
     assert result.exit_code == 2
     assert "No report" in result.output and list(reports.glob("*.html")) == []
+
+
+def test_an_invalid_legal_tag_is_refused_with_legals_reason(environment):
+    environment["invalid_tags"] = [{"name": "first-demo-legaltag", "reason": "LegalTag expired"}]
+    with pytest.raises(SuiteNotRun) as error:
+        dag_testing.run_dags(timeout=10)
+    assert error.value.code == "legal_tag_invalid" and error.value.exit_code == 2
+    assert "first-demo-legaltag: LegalTag expired" in str(error.value)
+    assert not environment["runs"]
+
+
+def test_a_legal_tag_legal_will_not_validate_for_the_caller_is_not_checked(environment):
+    environment["legal_status"] = 403
+    result = dag_testing.run_dags(timeout=10)
+    assert result.outcome == "passed"
+    assert ("not checked", "Legal tag is valid") in _names(result)
+
+
+def test_an_acl_outside_the_callers_domain_is_refused(environment):
+    environment["group_domain"] = "first.contoso.com"
+    with pytest.raises(SuiteNotRun) as error:
+        dag_testing.run_dags(timeout=10)
+    assert error.value.code == "acl_domain_mismatch"
+    assert "first.contoso.com" in str(error.value) and not environment["runs"]

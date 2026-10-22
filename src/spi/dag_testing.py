@@ -43,6 +43,7 @@ POLL_INTERVAL = 5.0
 SUCCESS_STATES = {"success", "finished"}
 ACTIVE_STATES = {"submitted", "queued", "running", "scheduled"}
 HELD, FAILED, REFUSED, NOT_REACHED = "held", "failed", "refused", "not reached"
+NOT_CHECKED = "not checked"
 BEFORE, RUNS, AFTER = "before", "runs", "after"
 RECORD_STEP = "Ingested record matches the manifest"
 PROVENANCE_STEP = "createUser is the caller"
@@ -271,7 +272,7 @@ def _target(facts: dict, partition: str | None) -> tuple[dict, dict[str, str], s
     if not domain:
         raise _refuse("env_not_ready", "Entitlements has no published domain.")
     endpoints = {}
-    for service in ("workflow", "storage", "schema", "entitlements"):
+    for service in ("workflow", "storage", "schema", "entitlements", "legal"):
         endpoint = facts.get("endpoints", {}).get(service, "")
         parsed = urllib.parse.urlsplit(endpoint)
         if (
@@ -325,6 +326,7 @@ def _preflight(api: Api, record: dict, trace: Trace) -> None:
             "Reapply the intended spi users editor/admin/ops preset, or wait for the deploy identity's members seed.",
         )
     trace.step(BEFORE, name, HELD, f"{IMPERSONATION_GROUP} among {len(names)} groups")
+    _acl_domain(api, record, groups["groups"], trace, refuse)
     for dag in DAG_IDS:
         name = f"{dag} is registered"
         status, workflow = api.request("workflow", "GET", "/workflow/" + dag)
@@ -352,6 +354,7 @@ def _preflight(api: Api, record: dict, trace: Trace) -> None:
                 f"{kind}: {api.detail(status, schema)}; inspect schema-load.",
             )
         trace.step(BEFORE, name, HELD, f"GET /schema/{kind}: 200")
+    _legal_tag(api, record, trace, refuse)
     name = "Smoke record is new"
     status, body = api.request(
         "storage", "GET", "/records/" + urllib.parse.quote(record["id"], safe="")
@@ -361,6 +364,53 @@ def _preflight(api: Api, record: dict, trace: Trace) -> None:
     if status != 404:
         raise refuse(name, "storage_unavailable", api.detail(status, body))
     trace.step(BEFORE, name, HELD, f"GET /records/{record['id']}: 404")
+
+
+def _acl_domain(
+    api: Api,
+    record: dict,
+    groups: list,
+    trace: Trace,
+    refuse: Callable[[str, str, str], SuiteNotRun],
+) -> None:
+    # Storage accepts an ACL whose domain matches the caller's first group email, not membership.
+    name = "Record ACL matches the caller's domain"
+    emails = [g["email"] for g in groups if isinstance(g, dict) and isinstance(g.get("email"), str)]
+    if not emails:
+        trace.step(BEFORE, name, NOT_CHECKED, "Entitlements returned no group email")
+        return
+    domain = emails[0].rpartition("@")[2].lower()
+    acls = {*record["acl"]["owners"], *record["acl"]["viewers"]}
+    foreign = sorted(acl for acl in acls if acl.rpartition("@")[2].lower() != domain)
+    if foreign:
+        raise refuse(
+            name,
+            "acl_domain_mismatch",
+            f"{', '.join(foreign)} is outside the caller's group domain {domain}; "
+            "Storage would skip the record.",
+        )
+    trace.step(BEFORE, name, HELD, f"owners and viewers end in @{domain}")
+
+
+def _legal_tag(
+    api: Api, record: dict, trace: Trace, refuse: Callable[[str, str, str], SuiteNotRun]
+) -> None:
+    name = "Legal tag is valid"
+    tags = list(record["legal"]["legaltags"])
+    status, body = api.request("legal", "POST", "/legaltags:validate", {"names": tags})
+    invalid = body.get("invalidLegalTags") if isinstance(body, dict) else None
+    if status != 200 or not isinstance(invalid, list):
+        # Storage validates with its own authority; a caller Legal refuses can still ingest.
+        trace.step(BEFORE, name, NOT_CHECKED, api.detail(status, body))
+        return
+    if invalid:
+        reasons = "; ".join(
+            f"{item.get('name')}: {item.get('reason')}"
+            for item in invalid
+            if isinstance(item, dict)
+        )
+        raise refuse(name, "legal_tag_invalid", f"{reasons}; Storage would skip the record.")
+    trace.step(BEFORE, name, HELD, f"legaltags:validate: {', '.join(tags)} valid")
 
 
 def _submitted_by(api: Api, body: dict, dag: str) -> None:
