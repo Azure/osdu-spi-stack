@@ -159,8 +159,14 @@ refused or discarded run, and 1 for another setup error. Workflow and
 Storage cannot be borrowed; a changed image, rollout or environment
 revision during the check discards its verdict.
 
+`--report` writes `spi-test-dags-<partition>.html` beside the suite reports
+and opens it: each check with its evidence, each run's queued and running
+time, the submitted record beside the stored one, and the images the smoke
+ran against. A refused check still gets a page once its partition is known.
+`--json` adds the page's path to the envelope as `report`.
+
 This is a stack-owned integration smoke, not a descriptor suite.
-`--suite`, `--source`, Maven arguments, `--set`, `--env-file`, `--report`
-and `--review` apply only to service suites and are refused for `dags`.
+`--suite`, `--source`, Maven arguments, `--set`, `--env-file` and
+`--review` apply only to service suites and are refused for `dags`.
 The DAG-only `--as`, `--partition` and `--timeout` options likewise do not
 override the identity or binding rules of service suites.

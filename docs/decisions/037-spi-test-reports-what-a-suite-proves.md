@@ -24,8 +24,15 @@ contract in `src/spi/suite_contract.py`, the reviewer in
 
 These options apply to the descriptor suites in ADR-036. The stack-owned
 `spi test dags` smoke (ADR-044) has no JUnit report or service contract to
-review; it reports Workflow run IDs and Storage provenance through its
-console output or JSON envelope instead.
+review, so it takes `--report` and refuses `--review`. Its page lists each
+check the smoke made with its evidence, the time each Workflow run spent
+queued and running as the CLI observed it while polling, the submitted record
+beside the one Storage returned, and the workflow and storage images it ran
+against. A refused smoke writes its page once a partition is selected, with
+the checks that held and the one that refused. The page is drawn in
+`src/spi/dag_page.py` with the suite pages' style, lands at
+`spi-reports/spi-test-dags-<partition>.html`, and embeds facts the scoreboard
+does not read.
 
 - **Facts are computed.** Status and duration come from the Surefire and
   Failsafe XML the verdict reads. A passing test is `empty` when the body

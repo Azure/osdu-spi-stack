@@ -210,7 +210,7 @@ See [Ingress modes](docs/architecture.md#ingress-profiles) and
 | `spi users` | Let a person call the OSDU APIs with their own token: `add --me` sets your role (`viewer`, `editor`, `admin`, `ops`) and verifies it, `add <id>` sets a colleague's, `list` shows members and roles, `remove` drops one |
 | `spi load` | Load the data the environment's registry names: reports the schema load and loads reference data from its pinned release, one Job per partition; `--status` shows each load's state, `--force` runs one again |
 | `spi test <service>` | Run a service's suite as its deployed commit shipped it, from the paired acceptance image or natively with `--source <checkout>`; `--dry-run` shows the command and variables a run would use and `--env-file` writes them for an IDE; `--report` writes a page of what ran, `--review` adds which contract rows each test proves |
-| `spi test dags` | Run core's Echo and manifest ingestion checks through Workflow, then verify Storage's `createUser`; `--as deploy` (default) or `--as me`, `--partition <name>`, `--dry-run`, and `--json` |
+| `spi test dags` | Run core's Echo and manifest ingestion checks through Workflow, then verify Storage's `createUser`; `--as deploy` (default) or `--as me`, `--partition <name>`, `--report` writes a page of what it proved, `--dry-run`, and `--json` |
 | `spi update` | Check for and install a newer CLI release |
 | `spi maintenance` | Set or clear the deploy-blocking maintenance flag |
 | `spi down` | Delete the environment's Azure resources; `--purge` removes the group and its identities |

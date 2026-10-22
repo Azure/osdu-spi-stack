@@ -1272,7 +1272,7 @@ def spi_test(
         [], "--set", help="NAME=VALUE the resolver takes over a fact; repeatable."
     ),
     report: bool = typer.Option(
-        False, "--report", help="Write a one-page report of the run and open it."
+        False, "--report", help="Write a one-page report of the run and open it; dags too."
     ),
     review: bool = typer.Option(
         False,
@@ -1324,22 +1324,21 @@ def spi_test(
     from .testing import SuiteNotRun, run_suite
 
     if service == "dags":
-        if (
-            source
-            or overrides
-            or report
-            or review
-            or env_file
-            or ctx.args
-            or suites != ["acceptance"]
-        ):
+        if source or overrides or review or env_file or ctx.args or suites != ["acceptance"]:
             raise _usage_error(
-                "'spi test dags' takes --as, --partition, --timeout, --dry-run and --json; "
-                "descriptor, Maven and report options apply to service suites.",
+                "'spi test dags' takes --as, --partition, --timeout, --report, --dry-run and "
+                "--json; descriptor, Maven and review options apply to service suites.",
                 output_json,
             )
+        if dry_run and report:
+            raise _usage_error("--dry-run runs nothing to report on.", output_json)
         _test_core_dags(
-            caller.value if caller else "deploy", partition, timeout or 900, dry_run, output_json
+            caller.value if caller else "deploy",
+            partition,
+            timeout or 900,
+            dry_run,
+            output_json,
+            report,
         )
         return
     if caller is not None or partition is not None or timeout is not None:
@@ -1469,11 +1468,16 @@ def spi_test(
 
 
 def _test_core_dags(
-    caller: str, partition: Optional[str], timeout: int, dry_run: bool, output_json: bool
+    caller: str,
+    partition: Optional[str],
+    timeout: int,
+    dry_run: bool,
+    output_json: bool,
+    report: bool = False,
 ) -> None:
     from rich.text import Text
 
-    from .dag_testing import run_dags
+    from .dag_testing import Trace, run_dags
     from .testing import SuiteNotRun
 
     ctx_name = _guarded_context(output_json)
@@ -1483,21 +1487,49 @@ def _test_core_dags(
     def progress(message: str) -> None:
         (error_console if output_json else console).print(Text("  " + message))
 
+    def written(smoke: Dict[str, Any]) -> Dict[str, Any]:
+        page = _write_dag_report(smoke) if report else None
+        if page is None:
+            return {}
+        if not output_json:
+            from .suite_report import show
+
+            show(page)
+            console.print(Text(f"  Report: {page}"))
+        return {"report": str(page)}
+
+    trace = Trace()
     try:
         result = run_dags(
-            caller=caller, partition=partition, timeout=timeout, dry_run=dry_run, progress=progress
+            caller=caller,
+            partition=partition,
+            timeout=timeout,
+            dry_run=dry_run,
+            progress=progress,
+            trace=trace,
         )
     except SuiteNotRun as exc:
-        if output_json:
-            _emit_outcome(
-                "refused" if exc.exit_code == 2 else "error", exc.code, str(exc), check="core-dags"
-            )
-        else:
+        outcome = "refused" if exc.exit_code == 2 else "error"
+        if not output_json:
             console.print(Text(f"DAG smoke not run ({exc.code}): {exc}", style="error"))
+        extra = {}
+        if trace.partition:
+            extra = written(
+                {
+                    "outcome": outcome,
+                    "code": exc.code,
+                    "detail": str(exc),
+                    "caller": {"as": trace.caller, "id": trace.user_id} if trace.caller else {},
+                    "partition": trace.partition,
+                    "environment": trace.environment,
+                    "checks": [],
+                    "trace": trace.facts(),
+                }
+            )
+        if output_json:
+            _emit_outcome(outcome, exc.code, str(exc), check="core-dags", **extra)
         raise typer.Exit(code=exc.exit_code)
-    if output_json:
-        _emit_outcome(result.outcome, result.code, result.detail, **result.facts())
-    else:
+    if not output_json:
         table = Table(title=Text(f"Core DAG smoke: {result.partition} as {result.user_id}"))
         table.add_column("DAG")
         table.add_column("Outcome")
@@ -1509,7 +1541,42 @@ def _test_core_dags(
             )
         console.print(table)
         console.print(Text(result.detail))
+    facts = result.facts()
+    extra = written(
+        {
+            **facts,
+            "outcome": result.outcome,
+            "code": result.code,
+            "detail": result.detail,
+            "trace": result.trace.facts(),
+        }
+    )
+    if output_json:
+        _emit_outcome(result.outcome, result.code, result.detail, **facts, **extra)
     raise typer.Exit(code=result.exit_code)
+
+
+def _write_dag_report(smoke: Dict[str, Any]) -> Optional[Path]:
+    """Write the DAG smoke's page and return it; a failure here never changes the verdict."""
+    from datetime import datetime, timezone
+
+    from .dag_page import DAG_PAGE_SCHEMA, PAGE_KIND, render
+    from .deploy_record import environment_label
+    from .suite_report import report_folder, write
+
+    try:
+        environment = smoke.get("environment") or {}
+        run = {
+            "environment": environment_label(environment),
+            "commit": (environment.get("running") or {}).get("commit") or "",
+            "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "cli": __version__,
+        }
+        facts = {"kind": PAGE_KIND, "schema": DAG_PAGE_SCHEMA, "run": run, "smoke": smoke}
+        return write(render(facts), report_folder(), PAGE_KIND, smoke["partition"])
+    except Exception as exc:  # noqa: BLE001
+        _report_warning("The report could not be written", exc)
+        return None
 
 
 def _plan_suites(

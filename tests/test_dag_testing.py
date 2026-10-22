@@ -519,7 +519,6 @@ def test_cli_prints_the_caller_as_literal_text(invoke, monkeypatch):
         ["--source", "."],
         ["--suite", "all"],
         ["--set", "X=1"],
-        ["--report"],
         ["--review"],
         ["--env-file", "vars"],
         ["--", "-Dtest=Something"],
@@ -530,7 +529,7 @@ def test_dag_mode_refuses_service_suite_options_before_any_work(invoke, options)
     result = runner.invoke(cli.app, ["test", "dags", *options])
     assert result.exit_code == 1
     assert calls == []
-    assert "descriptor, Maven and report options" in result.output
+    assert "descriptor, Maven and review options" in " ".join(result.output.split())
 
 
 def test_service_suite_refuses_dag_only_options(invoke):
@@ -551,3 +550,109 @@ def test_cli_preserves_failure_exit_and_machine_readable_code(invoke, monkeypatc
     assert result.exit_code == 2
     payload = json.loads(result.stdout.splitlines()[-1])
     assert payload["outcome"] == "refused" and payload["code"] == "impersonation_missing"
+
+
+def _names(result):
+    return [(step.state, step.name) for step in result.trace.steps]
+
+
+def test_trace_records_every_check_in_order_with_its_evidence(environment):
+    environment["read_delay"] = 2
+    result = dag_testing.run_dags(timeout=10)
+    assert [state for state, _ in _names(result)] == ["held"] * 11
+    assert [step.phase for step in result.trace.steps] == ["before"] * 6 + ["runs"] * 4 + ["after"]
+    stored, submitted = result.trace.stored, result.trace.submitted
+    assert stored is not None and submitted is not None
+    assert stored["createUser"] == DEPLOY and submitted["id"] == result.checks[1].record_id
+    ingest = [event for event, _ in result.checks[1].events]
+    assert ingest[0] == "submitted" and ingest[-2:] == ["finished", "stored"]
+    assert "read back after 10 s" in result.trace.steps[8].evidence
+
+
+def test_a_missing_record_fails_its_check_and_leaves_provenance_unreached(environment, monkeypatch):
+    monkeypatch.setattr(dag_testing.Api, "request", _without_records(dag_testing.Api.request))
+    result = dag_testing.run_dags(timeout=10)
+    assert result.code == "record_missing"
+    states = dict((name, state) for state, name in _names(result))
+    assert states[dag_testing.RECORD_STEP] == "failed"
+    assert states[dag_testing.PROVENANCE_STEP] == "not reached"
+    assert states["Target unchanged"] == "held"
+    assert result.checks[1].events[-1][0] == "record_missing"
+
+
+def _without_records(original):
+    def request(api, service, method, path, payload=None):
+        if service == "storage":
+            return 404, {"message": "not found"}
+        return original(api, service, method, path, payload)
+
+    return request
+
+
+def test_a_refused_preflight_keeps_the_checks_that_held_and_the_refusal(environment):
+    environment["schema_status"] = 404
+    trace = dag_testing.Trace()
+    with pytest.raises(SuiteNotRun):
+        dag_testing.run_dags(timeout=10, trace=trace)
+    assert [step.state for step in trace.steps] == ["held"] * 3 + ["refused"]
+    assert trace.partition == "first" and trace.user_id == DEPLOY
+
+
+@pytest.fixture
+def reports(monkeypatch, tmp_path):
+    from spi import suite_report
+
+    monkeypatch.setattr(cli, "verify_spi_cluster", lambda: "spi-test")
+    monkeypatch.setattr(suite_report, "report_folder", lambda: tmp_path)
+    monkeypatch.setattr(suite_report, "show", lambda path: False)
+    return tmp_path
+
+
+def test_report_draws_the_real_run_and_holds_no_token(environment, reports):
+    result = CliRunner().invoke(cli.app, ["test", "dags", "--as", "me", "--report", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout.splitlines()[-1])
+    page = (reports / "spi-test-dags-first.html").read_text()
+    assert payload["report"] == str(reports / "spi-test-dags-first.html")
+    assert environment["runs"]["Osdu_ingest"] in page and "createUser is the caller" in page
+    assert jwt(PERSON) not in page and jwt(PERSON).split(".")[1] not in page
+
+
+def test_the_scoreboard_passes_over_a_dag_page(environment, reports):
+    from spi.suite_page import read_pages
+
+    result = CliRunner().invoke(cli.app, ["test", "dags", "--report"])
+    assert result.exit_code == 0, result.output
+    assert [path.name for path in reports.glob("*.html")] == ["spi-test-dags-first.html"]
+    assert read_pages(reports.glob("*.html")) == []
+
+
+def test_a_refused_smoke_still_writes_its_page(environment, reports):
+    environment["impersonation"] = False
+    result = CliRunner().invoke(cli.app, ["test", "dags", "--report", "--json"])
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout.splitlines()[-1])
+    assert payload["code"] == "impersonation_missing" and payload["report"]
+    page = (reports / "spi-test-dags-first.html").read_text()
+    assert "Not run (impersonation_missing)" in page
+    assert "The record" not in page and "Where the time went" not in page
+
+
+def test_a_report_that_cannot_be_written_keeps_the_verdict(environment, reports, monkeypatch):
+    from spi import dag_page
+
+    def broken(facts):
+        raise RuntimeError("cannot draw")
+
+    monkeypatch.setattr(dag_page, "render", broken)
+    environment["owner"] = "somebody-else"
+    result = CliRunner().invoke(cli.app, ["test", "dags", "--report", "--json"])
+    assert result.exit_code == 3
+    assert "report" not in json.loads(result.stdout.splitlines()[-1])
+
+
+def test_dry_run_refuses_a_report(invoke):
+    runner, calls = invoke
+    result = runner.invoke(cli.app, ["test", "dags", "--dry-run", "--report"])
+    assert result.exit_code == 1 and calls == []
+    assert "nothing to report" in result.output
