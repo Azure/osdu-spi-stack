@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .bootstrap import ClusterConfigError
@@ -41,6 +42,10 @@ HTTP_TIMEOUT = 30
 POLL_INTERVAL = 5.0
 SUCCESS_STATES = {"success", "finished"}
 ACTIVE_STATES = {"submitted", "queued", "running", "scheduled"}
+HELD, FAILED, REFUSED, NOT_REACHED = "held", "failed", "refused", "not reached"
+BEFORE, RUNS, AFTER = "before", "runs", "after"
+RECORD_STEP = "Ingested record matches the manifest"
+PROVENANCE_STEP = "createUser is the caller"
 
 
 @dataclass(frozen=True)
@@ -68,6 +73,8 @@ class DagCheck:
     record_id: str = ""
     create_user: str = ""
     seconds: float = 0
+    # What the smoke observed and when, in seconds from its start.
+    events: list[tuple[str, float]] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -79,6 +86,50 @@ class DagCheck:
             "recordId": self.record_id or None,
             "createUser": self.create_user or None,
             "seconds": round(self.seconds, 3),
+            "events": [{"event": name, "at": round(at, 3)} for name, at in self.events],
+        }
+
+
+@dataclass(frozen=True)
+class Step:
+    phase: str
+    name: str
+    state: str
+    evidence: str
+
+    def as_dict(self) -> dict:
+        return {
+            "phase": self.phase,
+            "name": self.name,
+            "state": self.state,
+            "evidence": self.evidence,
+        }
+
+
+@dataclass
+class Trace:
+    """What a report draws on, kept as far as the smoke got, refused or not."""
+
+    started: str = ""
+    caller: str = ""
+    user_id: str = ""
+    partition: str = ""
+    environment: dict = field(default_factory=dict)
+    steps: list[Step] = field(default_factory=list)
+    submitted: dict | None = None
+    stored: dict | None = None
+    targets: dict[str, dict] = field(default_factory=dict)
+
+    def step(self, phase: str, name: str, state: str, evidence: str) -> None:
+        self.steps.append(Step(phase, name, state, evidence))
+
+    def facts(self) -> dict:
+        return {
+            "started": self.started,
+            "steps": [step.as_dict() for step in self.steps],
+            "submitted": self.submitted,
+            "stored": self.stored,
+            "targets": self.targets,
         }
 
 
@@ -93,6 +144,7 @@ class DagSmokeResult:
     partition: str
     environment: dict
     checks: tuple[DagCheck, ...]
+    trace: Trace = field(default_factory=Trace, compare=False)
 
     def facts(self) -> dict:
         return {
@@ -102,6 +154,7 @@ class DagSmokeResult:
             "partition": self.partition,
             "environment": self.environment,
             "checks": [check.as_dict() for check in self.checks],
+            **self.trace.facts(),
             "tests": {
                 "passed": sum(c.state == "passed" for c in self.checks),
                 "failed": sum(c.state == "failed" for c in self.checks),
@@ -250,48 +303,64 @@ def _capture_targets() -> dict[str, tuple[dict, str]]:
         raise SuiteNotRun("cluster_unreadable", str(exc)) from exc
 
 
-def _preflight(api: Api, record: dict) -> None:
+def _preflight(api: Api, record: dict, trace: Trace) -> None:
+    def refuse(name: str, code: str, detail: str) -> SuiteNotRun:
+        trace.step(BEFORE, name, REFUSED, detail)
+        return _refuse(code, detail)
+
+    name = "Caller can act for others"
     status, groups = api.request("entitlements", "GET", "/groups")
     if status != 200 or not isinstance(groups, dict) or not isinstance(groups.get("groups"), list):
-        raise _refuse("caller_not_authorized", api.detail(status, groups))
+        raise refuse(name, "caller_not_authorized", api.detail(status, groups))
     names = {
         g.get("name") or str(g.get("email", "")).partition("@")[0]
         for g in groups["groups"]
         if isinstance(g, dict)
     }
     if IMPERSONATION_GROUP not in names:
-        raise _refuse(
+        raise refuse(
+            name,
             "impersonation_missing",
             f"{api.partition}: {api.caller.user_id} is not in {IMPERSONATION_GROUP}. "
             "Reapply the intended spi users editor/admin/ops preset, or wait for the deploy identity's members seed.",
         )
+    trace.step(BEFORE, name, HELD, f"{IMPERSONATION_GROUP} among {len(names)} groups")
     for dag in DAG_IDS:
+        name = f"{dag} is registered"
         status, workflow = api.request("workflow", "GET", "/workflow/" + dag)
         if status != 200 or not isinstance(workflow, dict):
-            raise _refuse(
+            raise refuse(
+                name,
                 "dag_not_registered",
                 f"{dag}: {api.detail(status, workflow)}; inspect spi-osdu-dag-registration.",
             )
         instructions = workflow.get("registrationInstructions")
         if not isinstance(instructions, dict) or instructions.get("dagName") != dag:
-            raise _refuse(
-                "registration_conflict", f"{api.partition}/{dag} resolves to another DAG."
+            raise refuse(
+                name, "registration_conflict", f"{api.partition}/{dag} resolves to another DAG."
             )
+        trace.step(BEFORE, name, HELD, f"GET /workflow/{dag}: dagName {dag}")
     for kind in (MANIFEST_KIND, RECORD_KIND):
+        name = f"{kind} schema exists"
         status, schema = api.request(
             "schema", "GET", "/schema/" + urllib.parse.quote(kind, safe="")
         )
         if status != 200 or not isinstance(schema, dict):
-            raise _refuse(
-                "schema_missing", f"{kind}: {api.detail(status, schema)}; inspect schema-load."
+            raise refuse(
+                name,
+                "schema_missing",
+                f"{kind}: {api.detail(status, schema)}; inspect schema-load.",
             )
+        trace.step(BEFORE, name, HELD, f"GET /schema/{kind}: 200")
+    name = "Smoke record is new"
     status, body = api.request(
         "storage", "GET", "/records/" + urllib.parse.quote(record["id"], safe="")
     )
     if status == 200:
-        raise _refuse("record_exists", f"Refusing to overwrite smoke record {record['id']}.")
+        raise refuse(name, "record_exists", f"Refusing to overwrite smoke record {record['id']}.")
     if status != 404:
-        raise _refuse("storage_unavailable", api.detail(status, body))
+        raise refuse(name, "storage_unavailable", api.detail(status, body))
+    trace.step(BEFORE, name, HELD, f"GET /records/{record['id']}: 404")
 
 
 def _submitted_by(api: Api, body: dict, dag: str) -> None:
@@ -303,8 +372,16 @@ def _submitted_by(api: Api, body: dict, dag: str) -> None:
 
 
 def _run_workflow(
-    api: Api, check: DagCheck, context: dict, timeout: int, progress: Callable[[str], None]
-) -> None:
+    api: Api,
+    check: DagCheck,
+    context: dict,
+    timeout: int,
+    progress: Callable[[str], None],
+    origin: float,
+) -> str:
+    def observed(event: str) -> None:
+        check.events.append((event, time.monotonic() - origin))
+
     check.run_id = str(uuid.uuid4())
     path = "/workflow/" + check.dag + "/workflowRun"
     status, body = api.request(
@@ -317,6 +394,7 @@ def _run_workflow(
             "invalid_response", f"{check.dag}: Workflow did not return the requested runId."
         )
     _submitted_by(api, body, check.dag)
+    observed("submitted")
     progress(f"{check.dag}: submitted run {check.run_id}")
     deadline = time.monotonic() + timeout
     previous = ""
@@ -330,13 +408,17 @@ def _run_workflow(
             _submitted_by(api, body, check.dag)
             state = str(body.get("status", "")).lower()
             if state in SUCCESS_STATES:
-                return
+                observed(state)
+                return state
             if state == "failed":
+                observed(state)
                 raise CheckFailed("workflow_failed", f"{check.dag} run {check.run_id} failed.")
             if state not in ACTIVE_STATES:
                 raise CheckFailed(
                     "invalid_response", f"{check.dag}: unknown Workflow status {state!r}."
                 )
+            if state != (check.events[-1][0] if check.events else ""):
+                observed(state)
             detail = state
         elif status in (404, 429) or status >= 500:
             detail = api.detail(status, body)
@@ -346,13 +428,14 @@ def _run_workflow(
             progress(f"{check.dag}: {detail}")
             previous = detail
         if time.monotonic() >= deadline:
+            observed("timeout")
             raise CheckFailed(
                 "workflow_timeout", f"{check.dag} run {check.run_id} timed out ({detail})."
             )
         time.sleep(min(POLL_INTERVAL, max(0, deadline - time.monotonic())))
 
 
-def _verify_record(api: Api, record: dict, timeout: int) -> str:
+def _stored_record(api: Api, record: dict, timeout: int) -> dict:
     deadline = time.monotonic() + min(timeout, 60)
     path = "/records/" + urllib.parse.quote(record["id"], safe="")
     while True:
@@ -367,12 +450,7 @@ def _verify_record(api: Api, record: dict, timeout: int) -> str:
                 raise CheckFailed(
                     "record_mismatch", f"{record['id']}: stored record differs from the manifest."
                 )
-            if not api.caller.matches(body.get("createUser")):
-                raise CheckFailed(
-                    "caller_mismatch",
-                    f"{record['id']}: createUser={body.get('createUser')!r}, expected {api.caller.user_id!r}",
-                )
-            return body["createUser"]
+            return body
         if status not in (404, 429) and status < 500:
             raise CheckFailed("record_unreadable", f"{record['id']}: {api.detail(status, body)}")
         if time.monotonic() >= deadline:
@@ -391,6 +469,19 @@ def _environment_id(facts: dict) -> tuple:
     )
 
 
+def _run_steps() -> list[str]:
+    return [f"{dag} run succeeds as the caller" for dag in DAG_IDS] + [
+        RECORD_STEP,
+        PROVENANCE_STEP,
+    ]
+
+
+def _image(state: dict) -> dict:
+    entry = state.get("entry") or {}
+    held = {key.rpartition("_IMAGE_")[2].lower(): value for key, value in entry.items()}
+    return {name: held.get(name, "") for name in ("repository", "tag", "digest")}
+
+
 def run_dags(
     *,
     caller: str = "deploy",
@@ -398,7 +489,11 @@ def run_dags(
     timeout: int = 900,
     dry_run: bool = False,
     progress: Callable[[str], None] = lambda _: None,
+    trace: Trace | None = None,
 ) -> DagSmokeResult:
+    """Run the smoke; ``trace`` keeps what a report shows, even when the smoke is refused."""
+
+    trace = Trace() if trace is None else trace
     if caller not in ("deploy", "me") or timeout < 1:
         raise SuiteNotRun("invalid_options", "Choose deploy or me and a positive timeout.")
     try:
@@ -407,14 +502,22 @@ def run_dags(
         raise _refuse("not_deployable", str(exc)) from exc
     facts = collect_facts()
     selected, endpoints, domain = _target(facts, partition)
+    trace.partition, trace.environment = selected["name"], facts.get("environment", {})
     targets = _capture_targets()
+    trace.targets = {
+        service: {**_image(state), "revision": revision}
+        for service, (state, revision) in targets.items()
+    }
     actor = authenticate(caller)
+    trace.caller, trace.user_id = caller, actor.user_id
     api = Api(endpoints, actor, selected["name"])
     manifest = build_manifest(selected["name"], domain, selected["legal_tag"], uuid.uuid4().hex)
     record = manifest["ReferenceData"][0]
+    trace.submitted = record
     try:
-        _preflight(api, record)
+        _preflight(api, record, trace)
     except CheckFailed as exc:
+        trace.step(BEFORE, "Services answer", REFUSED, str(exc))
         raise SuiteNotRun(exc.code, str(exc)) from exc
     checks = (DagCheck(DAG_IDS[0]), DagCheck(DAG_IDS[1], record_id=record["id"]))
     result_fields = {
@@ -423,6 +526,7 @@ def run_dags(
         "partition": selected["name"],
         "environment": facts.get("environment", {}),
         "checks": checks,
+        "trace": trace,
     }
     if dry_run:
         return DagSmokeResult(
@@ -433,21 +537,46 @@ def run_dags(
             **result_fields,
         )
     progress(f"Core DAG smoke as {actor.user_id} in {selected['name']}; retains {record['id']}")
+    trace.started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    origin = time.monotonic()
     for check in checks:
         start = time.monotonic()
         context: dict = {"data-partition-id": selected["name"]}
         if check.dag == "Osdu_ingest":
             context["manifest"] = manifest
+        step = f"{check.dag} run succeeds as the caller"
         try:
-            _run_workflow(api, check, context, timeout, progress)
+            state = _run_workflow(api, check, context, timeout, progress, origin)
+            trace.step(RUNS, step, HELD, f"run {check.run_id} {state}; submittedBy matches")
             if check.dag == "Osdu_ingest":
-                check.create_user = _verify_record(api, record, timeout)
+                step = RECORD_STEP
+                reading = time.monotonic()
+                trace.stored = stored = _stored_record(api, record, timeout)
+                check.events.append(("stored", time.monotonic() - origin))
+                trace.step(
+                    RUNS,
+                    step,
+                    HELD,
+                    f"id, kind and data equal; read back after {time.monotonic() - reading:.0f} s",
+                )
+                step = PROVENANCE_STEP
+                if not actor.matches(stored.get("createUser")):
+                    raise CheckFailed(
+                        "caller_mismatch",
+                        f"{record['id']}: createUser={stored.get('createUser')!r}, "
+                        f"expected {actor.user_id!r}",
+                    )
+                check.create_user = stored["createUser"]
+                trace.step(RUNS, step, HELD, f"createUser {check.create_user}")
             check.state = "passed"
             check.detail = (
                 "createUser matches the caller" if check.create_user else "Workflow run completed"
             )
         except CheckFailed as exc:
             check.state, check.code, check.detail = "failed", exc.code, api.redact(str(exc))
+            if step == RECORD_STEP:
+                check.events.append((exc.code, time.monotonic() - origin))
+            trace.step(RUNS, step, FAILED, f"{exc.code}: {check.detail}")
         check.seconds = time.monotonic() - start
         progress(f"{check.dag}: {check.state}: {check.detail}")
         if check.state == "failed":
@@ -457,6 +586,10 @@ def run_dags(
                     "Echo failed; ingestion was not started",
                 )
             break
+    reached = {step.name for step in trace.steps}
+    for name in _run_steps():
+        if name not in reached:
+            trace.step(RUNS, name, NOT_REACHED, "an earlier check failed")
     try:
         for service, (expected, revision) in targets.items():
             check_target(service, expected, revision=revision, after="core DAG smoke")
@@ -466,7 +599,14 @@ def run_dags(
                 "target_changed", "The environment or stack revision changed during the DAG smoke."
             )
     except (SuiteNotRun, PinError) as exc:
+        trace.step(AFTER, "Target unchanged", FAILED, str(exc))
         return DagSmokeResult("refused", "target_changed", str(exc), 2, **result_fields)
+    trace.step(
+        AFTER,
+        "Target unchanged",
+        HELD,
+        "workflow and storage revisions, the environment and its stack commit as before",
+    )
     failed = next((check for check in checks if check.state == "failed"), None)
     if failed:
         return DagSmokeResult("failed", failed.code, failed.detail, 3, **result_fields)

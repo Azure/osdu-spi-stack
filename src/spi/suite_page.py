@@ -710,13 +710,13 @@ def embedded(page: str) -> dict | None:
     return facts if isinstance(facts.get("suites"), list) else None
 
 
-def _document(title: str, body: str, facts: Mapping) -> str:
+def _document(title: str, body: str, facts: Mapping, style: str = "") -> str:
     return (
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         '<meta name="color-scheme" content="light dark">'
         f"<title>{_e(title)} &middot; spi test</title>"
-        f"<style>{_STYLE}</style></head><body><main>{body}</main>{embed(facts)}</body></html>\n"
+        f"<style>{_STYLE}{style}</style></head><body><main>{body}</main>{embed(facts)}</body></html>\n"
     )
 
 
