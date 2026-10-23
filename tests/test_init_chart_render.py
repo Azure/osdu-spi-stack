@@ -132,6 +132,15 @@ def test_partition_record_carries_the_tenant_service_account():
     assert "serviceAccount" not in props
 
 
+def test_partition_record_names_the_ingest_account():
+    """Workflow's getSignedUrl reads ingest-storage-account-name from the
+    record and fails 500 without it; it signs with a user delegation key, so
+    the partition's own account serves and no ingest key entry is needed."""
+    props = _partition_records(_render(["opendes"]))["opendes.json"]["properties"]
+    assert props["ingest-storage-account-name"] == props["storage-account-name"]
+    assert "ingest-storage-account-key" not in props
+
+
 def test_partition_init_job_name_follows_the_record():
     """The Job is immutable once created and only ever POSTs or PATCHes the
     record it mounts, so a changed record has to rename the Job for Helm to

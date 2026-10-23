@@ -112,6 +112,10 @@ podFailurePolicy:
       "sensitive": true,
       "value": "storage-account-blob-endpoint"
     },
+    "ingest-storage-account-name": {
+      "sensitive": true,
+      "value": "storage"
+    },
     "elastic-endpoint": {
       "sensitive": true,
       "value": "elastic-endpoint"
