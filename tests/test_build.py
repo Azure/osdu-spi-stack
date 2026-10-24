@@ -31,6 +31,7 @@ from spi.build import (
     build_image,
     checkout_state,
     environment_registry,
+    java_release,
     maven_command,
     require_buildable,
     require_cluster_pull,
@@ -42,6 +43,13 @@ from spi.build import (
 
 _DIGEST = "sha256:" + "a" * 64
 _HEAD = "b" * 40
+# The template's stages, one per Java release it carries.
+_DOCKERFILE = (
+    "ARG JAVA_VERSION=17\n"
+    "FROM mcr.microsoft.com/openjdk/jdk:17-azurelinux AS runtime-17\n"
+    "FROM mcr.microsoft.com/openjdk/jdk:25-azurelinux AS runtime-25\n"
+    "FROM runtime-${JAVA_VERSION}\n"
+)
 _REGISTRY = Registry(
     name="osdutest12345",
     login_server="osdutest12345.azurecr.io",
@@ -62,7 +70,7 @@ def _checkout(tmp_path: Path, service: str = "partition", module: str | None = N
         yaml.safe_dump({"schemaVersion": 3, "service": {"name": service}}), encoding="utf-8"
     )
     (root / "build").mkdir()
-    (root / "build/Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (root / "build/Dockerfile").write_text(_DOCKERFILE, encoding="utf-8")
     (root / "build/docker-entrypoint.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     _jar(root, module or f"{service}-azure")
     return root
@@ -74,6 +82,14 @@ def _jar(root: Path, module: str, name: str = "app-1.0-spring-boot.jar") -> Path
     path = target / name
     path.write_bytes(b"jar")
     return path
+
+
+def _pom(root: Path, properties: str) -> None:
+    (root / "pom.xml").write_text(
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">'
+        f"<properties>{properties}</properties></project>",
+        encoding="utf-8",
+    )
 
 
 def _completed(stdout: str = "", returncode: int = 0, stderr: str = ""):
@@ -164,6 +180,65 @@ class TestResolveJar:
             resolve_jar(root, "partition", str(outside))
 
 
+class TestJavaRelease:
+    def test_a_checkout_without_a_pom_takes_the_default(self, tmp_path):
+        assert java_release(_checkout(tmp_path)) == "17"
+
+    def test_a_pom_without_either_property_takes_the_default(self, tmp_path):
+        root = _checkout(tmp_path)
+        _pom(root, "<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>")
+        assert java_release(root) == "17"
+
+    def test_java_version_names_the_release(self, tmp_path):
+        root = _checkout(tmp_path)
+        _pom(root, "<java.version>25</java.version>")
+        assert java_release(root) == "25"
+
+    def test_the_compiler_release_wins_over_java_version(self, tmp_path):
+        root = _checkout(tmp_path)
+        _pom(
+            root,
+            "<java.version>17</java.version><maven.compiler.release>25</maven.compiler.release>",
+        )
+        assert java_release(root) == "25"
+
+    def test_a_reference_resolves_within_the_pom(self, tmp_path):
+        root = _checkout(tmp_path)
+        _pom(root, "<jdk>25</jdk><maven.compiler.release>${jdk}</maven.compiler.release>")
+        assert java_release(root) == "25"
+
+    @pytest.mark.parametrize(
+        "properties",
+        [
+            "<java.version>${jdk}</java.version>",
+            "<java.version>${java.version}</java.version>",
+        ],
+    )
+    def test_a_reference_the_pom_cannot_resolve_is_refused(self, tmp_path, properties):
+        root = _checkout(tmp_path)
+        _pom(root, properties)
+        with pytest.raises(BuildError, match="does not resolve within the pom"):
+            java_release(root)
+
+    def test_a_pom_that_is_not_xml_is_refused(self, tmp_path):
+        root = _checkout(tmp_path)
+        (root / "pom.xml").write_text("<project>", encoding="utf-8")
+        with pytest.raises(BuildError, match="Cannot read the Java release"):
+            java_release(root)
+
+    def test_a_release_the_task_line_cannot_carry_is_refused(self, tmp_path):
+        root = _checkout(tmp_path)
+        _pom(root, "<java.version>25 --build-arg X=1</java.version>")
+        with pytest.raises(BuildError, match="is not a release number"):
+            java_release(root)
+
+    def test_a_release_the_dockerfile_carries_no_runtime_for_is_refused(self, tmp_path):
+        root = _checkout(tmp_path)
+        _pom(root, "<java.version>21</java.version>")
+        with pytest.raises(BuildError, match=r"no runtime-21 stage .*carries: 17, 25"):
+            java_release(root)
+
+
 class TestCheckoutState:
     def _git(self, monkeypatch, head, status, returncode=0):
         def fake(cmd, **kwargs):
@@ -188,17 +263,20 @@ class TestCheckoutState:
 
 class TestTask:
     def test_the_task_builds_with_buildkit_and_pushes_the_same_image(self):
-        document = yaml.safe_load(task_document("local/partition:sha-abc", "provider/x/app.jar"))
+        document = yaml.safe_load(
+            task_document("local/partition:sha-abc", "provider/x/app.jar", "25")
+        )
         build_step, push_step = document["steps"]
         assert build_step["env"] == ["DOCKER_BUILDKIT=1"]
         assert "-f build/Dockerfile" in build_step["build"]
         assert "--build-arg JAR_FILE=provider/x/app.jar" in build_step["build"]
+        assert "--build-arg JAVA_VERSION=25" in build_step["build"]
         assert "--platform linux/amd64" in build_step["build"]
         assert push_step == {"push": ["$Registry/local/partition:sha-abc"]}
 
     def test_a_staging_tag_is_built_and_pushed_beside_the_image(self):
         document = yaml.safe_load(
-            task_document("local/partition:sha-abc", "app.jar", "local/partition:sha-abc-1f")
+            task_document("local/partition:sha-abc", "app.jar", "17", "local/partition:sha-abc-1f")
         )
         build_step, push_step = document["steps"]
         assert build_step["build"].startswith(
@@ -214,7 +292,7 @@ class TestTask:
         context = tmp_path / "context"
         context.mkdir()
 
-        stage_context(root, jar, "local/partition:sha-abc", context)
+        stage_context(root, jar, "17", "local/partition:sha-abc", context)
 
         staged = sorted(
             p.relative_to(context).as_posix() for p in context.rglob("*") if p.is_file()
@@ -230,7 +308,7 @@ class TestTask:
         context.mkdir()
 
         with pytest.raises(BuildError, match="symbolic links .*leak"):
-            stage_context(root, resolve_jar(root, "partition"), "local/partition:x", context)
+            stage_context(root, resolve_jar(root, "partition"), "17", "local/partition:x", context)
         assert not (context / "build").exists()
 
     def test_maven_uses_the_checkouts_settings_and_the_template_profiles(self, tmp_path):
@@ -359,6 +437,7 @@ class TestBuildImage:
             staged["files"] = sorted(
                 p.relative_to(context).as_posix() for p in context.rglob("*") if p.is_file()
             )
+            staged["task"] = yaml.safe_load((context / "acr-task.yaml").read_text("utf-8"))
             return _completed(returncode=task)
 
         monkeypatch.setattr(build, "run_command", fake_run_command)
@@ -383,6 +462,24 @@ class TestBuildImage:
         assert commands[0][0] == "mvn"
         assert commands[1][:5] == ["az", "acr", "run", "--registry", "osdutest12345"]
         assert "acr-task.yaml" in staged["files"]
+
+    def test_the_image_runs_on_the_release_the_checkout_compiles_for(self, monkeypatch, tmp_path):
+        _, staged = self._wire(monkeypatch)
+        root = _checkout(tmp_path)
+        _pom(root, "<java.version>25</java.version>")
+
+        build_image("partition", root)
+
+        assert "--build-arg JAVA_VERSION=25" in staged["task"]["steps"][0]["build"]
+
+    def test_an_unresolved_release_builds_and_pushes_nothing(self, monkeypatch, tmp_path):
+        commands, _ = self._wire(monkeypatch)
+        root = _checkout(tmp_path)
+        _pom(root, "<java.version>${jdk}</java.version>")
+
+        with pytest.raises(BuildError, match="does not resolve within the pom"):
+            build_image("partition", root)
+        assert commands == []
 
     def test_the_digest_is_read_through_a_tag_of_this_run_alone(self, monkeypatch, tmp_path):
         self._wire(monkeypatch)
