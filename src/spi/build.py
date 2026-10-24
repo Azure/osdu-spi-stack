@@ -26,6 +26,7 @@ import re
 import secrets
 import shutil
 import tempfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
@@ -53,6 +54,15 @@ DIRTY_SUFFIX = "-dirty"
 # A JAR Maven did not build in this run; git cannot say which commit produced it.
 PREBUILT_SUFFIX = "-prebuilt"
 _JAR_PATH_RE = re.compile(r"^[A-Za-z0-9._/-]+\.jar$")
+POM_PATH = "pom.xml"
+# The fork template's java-release resolver: these properties in this order, else 17.
+JAVA_RELEASE_KEYS = ("maven.compiler.release", "java.version")
+DEFAULT_JAVA_RELEASE = "17"
+_JAVA_RELEASE_RE = re.compile(r"[0-9]+")
+_PROPERTY_REF_RE = re.compile(r"\$\{([^}]+)\}")
+_RUNTIME_STAGE_RE = re.compile(
+    r"^\s*FROM\s.*\sAS\s+runtime-(\S+)\s*$", re.IGNORECASE | re.MULTILINE
+)
 
 
 class BuildError(RuntimeError):
@@ -270,6 +280,73 @@ def _jar_stamps(checkout: Path, requested: str = "") -> dict[Path, int]:
     return {path.resolve(): path.stat().st_mtime_ns for path in paths if path.is_file()}
 
 
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _pom_properties(pom: Path) -> dict[str, str]:
+    """The root pom's own ``<properties>``; profiles and parents are not consulted."""
+
+    properties: dict[str, str] = {}
+    for child in ET.parse(pom).getroot():
+        if isinstance(child.tag, str) and _local_name(child.tag) == "properties":
+            for prop in child:
+                if isinstance(prop.tag, str):
+                    properties[_local_name(prop.tag)] = (prop.text or "").strip()
+    return properties
+
+
+def _expand(value: str, properties: dict[str, str], seen: tuple[str, ...] = ()) -> str | None:
+    ref = _PROPERTY_REF_RE.fullmatch(value)
+    if not ref:
+        return value
+    name = ref.group(1)
+    if name in seen or name not in properties:
+        return None
+    return _expand(properties[name], properties, (*seen, name))
+
+
+def java_release(checkout: Path) -> str:
+    """The Java release the checkout compiles for, which picks the Dockerfile's runtime stage.
+
+    Resolution follows the fork template's ``java-release`` resolver, so a local
+    image runs on the release the CI-built one does; without the argument the
+    Dockerfile falls back to 17.
+    """
+
+    pom = checkout / POM_PATH
+    release, source = DEFAULT_JAVA_RELEASE, f"no {POM_PATH}"
+    if pom.is_file():
+        try:
+            properties = _pom_properties(pom)
+        except (OSError, ET.ParseError) as exc:
+            raise BuildError(f"Cannot read the Java release from {pom}: {exc}") from exc
+        source = f"neither {' nor '.join(JAVA_RELEASE_KEYS)} is set in {POM_PATH}"
+        key = next((key for key in JAVA_RELEASE_KEYS if key in properties), None)
+        if key:
+            expanded = _expand(properties[key], properties)
+            if expanded is None:
+                raise BuildError(
+                    f"{key} in {pom} is {properties[key]!r}, which does not resolve within the pom."
+                )
+            release, source = expanded, f"{key} in {POM_PATH}"
+    # The release is written into the task's build line, which splits on spaces.
+    if not _JAVA_RELEASE_RE.fullmatch(release):
+        raise BuildError(f"Java release {release!r} ({source}) is not a release number.")
+    try:
+        dockerfile = (checkout / DOCKERFILE_PATH).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise BuildError(f"Cannot read {DOCKERFILE_PATH} in {checkout}: {exc}") from exc
+    stages = set(_RUNTIME_STAGE_RE.findall(dockerfile))
+    if release not in stages:
+        carried = ", ".join(sorted(stages, key=lambda stage: (len(stage), stage))) or "none"
+        raise BuildError(
+            f"Java release {release} ({source}) has no runtime-{release} stage in "
+            f"{DOCKERFILE_PATH} (carries: {carried}); sync the fork with its template."
+        )
+    return release
+
+
 def checkout_state(checkout: Path) -> tuple[str, bool]:
     """``(head, dirty)`` of the checkout; a tree git cannot describe is refused."""
 
@@ -292,7 +369,7 @@ def maven_command(checkout: Path, arguments: Sequence[str] = ()) -> list[str]:
     return [*command, *(arguments or MAVEN_ARGUMENTS)]
 
 
-def task_document(image: str, jar: str, staging: str = "") -> str:
+def task_document(image: str, jar: str, release: str, staging: str = "") -> str:
     """The ACR task: a BuildKit build of the checkout's Dockerfile, then the push.
 
     ``az acr build`` runs the classic builder, which rejects the Dockerfile's
@@ -302,7 +379,8 @@ def task_document(image: str, jar: str, staging: str = "") -> str:
     images = [f"$Registry/{name}" for name in (image, staging) if name]
     build = (
         f"{' '.join(f'-t {name}' for name in images)} -f {DOCKERFILE_PATH} "
-        f"--platform {BUILD_PLATFORM} --build-arg JAR_FILE={jar} ."
+        f"--platform {BUILD_PLATFORM} --build-arg JAR_FILE={jar} "
+        f"--build-arg JAVA_VERSION={release} ."
     )
     document = {
         "version": "v1.1.0",
@@ -314,7 +392,9 @@ def task_document(image: str, jar: str, staging: str = "") -> str:
     return yaml.safe_dump(document, sort_keys=False)
 
 
-def stage_context(checkout: Path, jar: str, image: str, into: Path, staging: str = "") -> Path:
+def stage_context(
+    checkout: Path, jar: str, release: str, image: str, into: Path, staging: str = ""
+) -> Path:
     """Copy what the Dockerfile reads into ``into``: its own directory and the JAR."""
 
     source = checkout / BUILD_DIRECTORY
@@ -327,7 +407,7 @@ def stage_context(checkout: Path, jar: str, image: str, into: Path, staging: str
     target = into / jar
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(checkout / jar, target)
-    (into / TASK_FILE).write_text(task_document(image, jar, staging), encoding="utf-8")
+    (into / TASK_FILE).write_text(task_document(image, jar, release, staging), encoding="utf-8")
     return into
 
 
@@ -367,6 +447,7 @@ def build_image(
     for tool in ("git", "az") + (() if skip_maven else ("mvn",)):
         _require_tool(tool)
     commit, dirty = checkout_state(checkout)
+    release = java_release(checkout)
     registry = environment_registry()
 
     prebuilt = skip_maven
@@ -397,7 +478,7 @@ def build_image(
     staging = f"{image}-{secrets.token_hex(4)}"
     scope = ["--subscription", registry.subscription] if registry.subscription else []
     with tempfile.TemporaryDirectory(prefix="spi-build-") as scratch:
-        context = stage_context(checkout, jar_path, image, Path(scratch), staging)
+        context = stage_context(checkout, jar_path, release, image, Path(scratch), staging)
         ran = run_command(
             ["az", "acr", "run", "--registry", registry.name, "--platform", BUILD_PLATFORM]
             + ["--file", TASK_FILE, *scope, "."],

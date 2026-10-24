@@ -520,7 +520,9 @@ spi service reset partition
 
 The pin step runs Maven in the checkout, builds `build/Dockerfile` around the
 JAR as `<registry>/local/partition` with an ACR task, pins the pushed digest,
-and returns once a running pod carries it. `--skip-maven` reuses the JAR
+and returns once a running pod carries it. The task's `JAVA_VERSION` comes
+from the root pom, as in the fork's CI, and a pom whose release cannot be
+resolved stops the step before Maven runs. `--skip-maven` reuses the JAR
 already in `target/`, and the pin then records the commit as `-prebuilt`.
 `spi service list` shows the pin as `local build <commit>`, and
 `spi test --source` labels the run `matched` when Maven built a clean checkout

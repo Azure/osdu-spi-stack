@@ -31,6 +31,13 @@ origin is `local`.
   `az acr run` executes a two-step task with `DOCKER_BUILDKIT=1`, because the
   `az acr build` quick build runs the classic builder and rejects the
   Dockerfile's `ADD --checksum`. The platform is `linux/amd64`.
+- **The image runs the release the checkout compiles for.** The task passes
+  `JAVA_VERSION` beside `JAR_FILE`, resolved from the root pom as the
+  template's `java-release` resolver does: `maven.compiler.release`, then
+  `java.version`, else 17. A reference the pom cannot resolve, or a release
+  with no `runtime-<n>` stage in `build/Dockerfile`, refuses the build before
+  Maven runs; the Dockerfile's own default of 17 would start a later
+  release's JAR on a runtime that cannot load it.
 - **The checkout is checked, not trusted.** The descriptor's `service.name`
   must equal the requested service, and the checkout must be a git tree. The
   pin records the commit in `source_sha`, suffixed `-dirty` when the tree had
