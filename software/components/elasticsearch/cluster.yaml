@@ -33,6 +33,8 @@ spec:
       config:
         node.roles: ["master", "data", "ingest"]
         node.store.allow_mmap: false
+        # Sized to a heap of half ES_MEMORY_LIMIT; lower the two together.
+        cluster.max_shards_per_node: 2000
       podTemplate:
         metadata:
           labels:
@@ -70,10 +72,10 @@ spec:
               resources:
                 requests:
                   cpu: "${ES_CPU_REQUEST:=500m}"
-                  memory: "${ES_MEMORY_REQUEST:=2Gi}"
+                  memory: "${ES_MEMORY_REQUEST:=6Gi}"
                 limits:
                   cpu: "${ES_CPU_LIMIT:=2}"
-                  memory: "${ES_MEMORY_LIMIT:=4Gi}"
+                  memory: "${ES_MEMORY_LIMIT:=8Gi}"
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities:
