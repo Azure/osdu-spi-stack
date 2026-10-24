@@ -74,7 +74,7 @@ def _service_defaults(service: str) -> dict[str, str]:
 MIDDLEWARE_DEFAULTS: dict[str, dict[str, str]] = {
     "elasticsearch": {
         "ES_COUNT": "3",
-        **_resources("ES", ("500m", "2", "2Gi", "4Gi")),
+        **_resources("ES", ("500m", "2", "6Gi", "8Gi")),
         "ES_STORAGE": "128Gi",
     },
     "postgres": {
