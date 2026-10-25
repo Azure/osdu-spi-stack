@@ -313,7 +313,7 @@ jobs:
       - name: Upload image lock snapshot
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: osdu-image-lock-snapshot-${{ github.run_id }}
+          name: osdu-image-lock-snapshot-${{ github.run_id }}-${{ github.run_attempt }}
           path: osdu-image-lock-snapshot.yaml
           if-no-files-found: ignore
 
@@ -325,7 +325,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: env-reset-diagnostics-quiesce-${{ github.run_id }}
+          name: env-reset-diagnostics-quiesce-${{ github.run_id }}-${{ github.run_attempt }}
           path: diagnostics/
           if-no-files-found: ignore
 
@@ -462,7 +462,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: env-reset-diagnostics-teardown-${{ github.run_id }}
+          name: env-reset-diagnostics-teardown-${{ github.run_id }}-${{ github.run_attempt }}
           path: diagnostics/
           if-no-files-found: ignore
 
@@ -651,7 +651,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: env-reset-diagnostics-provision-${{ github.run_id }}
+          name: env-reset-diagnostics-provision-${{ github.run_id }}-${{ github.run_attempt }}
           path: diagnostics/
           if-no-files-found: ignore
 
@@ -877,6 +877,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: env-reset-diagnostics-verify-${{ github.run_id }}
+          name: env-reset-diagnostics-verify-${{ github.run_id }}-${{ github.run_attempt }}
           path: diagnostics/
           if-no-files-found: ignore

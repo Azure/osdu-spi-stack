@@ -1107,6 +1107,20 @@ class TestEnvResetRetainedTags:
         assert f"declared by {locator}" in result.stdout
 
 
+def test_reset_artifact_names_differ_per_attempt():
+    """Recovery re-runs every job in the same run, where an artifact name is
+    taken once; a repeated name fails the upload."""
+    uploads = [
+        step["with"]["name"]
+        for job in _workflow(ENV_RESET)["jobs"].values()
+        for step in job["steps"]
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    ]
+
+    assert len(uploads) == 5
+    assert all(name.endswith("${{ github.run_id }}-${{ github.run_attempt }}") for name in uploads)
+
+
 class TestEnvResetQuiesceAndDrain:
     def test_maintenance_is_set_and_the_drain_holds_before_the_snapshot(self):
         job = _workflow(ENV_RESET)["jobs"]["quiesce"]
