@@ -63,8 +63,11 @@ substrate, and only that rebuild clears both cluster and PaaS state.
   serialize this repo's lifecycle runs against eight forks' deploy jobs.
   The pins are the cross-repository signal: after setting the flag, the
   workflow waits until every ephemeral pin's owning run (recorded in the pin,
-  ADR-031) has finished, bounded by a drain window sized to the fork
-  deploy-plus-test budget, and only then mutates the environment.
+  ADR-031) has finished, and only then mutates the environment. The drain
+  window is what the verb's budget leaves after its fixed phases, sized to
+  the part of a fork lane after its pin, not to the whole deploy-plus-test
+  budget: a lane that pinned just before the flag can outlast it, and the
+  drain then fails closed rather than waiting it out.
 - **The drain closes its own race.** The flag and the lock are separate
   objects, so a pin can read a clear flag while the workflow sets it and
   sees an empty pin set. Two halves close the window: a pin re-reads the
@@ -108,6 +111,12 @@ availability without an operator, but reopens deploys against an environment
 whose upgrade or rebuild did not finish; unavailability with a reason is the
 safer failure.
 
+Rejected: a drain window sized to the fork deploy-plus-test budget. It
+outlasts any lane in flight when the flag lands, so a scheduled reset never
+aborts on a healthy deploy, but a fork lane's verify step and suites carry
+their own timeouts and can hold a pin for most of an hour, which the reset's
+budget cannot absorb on top of its cold provision and converge.
+
 Rejected: a cluster-side Lease serializing pin admission against the
 maintenance transition. A genuinely atomic gate, but it adds a coordination
 object whose crashed holder blocks every deploy and lifecycle run; the
@@ -120,6 +129,8 @@ covers the single orphan case it leaves.
   cold provision, and a schema-load converge that alone budgets 230
   minutes); a fork pipeline that runs into it fails at deploy and is re-run,
   not queued.
+- A reset that starts while a fork lane is mid-test can exhaust its drain
+  and stop with the flag set; a dispatch once that lane finishes runs it.
 - A red upgrade, reset, or refresh leaves the environment refusing deploys
   until an operator intervenes; availability is traded against testing on a
   half-changed platform.

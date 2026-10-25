@@ -235,7 +235,8 @@ an unreadable pin set. A window that runs out fails the job
 with the flag set and names each remaining pin's run; nothing is deleted. A
 lane that pinned just before the flag can outlast the window, and a
 dispatch after that lane finishes resumes the reset. The window and
-interval are what the 7-hour budget leaves after its fixed phases.
+interval are what the 7-hour budget leaves after its fixed phases, not the
+whole fork deploy-plus-test budget (ADR-029).
 
 `spi down` has a 45-minute deadline and reports success only after the
 group contains identities alone and the managed nodes group is gone
