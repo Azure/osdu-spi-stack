@@ -66,7 +66,7 @@ pin file starts the upgrade. Nothing else moves the stack-definition version
 |---|---|---|---|
 | refresh | `env-refresh` | weekday cron 04:00 UTC, dispatch | 5 h |
 | upgrade | `env-upgrade` | push to `main` touching the pin file, dispatch | 6.5 h |
-| reset | `env-reset` | Saturday cron 06:00 UTC, confirm-dispatch | 7 h |
+| reset | `env-reset` | confirm-dispatch; Saturday cron 06:00 UTC once enabled | 7 h |
 | teardown | `env-teardown` | protected dispatch | 1 h |
 
 The budgets contain their worst cases: a reset spends up to 24 minutes
@@ -202,7 +202,9 @@ projections.
 
 **Reset** (`env-reset.yml`, implemented) is deletion plus cold provision at
 the pinned tag: load and validate the declaration, flag, drain, snapshot the
-lock, then `spi down`. It runs Saturdays at 06:00 UTC. A dispatch must name
+lock, then `spi down`. It runs on dispatch only: the Saturday 06:00 UTC
+schedule is off until supervised dispatches have rebuilt the environment
+cleanly, and turns on by adding the cron trigger back. A dispatch must name
 the declared environment in its `confirm` input, and any other value fails
 the `declare` job before a job touches Azure. `verify-release` then requires
 the `stackVersion` wheel at v0.30.0 or later, the first CLI that runs every
@@ -346,7 +348,7 @@ gh workflow run env-refresh.yml --ref main
 gh run watch
 ```
 
-Run a reset outside the Saturday cron. The confirmation is the declared
+Run a reset by dispatch. The confirmation is the declared
 environment name; the run deletes everything but the identities:
 
 ```bash

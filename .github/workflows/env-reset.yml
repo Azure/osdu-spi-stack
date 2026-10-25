@@ -8,9 +8,6 @@ name: Environment Reset
 # `uv run spi`; the lifecycle contract is docs/design/environment-lifecycle.md.
 
 on:
-  schedule:
-    # Saturday, where the merge gate is idle.
-    - cron: "0 6 * * 6"
   workflow_dispatch:
     inputs:
       confirm:

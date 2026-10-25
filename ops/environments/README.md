@@ -118,8 +118,9 @@ already be applied; see `docs/CI_SETUP.md`.
 
 - `env-upgrade`: first provision and later `stackVersion` upgrades.
 - `env-refresh`: the weekday reconcile-and-probe schedule.
-- `env-reset`: the Saturday drain, `spi down`, and cold rebuild at the
-  declared `stackVersion`; a dispatch confirms with the environment name.
+- `env-reset`: the drain, `spi down`, and cold rebuild at the declared
+  `stackVersion`; a dispatch confirms with the environment name, and the
+  Saturday schedule is off until supervised runs pass.
 
 - `forks:` and the declaration locator, reconciled by `spi up` and by
   `env-refresh` (ADR-032, ADR-033).

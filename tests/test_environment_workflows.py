@@ -953,10 +953,10 @@ def _run_script(tmp_path: Path, script: str, **env: str):
 class TestEnvResetTriggerAndGate:
     GATE = "Gate on declaration presence and confirmation"
 
-    def test_env_reset_triggers_saturday_at_0600_utc_and_confirmed_dispatch(self):
+    def test_env_reset_runs_only_on_a_confirmed_dispatch(self):
         workflow = _workflow(ENV_RESET)
 
-        assert [entry["cron"] for entry in workflow["on"]["schedule"]] == ["0 6 * * 6"]
+        assert "schedule" not in workflow["on"]
         confirm = workflow["on"]["workflow_dispatch"]["inputs"]["confirm"]
         assert confirm["required"] == "true"
         assert confirm["type"] == "string"

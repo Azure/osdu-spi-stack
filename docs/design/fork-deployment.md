@@ -101,7 +101,7 @@ default empty, which reads as a non-ephemeral operator pin.
 ## Stale-pin recovery
 
 A cancelled run, an expired token, or a lost runner strands a pin the restore
-job never returns. The Saturday reset's drain runs the backstop on every
+job never returns. The reset's drain runs the backstop on every
 poll (`scripts/drain_ephemeral_pins.sh`); the weekday refresh workflow's
 sweep step is unbuilt:
 
