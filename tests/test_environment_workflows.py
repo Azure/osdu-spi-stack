@@ -1288,9 +1288,8 @@ class TestEnvResetRebuild:
         """The provision job's read of main, with git serving a declaration whose
         env and stackVersion main now holds and uv running the export script."""
         declared = (REPO_ROOT / "ops" / "environments" / "shared.yaml").read_text(encoding="utf-8")
-        declared = declared.replace("env: shared", f"env: {env}").replace(
-            "stackVersion: v0.32.3", f"stackVersion: {version}"
-        )
+        declared = re.sub(r"(?m)^env: .*$", f"env: {env}", declared)
+        declared = re.sub(r"(?m)^stackVersion: .*$", f"stackVersion: {version}", declared)
         (tmp_path / "main.yaml").write_text(declared, encoding="utf-8")
         for name, body in {
             "git": f'[ "$1" = show ] && cat "{tmp_path}/main.yaml"; exit 0',
