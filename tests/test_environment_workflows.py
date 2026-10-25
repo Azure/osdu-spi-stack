@@ -1044,7 +1044,7 @@ class TestEnvResetRetainedTags:
     STEP = "Require the retained tags to match the declaration"
     LOCATOR = "Azure/osdu-spi-stack:ops/environments/shared.yaml"
 
-    def _run(self, tmp_path, tags: dict[str, str] | None, declares_forks: str = "true"):
+    def _run(self, tmp_path, tags: dict[str, str] | None):
         (tmp_path / "tags.json").write_text(json.dumps(tags), encoding="utf-8")
         stub = tmp_path / "az"
         stub.write_text(f'#!/usr/bin/env bash\ncat "{tmp_path}/tags.json"\n', encoding="utf-8")
@@ -1056,7 +1056,6 @@ class TestEnvResetRetainedTags:
             script,
             ENV_NAME="shared",
             NAME_SUFFIX="a43c7",
-            DECLARES_FORKS=declares_forks,
             GITHUB_REPOSITORY="Azure/osdu-spi-stack",
             DECLARATION_PATH=workflow["env"]["DECLARATION_PATH"],
         )
@@ -1103,13 +1102,6 @@ class TestEnvResetRetainedTags:
 
         assert result.returncode == 1
         assert f"declared by {locator}" in result.stdout
-
-    def test_an_undeclared_rebuild_ignores_the_retained_locator(self, tmp_path):
-        tags = {"spi-name-suffix": "a43c7", "spi-environment-declaration": "other/repo:x.yaml"}
-
-        result, _ = self._run(tmp_path, tags, declares_forks="false")
-
-        assert result.returncode == 0, result.stdout
 
 
 class TestEnvResetQuiesceAndDrain:

@@ -157,7 +157,6 @@ jobs:
         # group's tags, so a mismatch must stop the reset before spi down.
         env:
           NAME_SUFFIX: ${{ needs.declare.outputs.name_suffix }}
-          DECLARES_FORKS: ${{ needs.declare.outputs.declares_forks }}
         run: |
           set -euo pipefail
           RG="spi-stack-${ENV_NAME}"
@@ -170,16 +169,14 @@ jobs:
             echo "::error::$DECLARATION_PATH declares nameSuffix '$NAME_SUFFIX' but $RG retains '$RETAINED_SUFFIX'; spi up would refuse the rebuild after deletion"
             exit 1
           fi
-          # Only a handed-over declaration meets the retained locator.
-          if [ "$DECLARES_FORKS" = "true" ]; then
-            RETAINED=$(jq -r '.["spi-environment-declaration"] // empty' <<<"$TAGS")
-            LOCATOR="${GITHUB_REPOSITORY}:${DECLARATION_PATH}"
-            lower() { tr '[:upper:]' '[:lower:]' <<<"$1"; }
-            if [ -n "$RETAINED" ] && { [ "$(lower "${RETAINED%%:*}")" != "$(lower "$GITHUB_REPOSITORY")" ] \
-                || [ "${RETAINED#*:}" != "$DECLARATION_PATH" ]; }; then
-              echo "::error::$RG is declared by $RETAINED, not $LOCATOR; spi up would refuse the rebuild after deletion"
-              exit 1
-            fi
+          # spi up loads a retained locator even when --declaration is not passed.
+          RETAINED=$(jq -r '.["spi-environment-declaration"] // empty' <<<"$TAGS")
+          LOCATOR="${GITHUB_REPOSITORY}:${DECLARATION_PATH}"
+          lower() { tr '[:upper:]' '[:lower:]' <<<"$1"; }
+          if [ -n "$RETAINED" ] && { [ "$(lower "${RETAINED%%:*}")" != "$(lower "$GITHUB_REPOSITORY")" ] \
+              || [ "${RETAINED#*:}" != "$DECLARATION_PATH" ]; }; then
+            echo "::error::$RG is declared by $RETAINED, not $LOCATOR; spi up would refuse the rebuild after deletion"
+            exit 1
           fi
           echo "$RG retains suffix $RETAINED_SUFFIX and agrees with $DECLARATION_PATH"
 
