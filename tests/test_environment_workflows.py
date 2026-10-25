@@ -1208,6 +1208,25 @@ class TestEnvResetTeardown:
         if not allowed:
             assert "Re-run all jobs" in result.stdout
 
+    PROVISION_GUARD = "Require teardown from this attempt"
+
+    @pytest.mark.parametrize(("teardown_attempt", "allowed"), [("2", True), ("1", False)])
+    def test_provision_runs_only_after_a_teardown_from_its_own_attempt(
+        self, tmp_path, teardown_attempt, allowed
+    ):
+        jobs = _workflow(ENV_RESET)["jobs"]
+        assert jobs["teardown"]["outputs"]["attempt"] == "${{ github.run_attempt }}"
+        assert list(_steps(jobs["provision"]))[0] == self.PROVISION_GUARD
+        script = _steps(jobs["provision"])[self.PROVISION_GUARD]["run"]
+
+        result, _ = _run_script(
+            tmp_path, script, TEARDOWN_ATTEMPT=teardown_attempt, GITHUB_RUN_ATTEMPT="2"
+        )
+
+        assert (result.returncode == 0) is allowed, result.stdout
+        if not allowed:
+            assert "Re-run all jobs" in result.stdout
+
     def _run(self, tmp_path, inventory: list[dict[str, str]], nodes_exist: str):
         (tmp_path / "inventory.json").write_text(json.dumps(inventory), encoding="utf-8")
         stub = tmp_path / "az"

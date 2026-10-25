@@ -346,6 +346,8 @@ jobs:
     # spi down's 45-minute deletion deadline plus setup, so the CLI reports
     # what remains before the job is killed.
     timeout-minutes: 60
+    outputs:
+      attempt: ${{ github.run_attempt }}
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
@@ -482,6 +484,18 @@ jobs:
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
     steps:
+      - name: Require teardown from this attempt
+        # A reused teardown result says nothing about an environment that an
+        # upgrade may have rebuilt and reopened since, and spi up keeps its flag.
+        env:
+          TEARDOWN_ATTEMPT: ${{ needs.teardown.outputs.attempt }}
+        run: |
+          set -euo pipefail
+          if [ "$TEARDOWN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
+            echo "::error::teardown is from attempt ${TEARDOWN_ATTEMPT:-unknown}, not attempt $GITHUB_RUN_ATTEMPT; another lifecycle run may have rebuilt the environment since. Re-run all jobs so detection, the drain, and teardown run again before provisioning."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up uv + Python

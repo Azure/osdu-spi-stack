@@ -246,8 +246,9 @@ whole fork deploy-plus-test budget (ADR-029).
 group contains identities alone and the managed nodes group is gone
 (ADR-034). A failed or timed-out delete fails `teardown`, which reports the
 remaining inventory; re-running all jobs resumes from it. `teardown`
-refuses a detection or drain carried over from an earlier attempt, since a
-refresh or upgrade in between can clear the flag and admit new fork deploys. Only after
+refuses a detection or drain carried over from an earlier attempt, and
+`provision` a teardown carried over, since a refresh or upgrade in between
+can clear the flag or rebuild the environment and admit new fork deploys. Only after
 completion does `spi up --tag <pin>` resolve the declaration's desired
 sources and start the cold provision and converge wait. The retained roster
 is not used as a substitute for that declaration.
