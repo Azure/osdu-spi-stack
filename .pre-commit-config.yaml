@@ -2,7 +2,7 @@
 # tool versions and local runs match CI.
 
 default_language_version:
-  python: python3.10
+  python: python3.11
 
 repos:
   - repo: local
