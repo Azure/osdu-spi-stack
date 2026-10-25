@@ -1092,7 +1092,7 @@ class TestEnvResetRetainedTags:
     @pytest.mark.parametrize(
         "locator",
         [
-            "danielscholl/osdu-spi-stack:ops/environments/shared.yaml",
+            "contoso/osdu-spi-stack:ops/environments/shared.yaml",
             "Azure/osdu-spi-stack:ops/environments/dks.yaml",
         ],
     )
