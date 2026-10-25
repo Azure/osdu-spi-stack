@@ -1171,6 +1171,43 @@ class TestEnvResetTeardown:
         assert names.index("spi down") < names.index(self.STEP)
         assert TEARDOWN_DEADLINE_SECONDS // 60 + 10 <= int(job["timeout-minutes"]) < 60 + 10
 
+    GUARD = "Require detection and drain from this attempt"
+
+    def test_the_attempt_guard_runs_before_anything_is_deleted(self):
+        jobs = _workflow(ENV_RESET)["jobs"]
+
+        assert list(_steps(jobs["teardown"]))[0] == self.GUARD
+        assert jobs["detect"]["outputs"]["attempt"] == "${{ github.run_attempt }}"
+        assert jobs["quiesce"]["outputs"]["attempt"] == "${{ github.run_attempt }}"
+
+    @pytest.mark.parametrize(
+        ("quiesce", "quiesce_attempt", "detect_attempt", "allowed"),
+        [
+            ("success", "2", "1", True),
+            ("success", "1", "1", False),
+            ("skipped", "", "2", True),
+            ("skipped", "", "1", False),
+        ],
+        ids=["fresh-drain", "carried-drain", "fresh-detect", "carried-detect"],
+    )
+    def test_a_rerun_deletes_only_after_a_drain_from_its_own_attempt(
+        self, tmp_path, quiesce, quiesce_attempt, detect_attempt, allowed
+    ):
+        script = _steps(_workflow(ENV_RESET)["jobs"]["teardown"])[self.GUARD]["run"]
+
+        result, _ = _run_script(
+            tmp_path,
+            script,
+            QUIESCE_RESULT=quiesce,
+            QUIESCE_ATTEMPT=quiesce_attempt,
+            DETECT_ATTEMPT=detect_attempt,
+            GITHUB_RUN_ATTEMPT="2",
+        )
+
+        assert (result.returncode == 0) is allowed, result.stdout
+        if not allowed:
+            assert "Re-run all jobs" in result.stdout
+
     def _run(self, tmp_path, inventory: list[dict[str, str]], nodes_exist: str):
         (tmp_path / "inventory.json").write_text(json.dumps(inventory), encoding="utf-8")
         stub = tmp_path / "az"

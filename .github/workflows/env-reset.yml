@@ -110,6 +110,7 @@ jobs:
     environment: azure-shared
     outputs:
       cluster_exists: ${{ steps.detect.outputs.cluster_exists }}
+      attempt: ${{ github.run_attempt }}
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
     steps:
@@ -189,6 +190,8 @@ jobs:
     # The drain's window, quiescence, and two call timeouts plus setup, inside
     # the hour the cached Azure token lasts.
     timeout-minutes: 35
+    outputs:
+      attempt: ${{ github.run_attempt }}
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
@@ -347,6 +350,25 @@ jobs:
       ENV_NAME: ${{ needs.declare.outputs.env }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
     steps:
+      - name: Require detection and drain from this attempt
+        # Re-running failed jobs reuses earlier results, and a refresh or
+        # upgrade in between can clear maintenance and admit new fork deploys.
+        env:
+          QUIESCE_RESULT: ${{ needs.quiesce.result }}
+          QUIESCE_ATTEMPT: ${{ needs.quiesce.outputs.attempt }}
+          DETECT_ATTEMPT: ${{ needs.detect.outputs.attempt }}
+        run: |
+          set -euo pipefail
+          if [ "$QUIESCE_RESULT" = "success" ]; then
+            PROVEN="the drain"; ATTEMPT="$QUIESCE_ATTEMPT"
+          else
+            PROVEN="the missing-cluster detection"; ATTEMPT="$DETECT_ATTEMPT"
+          fi
+          if [ "$ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
+            echo "::error::$PROVEN is from attempt ${ATTEMPT:-unknown}, not attempt $GITHUB_RUN_ATTEMPT; another lifecycle run may have reopened deploys since. Re-run all jobs so detection and the drain run again before deletion."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Azure login (OIDC)
@@ -381,7 +403,7 @@ jobs:
       - name: spi down
         # Succeeds only once the group holds identities alone and the managed
         # nodes group is gone; a failed or expired delete exits 1 and names what
-        # remains, and a re-run resumes from there.
+        # remains, and re-running all jobs resumes from there.
         run: spi down --env "$ENV_NAME" --force
 
       - name: Confirm only managed identities remain
