@@ -2,7 +2,7 @@
 #
 # Licensed under the Apache License, Version 2.0.
 
-"""Contract tests for the env-upgrade and env-refresh lifecycle workflows.
+"""Contract tests for the env-upgrade, env-refresh, and env-reset lifecycle workflows.
 
 These pin what docs/design/environment-lifecycle.md promises: one serializing
 concurrency group, the bare released `spi` for every operational call, a
@@ -25,6 +25,8 @@ from spi.shell import run_process
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENV_UPGRADE = REPO_ROOT / ".github" / "workflows" / "env-upgrade.yml"
 ENV_REFRESH = REPO_ROOT / ".github" / "workflows" / "env-refresh.yml"
+ENV_RESET = REPO_ROOT / ".github" / "workflows" / "env-reset.yml"
+LIFECYCLE = (ENV_UPGRADE, ENV_REFRESH, ENV_RESET)
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release.yml"
 RELEASE_PLEASE_CONFIG = REPO_ROOT / ".release-please-config.json"
 TAG_RULESET = REPO_ROOT / "docs" / "tag-ruleset.json"
@@ -67,14 +69,14 @@ class TestTriggers:
 
 
 class TestConcurrencyAndEnvironment:
-    def test_both_workflows_share_one_serializing_concurrency_group(self):
-        for path in (ENV_UPGRADE, ENV_REFRESH):
+    def test_every_lifecycle_workflow_shares_one_serializing_concurrency_group(self):
+        for path in LIFECYCLE:
             workflow = _workflow(path)
             assert workflow["concurrency"]["group"] == "env-shared"
             assert workflow["concurrency"]["cancel-in-progress"] == "false"
 
     def test_azure_touching_jobs_use_the_azure_shared_environment(self):
-        for path in (ENV_UPGRADE, ENV_REFRESH):
+        for path in LIFECYCLE:
             workflow = _workflow(path)
             for name, job in workflow["jobs"].items():
                 if name == "declare" or name == "verify-release":
@@ -84,21 +86,21 @@ class TestConcurrencyAndEnvironment:
                 )
 
     def test_permissions_are_minimal_and_include_id_token(self):
-        for path in (ENV_UPGRADE, ENV_REFRESH):
+        for path in LIFECYCLE:
             workflow = _workflow(path)
             assert workflow["permissions"] == {"contents": "read", "id-token": "write"}
 
 
 class TestExactWheelDiscipline:
     def test_no_lifecycle_step_invokes_uv_run_spi(self):
-        for path in (ENV_UPGRADE, ENV_REFRESH):
+        for path in LIFECYCLE:
             run_text = _all_run_text(_workflow(path))
             assert "uv run spi" not in run_text, (
                 f"{path.name} must never invoke the checkout's source CLI via uv run spi"
             )
 
     def test_every_azure_job_installs_the_exact_release_wheel(self):
-        for path in (ENV_UPGRADE, ENV_REFRESH):
+        for path in LIFECYCLE:
             workflow = _workflow(path)
             for name, job in workflow["jobs"].items():
                 if name in ("declare", "verify-release", "detect", "detect-existing-environment"):
@@ -121,7 +123,7 @@ class TestExactWheelDiscipline:
                 assert '*"$VERSION"*' not in run_text
 
     def test_declare_job_parses_with_source_python_not_the_cli(self):
-        for path in (ENV_UPGRADE, ENV_REFRESH):
+        for path in LIFECYCLE:
             declare_steps = _steps(_workflow(path)["jobs"]["declare"])
             export_step = declare_steps["Validate and export declaration"]
             assert "scripts/export_environment.py" in export_step["run"]
@@ -163,7 +165,7 @@ class TestCleanSkip:
         assert refresh_job["if"] == "needs.declare.outputs.should_run == 'true'"
 
     def test_azure_detection_distinguishes_absence_from_api_failure(self):
-        for path in (ENV_UPGRADE, ENV_REFRESH):
+        for path in LIFECYCLE:
             detect = _steps(_workflow(path)["jobs"]["detect"])[
                 "Detect existing resource group and AKS cluster"
             ]["run"]
@@ -537,8 +539,12 @@ class TestAssertionsAndDeployability:
         assert ".reason.code" in assertion
         assert 'REASON_CODE" != "maintenance"' in assertion
 
-    def test_both_workflows_require_deployable_status_as_the_final_gate(self):
-        for path, job_name in ((ENV_UPGRADE, "verify"), (ENV_REFRESH, "refresh")):
+    def test_every_workflow_requires_deployable_status_as_the_final_gate(self):
+        for path, job_name in (
+            (ENV_UPGRADE, "verify"),
+            (ENV_REFRESH, "refresh"),
+            (ENV_RESET, "verify"),
+        ):
             steps = _steps(_workflow(path)["jobs"][job_name])
             deployable_step = steps["Require deployable status"]
             assert "spi status --json" in deployable_step["run"]
@@ -549,7 +555,11 @@ class TestAssertionsAndDeployability:
             )
 
     def test_bare_profile_skips_gateway_probes(self):
-        for path, job_name in ((ENV_UPGRADE, "verify"), (ENV_REFRESH, "refresh")):
+        for path, job_name in (
+            (ENV_UPGRADE, "verify"),
+            (ENV_REFRESH, "refresh"),
+            (ENV_RESET, "verify"),
+        ):
             steps = _steps(_workflow(path)["jobs"][job_name])
             assert steps["Acceptance probe (gateway reachable)"]["if"] == (
                 "needs.declare.outputs.profile != 'bare'"
@@ -562,7 +572,9 @@ class TestAssertionsAndDeployability:
 JOBS = [
     (ENV_UPGRADE, "verify", "Verify deployed stack matches the declaration"),
     (ENV_REFRESH, "refresh", "Verify stack version and source suspension are unchanged"),
+    (ENV_RESET, "verify", "Verify deployed stack matches the declaration"),
 ]
+JOB_IDS = ["upgrade", "refresh", "reset"]
 
 
 def _stub_status(tmp_path: Path, responses: list[tuple[int, dict[str, Any]]]) -> None:
@@ -609,7 +621,7 @@ class TestVerifyOnReRun:
         result = run_process(["bash", "-c", script], env=env, capture_output=True, text=True)
         return result, output.read_text(encoding="utf-8")
 
-    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=["upgrade", "refresh"])
+    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=JOB_IDS)
     def test_first_attempt_in_maintenance_clears_it(self, tmp_path, path, job_name, step):
         script = _steps(_workflow(path)["jobs"][job_name])[step]["run"]
         status = _status(maintenance=True, deployable=False, reason="maintenance")
@@ -619,7 +631,7 @@ class TestVerifyOnReRun:
         assert result.returncode == 0, result.stdout
         assert "clear=true" in output.splitlines()
 
-    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=["upgrade", "refresh"])
+    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=JOB_IDS)
     def test_re_run_after_maintenance_cleared_skips_the_clear(self, tmp_path, path, job_name, step):
         script = _steps(_workflow(path)["jobs"][job_name])[step]["run"]
         status = _status(maintenance=False, deployable=True, reason=None)
@@ -629,7 +641,7 @@ class TestVerifyOnReRun:
         assert result.returncode == 0, result.stdout
         assert "clear=false" in output.splitlines()
 
-    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=["upgrade", "refresh"])
+    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=JOB_IDS)
     def test_first_attempt_with_maintenance_off_fails(self, tmp_path, path, job_name, step):
         script = _steps(_workflow(path)["jobs"][job_name])[step]["run"]
         status = _status(maintenance=False, deployable=True, reason=None)
@@ -640,7 +652,7 @@ class TestVerifyOnReRun:
         assert "maintenance flag is not set" in result.stdout
         assert "clear=" not in output
 
-    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=["upgrade", "refresh"])
+    @pytest.mark.parametrize(("path", "job_name", "step"), JOBS, ids=JOB_IDS)
     def test_re_run_with_maintenance_off_and_not_deployable_fails(
         self, tmp_path, path, job_name, step
     ):
@@ -668,7 +680,7 @@ class TestRequireDeployablePolls:
         calls = int((tmp_path / "calls").read_text(encoding="utf-8"))
         return result, calls
 
-    @pytest.mark.parametrize(("path", "job_name", "_step"), JOBS, ids=["upgrade", "refresh"])
+    @pytest.mark.parametrize(("path", "job_name", "_step"), JOBS, ids=JOB_IDS)
     def test_a_transient_progressing_read_is_retried(self, tmp_path, path, job_name, _step):
         progressing = _status(maintenance=False, deployable=False, reason="kustomization_not_ready")
         deployable = _status(maintenance=False, deployable=True, reason=None)
@@ -679,7 +691,7 @@ class TestRequireDeployablePolls:
         assert calls == 2
         assert "kustomization_not_ready message" in result.stdout
 
-    @pytest.mark.parametrize(("path", "job_name", "_step"), JOBS, ids=["upgrade", "refresh"])
+    @pytest.mark.parametrize(("path", "job_name", "_step"), JOBS, ids=JOB_IDS)
     def test_not_deployable_past_the_deadline_fails(self, tmp_path, path, job_name, _step):
         progressing = _status(maintenance=False, deployable=False, reason="kustomization_not_ready")
 
@@ -688,7 +700,7 @@ class TestRequireDeployablePolls:
         assert result.returncode == 2
         assert "not deployable after 0s" in result.stdout
 
-    @pytest.mark.parametrize(("path", "job_name", "_step"), JOBS, ids=["upgrade", "refresh"])
+    @pytest.mark.parametrize(("path", "job_name", "_step"), JOBS, ids=JOB_IDS)
     def test_a_contract_read_error_fails_without_retry(self, tmp_path, path, job_name, _step):
         result, calls = self._run(tmp_path, path, job_name, [(1, {"error": "boom"})])
 
@@ -698,7 +710,7 @@ class TestRequireDeployablePolls:
 
 class TestDiagnostics:
     def test_every_azure_job_captures_diagnostics_on_failure(self):
-        for path in (ENV_UPGRADE, ENV_REFRESH):
+        for path in LIFECYCLE:
             workflow = _workflow(path)
             for name, job in workflow["jobs"].items():
                 run_text = "\n".join(step.get("run", "") for step in job.get("steps", []))
@@ -922,3 +934,438 @@ class TestImageBranchHandoff:
 
         assert result.returncode == 0, result.stderr
         assert ("--image-branch release-0-30" in result.stdout) is passed
+
+
+DRAIN_SCRIPT = REPO_ROOT / "scripts" / "drain_ephemeral_pins.sh"
+
+
+def _run_script(tmp_path: Path, script: str, **env: str):
+    """Run a step's script with tmp_path first on PATH, where its stubs live."""
+    output = tmp_path / "github_output"
+    output.write_text("", encoding="utf-8")
+    env["PATH"] = f"{tmp_path}{os.pathsep}{os.environ['PATH']}"
+    env["GITHUB_OUTPUT"] = str(output)
+    result = run_process(["bash", "-c", script], env=env, capture_output=True, text=True)
+    return result, output.read_text(encoding="utf-8")
+
+
+class TestEnvResetTriggerAndGate:
+    GATE = "Gate on declaration presence and confirmation"
+
+    def test_env_reset_triggers_saturday_at_0600_utc_and_confirmed_dispatch(self):
+        workflow = _workflow(ENV_RESET)
+
+        assert [entry["cron"] for entry in workflow["on"]["schedule"]] == ["0 6 * * 6"]
+        confirm = workflow["on"]["workflow_dispatch"]["inputs"]["confirm"]
+        assert confirm["required"] == "true"
+        assert confirm["type"] == "string"
+        assert "push" not in workflow["on"]
+
+    @pytest.mark.parametrize(
+        ("found", "event", "confirm", "exit_code", "should_run"),
+        [
+            ("true", "schedule", "", 0, "true"),
+            ("true", "workflow_dispatch", "shared", 0, "true"),
+            ("true", "workflow_dispatch", "", 1, None),
+            ("true", "workflow_dispatch", "Shared", 1, None),
+            ("false", "workflow_dispatch", "", 0, "false"),
+            ("false", "schedule", "", 0, "false"),
+        ],
+    )
+    def test_a_dispatch_runs_only_when_confirmed_with_the_declared_name(
+        self, tmp_path, found, event, confirm, exit_code, should_run
+    ):
+        script = _steps(_workflow(ENV_RESET)["jobs"]["declare"])[self.GATE]["run"]
+
+        result, output = _run_script(
+            tmp_path,
+            script,
+            DECLARATION_PATH="ops/environments/shared.yaml",
+            DECLARATION_FOUND=found,
+            DECLARED_ENV="shared",
+            EVENT_NAME=event,
+            CONFIRM=confirm,
+        )
+
+        assert result.returncode == exit_code, result.stdout
+        if should_run is None:
+            assert "should_run=" not in output
+        else:
+            assert f"should_run={should_run}" in output.splitlines()
+
+    def test_every_job_gates_on_should_run(self):
+        for name, job in _workflow(ENV_RESET)["jobs"].items():
+            if name == "declare":
+                continue
+            assert "needs.declare.outputs.should_run == 'true'" in job["if"], name
+
+    def test_the_release_is_verified_before_anything_is_deleted(self):
+        jobs = _workflow(ENV_RESET)["jobs"]
+        assert "gh release view" in _all_run_text({"jobs": {"v": jobs["verify-release"]}})
+        assert "verify-release" in jobs["detect"]["needs"]
+        assert "verify-release" in jobs["teardown"]["needs"]
+        assert "needs.verify-release.result == 'success'" in jobs["teardown"]["if"]
+
+
+class TestEnvResetDetect:
+    STEP = "Detect existing resource group and AKS cluster"
+
+    def _run(self, tmp_path, rg_exists: str, aks_count: str):
+        stub = tmp_path / "az"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'case "$1" in group) echo {rg_exists} ;; aks) echo {aks_count} ;; esac\n',
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        script = _steps(_workflow(ENV_RESET)["jobs"]["detect"])[self.STEP]["run"]
+        return _run_script(tmp_path, script, ENV_NAME="shared")
+
+    def test_a_missing_resource_group_fails_rather_than_minting_new_identities(self, tmp_path):
+        result, output = self._run(tmp_path, "false", "0")
+
+        assert result.returncode == 1
+        assert "env-upgrade" in result.stdout
+        assert output == ""
+
+    @pytest.mark.parametrize(("aks_count", "exists"), [("1", "true"), ("0", "false")])
+    def test_a_missing_cluster_resumes_at_teardown(self, tmp_path, aks_count, exists):
+        result, output = self._run(tmp_path, "true", aks_count)
+
+        assert result.returncode == 0, result.stdout
+        assert f"cluster_exists={exists}" in output.splitlines()
+
+
+class TestEnvResetQuiesceAndDrain:
+    def test_maintenance_is_set_and_the_drain_holds_before_the_snapshot(self):
+        job = _workflow(ENV_RESET)["jobs"]["quiesce"]
+        steps = _steps(job)
+        names = list(steps)
+
+        assert (
+            names.index("spi connect")
+            < names.index("Set maintenance")
+            < names.index("Sweep stale pins and drain fork deploys")
+            < names.index("Snapshot image lock")
+        )
+        assert steps["Set maintenance"]["run"] == "spi maintenance set"
+        drain = steps["Sweep stale pins and drain fork deploys"]
+        assert "scripts/drain_ephemeral_pins.sh" in drain["run"]
+        assert '--window "$DRAIN_WINDOW_SECONDS"' in drain["run"]
+        assert '--quiescence "$QUIESCENCE_SECONDS"' in drain["run"]
+        # The sweep reads each pin's owning run.
+        assert drain["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+        # A drain that runs out fails the job with maintenance still set.
+        assert "continue-on-error" not in drain
+        assert "cluster_exists == 'true'" in job["if"]
+
+    def test_the_drain_fits_the_job_and_the_cached_token(self):
+        job = _workflow(ENV_RESET)["jobs"]["quiesce"]
+        drain_minutes = (
+            int(job["env"]["DRAIN_WINDOW_SECONDS"]) + int(job["env"]["QUIESCENCE_SECONDS"])
+        ) / 60
+
+        assert drain_minutes + 10 <= int(job["timeout-minutes"]) < 60
+
+    def test_teardown_follows_only_a_drained_or_absent_cluster(self):
+        jobs = _workflow(ENV_RESET)["jobs"]
+        teardown = jobs["teardown"]
+
+        assert "quiesce" in teardown["needs"]
+        condition = " ".join(teardown["if"].split())
+        assert condition.startswith("!cancelled() &&")
+        assert "always()" not in condition
+        assert (
+            "(needs.quiesce.result == 'success' || (needs.quiesce.result == 'skipped' "
+            "&& needs.detect.outputs.cluster_exists == 'false'))"
+        ) in condition
+        assert jobs["provision"]["needs"] == ["declare", "teardown"]
+        assert "needs.teardown.result == 'success'" in jobs["provision"]["if"]
+        assert jobs["verify"]["needs"] == ["declare", "provision"]
+        assert "needs.provision.result == 'success'" in jobs["verify"]["if"]
+
+
+class TestEnvResetTeardown:
+    STEP = "Confirm only managed identities remain"
+    IDENTITY = {"type": "Microsoft.ManagedIdentity/userAssignedIdentities", "name": "osdu-identity"}
+
+    def test_spi_down_runs_within_its_deletion_deadline(self):
+        from spi.teardown import TEARDOWN_DEADLINE_SECONDS
+
+        job = _workflow(ENV_RESET)["jobs"]["teardown"]
+        steps = _steps(job)
+        names = list(steps)
+
+        assert steps["spi down"]["run"] == 'spi down --env "$ENV_NAME" --force'
+        assert "--purge" not in _all_run_text({"jobs": {"t": job}})
+        assert names.index("spi down") < names.index(self.STEP)
+        assert TEARDOWN_DEADLINE_SECONDS // 60 + 10 <= int(job["timeout-minutes"]) < 60 + 10
+
+    def _run(self, tmp_path, inventory: list[dict[str, str]], nodes_exist: str):
+        (tmp_path / "inventory.json").write_text(json.dumps(inventory), encoding="utf-8")
+        stub = tmp_path / "az"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'case "$1" in resource) cat "{tmp_path}/inventory.json" ;; '
+            f"group) echo {nodes_exist} ;; esac\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        script = _steps(_workflow(ENV_RESET)["jobs"]["teardown"])[self.STEP]["run"]
+        return _run_script(tmp_path, script, ENV_NAME="shared")
+
+    def test_identities_alone_with_the_nodes_group_gone_pass(self, tmp_path):
+        result, _ = self._run(tmp_path, [self.IDENTITY, self.IDENTITY], "false")
+
+        assert result.returncode == 0, result.stdout
+        assert "2 managed identities" in result.stdout
+
+    def test_a_leftover_resource_stops_the_reset(self, tmp_path):
+        leftover = {"type": "Microsoft.DocumentDB/databaseAccounts", "name": "osdu-cosmos"}
+
+        result, _ = self._run(tmp_path, [self.IDENTITY, leftover], "false")
+
+        assert result.returncode == 1
+        assert "Microsoft.DocumentDB/databaseAccounts osdu-cosmos" in result.stdout
+
+    def test_a_group_without_identities_stops_the_reset(self, tmp_path):
+        result, _ = self._run(tmp_path, [], "false")
+
+        assert result.returncode == 1
+        assert "no managed identities" in result.stdout
+
+    def test_a_surviving_nodes_group_stops_the_reset(self, tmp_path):
+        result, _ = self._run(tmp_path, [self.IDENTITY], "true")
+
+        assert result.returncode == 1
+        assert "spi-stack-shared-nodes still exists" in result.stdout
+
+
+class TestEnvResetRebuild:
+    def _up(self, tmp_path, declares_forks: str, profile: str = "core"):
+        stub = tmp_path / "spi"
+        stub.write_text('#!/usr/bin/env bash\necho "spi $*"\n', encoding="utf-8")
+        stub.chmod(0o755)
+        workflow = _workflow(ENV_RESET)
+        script = _steps(workflow["jobs"]["provision"])["spi up"]["run"]
+        return _run_script(
+            tmp_path,
+            script,
+            ENV_NAME="shared",
+            PROFILE=profile,
+            LOCATION="westus3",
+            INGRESS_MODE="azure",
+            NAME_SUFFIX="a43c7",
+            STACK_VERSION="v0.32.3",
+            DECLARES_FORKS=declares_forks,
+            GITHUB_REPOSITORY="Azure/osdu-spi-stack",
+            DECLARATION_PATH=workflow["env"]["DECLARATION_PATH"],
+        )
+
+    @pytest.mark.parametrize(("declares_forks", "handed_over"), [("true", True), ("false", False)])
+    def test_spi_up_rebuilds_from_the_declaration(self, tmp_path, declares_forks, handed_over):
+        result, _ = self._up(tmp_path, declares_forks)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.startswith(
+            "spi up --env shared --profile core --location westus3 --name-suffix a43c7 "
+            "--tag v0.32.3 --refresh-images --ingress-mode azure"
+        )
+        locator = "--declaration Azure/osdu-spi-stack:ops/environments/shared.yaml"
+        assert (locator in result.stdout) is handed_over
+        assert "--image-branch" not in result.stdout
+
+    def test_spi_up_omits_ingress_mode_for_a_bare_declaration(self, tmp_path):
+        result, _ = self._up(tmp_path, "false", profile="bare")
+
+        assert result.returncode == 0, result.stderr
+        assert "--ingress-mode" not in result.stdout
+
+    def test_verify_waits_probes_clears_then_loads(self):
+        job = _workflow(ENV_RESET)["jobs"]["verify"]
+        steps = _steps(job)
+        names = list(steps)
+
+        assert (
+            names.index("Resolve the deployed source revision")
+            < names.index("Wait for Flux Kustomizations to be Ready")
+            < names.index("Verify deployed stack matches the declaration")
+            < names.index("Clear maintenance")
+            < names.index("Require deployable status")
+            < names.index("Load default datasets")
+            < names.index("Capture diagnostics on failure")
+        )
+        wait = steps["Wait for Flux Kustomizations to be Ready"]
+        assert '--expect-revision "$EXPECT_REVISION"' in wait["run"]
+        assert steps["Clear maintenance"]["if"] == "steps.verify.outputs.clear == 'true'"
+        load = steps["Load default datasets"]
+        assert load["run"] == "spi load"
+        assert load["if"] == "needs.declare.outputs.profile == 'core'"
+        assert "continue-on-error" not in load
+
+    def test_the_reset_fits_its_seven_hour_budget(self):
+        """Worst case, with the 75-minute cold provision the lifecycle design budgets."""
+        from spi.teardown import TEARDOWN_DEADLINE_SECONDS
+
+        jobs = _workflow(ENV_RESET)["jobs"]
+        quiesce = jobs["quiesce"]["env"]
+        verify = _steps(jobs["verify"])
+        wait = re.search(
+            r"--timeout (\d+)", verify["Wait for Flux Kustomizations to be Ready"]["run"]
+        )
+        assert wait is not None
+
+        minutes = (
+            (int(quiesce["DRAIN_WINDOW_SECONDS"]) + int(quiesce["QUIESCENCE_SECONDS"])) / 60
+            + TEARDOWN_DEADLINE_SECONDS / 60
+            + 75
+            + int(wait.group(1)) / 60
+            + int(verify["Load default datasets"]["timeout-minutes"])
+        )
+
+        assert minutes <= 7 * 60
+
+
+class TestDrainScript:
+    """scripts/drain_ephemeral_pins.sh against a stub `spi` whose sweep and
+    status answers advance one per poll, then repeat the last."""
+
+    PIN = {"ephemeral": True, "runId": 39864717423, "sourceRepo": "Azure/osdu-spi-search"}
+
+    def _run(self, tmp_path, polls, *args: str):
+        for index, (sweep_code, sweep, status_code, status) in enumerate(polls):
+            (tmp_path / f"sweep-{index}").write_text(
+                f"panel output\n{json.dumps(sweep)}\n", encoding="utf-8"
+            )
+            (tmp_path / f"sweep-{index}.code").write_text(str(sweep_code), encoding="utf-8")
+            (tmp_path / f"status-{index}").write_text(json.dumps(status), encoding="utf-8")
+            (tmp_path / f"status-{index}.code").write_text(str(status_code), encoding="utf-8")
+        last = len(polls) - 1
+        stub = tmp_path / "spi"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'kind=sweep; [ "$1" = status ] && kind=status\n'
+            f'n=$(cat "{tmp_path}/$kind.calls" 2>/dev/null || echo 0)\n'
+            f'echo $((n + 1)) > "{tmp_path}/$kind.calls"\n'
+            f'[ "$n" -gt {last} ] && n={last}\n'
+            f'cat "{tmp_path}/$kind-$n"\n'
+            f'exit "$(cat "{tmp_path}/$kind-$n.code")"\n',
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        env = {"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"}
+        result = run_process(
+            ["bash", str(DRAIN_SCRIPT), "--poll", "0", *args],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        calls = tmp_path / "status.calls"
+        return result, int(calls.read_text(encoding="utf-8")) if calls.exists() else 0
+
+    @staticmethod
+    def _sweep(*swept: str) -> dict[str, Any]:
+        return {"outcome": "swept", "swept": list(swept), "kept": [], "refreshRequired": False}
+
+    @staticmethod
+    def _state(pins: dict[str, Any], maintenance: bool = True) -> dict[str, Any]:
+        return {"maintenance": maintenance, "deployable": False, "images": {"pins": pins}}
+
+    def test_an_empty_set_held_for_the_quiescence_drains(self, tmp_path):
+        result, _ = self._run(
+            tmp_path, [(0, self._sweep(), 2, self._state({}))], "--quiescence", "0"
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "drained" in result.stdout
+
+    def test_a_finished_run_is_swept_and_the_drain_completes(self, tmp_path):
+        polls = [
+            (0, self._sweep(), 2, self._state({"search": self.PIN})),
+            (0, self._sweep("search"), 2, self._state({})),
+        ]
+
+        result, calls = self._run(tmp_path, polls, "--quiescence", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert calls == 2
+        assert "run 39864717423 of Azure/osdu-spi-search" in result.stdout
+        assert "swept pins whose owning run finished: search" in result.stdout
+        assert "panel output" in result.stdout
+
+    def test_operator_pins_do_not_hold_the_drain(self, tmp_path):
+        operator = {"ephemeral": False, "image": "example.azurecr.io/local/search:1"}
+
+        result, _ = self._run(
+            tmp_path,
+            [(0, self._sweep(), 2, self._state({"search": operator}))],
+            "--quiescence",
+            "0",
+        )
+
+        assert result.returncode == 0, result.stderr
+
+    def test_a_pin_past_the_window_fails_and_names_it(self, tmp_path):
+        result, _ = self._run(
+            tmp_path,
+            [(0, self._sweep(), 2, self._state({"search": self.PIN}))],
+            "--window",
+            "0",
+        )
+
+        assert result.returncode == 1
+        assert "maintenance stays set" in result.stderr
+        assert "search: run 39864717423" in result.stderr
+
+    def test_maintenance_not_set_fails_at_once(self, tmp_path):
+        result, calls = self._run(
+            tmp_path, [(0, self._sweep(), 0, self._state({}, maintenance=False))]
+        )
+
+        assert result.returncode == 1
+        assert calls == 1
+        assert "maintenance is not set" in result.stderr
+
+    @pytest.mark.parametrize(
+        ("sweep_code", "status_code", "status", "problem"),
+        [
+            (1, 2, {}, "stale-pin sweep failed (exit 1): boom"),
+            (0, 1, {"error": "boom"}, "spi status --json failed (exit 1)"),
+            (0, 2, {"maintenance": True}, "no maintenance flag or pin state"),
+        ],
+        ids=["sweep", "status", "payload"],
+    )
+    def test_an_unreadable_pin_set_never_counts_as_empty(
+        self, tmp_path, sweep_code, status_code, status, problem
+    ):
+        sweep = {"outcome": "error", "detail": "boom"} if sweep_code else self._sweep()
+
+        result, _ = self._run(
+            tmp_path,
+            [(sweep_code, sweep, status_code, status)],
+            "--window",
+            "0",
+            "--quiescence",
+            "0",
+        )
+
+        assert result.returncode == 1
+        assert problem in result.stderr
+
+    def test_a_pin_seen_during_the_quiescence_restarts_it(self, tmp_path):
+        polls = [
+            (0, self._sweep(), 2, self._state({})),
+            (0, self._sweep(), 2, self._state({"search": self.PIN})),
+        ]
+
+        result, calls = self._run(tmp_path, polls, "--window", "0", "--quiescence", "600")
+
+        assert result.returncode == 1
+        assert calls == 2
+        assert "quiescence restarts" in result.stdout
+
+    @pytest.mark.parametrize("args", [["--window", "10m"], ["--quiescence"], ["--bogus"]])
+    def test_bad_arguments_exit_2(self, tmp_path, args):
+        result, _ = self._run(tmp_path, [(0, self._sweep(), 2, self._state({}))], *args)
+
+        assert result.returncode == 2
