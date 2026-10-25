@@ -1036,6 +1036,81 @@ class TestEnvResetDetect:
         assert f"cluster_exists={exists}" in output.splitlines()
 
 
+class TestEnvResetRetainedTags:
+    """spi up refuses a suffix or locator the group does not retain, so detect
+    checks both before anything is deleted."""
+
+    STEP = "Require the retained tags to match the declaration"
+    LOCATOR = "Azure/osdu-spi-stack:ops/environments/shared.yaml"
+
+    def _run(self, tmp_path, tags: dict[str, str] | None, declares_forks: str = "true"):
+        (tmp_path / "tags.json").write_text(json.dumps(tags), encoding="utf-8")
+        stub = tmp_path / "az"
+        stub.write_text(f'#!/usr/bin/env bash\ncat "{tmp_path}/tags.json"\n', encoding="utf-8")
+        stub.chmod(0o755)
+        workflow = _workflow(ENV_RESET)
+        script = _steps(workflow["jobs"]["detect"])[self.STEP]["run"]
+        return _run_script(
+            tmp_path,
+            script,
+            ENV_NAME="shared",
+            NAME_SUFFIX="a43c7",
+            DECLARES_FORKS=declares_forks,
+            GITHUB_REPOSITORY="Azure/osdu-spi-stack",
+            DECLARATION_PATH=workflow["env"]["DECLARATION_PATH"],
+        )
+
+    def test_the_check_runs_before_any_job_that_deletes(self):
+        jobs = _workflow(ENV_RESET)["jobs"]
+        names = list(_steps(jobs["detect"]))
+
+        assert names.index("Detect existing resource group and AKS cluster") < names.index(
+            self.STEP
+        )
+        assert "detect" in jobs["quiesce"]["needs"] and "detect" in jobs["teardown"]["needs"]
+
+    @pytest.mark.parametrize(
+        "locator", [LOCATOR, "azure/OSDU-SPI-STACK:ops/environments/shared.yaml", None]
+    )
+    def test_matching_tags_pass(self, tmp_path, locator):
+        tags = {"spi-name-suffix": "a43c7"}
+        if locator:
+            tags["spi-environment-declaration"] = locator
+
+        result, _ = self._run(tmp_path, tags)
+
+        assert result.returncode == 0, result.stdout
+
+    @pytest.mark.parametrize("tags", [{"spi-name-suffix": "b12d9"}, {"spi-name-suffix": ""}, None])
+    def test_a_suffix_the_group_does_not_retain_stops_the_reset(self, tmp_path, tags):
+        result, _ = self._run(tmp_path, tags)
+
+        assert result.returncode == 1
+        assert "declares nameSuffix 'a43c7'" in result.stdout
+
+    @pytest.mark.parametrize(
+        "locator",
+        [
+            "danielscholl/osdu-spi-stack:ops/environments/shared.yaml",
+            "Azure/osdu-spi-stack:ops/environments/dks.yaml",
+        ],
+    )
+    def test_a_different_declaration_stops_the_reset(self, tmp_path, locator):
+        tags = {"spi-name-suffix": "a43c7", "spi-environment-declaration": locator}
+
+        result, _ = self._run(tmp_path, tags)
+
+        assert result.returncode == 1
+        assert f"declared by {locator}" in result.stdout
+
+    def test_an_undeclared_rebuild_ignores_the_retained_locator(self, tmp_path):
+        tags = {"spi-name-suffix": "a43c7", "spi-environment-declaration": "other/repo:x.yaml"}
+
+        result, _ = self._run(tmp_path, tags, declares_forks="false")
+
+        assert result.returncode == 0, result.stdout
+
+
 class TestEnvResetQuiesceAndDrain:
     def test_maintenance_is_set_and_the_drain_holds_before_the_snapshot(self):
         job = _workflow(ENV_RESET)["jobs"]["quiesce"]

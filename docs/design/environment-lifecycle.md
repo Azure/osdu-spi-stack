@@ -210,7 +210,7 @@ step below without a version gate. The jobs that follow run in order:
 
 | Job | What it does |
 |---|---|
-| `detect` | Fails when the resource group is gone, since a rebuild would mint identities the forks do not hold; `env-upgrade` provisions a new environment. A missing cluster skips to `teardown`, resuming a reset that stopped after deleting it. |
+| `detect` | Fails when the resource group is gone, since a rebuild would mint identities the forks do not hold; `env-upgrade` provisions a new environment. Also fails when the group's retained suffix or declaration locator differs from the declaration, which `spi up` would refuse only after deletion. A missing cluster skips to `teardown`, resuming a reset that stopped after deleting it. |
 | `quiesce-and-drain` | Connects, sets `maintenance`, drains, and uploads the lock snapshot as an artifact. |
 | `teardown` | `spi down --env shared --force`, then an independent inventory check that the group holds managed identities alone and the managed nodes group is gone. |
 | `provision` | `spi up --tag <stackVersion> --refresh-images` with the declaration's fields, and `--declaration` as upgrade passes it. |
