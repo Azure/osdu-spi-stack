@@ -15,6 +15,8 @@ import json
 import os
 import re
 import shutil
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -1466,8 +1468,30 @@ class TestDrainScript:
         result, calls = self._run(tmp_path, polls, "--call-timeout", "1", "--quiescence", "0")
 
         assert result.returncode == 0, result.stderr
-        assert "stale-pin sweep ran past 00:01 and was stopped" in result.stderr
+        assert "stale-pin sweep ran out of time and was stopped" in result.stderr
         assert calls == 1
+
+    @pytest.mark.skipif(not GNU_TIMEOUT, reason="needs GNU timeout")
+    def test_slow_reads_never_carry_the_drain_past_its_deadline(self, tmp_path):
+        """The set reads empty only after slow reads past the window; the poll
+        that would confirm the quiescence is cut at window + quiescence + two
+        call timeouts instead of running its calls to their full limit."""
+        for name in ("sweep-1", "status-1", "sweep-2", "status-2"):
+            (tmp_path / f"{name}.sleep").write_text("2.5", encoding="utf-8")
+        polls = [
+            (0, self._sweep(), 2, self._state({"search": self.PIN})),
+            (0, self._sweep(), 2, self._state({})),
+            (0, self._sweep(), 2, self._state({})),
+        ]
+
+        started = time.monotonic()
+        result, _ = self._run(
+            tmp_path, polls, "--window", "1", "--quiescence", "1", "--call-timeout", "3"
+        )
+
+        assert result.returncode == 1
+        assert "ran out of time and was stopped" in result.stderr
+        assert time.monotonic() - started < 1 + 1 + 2 * 3 + 1.5
 
     @pytest.mark.parametrize(
         "args",

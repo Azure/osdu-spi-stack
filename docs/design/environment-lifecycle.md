@@ -231,9 +231,11 @@ post-write maintenance recheck: a schema pin makes four registry reads of up
 to 105 seconds each, then retries its lock write. A pin seen during the
 interval restarts it, an unreadable pin set never counts as empty, and
 operator pins do not hold the drain. Each sweep and status read is stopped
-after a minute: a sweep that restores a canonical writes the lock before it
-waits on Flux, so a stopped wait loses nothing, and a stopped call counts as
-an unreadable pin set. A window that runs out fails the job
+after a minute, or sooner at the drain's deadline of window plus quiescence
+plus two minutes, so slow reads never carry the drain past what the budget
+counts: a sweep that restores a canonical writes the lock before it waits on
+Flux, so a stopped wait loses nothing, and a stopped call counts as an
+unreadable pin set. A window that runs out fails the job
 with the flag set and names each remaining pin's run; nothing is deleted. A
 lane that pinned just before the flag can outlast the window, and a
 dispatch after that lane finishes resumes the reset. The window and

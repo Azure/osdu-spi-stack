@@ -25,10 +25,11 @@
 # never hold the drain.
 #
 # --window bounds the wait for the set to empty; the quiescence that follows
-# runs to its end. Each sweep and status read is killed after --call-timeout,
-# so the drain takes at most --window plus --quiescence plus two call timeouts.
-# A sweep restores canonicals before it waits on Flux, so a killed wait loses
-# nothing and the next poll reads the set empty.
+# runs to its end. Each sweep and status read is killed after --call-timeout or
+# at the drain's deadline, --window plus --quiescence plus two call timeouts,
+# whichever comes first, so no poll runs past that deadline. A sweep restores
+# canonicals before it waits on Flux, so a killed wait loses nothing and the
+# next poll reads the set empty.
 #
 # Exit codes:
 #   0  no ephemeral pin for the whole quiescence interval
@@ -114,7 +115,17 @@ ephemeral_pins() {
 }
 
 START=$SECONDS
+DEADLINE=$(( WINDOW + QUIESCENCE + 2 * CALL_TIMEOUT ))
 EMPTY_SINCE=-1
+
+# Runs a call under the smaller of --call-timeout and the time left before
+# the deadline; exits 124 like timeout, without running, once none is left.
+bounded() {
+    local left=$(( DEADLINE - (SECONDS - START) ))
+    [ "$left" -le 0 ] && return 124
+    [ "$left" -gt "$CALL_TIMEOUT" ] && left=$CALL_TIMEOUT
+    "$TIMEOUT" "$left" "$@"
+}
 
 echo "drain_ephemeral_pins · window $(fmt_mmss "$WINDOW") · quiescence $(fmt_mmss "$QUIESCENCE") · poll ${POLL}s"
 
@@ -125,13 +136,12 @@ while :; do
     # The sweep's command panels show what it changes; its final stdout line
     # is the JSON outcome.
     sweep_exit=0
-    sweep_out=$("$TIMEOUT" "$CALL_TIMEOUT" "${SPI[@]}" service reset --ephemeral --stale-only --json) \
-        || sweep_exit=$?
+    sweep_out=$(bounded "${SPI[@]}" service reset --ephemeral --stale-only --json) || sweep_exit=$?
     outcome=$(tail -n 1 <<<"$sweep_out")
     sed '$d' <<<"$sweep_out"
     stamp="[$(fmt_mmss $(( SECONDS - START ))) / $(fmt_mmss "$WINDOW")]"
     if [ "$sweep_exit" -eq 124 ]; then
-        problem="the stale-pin sweep ran past $(fmt_mmss "$CALL_TIMEOUT") and was stopped"
+        problem="the stale-pin sweep ran out of time and was stopped"
     elif [ "$sweep_exit" -ne 0 ]; then
         detail=$(jq -r '.detail // empty' <<<"$outcome" 2>/dev/null) || detail=""
         problem="the stale-pin sweep failed (exit $sweep_exit)${detail:+: $detail}"
@@ -145,10 +155,10 @@ while :; do
     if [ -z "$problem" ]; then
         read_at=$(( SECONDS - START ))
         status_exit=0
-        status=$("$TIMEOUT" "$CALL_TIMEOUT" "${SPI[@]}" status --json) || status_exit=$?
+        status=$(bounded "${SPI[@]}" status --json) || status_exit=$?
         # Exit 2 is "not deployable", which maintenance always is.
         if [ "$status_exit" -eq 124 ]; then
-            problem="spi status --json ran past $(fmt_mmss "$CALL_TIMEOUT") and was stopped"
+            problem="spi status --json ran out of time and was stopped"
         elif [ "$status_exit" -ne 0 ] && [ "$status_exit" -ne 2 ]; then
             problem="spi status --json failed (exit $status_exit)"
         elif ! pins=$(ephemeral_pins <<<"$status" 2>/dev/null); then
@@ -191,10 +201,11 @@ while :; do
             tail -n +2 <<<"$pins"
         fi
         if [ "$elapsed" -ge "$WINDOW" ]; then
-            echo "ERROR: drain window of $(fmt_mmss "$WINDOW") elapsed before every fork deploy finished; maintenance stays set" >&2
             if [ -n "$problem" ]; then
+                echo "ERROR: drain window of $(fmt_mmss "$WINDOW") elapsed without a readable pin set; maintenance stays set" >&2
                 echo "last problem: $problem" >&2
             else
+                echo "ERROR: drain window of $(fmt_mmss "$WINDOW") elapsed before every fork deploy finished; maintenance stays set" >&2
                 tail -n +2 <<<"$pins" >&2
             fi
             exit 1
