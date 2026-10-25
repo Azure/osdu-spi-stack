@@ -23,7 +23,7 @@ App Registration `osdu-spi-stack-github` exists in the
 | Federated context (PR builds) | Pull request |
 | Federated context (main builds) | `refs/heads/main` |
 | Federated context (Smoke + Sweeper) | Environment `azure-smoke` |
-| Federated context (env-upgrade + env-refresh) | Environment `azure-shared` |
+| Federated context (env-upgrade, env-refresh, env-reset) | Environment `azure-shared` |
 | RBAC | `Contributor` + conditioned `Role Based Access Control Administrator` at subscription scope ([Permissions](install.md#permissions)) |
 
 The exact `sub` values are controlled by the repository's GitHub OIDC subject
@@ -201,11 +201,13 @@ The orphan-RG sweeper is the cleanup backstop for full-workflow cancellation.
 
 ## GitHub Environment `azure-shared`
 
-Used by every Azure-touching job in `env-upgrade.yml` and `env-refresh.yml`.
-Same reviewer-free shape as `azure-smoke`, for the same reason: a scheduled
-`env-refresh` run must reconcile and probe without a human approval gate, and
-both lifecycle workflows share the `env-shared` concurrency group, so one
-waiting run would block every later trigger.
+Used by every Azure-touching job in `env-upgrade.yml`, `env-refresh.yml`, and
+`env-reset.yml`. Same reviewer-free shape as `azure-smoke`, for the same
+reason: scheduled `env-refresh` and `env-reset` runs must proceed without a
+human approval gate, and the lifecycle workflows share the `env-shared`
+concurrency group, so one waiting run would block every later trigger. A
+dispatched reset instead requires its `confirm` input to name the declared
+environment.
 
 ```bash
 gh api -X PUT "repos/Azure/osdu-spi-stack/environments/azure-shared" \
@@ -313,7 +315,8 @@ Notes:
 
 ## Activation ordering for the shared backing environment
 
-The lifecycle workflows (`env-upgrade.yml`, `env-refresh.yml`) exist from the
+The lifecycle workflows (`env-upgrade.yml`, `env-refresh.yml`,
+`env-reset.yml`) exist from the
 moment this repository merges them, but they act on nothing until a live
 declaration exists. Apply the prerequisites above in this order, once:
 

@@ -2,8 +2,8 @@
 
 Each file here is a reviewed pin naming exactly which stack release, profile,
 and Azure placement a lifecycle workflow deploys onto one standing backing
-environment. `src/spi/environment.py` owns the schema. `env-upgrade.yml` and
-`env-refresh.yml` read it to drive a deployment; `release.yml`'s bump job
+environment. `src/spi/environment.py` owns the schema. `env-upgrade.yml`,
+`env-refresh.yml`, and `env-reset.yml` read it to drive a deployment; `release.yml`'s bump job
 reads and validates it to open the version-bump PR, and is the only writer.
 
 There is one declaration today, `shared.yaml`. Adding a declaration is a
@@ -118,12 +118,14 @@ already be applied; see `docs/CI_SETUP.md`.
 
 - `env-upgrade`: first provision and later `stackVersion` upgrades.
 - `env-refresh`: the weekday reconcile-and-probe schedule.
+- `env-reset`: the Saturday drain, `spi down`, and cold rebuild at the
+  declared `stackVersion`; a dispatch confirms with the environment name.
 
 - `forks:` and the declaration locator, reconciled by `spi up` and by
   `env-refresh` (ADR-032, ADR-033).
 
 ## What is still future work
 
-- `env-reset` (cold rebuild) and `env-teardown` (protected manual deletion).
+- `env-teardown` (protected manual deletion).
 
 See `docs/design/environment-lifecycle.md` for the complete roadmap.

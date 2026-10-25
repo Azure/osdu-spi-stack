@@ -9,13 +9,13 @@ being ready when they run. When it is not, the operator needs to know which
 verb applies, what it costs, and what it will not fix; improvising that during
 an incident is how a 20-minute refresh becomes a 4-hour rebuild.
 
-**Status.** `env-upgrade` and `env-refresh` are implemented and described
-below as built, as is the test-identity ensure step. Onboarding-intent
-reconciliation is implemented in the CLI and both workflows, and `shared`'s
-declaration lists the five repositories it trusts. `env-reset` and `env-teardown`,
-the stale-pin sweep's workflow step, and the drain remain unbuilt; those
-sections still describe the target mechanism ahead of the code. Remove the remaining marks
-as those phases land.
+**Status.** `env-upgrade`, `env-refresh`, and `env-reset` are implemented
+and described below as built, as is the test-identity ensure step.
+Onboarding-intent reconciliation is implemented in the CLI and the workflows,
+and `shared`'s declaration lists the five repositories it trusts. Reset runs
+the stale-pin sweep and the drain; `env-teardown` and those two steps in
+`env-refresh` remain unbuilt, and their sections still describe the target
+mechanism ahead of the code. Remove the remaining marks as those phases land.
 
 ![The backing environment at a glance](../diagrams/environment-lifecycle.png)
 
@@ -69,9 +69,11 @@ pin file starts the upgrade. Nothing else moves the stack-definition version
 | reset | `env-reset` | Saturday cron 06:00 UTC, confirm-dispatch | 7 h |
 | teardown | `env-teardown` | protected dispatch | 1 h |
 
-The budgets contain their worst cases: a reset spends up to 45 minutes on
-deletion, 75 minutes provisioning, and 230 minutes in the cold-cluster
-schema-load converge before probes; an upgrade whose `--refresh-images` pass
+The budgets contain their worst cases: a reset spends up to 23 minutes
+draining fork deploys, 45 minutes on deletion, 75 minutes provisioning, 230
+minutes in the cold-cluster schema-load converge, 20 minutes in the HTTPS
+probe and deployable poll, and 20 minutes loading data, 413 minutes before
+job setup; an upgrade whose `--refresh-images` pass
 moves the schema image spends up to 60 minutes in `spi up` plus the same
 230-minute converge, hence its 6.5-hour budget. A refresh is normally a
 re-reconcile of already-scheduled workloads, but its wait keeps the same
@@ -79,21 +81,21 @@ re-reconcile of already-scheduled workloads, but its wait keeps the same
 for example after a node recycle, hence its 5-hour budget. The fork
 canonical refresh ahead of that wait is capped at 20 minutes; it waits on
 Flux only for a service whose image moved, and a rollout still running at
-the cap fails the run. Both verbs end with `spi load` for the registry's
-default loads (ADR-040), after maintenance clears and capped at 30 minutes: a
-first reference-data load took 7 minutes on a core environment and a complete
-load returns at once. A failed load fails the run and leaves the environment
+the cap fails the run. Refresh, upgrade, and reset end with `spi load` for
+the registry's default loads (ADR-040), after maintenance clears and capped
+at 30 minutes, 20 for reset: a first reference-data load took 7 minutes on a
+core environment and a complete load returns at once. A failed load fails the run and leaves the environment
 deployable.
 
 All four verbs share concurrency group `env-shared` with
 `cancel-in-progress: false`, so lifecycle operations serialize against each
 other; fork deploys serialize per service and are otherwise concurrent
-(ADR-031). Only `refresh` and `upgrade` are implemented; `reset` and
-`teardown` remain unbuilt, but reuse the same group when they land. GitHub
+(ADR-031). `refresh`, `upgrade`, and `reset` are implemented; `teardown`
+remains unbuilt, but reuses the same group when it lands. GitHub
 concurrency groups are repository-scoped, so nothing here can serialize
 against fork jobs in other repositories: coordination with the fleet is the
-`maintenance` flag (which stops new deploys) plus, once fork onboarding
-lands, the drain (which will wait out in-flight ones; ADR-029). The
+`maintenance` flag (which stops new deploys) plus the drain (which waits out
+in-flight ones; ADR-029). The
 workflows run under a GitHub environment `azure-shared` on the same app
 registration as the smoke pipeline, reusing its job shape: one fresh OIDC
 login per job, token pre-caching, `scripts/capture_diagnostics.sh` on
@@ -119,8 +121,9 @@ the image that build replaced. A failed step leaves the flag set (ADR-029), so a
 04:00 UTC run blocks the day's fork deploys with a reason instead of letting
 them race a sick environment. The stale-pin sweep
 ([fork-deployment.md](fork-deployment.md)) and the drain insert between the
-quiesce step and the reconcile, without changing the workflow's shape; both
-steps are unbuilt.
+quiesce step and the reconcile, without changing the workflow's shape; reset
+runs both through `scripts/drain_ephemeral_pins.sh`, and refresh does not
+yet.
 
 **Upgrade** (`env-upgrade.yml`, implemented) is `spi up --env shared --tag
 <new> --refresh-images` re-run on the standing environment. For an existing
@@ -142,7 +145,7 @@ pass moves canonical images during an upgrade, but the bump pins only the
 stack-definition axis. Weekday refreshes advance every canonical, Azure and
 mirror alike (ADR-033).
 
-After the flag clears, both verbs poll `spi status --json` for up to 5
+After the flag clears, each verb polls `spi status --json` for up to 5
 minutes until it reports deployable. A Kustomization with `wait: true`
 reports Progressing for a few seconds on every interval reconcile, and a
 single read can land on one. A re-run of a failed attempt can find the flag
@@ -165,14 +168,14 @@ group is created, or on the next run against a group that lacks it. With an
 existing locator, an omitted option reuses it and a conflicting locator is
 refused.
 
-`env-upgrade.yml` carries the locator through the jobs that already carry
-the declaration's individual fields:
+`env-upgrade.yml` and `env-reset.yml` carry the locator through the jobs
+that already carry the declaration's individual fields:
 
 | Surface | Wiring |
 |---|---|
 | `declare` job | Exports `declares_forks`, true when the file lists at least one fork, beside the validated fields read from `main`. |
 | `provision` job | Appends `--declaration "${GITHUB_REPOSITORY}:${DECLARATION_PATH}"` to the `spi up` argument array when `declares_forks` is true and `stackVersion` is v0.24.0 or later; an older version logs a notice and provisions undeclared. |
-| Reset workflow (unbuilt) | Use the same declaration input for re-provisioning; the retained locator must agree rather than supplying competing intent. |
+| Reset `provision` job | Appends the same `--declaration` argument under the same `declares_forks` gate, so the retained locator agrees with it rather than supplying competing intent. |
 
 The `declares_forks` gate exists because a declaration with no forks revokes
 every fork credential on the identities. `shared` trusts repositories that
@@ -197,15 +200,47 @@ post-provision step that first corrects an obsolete image source.
 `spi onboard --reconcile --write`, ahead of the fork refresh that reads the
 projections.
 
-**Reset** (unbuilt) is deletion plus cold provision at the pinned tag: load and
-validate the declaration, flag, drain, snapshot the lock, then `spi down`.
-`spi down` itself is built: it has a 45-minute deadline and reports success
-only after the group contains identities alone and the managed nodes group
-is gone (ADR-034).
-A failed or timed-out delete stops reset; a re-run resumes from the reported
-remaining inventory. Only after completion does `spi up --tag <pin>` resolve
-the declaration's desired sources and start the cold provision and converge
-wait. The retained roster is not used as a substitute for that declaration.
+**Reset** (`env-reset.yml`, implemented) is deletion plus cold provision at
+the pinned tag: load and validate the declaration, flag, drain, snapshot the
+lock, then `spi down`. It runs Saturdays at 06:00 UTC. A dispatch must name
+the declared environment in its `confirm` input, and any other value fails
+the `declare` job before a job touches Azure. `verify-release` then requires
+the `stackVersion` wheel at v0.30.0 or later, the first CLI that runs every
+step below without a version gate. The jobs that follow run in order:
+
+| Job | What it does |
+|---|---|
+| `detect` | Fails when the resource group is gone, since a rebuild would mint identities the forks do not hold; `env-upgrade` provisions a new environment. A missing cluster skips to `teardown`, resuming a reset that stopped after deleting it. |
+| `quiesce-and-drain` | Connects, sets `maintenance`, drains, and uploads the lock snapshot as an artifact. |
+| `teardown` | `spi down --env shared --force`, then an independent inventory check that the group holds managed identities alone and the managed nodes group is gone. |
+| `provision` | `spi up --tag <stackVersion> --refresh-images` with the declaration's fields, and `--declaration` as upgrade passes it. |
+| `verify` | Upgrade's verification: the revision-gated wait, probes, deployed-stack assertions, flag clear, deployable poll, and `spi load`. |
+
+The drain is `scripts/drain_ephemeral_pins.sh`. Each poll runs
+`spi service reset --ephemeral --stale-only`, which removes the pins whose
+owning run has finished ([fork-deployment.md](fork-deployment.md)), then
+reads the remaining pins from `spi status --json`. A pin in flight when the
+flag lands was written before it, so the 15-minute window covers the part
+of its lane after the pin: a passing search lane ran 28 minutes end to end,
+including the install and dependency gate that precede its pin. Once no
+ephemeral pin remains, the set must stay empty for an 8-minute quiescence
+interval, longer than a pin's path from its deployability check to its
+post-write maintenance recheck: a schema pin makes four registry reads of up
+to 105 seconds each, then retries its lock write. A pin seen during the
+interval restarts it, an unreadable pin set never counts as empty, and
+operator pins do not hold the drain. A window that runs out fails the job
+with the flag set and names each remaining pin's run; nothing is deleted. A
+lane that pinned just before the flag can outlast the window, and a
+dispatch after that lane finishes resumes the reset. The window and
+interval are what the 7-hour budget leaves after its fixed phases.
+
+`spi down` has a 45-minute deadline and reports success only after the
+group contains identities alone and the managed nodes group is gone
+(ADR-034). A failed or timed-out delete fails `teardown`, which reports the
+remaining inventory; re-running the failed job resumes from it. Only after
+completion does `spi up --tag <pin>` resolve the declaration's desired
+sources and start the cold provision and converge wait. The retained roster
+is not used as a substitute for that declaration.
 
 The deploy identity, suffix, source-policy tags, and declaration locator
 survive deletion, so repository client IDs and resource names stay stable,
@@ -232,8 +267,8 @@ removal leaves the identities and group standing (ADR-034).
 
 - `spi status --json`: `ready` for convergence, `deployable` as the
   deploy gate, a typed reason, the deployed version, and the `maintenance`
-  flag. Exit 0/2/1 (ADR-030). Implemented; both lifecycle workflows gate on
-  it.
+  flag. Exit 0/2/1 (ADR-030). Implemented; every lifecycle workflow gates
+  on it.
 - `spi info --json`: endpoints, partitions, non-secret Azure coordinates,
   the deploy identity's client id with the tenant, subscription, resource
   group, and cluster (the five values a fork holds; ADR-032), and the
@@ -307,6 +342,14 @@ gh workflow run env-refresh.yml --ref main
 gh run watch
 ```
 
+Run a reset outside the Saturday cron. The confirmation is the declared
+environment name; the run deletes everything but the identities:
+
+```bash
+gh workflow run env-reset.yml --ref main -f confirm=shared
+gh run watch
+```
+
 ## Implementation roadmap
 
 1. **Foundations** (mostly built): `spi status --json`, `spi connect`,
@@ -319,10 +362,10 @@ gh run watch
    `infra/flux.bicep`, `spi up --tag`, the deploy record, the declaration
    schema (`src/spi/environment.py`), and tri-state image refresh are
    implemented; `shared` stands up at the release tag via `env-upgrade`.
-3. **Ops workflows** (mostly built): `env-refresh`, `env-upgrade`, and the
-   bump-PR job are implemented, as is the test-identity ensure step. Still
-   unbuilt: `env-reset`, `env-teardown`, and the stale-pin sweep and drain
-   steps noted above.
+3. **Ops workflows** (mostly built): `env-refresh`, `env-upgrade`,
+   `env-reset` with its stale-pin sweep and drain, and the bump-PR job are
+   implemented, as is the test-identity ensure step. Still unbuilt:
+   `env-teardown`, and the sweep and drain steps in `env-refresh`.
 4. **Onboarding** (in progress): the deploy identity and two Roles in `spi up`,
    identity and RG-tag retention in `spi down` (ADR-034), and the trust path
    of `spi onboard` (repository protection, the five values, the federated
@@ -360,7 +403,9 @@ gh run watch
 - `src/spi/cli.py`, `src/spi/deploy.py`, `src/spi/status.py`,
   `src/spi/pins.py`, `src/spi/images.py`
 - `.github/workflows/release.yml`, `.github/workflows/smoke.yml`,
-  `.github/workflows/env-upgrade.yml`, `.github/workflows/env-refresh.yml`
+  `.github/workflows/env-upgrade.yml`, `.github/workflows/env-refresh.yml`,
+  `.github/workflows/env-reset.yml`
 - `scripts/export_environment.py`, `scripts/wait_for_flux_ready.sh`,
-  `scripts/probe_gateway.sh`, `scripts/capture_diagnostics.sh`
+  `scripts/probe_gateway.sh`, `scripts/capture_diagnostics.sh`,
+  `scripts/drain_ephemeral_pins.sh`
 - `.release-please-config.json`, `docs/tag-ruleset.json`

@@ -36,8 +36,8 @@
 set -u
 set -o pipefail
 
-WINDOW=1500
-QUIESCENCE=600
+WINDOW=900
+QUIESCENCE=480
 POLL=30
 
 usage() {

@@ -1204,7 +1204,8 @@ class TestEnvResetRebuild:
         assert "continue-on-error" not in load
 
     def test_the_reset_fits_its_seven_hour_budget(self):
-        """Worst case, with the 75-minute cold provision the lifecycle design budgets."""
+        """Every bounded phase at its cap, with the 75-minute cold provision the
+        lifecycle design budgets and minutes left over for job setup."""
         from spi.teardown import TEARDOWN_DEADLINE_SECONDS
 
         jobs = _workflow(ENV_RESET)["jobs"]
@@ -1214,16 +1215,22 @@ class TestEnvResetRebuild:
             r"--timeout (\d+)", verify["Wait for Flux Kustomizations to be Ready"]["run"]
         )
         assert wait is not None
+        probe = (REPO_ROOT / "scripts" / "probe_gateway.sh").read_text(encoding="utf-8")
+        assert "seq 1 20" in probe and "--max-time 15" in probe and "sleep 30" in probe
+        https_probe_seconds = 20 * (15 + 30)
+        deployable = verify["Require deployable status"]["env"]["DEPLOYABLE_TIMEOUT_SECONDS"]
 
         minutes = (
             (int(quiesce["DRAIN_WINDOW_SECONDS"]) + int(quiesce["QUIESCENCE_SECONDS"])) / 60
             + TEARDOWN_DEADLINE_SECONDS / 60
             + 75
             + int(wait.group(1)) / 60
+            + https_probe_seconds / 60
+            + int(deployable) / 60
             + int(verify["Load default datasets"]["timeout-minutes"])
         )
 
-        assert minutes <= 7 * 60
+        assert minutes <= 7 * 60 - 5
 
 
 class TestDrainScript:

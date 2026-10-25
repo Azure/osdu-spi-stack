@@ -163,18 +163,19 @@ jobs:
     environment: azure-shared
     # The drain's window and quiescence plus setup, inside the hour the cached
     # Azure token lasts.
-    timeout-minutes: 50
+    timeout-minutes: 35
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
-      # A lane that borrowed just before the flag finishes inside the window: a
-      # passing search lane ran 28 minutes, including the install and gate that
-      # precede its pin.
-      DRAIN_WINDOW_SECONDS: "1500"
+      # Covers the part of a lane after its pin: a passing search lane ran 28
+      # minutes, including the install and gate that precede the pin. A lane
+      # that pinned just before the flag can outlast it; the drain then fails
+      # closed. Window and quiescence are what the 7-hour budget leaves.
+      DRAIN_WINDOW_SECONDS: "900"
       # Longer than a pin's slowest path from its deployability check to its
       # maintenance recheck: four registry reads for a schema pair, each up to
-      # three attempts, then the lock write's retries.
-      QUIESCENCE_SECONDS: "600"
+      # 105 seconds over three attempts, then the lock write's retries.
+      QUIESCENCE_SECONDS: "480"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -560,8 +561,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: azure-shared
     # smoke.yml's verify budget plus the wheel install, the connect steps, and
-    # the 30-minute load step.
-    timeout-minutes: 330
+    # the 20-minute load step.
+    timeout-minutes: 320
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
       STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
@@ -757,9 +758,10 @@ jobs:
       - name: Load default datasets
         # After maintenance clears: a load needs a deployable environment and
         # never changes that verdict. A rebuilt environment holds no data, and a
-        # first load of the reference data took 7 minutes on a core environment.
+        # first load of the reference data took 7 minutes on a core environment;
+        # the cap is 20 minutes rather than upgrade's 30 to fit the 7-hour budget.
         if: needs.declare.outputs.profile == 'core'
-        timeout-minutes: 30
+        timeout-minutes: 20
         run: spi load
 
       - name: Capture diagnostics on failure
