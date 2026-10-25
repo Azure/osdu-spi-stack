@@ -215,7 +215,7 @@ step below without a version gate. The jobs that follow run in order:
 | `detect` | Fails when the resource group is gone, since a rebuild would mint identities the forks do not hold; `env-upgrade` provisions a new environment. Also fails when the group's retained suffix or declaration locator differs from the declaration, which `spi up` would refuse only after deletion. A missing cluster skips to `teardown`, resuming a reset that stopped after deleting it. |
 | `quiesce-and-drain` | Connects, sets `maintenance`, drains, and uploads the lock snapshot as an artifact. |
 | `teardown` | `spi down --env shared --force`, then an independent inventory check that the group holds managed identities alone and the managed nodes group is gone. |
-| `provision` | `spi up --tag <stackVersion> --refresh-images` with the declaration's fields, and `--declaration` as upgrade passes it. |
+| `provision` | Re-reads the declaration from `main`, since `spi up` checks its options against `main` and a bump merged mid-reset would otherwise fail the rebuild after deletion, then runs `spi up --tag <stackVersion> --refresh-images` with that declaration's fields and wheel, and `--declaration` as upgrade passes it. `verify` checks the version provision rebuilt. |
 | `verify` | Upgrade's verification: the revision-gated wait, probes, deployed-stack assertions, flag clear, deployable poll, and `spi load`. |
 
 The drain is `scripts/drain_ephemeral_pins.sh`. Each poll runs

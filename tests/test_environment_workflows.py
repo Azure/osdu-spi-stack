@@ -558,17 +558,18 @@ class TestAssertionsAndDeployability:
             )
 
     def test_bare_profile_skips_gateway_probes(self):
-        for path, job_name in (
-            (ENV_UPGRADE, "verify"),
-            (ENV_REFRESH, "refresh"),
-            (ENV_RESET, "verify"),
+        # Reset verifies what provision rebuilt from, which a mid-reset bump moves.
+        for path, job_name, source in (
+            (ENV_UPGRADE, "verify", "declare"),
+            (ENV_REFRESH, "refresh", "declare"),
+            (ENV_RESET, "verify", "provision"),
         ):
             steps = _steps(_workflow(path)["jobs"][job_name])
             assert steps["Acceptance probe (gateway reachable)"]["if"] == (
-                "needs.declare.outputs.profile != 'bare'"
+                f"needs.{source}.outputs.profile != 'bare'"
             )
             assert steps["Acceptance probe (HTTPS terminates)"]["if"] == (
-                "needs.declare.outputs.profile != 'bare'"
+                f"needs.{source}.outputs.profile != 'bare'"
             )
 
 
@@ -1244,6 +1245,76 @@ class TestEnvResetRebuild:
         assert (locator in result.stdout) is handed_over
         assert "--image-branch" not in result.stdout
 
+    CURRENT = "Read the declaration main holds now"
+
+    def _current(self, tmp_path, env: str = "shared", version: str = "v0.32.3"):
+        """The provision job's read of main, with git serving a declaration whose
+        env and stackVersion main now holds and uv running the export script."""
+        declared = (REPO_ROOT / "ops" / "environments" / "shared.yaml").read_text(encoding="utf-8")
+        declared = declared.replace("env: shared", f"env: {env}").replace(
+            "stackVersion: v0.32.3", f"stackVersion: {version}"
+        )
+        (tmp_path / "main.yaml").write_text(declared, encoding="utf-8")
+        for name, body in {
+            "git": f'[ "$1" = show ] && cat "{tmp_path}/main.yaml"; exit 0',
+            "uv": f'[ "$1" = run ] && shift 2 && exec "{sys.executable}" "$@"; exit 0',
+        }.items():
+            stub = tmp_path / name
+            stub.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
+            stub.chmod(0o755)
+        workflow = _workflow(ENV_RESET)
+        script = _steps(workflow["jobs"]["provision"])[self.CURRENT]["run"]
+        return _run_script(
+            tmp_path,
+            f"cd {REPO_ROOT} && {script}",
+            DECLARED_VERSION="v0.32.3",
+            RESET_CLI_MIN_VERSION="v0.30.0",
+            RUNNER_TEMP=str(tmp_path),
+            DECLARATION_PATH=workflow["env"]["DECLARATION_PATH"],
+        )
+
+    def test_provision_rebuilds_from_what_main_declares(self):
+        jobs = _workflow(ENV_RESET)["jobs"]
+        steps = _steps(jobs["provision"])
+        names = list(steps)
+
+        assert names.index(self.CURRENT) < names.index("Install exact release wheel")
+        current = "${{ steps.current.outputs.stack_version }}"
+        assert steps["Install exact release wheel"]["env"]["STACK_VERSION"] == current
+        assert steps["spi up"]["env"]["STACK_VERSION"] == current
+        assert steps["spi up"]["env"]["NAME_SUFFIX"] == "${{ steps.current.outputs.name_suffix }}"
+        assert (
+            jobs["verify"]["env"]["STACK_VERSION"] == "${{ needs.provision.outputs.stack_version }}"
+        )
+        assert "needs.declare.outputs.profile" not in json.dumps(jobs["verify"])
+
+    def test_a_bump_merged_mid_reset_sets_the_rebuild_version(self, tmp_path):
+        result, output = self._current(tmp_path, version="v0.33.0")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "stack_version=v0.33.0" in output.splitlines()
+        assert "rebuilding at v0.33.0" in result.stdout
+
+    def test_an_unchanged_declaration_rebuilds_at_its_version(self, tmp_path):
+        result, output = self._current(tmp_path)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "stack_version=v0.32.3" in output.splitlines()
+        assert "rebuilding at" not in result.stdout
+
+    @pytest.mark.parametrize(
+        ("env", "version", "error"),
+        [
+            ("dks", "v0.32.3", "does not match declaration filename"),
+            ("shared", "v0.29.0", "predates the reset CLI"),
+        ],
+    )
+    def test_a_declaration_main_cannot_rebuild_stops_provision(self, tmp_path, env, version, error):
+        result, _ = self._current(tmp_path, env=env, version=version)
+
+        assert result.returncode == 1
+        assert error in result.stdout + result.stderr
+
     def test_spi_up_omits_ingress_mode_for_a_bare_declaration(self, tmp_path):
         result, _ = self._up(tmp_path, "false", profile="bare")
 
@@ -1269,7 +1340,7 @@ class TestEnvResetRebuild:
         assert steps["Clear maintenance"]["if"] == "steps.verify.outputs.clear == 'true'"
         load = steps["Load default datasets"]
         assert load["run"] == "spi load"
-        assert load["if"] == "needs.declare.outputs.profile == 'core'"
+        assert load["if"] == "needs.provision.outputs.profile == 'core'"
         assert "continue-on-error" not in load
 
     def test_the_reset_fits_its_seven_hour_budget(self):

@@ -454,16 +454,48 @@ jobs:
     environment: azure-shared
     # The 75-minute cold provision plus setup.
     timeout-minutes: 90
+    outputs:
+      stack_version: ${{ steps.current.outputs.stack_version }}
+      profile: ${{ steps.current.outputs.profile }}
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
-      PROFILE: ${{ needs.declare.outputs.profile }}
-      LOCATION: ${{ needs.declare.outputs.location }}
-      INGRESS_MODE: ${{ needs.declare.outputs.ingress_mode }}
-      NAME_SUFFIX: ${{ needs.declare.outputs.name_suffix }}
-      STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
-      DECLARES_FORKS: ${{ needs.declare.outputs.declares_forks }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv + Python
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+
+      - name: Read the declaration main holds now
+        id: current
+        # spi up re-reads the declaration from main and refuses options that
+        # disagree, so a bump merged during the drain or teardown must set the
+        # rebuild's version rather than strand the deleted environment.
+        env:
+          DECLARED_VERSION: ${{ needs.declare.outputs.stack_version }}
+          RESET_CLI_MIN_VERSION: v0.30.0
+        run: |
+          set -euo pipefail
+          git fetch --quiet --depth 1 origin main
+          # The validator binds env to the file name, so the copy keeps it.
+          CURRENT="$RUNNER_TEMP/main/$(basename "$DECLARATION_PATH")"
+          mkdir -p "$(dirname "$CURRENT")"
+          git show "FETCH_HEAD:$DECLARATION_PATH" > "$CURRENT"
+          uv sync --frozen
+          uv run python scripts/export_environment.py --declaration-path "$CURRENT"
+          VERSION=$(sed -n 's/^stack_version=//p' "$GITHUB_OUTPUT" | tail -n 1)
+          if [ -z "$VERSION" ]; then
+            echo "::error::$DECLARATION_PATH is gone from main; nothing declares the rebuild"
+            exit 1
+          fi
+          if [ "$(printf '%s\n' "$RESET_CLI_MIN_VERSION" "$VERSION" | sort -V | head -n1)" != "$RESET_CLI_MIN_VERSION" ]; then
+            echo "::error::stackVersion $VERSION predates the reset CLI (minimum $RESET_CLI_MIN_VERSION)"
+            exit 1
+          fi
+          if [ "$VERSION" != "$DECLARED_VERSION" ]; then
+            echo "::notice::main moved stackVersion from $DECLARED_VERSION to $VERSION during the reset; rebuilding at $VERSION"
+          fi
 
       - name: Install kubectl
         uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
@@ -525,6 +557,7 @@ jobs:
       - name: Install exact release wheel
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STACK_VERSION: ${{ steps.current.outputs.stack_version }}
         run: |
           set -euo pipefail
           VERSION="${STACK_VERSION#v}"
@@ -546,6 +579,12 @@ jobs:
           # Reads the declaration and each fork's subject and environment rules, and
           # resolves id-subject fork credentials to repository names for the lock's roster.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROFILE: ${{ steps.current.outputs.profile }}
+          LOCATION: ${{ steps.current.outputs.location }}
+          INGRESS_MODE: ${{ steps.current.outputs.ingress_mode }}
+          NAME_SUFFIX: ${{ steps.current.outputs.name_suffix }}
+          STACK_VERSION: ${{ steps.current.outputs.stack_version }}
+          DECLARES_FORKS: ${{ steps.current.outputs.declares_forks }}
         run: |
           set -euo pipefail
           ARGS=(
@@ -594,7 +633,8 @@ jobs:
     timeout-minutes: 320
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
-      STACK_VERSION: ${{ needs.declare.outputs.stack_version }}
+      # What provision rebuilt from, which a bump merged mid-reset moves.
+      STACK_VERSION: ${{ needs.provision.outputs.stack_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -680,11 +720,11 @@ jobs:
             --expect-revision "$EXPECT_REVISION"
 
       - name: Acceptance probe (gateway reachable)
-        if: needs.declare.outputs.profile != 'bare'
+        if: needs.provision.outputs.profile != 'bare'
         run: bash scripts/probe_gateway.sh gateway
 
       - name: Acceptance probe (HTTPS terminates)
-        if: needs.declare.outputs.profile != 'bare'
+        if: needs.provision.outputs.profile != 'bare'
         run: bash scripts/probe_gateway.sh https
 
       - name: Verify deployed stack matches the declaration
@@ -789,7 +829,7 @@ jobs:
         # never changes that verdict. A rebuilt environment holds no data, and a
         # first load of the reference data took 7 minutes on a core environment;
         # the cap is 20 minutes rather than upgrade's 30 to fit the 7-hour budget.
-        if: needs.declare.outputs.profile == 'core'
+        if: needs.provision.outputs.profile == 'core'
         timeout-minutes: 20
         run: spi load
 
