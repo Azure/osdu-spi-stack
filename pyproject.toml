@@ -10,7 +10,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Microsoft Corporation" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 # Version floors must be installable from the Microsoft package feed proxy
 # declared below, which lags PyPI by roughly a week. The `mirror-deps` CI job
 # enforces that for both this runtime set and the dev group.
@@ -84,7 +84,7 @@ dev = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
