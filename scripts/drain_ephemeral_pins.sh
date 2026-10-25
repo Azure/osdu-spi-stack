@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # Drain the fork deploys in flight before a lifecycle run changes the
-# environment (ADR-029). Run it after `spi maintenance set`: the flag stops new
+# environment. Run it after `spi maintenance set`: the flag stops new
 # pins, and this waits out the ones already placed. Each poll sweeps the
 # ephemeral pins whose owning run has finished (`spi service reset --ephemeral
 # --stale-only`), then reads what remains from `spi status --json`. Once no

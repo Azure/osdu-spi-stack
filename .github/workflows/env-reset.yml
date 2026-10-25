@@ -2,7 +2,7 @@ name: Environment Reset
 
 # Deletes and rebuilds the standing environment in ops/environments/shared.yaml
 # at its declared stackVersion, the only verb that sheds both cluster and PaaS
-# state (ADR-029): quiesce and drain, spi down to the retained identities,
+# state: quiesce and drain, spi down to the retained identities,
 # spi up from the declaration, wait, probe, reopen for deploys. Every
 # operational call uses the `spi` wheel of the declared stackVersion, never
 # `uv run spi`; the lifecycle contract is docs/design/environment-lifecycle.md.
@@ -387,7 +387,7 @@ jobs:
       - name: spi down
         # Succeeds only once the group holds identities alone and the managed
         # nodes group is gone; a failed or expired delete exits 1 and names what
-        # remains, and a re-run resumes from there (ADR-034).
+        # remains, and a re-run resumes from there.
         run: spi down --env "$ENV_NAME" --force
 
       - name: Confirm only managed identities remain
