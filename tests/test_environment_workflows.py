@@ -14,6 +14,7 @@ captured on failure.
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -1128,6 +1129,7 @@ class TestEnvResetQuiesceAndDrain:
         assert "scripts/drain_ephemeral_pins.sh" in drain["run"]
         assert '--window "$DRAIN_WINDOW_SECONDS"' in drain["run"]
         assert '--quiescence "$QUIESCENCE_SECONDS"' in drain["run"]
+        assert '--call-timeout "$DRAIN_CALL_TIMEOUT_SECONDS"' in drain["run"]
         # The sweep reads each pin's owning run.
         assert drain["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
         # A drain that runs out fails the job with maintenance still set.
@@ -1136,9 +1138,7 @@ class TestEnvResetQuiesceAndDrain:
 
     def test_the_drain_fits_the_job_and_the_cached_token(self):
         job = _workflow(ENV_RESET)["jobs"]["quiesce"]
-        drain_minutes = (
-            int(job["env"]["DRAIN_WINDOW_SECONDS"]) + int(job["env"]["QUIESCENCE_SECONDS"])
-        ) / 60
+        drain_minutes = _drain_seconds(job["env"]) / 60
 
         assert drain_minutes + 10 <= int(job["timeout-minutes"]) < 60
 
@@ -1284,7 +1284,6 @@ class TestEnvResetRebuild:
         from spi.teardown import TEARDOWN_DEADLINE_SECONDS
 
         jobs = _workflow(ENV_RESET)["jobs"]
-        quiesce = jobs["quiesce"]["env"]
         verify = _steps(jobs["verify"])
         wait = re.search(
             r"--timeout (\d+)", verify["Wait for Flux Kustomizations to be Ready"]["run"]
@@ -1296,7 +1295,7 @@ class TestEnvResetRebuild:
         deployable = verify["Require deployable status"]["env"]["DEPLOYABLE_TIMEOUT_SECONDS"]
 
         minutes = (
-            (int(quiesce["DRAIN_WINDOW_SECONDS"]) + int(quiesce["QUIESCENCE_SECONDS"])) / 60
+            _drain_seconds(jobs["quiesce"]["env"]) / 60
             + TEARDOWN_DEADLINE_SECONDS / 60
             + 75
             + int(wait.group(1)) / 60
@@ -1306,6 +1305,19 @@ class TestEnvResetRebuild:
         )
 
         assert minutes <= 7 * 60 - 5
+
+
+def _drain_seconds(env: dict[str, str]) -> int:
+    """The drain's longest run: a final poll lands on its deadline, then each
+    of its two calls may run to the call timeout."""
+    return (
+        int(env["DRAIN_WINDOW_SECONDS"])
+        + int(env["QUIESCENCE_SECONDS"])
+        + 2 * int(env["DRAIN_CALL_TIMEOUT_SECONDS"])
+    )
+
+
+GNU_TIMEOUT = shutil.which("timeout") or shutil.which("gtimeout")
 
 
 class TestDrainScript:
@@ -1322,6 +1334,10 @@ class TestDrainScript:
             (tmp_path / f"sweep-{index}.code").write_text(str(sweep_code), encoding="utf-8")
             (tmp_path / f"status-{index}").write_text(json.dumps(status), encoding="utf-8")
             (tmp_path / f"status-{index}.code").write_text(str(status_code), encoding="utf-8")
+        if not GNU_TIMEOUT:
+            passthrough = tmp_path / "timeout"
+            passthrough.write_text('#!/usr/bin/env bash\nshift\nexec "$@"\n', encoding="utf-8")
+            passthrough.chmod(0o755)
         last = len(polls) - 1
         stub = tmp_path / "spi"
         stub.write_text(
@@ -1330,6 +1346,7 @@ class TestDrainScript:
             f'n=$(cat "{tmp_path}/$kind.calls" 2>/dev/null || echo 0)\n'
             f'echo $((n + 1)) > "{tmp_path}/$kind.calls"\n'
             f'[ "$n" -gt {last} ] && n={last}\n'
+            f'[ -f "{tmp_path}/$kind-$n.sleep" ] && sleep "$(cat "{tmp_path}/$kind-$n.sleep")"\n'
             f'cat "{tmp_path}/$kind-$n"\n'
             f'exit "$(cat "{tmp_path}/$kind-$n.code")"\n',
             encoding="utf-8",
@@ -1446,7 +1463,24 @@ class TestDrainScript:
         assert calls == 2
         assert "quiescence restarts" in result.stdout
 
-    @pytest.mark.parametrize("args", [["--window", "10m"], ["--quiescence"], ["--bogus"]])
+    @pytest.mark.skipif(not GNU_TIMEOUT, reason="needs GNU timeout")
+    def test_a_sweep_stuck_on_flux_is_stopped_and_the_next_poll_drains(self, tmp_path):
+        (tmp_path / "sweep-0.sleep").write_text("30", encoding="utf-8")
+        polls = [
+            (0, self._sweep("search"), 2, self._state({})),
+            (0, self._sweep(), 2, self._state({})),
+        ]
+
+        result, calls = self._run(tmp_path, polls, "--call-timeout", "1", "--quiescence", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "stale-pin sweep ran past 00:01 and was stopped" in result.stderr
+        assert calls == 1
+
+    @pytest.mark.parametrize(
+        "args",
+        [["--window", "10m"], ["--quiescence"], ["--bogus"], ["--call-timeout", "0"]],
+    )
     def test_bad_arguments_exit_2(self, tmp_path, args):
         result, _ = self._run(tmp_path, [(0, self._sweep(), 2, self._state({}))], *args)
 

@@ -25,7 +25,10 @@
 # never hold the drain.
 #
 # --window bounds the wait for the set to empty; the quiescence that follows
-# runs to its end, so the drain takes at most --window plus --quiescence.
+# runs to its end. Each sweep and status read is killed after --call-timeout,
+# so the drain takes at most --window plus --quiescence plus two call timeouts.
+# A sweep restores canonicals before it waits on Flux, so a killed wait loses
+# nothing and the next poll reads the set empty.
 #
 # Exit codes:
 #   0  no ephemeral pin for the whole quiescence interval
@@ -39,11 +42,12 @@ set -o pipefail
 WINDOW=900
 QUIESCENCE=480
 POLL=30
+CALL_TIMEOUT=60
 
 usage() {
     cat <<'EOF'
 Usage: drain_ephemeral_pins.sh [--window SECONDS] [--quiescence SECONDS]
-                               [--poll SECONDS]
+                               [--poll SECONDS] [--call-timeout SECONDS]
 EOF
 }
 
@@ -52,20 +56,36 @@ while [ $# -gt 0 ]; do
         --window) WINDOW="${2:-}"; shift 2 || { usage >&2; exit 2; } ;;
         --quiescence) QUIESCENCE="${2:-}"; shift 2 || { usage >&2; exit 2; } ;;
         --poll) POLL="${2:-}"; shift 2 || { usage >&2; exit 2; } ;;
+        --call-timeout) CALL_TIMEOUT="${2:-}"; shift 2 || { usage >&2; exit 2; } ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
-for value in "$WINDOW" "$QUIESCENCE" "$POLL"; do
+for value in "$WINDOW" "$QUIESCENCE" "$POLL" "$CALL_TIMEOUT"; do
     if ! [[ "$value" =~ ^[0-9]+$ ]]; then
-        echo "error: --window, --quiescence, and --poll take whole seconds, got '$value'" >&2
+        echo "error: --window, --quiescence, --poll, and --call-timeout take whole seconds, got '$value'" >&2
         exit 2
     fi
 done
+if [ "$CALL_TIMEOUT" -eq 0 ]; then
+    echo "error: --call-timeout must be at least one second" >&2
+    exit 2
+fi
 
 if ! command -v jq >/dev/null 2>&1; then
     echo "error: jq is required but not on PATH" >&2
+    exit 2
+fi
+
+# GNU timeout signals the command's whole process group, so a killed sweep
+# takes its `flux reconcile` child with it.
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT=gtimeout
+else
+    echo "error: timeout (GNU coreutils) is required but not on PATH" >&2
     exit 2
 fi
 
@@ -99,18 +119,20 @@ EMPTY_SINCE=-1
 echo "drain_ephemeral_pins · window $(fmt_mmss "$WINDOW") · quiescence $(fmt_mmss "$QUIESCENCE") · poll ${POLL}s"
 
 while :; do
-    elapsed=$(( SECONDS - START ))
-    stamp="[$(fmt_mmss "$elapsed") / $(fmt_mmss "$WINDOW")]"
     problem=""
     count=""
 
     # The sweep's command panels show what it changes; its final stdout line
     # is the JSON outcome.
     sweep_exit=0
-    sweep_out=$("${SPI[@]}" service reset --ephemeral --stale-only --json) || sweep_exit=$?
+    sweep_out=$("$TIMEOUT" "$CALL_TIMEOUT" "${SPI[@]}" service reset --ephemeral --stale-only --json) \
+        || sweep_exit=$?
     outcome=$(tail -n 1 <<<"$sweep_out")
     sed '$d' <<<"$sweep_out"
-    if [ "$sweep_exit" -ne 0 ]; then
+    stamp="[$(fmt_mmss $(( SECONDS - START ))) / $(fmt_mmss "$WINDOW")]"
+    if [ "$sweep_exit" -eq 124 ]; then
+        problem="the stale-pin sweep ran past $(fmt_mmss "$CALL_TIMEOUT") and was stopped"
+    elif [ "$sweep_exit" -ne 0 ]; then
         detail=$(jq -r '.detail // empty' <<<"$outcome" 2>/dev/null) || detail=""
         problem="the stale-pin sweep failed (exit $sweep_exit)${detail:+: $detail}"
     else
@@ -121,10 +143,13 @@ while :; do
     fi
 
     if [ -z "$problem" ]; then
+        read_at=$(( SECONDS - START ))
         status_exit=0
-        status=$("${SPI[@]}" status --json) || status_exit=$?
+        status=$("$TIMEOUT" "$CALL_TIMEOUT" "${SPI[@]}" status --json) || status_exit=$?
         # Exit 2 is "not deployable", which maintenance always is.
-        if [ "$status_exit" -ne 0 ] && [ "$status_exit" -ne 2 ]; then
+        if [ "$status_exit" -eq 124 ]; then
+            problem="spi status --json ran past $(fmt_mmss "$CALL_TIMEOUT") and was stopped"
+        elif [ "$status_exit" -ne 0 ] && [ "$status_exit" -ne 2 ]; then
             problem="spi status --json failed (exit $status_exit)"
         elif ! pins=$(ephemeral_pins <<<"$status" 2>/dev/null); then
             problem="spi status --json carried no maintenance flag or pin state"
@@ -136,15 +161,24 @@ while :; do
         fi
     fi
 
+    elapsed=$(( SECONDS - START ))
+    stamp="[$(fmt_mmss "$elapsed") / $(fmt_mmss "$WINDOW")]"
+
     if [ "$count" = "0" ]; then
+        # The interval runs from after the read that first saw the set empty
+        # to before the latest read, so a slow call never lengthens it.
         if [ "$EMPTY_SINCE" -lt 0 ]; then
             EMPTY_SINCE=$elapsed
+            held=0
             echo "$stamp no ephemeral pins; holding $(fmt_mmss "$QUIESCENCE") of quiescence"
+        else
+            held=$(( read_at - EMPTY_SINCE ))
         fi
-        if [ $(( elapsed - EMPTY_SINCE )) -ge "$QUIESCENCE" ]; then
-            echo "✓ drained: no ephemeral pin for $(fmt_mmss $(( elapsed - EMPTY_SINCE ))) at $(fmt_mmss "$elapsed")"
+        if [ "$held" -ge "$QUIESCENCE" ]; then
+            echo "✓ drained: no ephemeral pin for $(fmt_mmss "$held") at $(fmt_mmss "$elapsed")"
             exit 0
         fi
+        next_deadline=$(( EMPTY_SINCE + QUIESCENCE ))
     else
         if [ "$EMPTY_SINCE" -ge 0 ]; then
             echo "$stamp the pin set is no longer provably empty; quiescence restarts once it is"
@@ -165,7 +199,12 @@ while :; do
             fi
             exit 1
         fi
+        next_deadline=$WINDOW
     fi
 
-    sleep "$POLL"
+    # The last poll lands on the deadline rather than up to a poll past it.
+    wait_for=$(( next_deadline - elapsed ))
+    [ "$wait_for" -gt "$POLL" ] && wait_for=$POLL
+    [ "$wait_for" -lt 0 ] && wait_for=0
+    sleep "$wait_for"
 done

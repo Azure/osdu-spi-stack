@@ -192,8 +192,8 @@ jobs:
     if: needs.declare.outputs.should_run == 'true' && needs.detect.outputs.cluster_exists == 'true'
     runs-on: ubuntu-latest
     environment: azure-shared
-    # The drain's window and quiescence plus setup, inside the hour the cached
-    # Azure token lasts.
+    # The drain's window, quiescence, and two call timeouts plus setup, inside
+    # the hour the cached Azure token lasts.
     timeout-minutes: 35
     env:
       ENV_NAME: ${{ needs.declare.outputs.env }}
@@ -202,11 +202,14 @@ jobs:
       # minutes, including the install and gate that precede the pin. A lane
       # that pinned just before the flag can outlast it; the drain then fails
       # closed. Window and quiescence are what the 7-hour budget leaves.
-      DRAIN_WINDOW_SECONDS: "900"
+      DRAIN_WINDOW_SECONDS: "840"
       # Longer than a pin's slowest path from its deployability check to its
       # maintenance recheck: four registry reads for a schema pair, each up to
       # 105 seconds over three attempts, then the lock write's retries.
       QUIESCENCE_SECONDS: "480"
+      # A sweep that restores a canonical then waits on Flux; the drain needs
+      # only its lock write, which lands first.
+      DRAIN_CALL_TIMEOUT_SECONDS: "60"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -297,7 +300,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           bash scripts/drain_ephemeral_pins.sh \
-            --window "$DRAIN_WINDOW_SECONDS" --quiescence "$QUIESCENCE_SECONDS"
+            --window "$DRAIN_WINDOW_SECONDS" --quiescence "$QUIESCENCE_SECONDS" \
+            --call-timeout "$DRAIN_CALL_TIMEOUT_SECONDS"
 
       - name: Snapshot image lock
         run: |

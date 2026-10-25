@@ -69,10 +69,10 @@ pin file starts the upgrade. Nothing else moves the stack-definition version
 | reset | `env-reset` | Saturday cron 06:00 UTC, confirm-dispatch | 7 h |
 | teardown | `env-teardown` | protected dispatch | 1 h |
 
-The budgets contain their worst cases: a reset spends up to 23 minutes
+The budgets contain their worst cases: a reset spends up to 24 minutes
 draining fork deploys, 45 minutes on deletion, 75 minutes provisioning, 230
 minutes in the cold-cluster schema-load converge, 20 minutes in the HTTPS
-probe and deployable poll, and 20 minutes loading data, 413 minutes before
+probe and deployable poll, and 20 minutes loading data, 414 minutes before
 job setup; an upgrade whose `--refresh-images` pass
 moves the schema image spends up to 60 minutes in `spi up` plus the same
 230-minute converge, hence its 6.5-hour budget. A refresh is normally a
@@ -220,7 +220,7 @@ The drain is `scripts/drain_ephemeral_pins.sh`. Each poll runs
 `spi service reset --ephemeral --stale-only`, which removes the pins whose
 owning run has finished ([fork-deployment.md](fork-deployment.md)), then
 reads the remaining pins from `spi status --json`. A pin in flight when the
-flag lands was written before it, so the 15-minute window covers the part
+flag lands was written before it, so the 14-minute window covers the part
 of its lane after the pin: a passing search lane ran 28 minutes end to end,
 including the install and dependency gate that precede its pin. Once no
 ephemeral pin remains, the set must stay empty for an 8-minute quiescence
@@ -228,7 +228,10 @@ interval, longer than a pin's path from its deployability check to its
 post-write maintenance recheck: a schema pin makes four registry reads of up
 to 105 seconds each, then retries its lock write. A pin seen during the
 interval restarts it, an unreadable pin set never counts as empty, and
-operator pins do not hold the drain. A window that runs out fails the job
+operator pins do not hold the drain. Each sweep and status read is stopped
+after a minute: a sweep that restores a canonical writes the lock before it
+waits on Flux, so a stopped wait loses nothing, and a stopped call counts as
+an unreadable pin set. A window that runs out fails the job
 with the flag set and names each remaining pin's run; nothing is deleted. A
 lane that pinned just before the flag can outlast the window, and a
 dispatch after that lane finishes resumes the reset. The window and
