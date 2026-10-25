@@ -17,9 +17,9 @@ ownership-checked `reset --if-run`, the separate stale sweep
 below, `--list` and `--remove` for trust, source policy, and both
 projections, roster-derived pin validation, repository-derived GHCR package
 validation), `spi service refresh`, `spi test`, and the local build path (`spi build`,
-`spi service pin --source`) are implemented. Declaration
-enforcement and the refresh workflow's stale-pin sweep step are ahead of the
-code (phases 3 and 4 of the roadmap in
+`spi service pin --source`) are implemented, and the reset workflow's drain
+runs the stale sweep. Declaration enforcement and the refresh workflow's
+stale-pin sweep step are ahead of the code (phases 3 and 4 of the roadmap in
 [environment-lifecycle.md](environment-lifecycle.md)).
 Remove the marks as they land.
 
@@ -101,8 +101,9 @@ default empty, which reads as a non-ephemeral operator pin.
 ## Stale-pin recovery
 
 A cancelled run, an expired token, or a lost runner strands a pin the restore
-job never returns. The weekday refresh workflow runs the backstop (the
-sweep's workflow step is unbuilt; the sweep verb and the refresh step exist):
+job never returns. The reset's drain runs the backstop on every
+poll (`scripts/drain_ephemeral_pins.sh`); the weekday refresh workflow's
+sweep step is unbuilt:
 
 - `spi service reset --ephemeral --stale-only` sweeps an ephemeral
   pin only when its owning workflow run reports a terminal state or, when
