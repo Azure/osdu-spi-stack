@@ -16,8 +16,8 @@ requires-python = ">=3.11"
 # enforces that for both this runtime set and the dev group.
 dependencies = [
     "rich>=15.0.0",
-    "typer>=0.27.2",
-    "pydantic>=2.13.5",
+    "typer>=0.27.3",
+    "pydantic>=2.14.1",
     "pyyaml>=6.0",
     "packaging>=26.3",
 ]
@@ -74,12 +74,12 @@ ty = { index = "microsoft-pypi-proxy" }
 
 [dependency-groups]
 dev = [
-    "pre-commit>=4.6.2",
+    "pre-commit>=4.7.0",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "pyyaml>=6.0.3",
-    "ruff>=0.16.10",
-    "ty>=0.0.84",
+    "ruff>=0.17.1",
+    "ty>=0.0.89",
 ]
 
 [tool.ruff]
