@@ -1,0 +1,4 @@
+# Security fixes newer than the Airflow 3.2.2 constraints; drop each once the constraints reach it.
+anyio==4.14.2
+certifi==2026.10.19
+urllib3==2.8.0
