@@ -58,6 +58,12 @@ so a missing package cannot be forwarded to PyPI by a GitLab extra index.
 The constraints used for this lock have SHA-256
 `b3e3c347186f40738abb0e0529affb7ac9f7de8e3cb6bbc8df7be66a5bcfcfd0`.
 
+`overrides.txt` pins security fixes the constraints have not reached yet.
+The script removes each overridden package from the constraints and passes
+the file to uv as `--override`, so the lock, and the pip install at
+container start, move those packages past the versions the image ships.
+Delete a line once the Airflow constraints carry that version or later.
+
 Both main containers let the image entrypoint install
 `-r /opt/spi/osdu/requirements.txt --require-hashes --only-binary :all:`.
 The loader bypasses that install and uses Python and PyYAML already in the
