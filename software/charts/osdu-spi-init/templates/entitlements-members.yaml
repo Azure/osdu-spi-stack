@@ -5,8 +5,9 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */}}
 
-# One Job per partition, adding each member to the root entitlement groups and
-# each member user to users, the service user groups, and service.storage.admin.
+# One Job per partition, adding each member to the root entitlement groups, and
+# to the system groups in the primary partition, and each member user to users,
+# the service user groups, and service.storage.admin.
 # The name hashes the lists and the seed generation so a changed list, a
 # changed seed, or a changed spec renders a new Job, leaving out the member-user list when it is
 # empty so existing Jobs keep their name; templates.entitlements_members_job_name
@@ -57,6 +58,10 @@ spec:
               value: {{ $members | join "," | quote }}
             - name: MEMBER_USERS
               value: {{ $memberUsers | join "," | quote }}
+            {{- if and $.Values.systemGroups (eq $partition (first $.Values.partitions)) }}
+            - name: SYSTEM_GROUPS
+              value: {{ $.Values.systemGroups | join "," | quote }}
+            {{- end }}
           volumeMounts:
             - name: scripts
               mountPath: /scripts

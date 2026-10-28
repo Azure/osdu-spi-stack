@@ -36,11 +36,20 @@ entitlementsMembers: []
 #    the test caller who passes a service's role check but no data-manager check.
 entitlementsMemberUsers: []
 
+# -- Groups that guard writes to the system database, which only the primary
+#    (first) partition hosts. entitlements-init creates them in that partition
+#    as the OSDU identity, which makes it their OWNER, and entitlements-members
+#    adds each member to them. Schema reads its editors group from the
+#    partition osdu-config names as PRIMARY_PARTITION. A change here also needs
+#    a membersGeneration bump, since the members Job name does not cover it.
+systemGroups:
+  - service.system-schema-service.editors
+
 # -- Bumped when entitlements-members seeds something new or its Job spec
 #    changes, so an environment whose member list is unchanged still renders
 #    a fresh Job rather than patching an immutable one. Must equal
 #    ENTITLEMENTS_MEMBERS_GENERATION in the CLI, which computes the Job name.
-membersGeneration: 5
+membersGeneration: 6
 
 # -- Namespace where the Jobs run; the CLI bootstrap creates
 #    workload-identity-sa here.
@@ -86,8 +95,8 @@ activeDeadlineSeconds: 600
 legalActiveDeadlineSeconds: 3600
 
 # -- activeDeadlineSeconds for the members Jobs. init_members.py's worst case
-#    is 2405 s; test_members_deadline_covers_its_wait_budget recomputes it.
-membersActiveDeadlineSeconds: 2460
+#    is 2465 s; test_members_deadline_covers_its_wait_budget recomputes it.
+membersActiveDeadlineSeconds: 2520
 
 # -- The scripts treat 409 as success, so a retried failure is a real error.
 backoffLimit: 2

@@ -263,6 +263,30 @@ def test_members_job_name_keeps_the_legacy_seed_without_member_users():
     assert entitlements_members_job_name("opendes", members) == expected
 
 
+def _env(job: dict) -> dict:
+    return {
+        e["name"]: e.get("value") for e in job["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+
+
+def test_system_groups_render_only_for_the_primary_partition():
+    """The system database lives in the first partition, so only its Jobs create
+    and seed the editors group; the primary entitlements-init renders under a new
+    name so a standing environment reruns it, and the others keep theirs."""
+    partitions = ["opendes", "second"]
+    docs = _render(partitions, _MEMBERS)
+    before = _render(partitions, {**_MEMBERS, "systemGroups": "null"})
+
+    for component in ("entitlements-init", "entitlements-members"):
+        primary, other = _jobs(docs, component)
+        assert _env(primary)["SYSTEM_GROUPS"] == "service.system-schema-service.editors"
+        assert "SYSTEM_GROUPS" not in _env(other)
+
+    init, old_init = _jobs(docs, "entitlements-init"), _jobs(before, "entitlements-init")
+    assert init[0]["metadata"]["name"] != old_init[0]["metadata"]["name"]
+    assert init[1]["metadata"]["name"] == old_init[1]["metadata"]["name"]
+
+
 def test_members_generation_agrees_between_chart_and_cli():
     """The chart's default generation and the CLI constant feed the same
     hash; a bump on one side alone would make spi info miss every seeded Job."""
@@ -447,11 +471,12 @@ def test_members_deadline_covers_its_wait_budget(init_scripts):
         + 2 * const["MAX_USER_GROUPS"]
         + 2 * len(const["MEMBER_USER_GROUPS"])
     )
+    docs = _render(["opendes"], _MEMBERS)
+    job = _jobs(docs, "entitlements-members")[0]
+    calls += 2 * len(_env(job)["SYSTEM_GROUPS"].split(","))
     assert const["REQUEST_BUDGET"] >= _TOKEN_TIMEOUT + calls * const["REQUEST_TIMEOUT"]
     budget += const["PARTITION_WAIT"] + const["PARTITION_RETRY_DELAY"] + const["REQUEST_TIMEOUT"]
 
-    docs = _render(["opendes"], _MEMBERS)
-    job = _jobs(docs, "entitlements-members")[0]
     assert job["spec"]["activeDeadlineSeconds"] >= budget
 
 
@@ -633,6 +658,46 @@ def test_entitlements_init_fails_fast_on_unrelated_forbidden(init_scripts, monke
     assert sleeps == []
 
 
+@pytest.mark.parametrize(
+    ("group_code", "exit_code"), [(201, 0), (409, 0), (403, 1)], ids=["created", "exists", "denied"]
+)
+def test_entitlements_init_creates_the_system_groups_after_provisioning(
+    init_scripts, monkeypatch, group_code, exit_code
+):
+    monkeypatch.setenv("PARTITION", "opendes")
+    monkeypatch.setenv("SYSTEM_GROUPS", "service.system-schema-service.editors")
+    auth = types.ModuleType("auth")
+    setattr(auth, "get_token", lambda: "test-token")
+    wait = types.ModuleType("wait")
+    setattr(wait, "wait_for_status", lambda *args, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "auth", auth)
+    monkeypatch.setitem(sys.modules, "wait", wait)
+
+    namespace: dict[str, object] = {"__name__": "init_entitlements_test"}
+    exec(init_scripts["init_entitlements.py"], namespace)
+    requests = []
+
+    def urlopen(req, timeout):
+        requests.append(req)
+        code = 409 if req.full_url.endswith("/tenant-provisioning") else group_code
+        if code >= 400:
+            raise urllib.error.HTTPError(
+                req.full_url, code, "error", email.message.Message(), io.BytesIO(b"{}")
+            )
+        return _FakeResponse(code, b"{}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    main = cast(Callable[[], int], namespace["main"])
+    assert main() == exit_code
+    assert [req.full_url.rsplit("/", 1)[1] for req in requests] == [
+        "tenant-provisioning",
+        "groups",
+    ]
+    assert json.loads(requests[1].data)["name"] == "service.system-schema-service.editors"
+    assert requests[1].headers["Data-partition-id"] == "opendes"
+
+
 # --- init_members.py execution harness ---------------------------------------
 
 _GROUPS = {
@@ -658,7 +723,13 @@ _USER_GROUPS = {
     "service.legal.user": "service.legal.user@opendes.dataservices.energy",
     "service.storage.admin": "service.storage.admin@opendes.dataservices.energy",
 }
-_ALL_GROUPS = {**_GROUPS, **_CREATED_GROUPS, **_USER_GROUPS}
+_SYSTEM_GROUP = "service.system-schema-service.editors"
+_ALL_GROUPS = {
+    **_GROUPS,
+    **_CREATED_GROUPS,
+    **_USER_GROUPS,
+    _SYSTEM_GROUP: f"{_SYSTEM_GROUP}@opendes.dataservices.energy",
+}
 
 
 def _groups_listing(names=tuple(_ALL_GROUPS)) -> bytes:
@@ -769,6 +840,32 @@ def test_members_seeds_member_users_into_the_user_groups_and_storage_admin_only(
     assert member_posts == set(_USER_GROUPS.values())
     admin_posts = {g for m, g in posts if m == "deployer-client-id"}
     assert admin_posts == set(_GROUPS.values())
+
+
+def test_members_seeds_members_alone_into_the_system_groups(init_scripts, monkeypatch, capsys):
+    monkeypatch.setenv("SYSTEM_GROUPS", _SYSTEM_GROUP)
+    result = _run_members(init_scripts, monkeypatch, capsys, member_users="member-client-id")
+
+    assert result.exit_code == 0
+    system = [p for p in result.routed("post") if f"/groups/{_ALL_GROUPS[_SYSTEM_GROUP]}/" in p.url]
+    assert [json.loads(p.body)["email"] for p in system] == ["deployer-client-id"]
+
+
+def test_members_fails_before_any_write_when_a_system_group_is_missing(
+    init_scripts, monkeypatch, capsys
+):
+    monkeypatch.setenv("SYSTEM_GROUPS", _SYSTEM_GROUP)
+    names = tuple(n for n in _ALL_GROUPS if n != _SYSTEM_GROUP)
+    result = _run_members(
+        init_scripts, monkeypatch, capsys, groups=_responds(200, _groups_listing(names))
+    )
+
+    assert result.exit_code == 1
+    assert result.termination_message == (
+        "entitlements-members outcome: group_missing: system groups not visible to the "
+        f"owner: {_SYSTEM_GROUP}; deployer-client-id not seeded"
+    )
+    assert result.routed("post") == []
 
 
 def test_members_fails_closed_when_the_listing_exceeds_max_user_groups(

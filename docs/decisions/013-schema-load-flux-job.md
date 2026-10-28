@@ -14,10 +14,12 @@ Shape:
 
 - New Kustomization `spi-osdu-schema-load` at `software/stacks/osdu/schema-load/`, wired into the core profile as Layer 5b (after `spi-osdu-init`, before `spi-osdu-reference`) per ADR-007.
 - Single `Job` with `workload-identity-sa`, the workload-identity pod label, and the `SCHEMA_URL` and `DATA_PARTITION` values the loader's own entrypoint reads.
+- The loader presents the OSDU identity, and the schema service authorizes its system-schema writes against `service.system-schema-service.editors` in the primary partition, which `entitlements-init` creates with that identity as OWNER (ADR-015).
 - Kustomization `healthChecks` target the Job's `Complete` condition so `spi status` surfaces the Job alongside every other Flux resource.
 - The loader image is resolved through `osdu-image-lock` from the same commit selected for schema-service, and resolution fails when that repository published no loader for the commit.
 
 Rejected:
+- **Authorizing the loader by its token issuer alone.** Needs no entitlements group, but the mesh accepts the management audience (ADR-016), so every service principal and managed identity in the tenant would pass the same check.
 - **A long-running Deployment that loads once then sleeps.** Works, but lies to Kubernetes about what the workload is.
 - **A Terraform `null_resource` with `local-exec`.** Runs at apply time with no cluster-side resource to manage, but re-introduces the CLI-tail problem inside Terraform instead of Python.
 - **A home-grown Python loader that fetches schemas from Git.** Duplicates the schema repository's CI, which already publishes a loader at the same commit as the service.

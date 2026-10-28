@@ -188,9 +188,13 @@ data:
     """Seed entitlements root groups for a partition.
 
     Partition creation and the entitlements partition cache converge
-    asynchronously. Retry tenant provisioning while entitlements reports that
-    the partition is not valid, then treat 200 and 409 as success.
+    asynchronously. Retry each POST while entitlements reports that the
+    partition is not valid. Tenant provisioning succeeds on 200 or 409; each
+    of SYSTEM_GROUPS, set only for the primary partition, is then created as
+    this identity, which makes it the group's OWNER, and succeeds on 200, 201,
+    or 409.
     """
+    import json
     import os
     import sys
     import time
@@ -202,29 +206,25 @@ data:
     from wait import wait_for_status
 
     PARTITION = os.environ["PARTITION"]
+    SYSTEM_GROUPS = [g.strip() for g in os.environ.get("SYSTEM_GROUPS", "").split(",") if g.strip()]
     ENTITLEMENTS_HOST = os.environ.get(
         "ENTITLEMENTS_HOST", "http://entitlements.osdu.svc.cluster.local"
     )
 
     INFO_URL = f"{ENTITLEMENTS_HOST}/api/entitlements/v2/info"
     POST_URL = f"{ENTITLEMENTS_HOST}/api/entitlements/v2/tenant-provisioning"
+    GROUPS_URL = f"{ENTITLEMENTS_HOST}/api/entitlements/v2/groups"
     PROVISION_ATTEMPTS = 150
     RETRY_DELAY = 2.0
 
 
-    def main() -> int:
-        print(f"Entitlements bootstrap for '{PARTITION}'")
-
-        if not wait_for_status(INFO_URL, {200}, attempts=600, delay=2.0):
-            return 1
-
-        print("  Acquiring bearer token via Workload Identity...")
-        token = get_token()
-
+    def post(url: str, body: bytes, token: str) -> int:
+        """POST until entitlements knows the partition; return the final status."""
+        code = 0
         for attempt in range(1, PROVISION_ATTEMPTS + 1):
             req = urllib.request.Request(
-                POST_URL,
-                data=b"",
+                url,
+                data=body,
                 method="POST",
                 headers={
                     "Content-Type": "application/json",
@@ -241,21 +241,40 @@ data:
                 code = e.code
                 payload = e.read().decode(errors="replace")
 
-            print(f"  POST {POST_URL} -> {code}")
+            print(f"  POST {url} -> {code}")
             print(payload)
-            if code == 200:
-                return 0
-            if code == 409:
-                print("  Tenant already provisioned; treating as success.")
-                return 0
             if code == 403 and "Invalid data partition id" in payload:
                 if attempt < PROVISION_ATTEMPTS:
                     print("  Partition is not visible to entitlements yet; retrying...")
                     time.sleep(RETRY_DELAY)
                     continue
+            return code
+        return code
+
+
+    def main() -> int:
+        print(f"Entitlements bootstrap for '{PARTITION}'")
+
+        if not wait_for_status(INFO_URL, {200}, attempts=600, delay=2.0):
             return 1
 
-        return 1
+        print("  Acquiring bearer token via Workload Identity...")
+        token = get_token()
+
+        code = post(POST_URL, b"", token)
+        if code == 409:
+            print("  Tenant already provisioned; treating as success.")
+        elif code != 200:
+            return 1
+
+        for name in SYSTEM_GROUPS:
+            body = json.dumps({"name": name, "description": "Guards the system database"})
+            code = post(GROUPS_URL, body.encode(), token)
+            if code == 409:
+                print(f"  {name} already exists; treating as success.")
+            elif code not in (200, 201):
+                return 1
+        return 0
 
 
     if __name__ == "__main__":
@@ -589,10 +608,12 @@ data:
     which tenant-provisioning made OWNER of the root groups, and adds each
     configured member as x-user-id to users, users.datalake.ops,
     users.datalake.admins, users.data.root, users.datalake.delegation, and
-    users.datalake.impersonation
-    for the partition. Each configured member user, the test caller who is
-    no data manager, is added to users, to every service.<name>.user group the
-    listing carries, and to the fixed MEMBER_USER_GROUPS, and nothing else.
+    users.datalake.impersonation for the partition, and to each of
+    SYSTEM_GROUPS, which only the primary partition's Job sets and
+    entitlements-init creates. Each configured member user, the test caller
+    who is no data manager, is added to users, to every service.<name>.user
+    group the listing carries, and to the fixed MEMBER_USER_GROUPS, and
+    nothing else.
 
     The Azure provider's tenant-provisioning does not create the two
     impersonation groups the core defines, users.datalake.delegation (who may
@@ -611,7 +632,7 @@ data:
          the listing carries more than MAX_USER_GROUPS service.<name>.user
          groups or lacks one of MEMBER_USER_GROUPS.
       3. POST /groups for each impersonation group the listing lacks.
-      4. Select the six root groups by name, and users, every
+      4. Select the six root groups and SYSTEM_GROUPS by name, and users, every
          service.<name>.user group, and MEMBER_USER_GROUPS for the member users.
       5. POST each principal to each of its groups. 200 adds, 409 is
          already a member.
@@ -665,10 +686,11 @@ data:
     # fifteen 30 s calls for the one member the CLI seeds (one listing, two
     # creates, then a write and a read per root group), and up to
     # MAX_USER_GROUPS plus len(MEMBER_USER_GROUPS) more write-and-read pairs
-    # plus a users write for the one member user. Partition retries add at most
+    # plus a users write for the one member user, and a write-and-read pair for
+    # the one system group. Partition retries add at most
     # PARTITION_WAIT plus one delay and one more call.
     REQUEST_TIMEOUT = 30
-    REQUEST_BUDGET = 1560
+    REQUEST_BUDGET = 1620
     PARTITION_WAIT = 600
     PARTITION_RETRY_DELAY = 5.0
     INFO_ATTEMPTS = 30
@@ -731,6 +753,9 @@ data:
         member_users = sorted(
             {m.strip() for m in os.environ.get("MEMBER_USERS", "").split(",") if m.strip()}
         )
+        system_groups = [
+            g.strip() for g in os.environ.get("SYSTEM_GROUPS", "").split(",") if g.strip()
+        ]
         host = os.environ.get("ENTITLEMENTS_HOST", "http://entitlements.osdu.svc.cluster.local")
         base = f"{host}/api/entitlements/v2"
         print(f"Entitlements members for '{partition}': {', '.join(members)}")
@@ -806,8 +831,18 @@ data:
             )
             return 1
 
+        absent_system = [name for name in system_groups if not emails.get(name)]
+        if absent_system:
+            outcome(
+                "group_missing",
+                f"system groups not visible to the owner: {', '.join(absent_system)}; "
+                f"{', '.join(members)} not seeded",
+            )
+            return 1
+
         user_groups = ["users"] + matched_groups + list(MEMBER_USER_GROUPS)
         seeds = [(member, name) for member in members for name in ROOT_GROUPS]
+        seeds += [(member, name) for member in members for name in system_groups]
         seeds += [(member, name) for member in member_users for name in user_groups]
 
         added = False
