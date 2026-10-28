@@ -69,6 +69,13 @@ spec:
         value: osdu-db
       - name: AZURE_SYSTEM_STORAGECONTAINERNAME
         value: system
+      # System-schema writes authorize against service.system-schema-service.editors
+      # here, the group the osdu-spi-init chart creates in the primary partition.
+      - name: AZURE_SYSTEM_AUTHORIZATIONPARTITION
+        valueFrom:
+          configMapKeyRef:
+            name: osdu-config
+            key: PRIMARY_PARTITION
       - name: SERVICEBUS_TOPIC_NAME
         value: schemachangedtopic
       - name: EVENT_GRID_ENABLED

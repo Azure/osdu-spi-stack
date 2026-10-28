@@ -7,7 +7,8 @@ you may not use this file except in compliance with the License.
 
 {{- define "osdu-spi-init.entitlementsInitSpec" -}}
 {{- $root := .root }}
-{{- $partition := .partition -}}
+{{- $partition := .partition }}
+{{- $systemGroups := .systemGroups -}}
 backoffLimit: {{ $root.Values.backoffLimit }}
 activeDeadlineSeconds: {{ $root.Values.activeDeadlineSeconds }}
 {{ include "osdu-spi-init.podFailurePolicy" $root }}
@@ -30,6 +31,10 @@ template:
         env:
           - name: PARTITION
             value: {{ $partition | quote }}
+          {{- if $systemGroups }}
+          - name: SYSTEM_GROUPS
+            value: {{ $systemGroups | join "," | quote }}
+          {{- end }}
         volumeMounts:
           - name: scripts
             mountPath: /scripts
@@ -49,10 +54,15 @@ template:
 {{- if .Values.coreEnabled }}
 # One Job per partition. POSTs tenant-provisioning so entitlements creates
 # the root groups with the caller's appid as OWNER, once partition-init has
-# landed the partition record. A Job's spec is immutable, so the name carries
-# a hash of it and a changed spec renders a new Job.
+# landed the partition record, then creates the system groups in the primary
+# partition. A Job's spec is immutable, so the name carries a hash of it and a
+# changed spec renders a new Job.
 {{- range $partition := .Values.partitions }}
-{{- $spec := include "osdu-spi-init.entitlementsInitSpec" (dict "root" $ "partition" $partition) }}
+{{- $systemGroups := list }}
+{{- if eq $partition (first $.Values.partitions) }}
+{{- $systemGroups = $.Values.systemGroups | default list }}
+{{- end }}
+{{- $spec := include "osdu-spi-init.entitlementsInitSpec" (dict "root" $ "partition" $partition "systemGroups" $systemGroups) }}
 ---
 apiVersion: batch/v1
 kind: Job

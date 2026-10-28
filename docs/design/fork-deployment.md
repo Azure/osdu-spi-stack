@@ -412,15 +412,17 @@ a template revision that includes
 The deploy identity is the positive caller: the `entitlements-members` Job
 adds its client id to `users`,
 `users.datalake.ops`, `users.datalake.admins`, `users.data.root`,
-`users.datalake.delegation`, and `users.datalake.impersonation` for every partition, creating the delegation group
+`users.datalake.delegation`, and `users.datalake.impersonation` for every partition, and to
+`service.system-schema-service.editors` in the primary partition, creating the delegation group
 and `users.datalake.impersonation` first when the Azure tenant bootstrap has
 not. A new Job runs when the environment is built, the identity changes, or
 the chart's seed generation is bumped. `spi info --json` reports
 `entitlements_domain` from `SERVICE_DOMAIN_NAME` on the live
 `osdu-entitlements` Deployment, with an empty value before that Deployment
 exists. It reports `entitlements_seeded.<partition>` once the Job has completed.
-Generation 5 reruns the Job on an upgrade to add impersonation for the
-deploy identity; it changes neither the member nor no-access caller's groups.
+Generation 6 reruns the Job on an upgrade to add the deploy identity to the
+system-schema editors group; it changes neither the member nor no-access
+caller's groups.
 Two identities carry the negative paths, and both hold the same federated
 credential as the deployer. The member identity is the caller the OSDU
 suites name `NO_ACCESS_USER`: the same Job seeds it into `users`, every

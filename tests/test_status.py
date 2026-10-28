@@ -105,7 +105,7 @@ def _init_values(members=("deployer-client-id",), partitions=("opendes",)) -> di
     return {"data": {"values.yaml": "\n".join(lines) + "\n"}}
 
 
-EXPECTED_JOB = status.entitlements_members_job_name("opendes", ["deployer-client-id"])
+EXPECTED_JOB = status.entitlements_members_job_name("opendes", ["deployer-client-id"], primary=True)
 
 
 def _wire(
