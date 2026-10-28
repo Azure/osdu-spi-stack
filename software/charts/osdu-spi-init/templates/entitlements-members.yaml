@@ -58,9 +58,16 @@ spec:
               value: {{ $members | join "," | quote }}
             - name: MEMBER_USERS
               value: {{ $memberUsers | join "," | quote }}
-            {{- if and $.Values.systemGroups (eq $partition (first $.Values.partitions)) }}
+            {{- if $.Values.systemGroups }}
+            # The spec must not depend on partition order: the name hashes only
+            # the member lists and generation, and a Job's pod template is immutable.
             - name: SYSTEM_GROUPS
               value: {{ $.Values.systemGroups | join "," | quote }}
+            - name: PRIMARY_PARTITION
+              valueFrom:
+                configMapKeyRef:
+                  name: osdu-config
+                  key: PRIMARY_PARTITION
             {{- end }}
           volumeMounts:
             - name: scripts
