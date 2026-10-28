@@ -10,8 +10,9 @@ you may not use this file except in compliance with the License.
 # the service user groups, and service.storage.admin.
 # The name hashes the lists and the seed generation so a changed list, a
 # changed seed, or a changed spec renders a new Job, leaving out the member-user list when it is
-# empty so existing Jobs keep their name; templates.entitlements_members_job_name
-# computes the same.
+# empty so existing Jobs keep their name. The primary partition's seed is marked,
+# so a partition that gains or loses that role reruns its Job;
+# templates.entitlements_members_job_name computes the same.
 {{- if and .Values.membersEnabled .Values.entitlementsMembers }}
 {{- $members := .Values.entitlementsMembers | sortAlpha }}
 {{- $memberUsers := .Values.entitlementsMemberUsers | default list | sortAlpha }}
@@ -19,8 +20,9 @@ you may not use this file except in compliance with the License.
 {{- if $memberUsers }}
 {{- $seed = printf "%s|%s#%v" ($members | join ",") ($memberUsers | join ",") .Values.membersGeneration }}
 {{- end }}
-{{- $hash := $seed | sha256sum | trunc 8 }}
 {{- range $partition := .Values.partitions }}
+{{- $primary := eq $partition (first $.Values.partitions) }}
+{{- $hash := ternary (printf "%s@primary" $seed) $seed $primary | sha256sum | trunc 8 }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -58,16 +60,9 @@ spec:
               value: {{ $members | join "," | quote }}
             - name: MEMBER_USERS
               value: {{ $memberUsers | join "," | quote }}
-            {{- if $.Values.systemGroups }}
-            # The spec must not depend on partition order: the name hashes only
-            # the member lists and generation, and a Job's pod template is immutable.
+            {{- if and $.Values.systemGroups $primary }}
             - name: SYSTEM_GROUPS
               value: {{ $.Values.systemGroups | join "," | quote }}
-            - name: PRIMARY_PARTITION
-              valueFrom:
-                configMapKeyRef:
-                  name: osdu-config
-                  key: PRIMARY_PARTITION
             {{- end }}
           volumeMounts:
             - name: scripts

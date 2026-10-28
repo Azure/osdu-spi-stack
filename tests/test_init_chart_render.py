@@ -181,7 +181,7 @@ def test_component_split_matches_the_three_releases():
 
     members = _render(["opendes"], {"coreEnabled": "false", "legalEnabled": "false", **_MEMBERS})
     assert [doc["metadata"]["name"] for doc in members] == [
-        entitlements_members_job_name("opendes", ["deployer-client-id"])
+        entitlements_members_job_name("opendes", ["deployer-client-id"], primary=True)
     ]
 
 
@@ -201,7 +201,7 @@ def test_members_job_renders_one_per_partition_under_the_cli_computed_name():
     jobs = _jobs(docs, "entitlements-members")
 
     assert [job["metadata"]["name"] for job in jobs] == [
-        entitlements_members_job_name("opendes", members),
+        entitlements_members_job_name("opendes", members, primary=True),
         entitlements_members_job_name("second", members),
     ]
     for job in jobs:
@@ -230,9 +230,11 @@ def test_members_job_name_covers_member_users():
     job = _jobs(docs, "entitlements-members")[0]
 
     assert job["metadata"]["name"] == entitlements_members_job_name(
-        "opendes", members, ["member-client-id"]
+        "opendes", members, ["member-client-id"], primary=True
     )
-    assert job["metadata"]["name"] != entitlements_members_job_name("opendes", members)
+    assert job["metadata"]["name"] != entitlements_members_job_name(
+        "opendes", members, primary=True
+    )
     env = {
         e["name"]: e.get("value") for e in job["spec"]["template"]["spec"]["containers"][0]["env"]
     }
@@ -255,12 +257,12 @@ def test_members_job_name_keeps_the_legacy_seed_without_member_users():
     )
     job = _jobs(docs, "entitlements-members")[0]
 
-    seed = f"deployer-client-id#{ENTITLEMENTS_MEMBERS_GENERATION}"
+    seed = f"deployer-client-id#{ENTITLEMENTS_MEMBERS_GENERATION}@primary"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
     expected = f"entitlements-members-opendes-{digest}"
 
     assert job["metadata"]["name"] == expected
-    assert entitlements_members_job_name("opendes", members) == expected
+    assert entitlements_members_job_name("opendes", members, primary=True) == expected
 
 
 def _env(job: dict) -> dict:
@@ -283,24 +285,28 @@ def test_system_groups_are_created_only_in_the_primary_partition():
     assert init[1]["metadata"]["name"] == old_init[1]["metadata"]["name"]
 
 
-def test_members_jobs_do_not_depend_on_partition_order():
-    """The members Job name ignores partition order and its pod template is
-    immutable, so reordering the list must render identical Jobs; the script
-    finds the primary partition in osdu-config at run time instead."""
+def test_members_jobs_rerun_when_a_partition_gains_or_loses_the_primary_role():
+    """A completed Job never reruns and its pod template is immutable, so the
+    primary role is part of the name: a reorder renames the Jobs of the
+    partitions whose role changed, under the names the CLI computes, and only
+    the new primary seeds the system groups."""
+    members = ["deployer-client-id"]
 
-    def members(partitions: list[str]) -> dict[str, dict]:
-        jobs = _jobs(_render(partitions, _MEMBERS), "entitlements-members")
-        return {job["metadata"]["name"]: job for job in jobs}
+    def jobs(partitions: list[str]) -> dict[str, dict]:
+        rendered = _jobs(_render(partitions, _MEMBERS), "entitlements-members")
+        return {job["metadata"]["labels"]["osdu.spi/partition"]: job for job in rendered}
 
-    forward = members(["opendes", "second"])
-    assert forward == members(["second", "opendes"])
-    for job in forward.values():
-        env = {e["name"]: e for e in job["spec"]["template"]["spec"]["containers"][0]["env"]}
-        assert env["SYSTEM_GROUPS"]["value"] == "service.system-schema-service.editors"
-        assert env["PRIMARY_PARTITION"]["valueFrom"]["configMapKeyRef"] == {
-            "name": "osdu-config",
-            "key": "PRIMARY_PARTITION",
-        }
+    before = jobs(["opendes", "second", "third"])
+    after = jobs(["second", "opendes", "third"])
+
+    for partition, job in after.items():
+        primary = partition == "second"
+        assert job["metadata"]["name"] == entitlements_members_job_name(
+            partition, members, primary=primary
+        )
+        assert ("SYSTEM_GROUPS" in _env(job)) is primary
+    renamed = {p for p in after if after[p]["metadata"]["name"] != before[p]["metadata"]["name"]}
+    assert renamed == {"opendes", "second"}
 
 
 def test_members_generation_agrees_between_chart_and_cli():
@@ -317,7 +323,7 @@ def test_impersonation_seed_reruns_the_job_on_a_v0_30_upgrade():
     current = _jobs(_render(["opendes"], _MEMBERS), "entitlements-members")[0]
     assert current["metadata"]["name"] != previous["metadata"]["name"]
     assert current["metadata"]["name"] == entitlements_members_job_name(
-        "opendes", ["deployer-client-id"]
+        "opendes", ["deployer-client-id"], primary=True
     )
     pod = current["spec"]["template"]
     assert pod["spec"]["serviceAccountName"] == "workload-identity-sa"
@@ -435,7 +441,7 @@ def test_job_names_follow_their_spec():
     assert name(changed, "entitlements-init") != name(base, "entitlements-init")
     assert name(legal, "legal-init") != name(base, "legal-init")
     assert [job["metadata"]["name"] for job in _jobs(base, "entitlements-members")] == [
-        entitlements_members_job_name("opendes", ["deployer-client-id"])
+        entitlements_members_job_name("opendes", ["deployer-client-id"], primary=True)
     ]
     again = _render(["opendes"], _MEMBERS)
     assert sorted(doc["metadata"]["name"] for doc in again) == sorted(
@@ -858,26 +864,19 @@ def test_members_seeds_member_users_into_the_user_groups_and_storage_admin_only(
     assert admin_posts == set(_GROUPS.values())
 
 
-@pytest.mark.parametrize(
-    ("primary", "seeded"), [("opendes", ["deployer-client-id"]), ("second", [])]
-)
-def test_members_seeds_members_alone_into_the_system_groups_of_the_primary_partition(
-    init_scripts, monkeypatch, capsys, primary, seeded
-):
+def test_members_seeds_members_alone_into_the_system_groups(init_scripts, monkeypatch, capsys):
     monkeypatch.setenv("SYSTEM_GROUPS", _SYSTEM_GROUP)
-    monkeypatch.setenv("PRIMARY_PARTITION", primary)
     result = _run_members(init_scripts, monkeypatch, capsys, member_users="member-client-id")
 
     assert result.exit_code == 0
     system = [p for p in result.routed("post") if f"/groups/{_ALL_GROUPS[_SYSTEM_GROUP]}/" in p.url]
-    assert [json.loads(p.body)["email"] for p in system] == seeded
+    assert [json.loads(p.body)["email"] for p in system] == ["deployer-client-id"]
 
 
 def test_members_fails_before_any_write_when_a_system_group_is_missing(
     init_scripts, monkeypatch, capsys
 ):
     monkeypatch.setenv("SYSTEM_GROUPS", _SYSTEM_GROUP)
-    monkeypatch.setenv("PRIMARY_PARTITION", "opendes")
     names = tuple(n for n in _ALL_GROUPS if n != _SYSTEM_GROUP)
     result = _run_members(
         init_scripts, monkeypatch, capsys, groups=_responds(200, _groups_listing(names))

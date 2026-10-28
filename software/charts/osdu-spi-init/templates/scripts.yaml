@@ -608,9 +608,9 @@ data:
     which tenant-provisioning made OWNER of the root groups, and adds each
     configured member as x-user-id to users, users.datalake.ops,
     users.datalake.admins, users.data.root, users.datalake.delegation, and
-    users.datalake.impersonation for the partition, and, when PARTITION is
-    PRIMARY_PARTITION, to each of SYSTEM_GROUPS, which entitlements-init
-    creates there. Each configured member user, the test caller
+    users.datalake.impersonation for the partition, and to each of
+    SYSTEM_GROUPS, which only the primary partition's Job sets and
+    entitlements-init creates. Each configured member user, the test caller
     who is no data manager, is added to users, to every service.<name>.user
     group the listing carries, and to the fixed MEMBER_USER_GROUPS, and
     nothing else.
@@ -756,8 +756,6 @@ data:
         system_groups = [
             g.strip() for g in os.environ.get("SYSTEM_GROUPS", "").split(",") if g.strip()
         ]
-        if os.environ.get("PRIMARY_PARTITION") != partition:
-            system_groups = []
         host = os.environ.get("ENTITLEMENTS_HOST", "http://entitlements.osdu.svc.cluster.local")
         base = f"{host}/api/entitlements/v2"
         print(f"Entitlements members for '{partition}': {', '.join(members)}")

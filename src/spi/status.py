@@ -359,7 +359,8 @@ def _read_expected_members_jobs() -> list[str]:
         return []
     users = [m for m in values.get("entitlementsMemberUsers") or [] if isinstance(m, str)]
     return [
-        entitlements_members_job_name(p, members, users) for p in values.get("partitions") or []
+        entitlements_members_job_name(p, members, users, i == 0)
+        for i, p in enumerate(values.get("partitions") or [])
     ]
 
 

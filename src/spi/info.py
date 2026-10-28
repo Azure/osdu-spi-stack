@@ -254,7 +254,7 @@ def _legal_tag_seeded(partition: str) -> bool:
 
 
 def _entitlements_seeded(
-    partition: str, members: list[str], member_users: Sequence[str] = ()
+    partition: str, members: list[str], member_users: Sequence[str] = (), primary: bool = False
 ) -> bool:
     """Whether entitlements-members has added the configured members for this partition.
 
@@ -264,7 +264,7 @@ def _entitlements_seeded(
     """
     if not members:
         return False
-    name = entitlements_members_job_name(partition, members, member_users)
+    name = entitlements_members_job_name(partition, members, member_users, primary)
     data = kubectl_json(["get", "job", name, "-n", "osdu"])
     return bool(((data or {}).get("status") or {}).get("succeeded"))
 
@@ -496,7 +496,10 @@ def _collect_info() -> dict:
     members = _parse_members_from_values_yaml(init_values)
     member_users = _parse_member_users_from_values_yaml(init_values)
     members_seeded = gather_reads(
-        [partial(_entitlements_seeded, name, members, member_users) for name in partitions]
+        [
+            partial(_entitlements_seeded, name, members, member_users, i == 0)
+            for i, name in enumerate(partitions)
+        ]
     )
     versions = _osdu_versions(image_lock)
 

@@ -108,7 +108,7 @@ def _wire(
     monkeypatch.setattr(
         info,
         "_entitlements_seeded",
-        lambda partition, members, member_users=(): bool(members) and members_seeded,
+        lambda partition, members, member_users=(), primary=False: bool(members) and members_seeded,
     )
     monkeypatch.setattr(info, "read_entitlements_domain", lambda: entitlements_domain)
     monkeypatch.setattr(info, "_read_deploy_record", lambda: record)
@@ -326,6 +326,21 @@ def test_info_json_reports_entitlements_seeded_per_partition(monkeypatch):
 
     _wire(monkeypatch, members=())
     assert info.collect_info()["entitlements_seeded"] == {"opendes": False}
+
+
+def test_info_reads_the_primary_members_job_only_for_the_first_partition(monkeypatch):
+    """The primary partition's members Job name differs, so seeding is read
+    against the name the chart renders for each partition's role."""
+    _wire(monkeypatch, partitions=["opendes", "second"])
+    seen = []
+
+    def seeded(partition, members, member_users=(), primary=False):
+        seen.append((partition, primary))
+        return True
+
+    monkeypatch.setattr(info, "_entitlements_seeded", seeded)
+    info.collect_info()
+    assert sorted(seen) == [("opendes", True), ("second", False)]
 
 
 def test_info_json_reports_entitlements_domain_from_deployment(monkeypatch):

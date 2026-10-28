@@ -402,19 +402,25 @@ def parse_init_values(text: str) -> dict:
 
 
 def entitlements_members_job_name(
-    partition: str, members: Sequence[str], member_users: Sequence[str] = ()
+    partition: str,
+    members: Sequence[str],
+    member_users: Sequence[str] = (),
+    primary: bool = False,
 ) -> str:
     """The Job name the chart renders for these member lists.
 
     Must match templates/entitlements-members.yaml: each list sortAlpha and
     join ",", seeded as "<admins>|<users>#<generation>", or "<admins>#<generation>"
-    with no member users so existing Jobs keep their name, then sha256sum,
-    trunc 8. A render test holds the two together.
+    with no member users so existing Jobs keep their name, with "@primary"
+    appended for the first partition, then sha256sum, trunc 8. A render test
+    holds the two together.
     """
     admins = ",".join(sorted(set(members)))
     users = ",".join(sorted(set(member_users)))
     generation = ENTITLEMENTS_MEMBERS_GENERATION
     seed = f"{admins}|{users}#{generation}" if users else f"{admins}#{generation}"
+    if primary:
+        seed += "@primary"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
     return f"{ENTITLEMENTS_MEMBERS_COMPONENT}-{partition}-{digest}"
 
