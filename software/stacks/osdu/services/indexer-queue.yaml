@@ -67,7 +67,7 @@ spec:
       - name: AZURE_SCHEMACHANGED_TOPIC_NAME
         value: schemachangedtopic
       - name: AZURE_SCHEMACHANGED_TOPIC_SUBSCRIPTION
-        value: schemachangedtopiceg
+        value: schemachangedtopicsubscription
       - name: MAX_CONCURRENT_CALLS
         value: "32"
       - name: MAX_DELIVERY_COUNT
