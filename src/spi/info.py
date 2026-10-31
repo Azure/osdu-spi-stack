@@ -69,6 +69,12 @@ from .templates import LEGAL_TAG_BASE, entitlements_members_job_name, parse_init
 
 MANAGEMENT_AUDIENCE = "https://management.azure.com"
 
+# The in-cluster targets a trusted repository may port-forward to; the
+# spi-fork-forwarder Role in software/components/fork-rbac grants exactly these.
+FORWARDS = {
+    "elasticsearch": {"namespace": "platform", "pod": "elasticsearch-es-default-0", "port": 9200},
+}
+
 # Display order.
 _OSDU_API_PATHS = [
     ("partition", "/api/partition/v1/"),
@@ -511,6 +517,7 @@ def _collect_info() -> dict:
         "endpoints": endpoints,
         "middleware_uis": middleware,
         "internal_services": {svc: addr for svc, addr, _hint in _build_internal_services()},
+        "forwards": FORWARDS,
         "azure": {
             "resource_group": rg,
             "region": azure_ext.get("AZURE_REGION", ""),

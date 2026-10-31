@@ -111,7 +111,7 @@ config.
   that intent, not from a stale retained roster. An unreadable declaration
   blocks mutation; it does not turn a declared environment into an
   undeclared one.
-- **Explicit-subject RBAC, reads split from writes.** Two Roles in the
+- **Explicit-subject RBAC, reads split from writes.** Three Roles in the
   platform manifests carry the verbs; their RoleBindings name the deploy
   identity's principal id as a `User` subject, substituted from
   `spi-cluster-config` the way the Istio revision is. Managed-identity tokens
@@ -126,8 +126,13 @@ config.
   - `spi-fork-verifier` in `osdu`: `deployments` get/list/watch, `pods`
     get/list, `pods/log` get, `events` list, `configmaps` get/list, `jobs`
     get for the legal-tag observation `spi info --json` reports.
-  No create or delete on anything, and no Kubernetes `secrets` verb in either
-  namespace: acceptance secrets come from Key Vault.
+  - `spi-fork-forwarder` in `platform`: `pods` get and `pods/portforward`
+    create, both restricted by `resourceNames` to the targets `spi info --json`
+    publishes under `forwards` (today `elasticsearch-es-default-0`), for
+    suites that assert against Elasticsearch directly.
+  No create beyond that port-forward, no delete on anything, and no
+  Kubernetes `secrets` verb in any namespace: acceptance secrets come from
+  Key Vault.
 - **Onboarding plans by default.** `spi onboard` prints the `az`, `spi`, and
   `gh` commands it would run, grouped by the system they touch, and changes
   nothing until `--write`. It requires the `core` profile, read from the
