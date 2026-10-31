@@ -549,6 +549,20 @@ def test_info_json_publishes_the_deploy_identity_values(monkeypatch):
     assert "deployer-principal-id" not in str(block)
 
 
+def test_info_json_publishes_the_elasticsearch_forward_target(monkeypatch):
+    _wire(monkeypatch)
+
+    forwards = info.collect_info()["forwards"]
+
+    assert forwards == {
+        "elasticsearch": {
+            "namespace": "platform",
+            "pod": "elasticsearch-es-default-0",
+            "port": 9200,
+        }
+    }
+
+
 def test_deploy_identity_block_is_empty_strings_before_bootstrap(monkeypatch):
     _wire(monkeypatch)
     monkeypatch.setattr(info, "_read_cluster_config", lambda: {})

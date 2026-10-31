@@ -31,6 +31,7 @@ import yaml
 
 from spi.bootstrap import ISTIO_REVISION_CONFIGMAP
 from spi.config import IngressMode, Profile
+from spi.info import FORWARDS
 from spi.ingress import (
     AZURE_DNS_LABEL_ANNOTATION,
     GATEWAY_NAME,
@@ -862,11 +863,15 @@ class TestForkRbac:
         )
         roles = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Role"}
         bindings = [d for d in docs if d["kind"] == "RoleBinding"]
-        assert set(roles) == {"spi-fork-deployer", "spi-fork-verifier"}
+        assert set(roles) == {"spi-fork-deployer", "spi-fork-verifier", "spi-fork-forwarder"}
+        forward_pods = sorted(target["pod"] for target in FORWARDS.values())
         for role in roles.values():
             for rule in role["rules"]:
                 assert "secrets" not in rule["resources"]
-                assert not {"create", "delete", "update"} & set(rule["verbs"])
+                assert not {"delete", "update"} & set(rule["verbs"])
+                if "create" in rule["verbs"]:
+                    assert rule["resources"] == ["pods/portforward"]
+                    assert sorted(rule["resourceNames"]) == forward_pods
                 if "patch" in rule["verbs"]:
                     assert rule["resourceNames"] == ["osdu-image-lock"]
         verifier_verbs = {
@@ -883,6 +888,25 @@ class TestForkRbac:
             assert subject["name"] == (
                 "${DEPLOY_IDENTITY_PRINCIPAL_ID:=spi-deploy-identity-unprovisioned}"
             )
+
+    def test_forwarder_grants_exactly_the_published_forward_targets(self):
+        docs = list(
+            yaml.safe_load_all(
+                (STACKS.parent.parent / "components/fork-rbac/fork-rbac.yaml").read_text()
+            )
+        )
+        (role,) = [
+            d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "spi-fork-forwarder"
+        ]
+        granted = {
+            (role["metadata"]["namespace"], pod)
+            for rule in role["rules"]
+            for pod in rule["resourceNames"]
+        }
+        published = {(target["namespace"], target["pod"]) for target in FORWARDS.values()}
+        assert granted == published
+        verbs = {rule["resources"][0]: rule["verbs"] for rule in role["rules"]}
+        assert verbs == {"pods": ["get"], "pods/portforward": ["create"]}
 
 
 class TestLoadRegistry:

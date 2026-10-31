@@ -87,3 +87,36 @@ subjects:
   - apiGroup: rbac.authorization.k8s.io
     kind: User
     name: ${DEPLOY_IDENTITY_PRINCIPAL_ID:=spi-deploy-identity-unprovisioned}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spi-fork-forwarder
+  namespace: platform
+  labels:
+    app.kubernetes.io/managed-by: osdu-spi-stack
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    resourceNames: ["elasticsearch-es-default-0"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    resourceNames: ["elasticsearch-es-default-0"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spi-fork-forwarder
+  namespace: platform
+  labels:
+    app.kubernetes.io/managed-by: osdu-spi-stack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spi-fork-forwarder
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: ${DEPLOY_IDENTITY_PRINCIPAL_ID:=spi-deploy-identity-unprovisioned}
