@@ -26,14 +26,19 @@ import json
 import os
 import re
 import shutil
+import socket
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Collection, Iterable, Mapping, Sequence
+from typing import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 
 from rich.markup import escape
 
@@ -65,18 +70,28 @@ from .pins import (
     require_deployable,
     verify_service_image,
 )
-from .shell import run_command, run_process
+from .shell import prepare_command, run_command, run_process
 from .suite_report import REPORT_DIRS, redactor, secret_name, secret_values
 
 DESCRIPTOR_PATH = ".spi/service.yaml"
 RESOLVER_PATH = ".github/actions/acceptance-resolver/resolve.py"
 VERDICT_PATH = ".github/actions/acceptance-image/suite-verdict.py"
+TRUSTSTORE_PATH = ".github/actions/acceptance-image/forward-truststore.sh"
 SETTINGS_PATH = ".mvn/community-maven.settings.xml"
 MACHINERY = (DESCRIPTOR_PATH, RESOLVER_PATH, VERDICT_PATH)
 REPORT_SCHEMA = 1
 SUITE_PLATFORM = "linux/amd64"
 # The acceptance image bakes each suite under its working directory, as the lane reads it.
 IMAGE_SUITE_ROOT = "/suite"
+TRUST_MOUNT = "/spi-trust"
+ENGINES = ("docker", "podman")
+# Where a container reaches the host's loopback when its engine runs in a VM.
+HOST_ALIASES = {"docker": "host.docker.internal", "podman": "host.containers.internal"}
+_HOST_NETWORK = sys.platform.startswith("linux")
+# The first resolver that takes --forward-host.
+FORWARD_HOST_ENGINE = (1, 3, 0)
+FORWARD_READY_SECONDS = 30
+FORWARD_REOPEN_SECONDS = 2
 BEARERS = (
     ("deploy", "RESOLVER_TOKEN"),
     ("member", "RESOLVER_MEMBER_TOKEN"),
@@ -182,6 +197,10 @@ class SuitePlan:
     shown: dict[str, str]
     expires: str
     declared: tuple[str, ...] = ()
+    # ``name host:port`` for each in-cluster service the suite reaches through a port-forward.
+    forwards: tuple[str, ...] = ()
+    # Vault values among ``variables``: they outlive the bearers' expiry.
+    vault_secrets: int = 0
 
 
 @dataclass(frozen=True)
@@ -197,6 +216,15 @@ class _Binding:
     env_file: Path
     bearers: dict[str, str]
     expected: dict
+    engine: str = "docker"
+    forwards: tuple[dict, ...] = ()
+    secrets: tuple[str, ...] = ()
+    forward_host: str = "localhost"
+
+    @property
+    def host_network(self) -> bool:
+        """A paired container on the host's own network reaches the forward on localhost."""
+        return bool(self.forwards) and self.mode == "paired" and self.forward_host == "localhost"
 
     @property
     def test_dir(self) -> str:
@@ -360,10 +388,12 @@ def resolve_commit(target: PairedTarget) -> str:
     return sha
 
 
-def fetch_machinery(source_repo: str, sha: str, into: Path) -> Path:
-    """Write the commit's descriptor, resolver, and verdict script under ``into``."""
+def fetch_machinery(
+    source_repo: str, sha: str, into: Path, files: Sequence[str] = MACHINERY
+) -> Path:
+    """Write the commit's descriptor, resolver, and verdict script (or ``files``) under ``into``."""
 
-    for relative in MACHINERY:
+    for relative in files:
         try:
             body = github_file(source_repo, relative, sha)
         except ImageResolutionError as exc:
@@ -445,45 +475,29 @@ def mint_bearers() -> dict[str, str]:
     return bearers
 
 
-def resolve_suite(
-    service: str,
+def _resolver(
     root: Path,
     suite: str,
-    facts: Path,
-    work: Path,
-    bearers: Mapping[str, str],
-    overrides: Mapping[str, str],
-) -> tuple[dict, Path]:
-    """Run the resolver in ``run`` mode; return the report's contract and the env file.
+    arguments: Sequence[str],
+    env: Mapping[str, str],
+    report_path: Path,
+    held: Iterable[str],
+) -> dict:
+    """Run the commit's resolver; return its report, or raise with its refusal's category."""
 
-    The descriptor must name ``service``, or a checkout of another fork would
-    run its suite under this service's guards.
-
-    The resolver lets an explicit variable win over every fact, so it sees
-    only PATH, the bearers, and the caller's overrides (plus the Windows startup set).
-    """
-
-    env_file = work / "suite.env"
-    report_path = work / "report.json"
-    env = {**_host_env(("PATH",), WINDOWS_PROCESS_ENV), **bearers, **overrides}
     result = run_process(
         [
             sys.executable,
             str(root / RESOLVER_PATH),
-            "--mode",
-            "run",
+            *arguments,
             "--suite",
             suite,
             "--descriptor",
             str(root / DESCRIPTOR_PATH),
-            "--facts",
-            str(facts),
-            "--env-file",
-            str(env_file),
             "--report",
             str(report_path),
         ],
-        env=env,
+        env=dict(env),
         capture_output=True,
         text=True,
     )
@@ -495,7 +509,7 @@ def resolve_suite(
         error = report.get("error") or {}
         stderr = (result.stderr or "").strip().splitlines()
         # The resolver held these credentials, so what it says of a failure may quote one.
-        redact = redactor(secret_values(bearers, overrides))
+        redact = redactor(held)
         detail = redact(error.get("detail") or (stderr[-1] if stderr else ""))
         code, exit_code = _RESOLVER_EXITS.get(result.returncode, ("resolver_failed", EXIT_NOT_RUN))
         raise SuiteNotRun(
@@ -508,6 +522,59 @@ def resolve_suite(
             "report_schema",
             f"resolver report_schema {report.get('report_schema')!r} is not {REPORT_SCHEMA}",
         )
+    return report
+
+
+def suite_contract(root: Path, suite: str, work: Path) -> dict:
+    """The resolver's contract-only report: what ``suite`` needs before it can be bound."""
+
+    return _resolver(
+        root,
+        suite,
+        ["--contract-only"],
+        _host_env(("PATH",), WINDOWS_PROCESS_ENV),
+        work / "contract.json",
+        (),
+    )
+
+
+def resolve_suite(
+    service: str,
+    root: Path,
+    suite: str,
+    facts: Path,
+    work: Path,
+    bearers: Mapping[str, str],
+    overrides: Mapping[str, str],
+    *,
+    secrets: Path | None = None,
+    held: Iterable[str] = (),
+    forward_host: str = "",
+) -> tuple[dict, Path]:
+    """Run the resolver in ``run`` mode; return its report and the env file.
+
+    The descriptor must name ``service``, or a checkout of another fork would
+    run its suite under this service's guards.
+
+    The resolver lets an explicit variable win over every fact, so it sees
+    only PATH, the bearers, and the caller's overrides (plus the Windows startup set).
+    """
+
+    env_file = work / "suite.env"
+    env = {**_host_env(("PATH",), WINDOWS_PROCESS_ENV), **bearers, **overrides}
+    arguments = ["--mode", "run", "--facts", str(facts), "--env-file", str(env_file)]
+    if secrets is not None:
+        arguments += ["--secrets", str(secrets)]
+    if forward_host:
+        arguments += ["--forward-host", forward_host]
+    report = _resolver(
+        root,
+        suite,
+        arguments,
+        env,
+        work / "report.json",
+        (*secret_values(bearers, overrides), *held),
+    )
     declared = report.get("service")
     if declared != service:
         raise SuiteNotRun(
@@ -515,7 +582,203 @@ def resolve_suite(
             f"the descriptor declares service {declared!r}, not {service!r}; "
             "point --source at the fork that builds it",
         )
-    return report.get("contract") or {}, env_file
+    return report, env_file
+
+
+def _engine_version(report: Mapping) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in str(report.get("engine_version", "")).split("."))
+    except ValueError:
+        return ()
+
+
+def fetch_secrets(names: Sequence[str], facts: Mapping, into: Path) -> tuple[Path, tuple[str, ...]]:
+    """Read ``names`` from the environment's vault into an owner-only JSON file.
+
+    Returns the file and the values, so every message the run prints can leave them out.
+    """
+
+    vault = str((facts.get("azure") or {}).get("keyvault") or "")
+    if not re.fullmatch(r"[A-Za-z0-9-]{3,24}", vault):
+        raise _refused("env_not_ready", "the environment publishes no usable azure.keyvault")
+    _require_tool("az")
+    values: dict[str, str] = {}
+    for name in names:
+        result = run_process(
+            [
+                "az",
+                "keyvault",
+                "secret",
+                "show",
+                "--vault-name",
+                vault,
+                "--name",
+                name,
+                "-o",
+                "json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        try:
+            value = (
+                json.loads(result.stdout or "{}").get("value") if result.returncode == 0 else None
+            )
+        except (json.JSONDecodeError, AttributeError):
+            value = None
+        if not isinstance(value, str) or not value:
+            stderr = (result.stderr or "").strip().splitlines()
+            why = stderr[-1] if stderr else "no value"
+            raise SuiteNotRun("secret_unavailable", f"Key Vault secret {name} in {vault}: {why}")
+        # As the lane reads it: an env file cannot carry the newline a vault value often ends with.
+        values[name] = value.rstrip("\n")
+    path = into / "secrets.json"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(values, handle)
+    return path, tuple(values.values())
+
+
+def container_engine() -> str:
+    """``SPI_CONTAINER_ENGINE``, else the first of docker and podman on PATH."""
+
+    chosen = os.environ.get("SPI_CONTAINER_ENGINE", "").strip().lower()
+    if chosen:
+        if chosen not in ENGINES:
+            raise SuiteNotRun(
+                "engine_unknown",
+                f"SPI_CONTAINER_ENGINE={chosen} is not one of {', '.join(ENGINES)}",
+            )
+        return chosen
+    return next((engine for engine in ENGINES if shutil.which(engine)), ENGINES[0])
+
+
+def forward_host(engine: str, paired: bool) -> str:
+    """Where the suite reaches a port-forward the host opened.
+
+    ``SPI_FORWARD_HOST`` overrides it for a paired run, for an engine whose
+    host network is not this host's (rootless Docker, Docker Desktop on Linux).
+    """
+
+    if not paired:
+        return "localhost"
+    chosen = os.environ.get("SPI_FORWARD_HOST", "").strip()
+    if chosen:
+        if not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", chosen):
+            raise SuiteNotRun(
+                "forward_host_invalid", f"SPI_FORWARD_HOST={chosen} is not a hostname"
+            )
+        return chosen
+    return "localhost" if _HOST_NETWORK else HOST_ALIASES[engine]
+
+
+def _listening(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def _start_forward(command: list[str], log: Path) -> subprocess.Popen:
+    with log.open("ab") as handle:
+        return subprocess.Popen(
+            prepare_command(command),
+            stdin=subprocess.DEVNULL,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+        )
+
+
+@contextmanager
+def forwarding(targets: Sequence[Mapping], work: Path) -> Iterator[None]:
+    """Hold a ``kubectl port-forward`` to each target, reopened if it drops, for the block."""
+
+    stopped = threading.Event()
+    running: dict[str, subprocess.Popen] = {}
+    threads = []
+
+    def hold(name: str, command: list[str], log: Path) -> None:
+        while not stopped.is_set():
+            proc = _start_forward(command, log)
+            running[name] = proc
+            while proc.poll() is None and not stopped.wait(0.5):
+                pass
+            if stopped.is_set():
+                break
+            stopped.wait(FORWARD_REOPEN_SECONDS)
+
+    try:
+        for target in targets:
+            name, port = str(target["name"]), int(target["port"])
+            log = work / f"forward-{name}.log"
+            log.write_bytes(b"")
+            command = [
+                "kubectl",
+                "port-forward",
+                "-n",
+                str(target["namespace"]),
+                f"pod/{target['pod']}",
+                f"{port}:{port}",
+            ]
+            thread = threading.Thread(target=hold, args=(name, command, log), daemon=True)
+            thread.start()
+            threads.append(thread)
+            deadline = time.monotonic() + FORWARD_READY_SECONDS
+            # Ready only once this forward owns the IPv4 listener, never another process on the port.
+            marker = f"Forwarding from 127.0.0.1:{port} "
+            while time.monotonic() < deadline:
+                if marker in log.read_text(errors="replace") and _listening(port):
+                    break
+                time.sleep(0.5)
+            else:
+                said = log.read_text(errors="replace").strip().splitlines()[-3:]
+                raise SuiteNotRun(
+                    "forward_failed",
+                    f"the port-forward to {name} ({target['namespace']}/{target['pod']}:{port}) "
+                    "did not open" + (f": {' / '.join(said)}" if said else ""),
+                )
+        yield
+    finally:
+        stopped.set()
+        # Joined first, so no thread reopens a forward after it is ended.
+        for thread in threads:
+            thread.join(timeout=5)
+        for proc in running.values():
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+
+
+def trust_store(root: Path, image: str, ports: Sequence[int], into: Path, engine: str) -> Path:
+    """The suite JVM's trust store with each forwarded CA, built by the commit's own script.
+
+    ``image`` is the suite image whose JDK reads it, or empty for the host JDK Maven uses.
+    """
+
+    script = root / TRUSTSTORE_PATH
+    out = into / "trust"
+    built = run_process(
+        ["bash", str(script), image or "--host-jdk", str(out), *map(str, ports)],
+        env={**os.environ, "CONTAINER_ENGINE": engine},
+        capture_output=True,
+        text=True,
+    )
+    if built.returncode != 0 or not (out / "cacerts").is_file():
+        stderr = (built.stderr or "").strip().splitlines()
+        raise SuiteNotRun(
+            "trust_failed",
+            "the forwarded CA could not be added to the suite trust store"
+            + (f": {stderr[-1]}" if stderr else ""),
+        )
+    return out
+
+
+def _trust_options(store: str) -> str:
+    return f"-Djavax.net.ssl.trustStore={store}/cacerts -Djavax.net.ssl.trustStorePassword=changeit"
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -571,15 +834,36 @@ def _require_tool(name: str) -> None:
 
 
 def _docker_run(
-    image: str, test_dir: str, env_file: str, args: Sequence[str], container: str = ""
+    image: str,
+    test_dir: str,
+    env_file: str,
+    args: Sequence[str],
+    container: str = "",
+    *,
+    engine: str = "docker",
+    host_network: bool = False,
+    trust: Path | None = None,
 ) -> list[str]:
     name = ["--name", container] if container else []
+    network = ["--network", "host"] if host_network else []
+    mount = (
+        [
+            "-v",
+            f"{trust}:{TRUST_MOUNT}:ro",
+            "-e",
+            f"JAVA_TOOL_OPTIONS={_trust_options(TRUST_MOUNT)}",
+        ]
+        if trust
+        else []
+    )
     return [
-        "docker",
+        engine,
         "run",
         *name,
         "--platform",
         SUITE_PLATFORM,
+        *network,
+        *mount,
         "--env-file",
         env_file,
         "-e",
@@ -589,6 +873,18 @@ def _docker_run(
     ]
 
 
+def pull_paired(image: str, engine: str) -> None:
+    _require_tool(engine)
+    pulled = run_command(
+        [engine, "pull", "--platform", SUITE_PLATFORM, image],
+        capture_output=False,
+        description="Pull the paired acceptance image",
+        check=False,
+    )
+    if pulled.returncode != 0:
+        raise SuiteNotRun("pull_failed", f"{engine} could not pull {image}")
+
+
 def run_paired(
     image: str,
     test_dir: str,
@@ -596,29 +892,34 @@ def run_paired(
     args: Sequence[str],
     timeout: int | None,
     reports: Path,
+    *,
+    engine: str = "docker",
+    host_network: bool = False,
+    trust: Path | None = None,
 ) -> int:
-    """Run the suite in the paired image; copy its reports out before the container goes."""
+    """Run the suite in the paired image, already pulled; copy its reports out before the
+    container goes."""
 
-    _require_tool("docker")
-    pulled = run_command(
-        ["docker", "pull", "--platform", SUITE_PLATFORM, image],
-        capture_output=False,
-        description="Pull the paired acceptance image",
-        check=False,
-    )
-    if pulled.returncode != 0:
-        raise SuiteNotRun("pull_failed", f"docker could not pull {image}")
     container = f"spi-test-{uuid.uuid4().hex[:12]}"
     try:
         ran = run_command(
-            _docker_run(image, test_dir, str(env_file), args, container),
+            _docker_run(
+                image,
+                test_dir,
+                str(env_file),
+                args,
+                container,
+                engine=engine,
+                host_network=host_network,
+                trust=trust,
+            ),
             capture_output=False,
             description=f"Run {test_dir}",
             check=False,
             timeout=timeout,
         )
         copied = run_process(
-            ["docker", "cp", f"{container}:{IMAGE_SUITE_ROOT}/{test_dir}", str(reports)],
+            [engine, "cp", f"{container}:{IMAGE_SUITE_ROOT}/{test_dir}", str(reports)],
             capture_output=True,
             text=True,
         )
@@ -632,26 +933,26 @@ def run_paired(
                 f"out of {container}: {detail}; no verdict can be given",
             )
     except BaseException:
-        _remove_container(container, strict=False)
+        _remove_container(container, strict=False, engine=engine)
         raise
-    _remove_container(container)
+    _remove_container(container, engine=engine)
     return ran.returncode
 
 
-def _remove_container(container: str, *, strict: bool = True) -> None:
+def _remove_container(container: str, *, strict: bool = True, engine: str = "docker") -> None:
     """Remove the suite container, which a timeout leaves running with the suite's bearers.
 
     A failed removal refuses the run; ``strict=False`` only warns, for a run
     already failing with another error.
     """
 
-    removed = run_process(["docker", "rm", "-f", container], capture_output=True, text=True)
+    removed = run_process([engine, "rm", "-f", container], capture_output=True, text=True)
     detail = (removed.stderr or "").strip()
     if removed.returncode == 0 or "no such container" in detail.lower():
         return
     message = (
         f"container {container} could not be removed ({detail or f'exit {removed.returncode}'})"
-        f" and may still be running with the suite's bearers; run 'docker rm -f {container}'"
+        f" and may still be running with the suite's bearers; run '{engine} rm -f {container}'"
     )
     if not strict:
         console.print(f"  [warning]{message}[/warning]")
@@ -683,7 +984,13 @@ def _maven(checkout: Path, args: Sequence[str]) -> list[str]:
 
 
 def run_checkout(
-    checkout: Path, test_dir: str, env_file: Path, args: Sequence[str], timeout: int | None
+    checkout: Path,
+    test_dir: str,
+    env_file: Path,
+    args: Sequence[str],
+    timeout: int | None,
+    *,
+    trust: Path | None = None,
 ) -> tuple[int, Path]:
     """Run the suite with the host's Maven, as the image's entrypoint would."""
 
@@ -692,6 +999,8 @@ def run_checkout(
     _clear_reports(suite_dir)
     env = _host_env(MAVEN_BASE_ENV, WINDOWS_PROCESS_ENV + WINDOWS_PROFILE_ENV)
     env.update(read_env_file(env_file))
+    if trust:
+        env["JAVA_TOOL_OPTIONS"] = _trust_options(str(trust))
     ran = run_command(
         _maven(checkout, args),
         capture_output=False,
@@ -802,13 +1111,74 @@ def _bind(
         label, commit = checkout_label(root, deployed_fork_commit(lock, service))
         mode, image = "checkout", ""
 
+    facts_body = collect_facts()
     facts = work / "facts.json"
-    facts.write_text(json.dumps(collect_facts()), encoding="utf-8")
+    facts.write_text(json.dumps(facts_body), encoding="utf-8")
     bearers = mint_bearers()
-    contract, env_file = resolve_suite(
-        service, root, suite, facts, work, bearers, dict(overrides or {})
+
+    needs = suite_contract(root, suite, work)
+    paired = checkout is None
+    engine = container_engine() if paired else "docker"
+    host = "localhost"
+    if (needs.get("contract") or {}).get("forwards"):
+        if _ON_WINDOWS:
+            raise SuiteNotRun(
+                "forwards_unsupported",
+                f"suite {suite} reaches a forwarded service, which spi test does not run "
+                "on Windows yet; the lane runs it",
+            )
+        host = forward_host(engine, paired)
+        if host != "localhost" and _engine_version(needs) < FORWARD_HOST_ENGINE:
+            raise SuiteNotRun(
+                "resolver_outdated",
+                f"suite {suite} reaches a forwarded service, but this commit's resolver "
+                f"(engine {needs.get('engine_version') or 'unknown'}) binds it only on localhost, "
+                f"which a {engine} container on this host cannot reach; sync the fork's "
+                "template, or run it with --source on the host's Maven",
+            )
+        if target is not None and paired:
+            fetch_machinery(target.source_repo, commit, root, (TRUSTSTORE_PATH,))
+        elif not (root / TRUSTSTORE_PATH).is_file():
+            raise SuiteNotRun(
+                "machinery_missing",
+                f"{root} has no {TRUSTSTORE_PATH}; it predates forwarded suites",
+            )
+    secrets_file: Path | None = None
+    held: tuple[str, ...] = ()
+    names = list((needs.get("key_vault") or {}).get("secret_names") or [])
+    if names:
+        secrets_file, held = fetch_secrets(names, facts_body, work)
+    try:
+        report, env_file = resolve_suite(
+            service,
+            root,
+            suite,
+            facts,
+            work,
+            bearers,
+            dict(overrides or {}),
+            secrets=secrets_file,
+            held=held,
+            forward_host="" if host == "localhost" else host,
+        )
+    finally:
+        if secrets_file is not None:
+            secrets_file.unlink(missing_ok=True)
+    return _Binding(
+        mode,
+        label,
+        image,
+        commit,
+        root,
+        report.get("contract") or {},
+        env_file,
+        bearers,
+        expected,
+        engine,
+        tuple(report.get("forwards") or ()),
+        held,
+        host,
     )
-    return _Binding(mode, label, image, commit, root, contract, env_file, bearers, expected)
 
 
 def plan_suite(
@@ -822,7 +1192,8 @@ def plan_suite(
 ) -> SuitePlan:
     """Bind ``suite`` and check its target as ``run_suite`` does, and name what it would start.
 
-    Docker and Maven are not looked for. ``env_file`` only names the file in a
+    Docker and Maven are not looked for; a suite that names vault secrets reads them,
+    so ``az`` and vault access are needed as for a run. ``env_file`` only names the file in a
     paired run's command; nothing is written here.
     """
 
@@ -836,12 +1207,22 @@ def plan_suite(
         args = bound.arguments(maven_arguments)
         if checkout is None:
             directory = f"{IMAGE_SUITE_ROOT}/{bound.test_dir}"
-            command = _docker_run(bound.image, bound.test_dir, env_file or "suite.env", args)
+            command = _docker_run(
+                bound.image,
+                bound.test_dir,
+                env_file or "suite.env",
+                args,
+                engine=bound.engine,
+                host_network=bound.host_network,
+            )
         else:
             directory = str(_suite_dir(bound.root, bound.test_dir))
             command = _maven(bound.root, args)
 
-    secrets = secret_values(bound.bearers, variables)
+    forwards = tuple(
+        f"{target['name']} {bound.forward_host}:{target['port']}" for target in bound.forwards
+    )
+    secrets = (*secret_values(bound.bearers, variables), *bound.secrets)
     redact = redactor(secrets, named=False)
     return SuitePlan(
         service,
@@ -860,6 +1241,8 @@ def plan_suite(
         },
         _expiry(bound.bearers.values()),
         tuple(bound.contract.get("suites") or ()),
+        forwards,
+        len(bound.secrets),
     )
 
 
@@ -885,7 +1268,7 @@ def run_suite(
         secrets: tuple[str, ...] = ()
         if inspect:
             try:
-                secrets = secret_values(bound.bearers, read_env_file(env_file))
+                secrets = (*secret_values(bound.bearers, read_env_file(env_file)), *bound.secrets)
             except (OSError, ValueError) as exc:
                 # Nothing of a run is shown when its credentials cannot be named.
                 console.print(
@@ -899,10 +1282,32 @@ def run_suite(
         revision = check_target(service, bound.expected)
         try:
             if checkout is None:
-                reports = work / "reports"
-                code = run_paired(bound.image, test_dir, env_file, args, timeout, reports)
-            else:
-                code, reports = run_checkout(root, test_dir, env_file, args, timeout)
+                pull_paired(bound.image, bound.engine)
+            if bound.forwards:
+                for tool in ("kubectl", "bash", "openssl"):
+                    _require_tool(tool)
+            with forwarding(bound.forwards, work):
+                trust = None
+                if bound.forwards:
+                    ports = [int(target["port"]) for target in bound.forwards]
+                    trust = trust_store(root, bound.image, ports, work, bound.engine)
+                if checkout is None:
+                    reports = work / "reports"
+                    code = run_paired(
+                        bound.image,
+                        test_dir,
+                        env_file,
+                        args,
+                        timeout,
+                        reports,
+                        engine=bound.engine,
+                        host_network=bound.host_network,
+                        trust=trust,
+                    )
+                else:
+                    code, reports = run_checkout(
+                        root, test_dir, env_file, args, timeout, trust=trust
+                    )
         finally:
             env_file.unlink(missing_ok=True)
         passed, verdict = judge(root, code, reports)
