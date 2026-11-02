@@ -106,12 +106,15 @@ Maven, checkout and report options do not apply to that target.
   as in the lane. Docker Desktop and Podman run containers in a VM that
   does not share the host's loopback, so the CLI passes the engine's host
   alias (`host.docker.internal`, `host.containers.internal`) as the
-  resolver's `--forward-host`, and refuses with `resolver_outdated` a
-  commit whose resolver predates that flag (engine 1.3.0).
-  `SPI_FORWARD_HOST` names the host instead, for an engine whose host
-  network is not the host's own, such as rootless Docker. A forward that
-  does not open or a CA that cannot be added runs no suite, and Windows
-  refuses forwarded suites until the trust store script is proven there.
+  resolver's `--forward-host`. `SPI_FORWARD_HOST` names the host instead,
+  for an engine whose host network is not the host's own, such as rootless
+  Docker. A commit whose template predates engine 1.3.0 binds a forward
+  only on `localhost`, runs its trust store script only with Docker, and
+  builds the store only from an image, so a host alias, Podman, or checkout
+  mode refuses it with `resolver_outdated`; a paired Docker run on Linux
+  still runs it. A forward that does not open or a CA that cannot be added
+  runs no suite, and Windows refuses forwarded suites until the trust store
+  script is proven there.
 - **The container engine.** `SPI_CONTAINER_ENGINE` names `docker` or
   `podman`; unset, the first of the two on `PATH` pulls, runs, copies out
   of, and removes the suite container.

@@ -169,7 +169,7 @@ class TestCollect:
             + "</testsuite>",
         )
 
-        facts = collect(suite, secrets=["minted-bearer-value", "kv-secret-value", cut, "short"])
+        facts = collect(suite, secrets=["minted-bearer-value", "kv-secret-value", cut])
 
         kept = json.dumps(facts)
         for secret in (
@@ -186,6 +186,14 @@ class TestCollect:
         assert "https://gw.example/api/partition/v1/partitions" in test["output"]
         assert "line 0" not in test["output"] and "line 199" in test["output"]
         assert "at Client.send(" in test["detail"]
+
+    def test_a_secret_given_by_the_caller_is_left_out_however_short(self, suite):
+        body = _case("login", "<failure>as hunter2 from the vault</failure>")
+        _reports(suite, f"<testsuite>{body}</testsuite>")
+
+        [test] = collect(suite, secrets=["hunter2"])["classes"][0]["tests"]
+
+        assert test["detail"] == "as [redacted] from the vault"
 
     def test_a_comment_in_the_source_is_redacted_like_the_reports_text(self, suite):
         source = (

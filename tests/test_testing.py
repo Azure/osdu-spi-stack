@@ -69,7 +69,7 @@ host = getattr(args, "forward_host", None) or "localhost"
 extra = f"ELASTIC_HOST={host}\\n" if forwards else ""
 for variable, name in behavior.get("bind_secrets", {}).items():
     extra += f"{variable}={report['secrets'][name]}\\n"
-pathlib.Path(args.env_file).write_text("HOST=https://gw\\nTOKEN=a=b\\n" + extra)
+pathlib.Path(args.env_file).write_text("HOST=https://gw\\nTOKEN=a=b-opaque\\n" + extra)
 pathlib.Path(args.report).write_text(json.dumps(report))
 """
 FAKE_VERDICT = """
@@ -208,7 +208,9 @@ def cluster(monkeypatch, tmp_path):
     monkeypatch.setattr(testing, "_deployment_revision", revision)
     monkeypatch.setattr(testing, "collect_facts", lambda: {"base_url": "https://gw"})
     monkeypatch.setattr(
-        testing, "mint_bearers", lambda: {"RESOLVER_TOKEN": "t", "RESOLVER_MEMBER_TOKEN": "m"}
+        testing,
+        "mint_bearers",
+        lambda: {"RESOLVER_TOKEN": "deploy-bearer", "RESOLVER_MEMBER_TOKEN": "member-bearer"},
     )
     monkeypatch.setattr(testing, "resolve_ghcr_manifest", lambda repository, digest: None)
     monkeypatch.setattr(testing, "github_get", lambda path: {"sha": SHA})
@@ -502,7 +504,7 @@ class TestCheckoutRun:
         assert mvn[mvn.index("--settings") + 1] == str(checkout / testing.SETTINGS_PATH)
         assert mvn[-2:] == ["-Dtest=One", "test"]
         assert kwargs["cwd"] == str(checkout.resolve() / "suite")
-        assert kwargs["env"]["TOKEN"] == "a=b"
+        assert kwargs["env"]["TOKEN"] == "a=b-opaque"
         assert "STRAY_EXPORT" not in kwargs["env"]
         assert cluster["github"] == []
         assert (result.mode, result.label, result.commit) == ("checkout", "matched", head)
@@ -704,8 +706,46 @@ class TestForwardedRun:
         with pytest.raises(SuiteNotRun) as exc:
             testing.run_suite("partition")
 
-        assert exc.value.code == "resolver_outdated" and "--source" in str(exc.value)
+        assert exc.value.code == "resolver_outdated" and "sync the fork" in str(exc.value)
         assert forwarded["forwards"] == [] and not _commands(forwarded, ["docker", "run"])
+
+    def test_a_trust_script_that_runs_only_docker_is_refused_under_podman(
+        self, forwarded, monkeypatch
+    ):
+        _machinery(forwarded["commit_tree"], forwards=[ES], engine="1.2.0")
+        monkeypatch.setattr(testing, "_HOST_NETWORK", True)
+        monkeypatch.setenv("SPI_CONTAINER_ENGINE", "podman")
+
+        with pytest.raises(SuiteNotRun) as exc:
+            testing.run_suite("partition")
+
+        assert exc.value.code == "resolver_outdated" and "docker, not podman" in str(exc.value)
+        assert forwarded["forwards"] == [] and forwarded["trust"] == []
+
+    def test_a_checkout_whose_script_knows_no_host_jdk_is_refused(self, forwarded, tmp_path):
+        checkout = _checkout(tmp_path, forwards=[ES], engine="1.2.0")
+        (checkout / testing.TRUSTSTORE_PATH).write_text("# the script before --host-jdk\n")
+
+        with pytest.raises(SuiteNotRun) as exc:
+            testing.run_suite("partition", checkout=checkout)
+
+        assert exc.value.code == "resolver_outdated" and "host JDK" in str(exc.value)
+        assert forwarded["trust"] == [] and not _commands(forwarded, ["mvn", "-B"])
+
+    def test_the_trust_store_is_mounted_by_its_physical_path(
+        self, forwarded, tmp_path, monkeypatch
+    ):
+        real = tmp_path / "real"
+        real.mkdir()
+        (tmp_path / "link").symlink_to(real)
+        monkeypatch.setattr(testing.tempfile, "tempdir", str(tmp_path / "link"))
+
+        testing.run_suite("partition")
+
+        [(cmd, _)] = forwarded["trust"]
+        [(run, _)] = _commands(forwarded, ["docker", "run"])
+        mount = run[run.index("-v") + 1].split(":")[0]
+        assert mount == cmd[3] and mount.startswith(str(real))
 
     def test_a_resolver_that_binds_only_localhost_still_runs_on_a_linux_host(
         self, forwarded, monkeypatch
@@ -839,6 +879,7 @@ class TestSuiteSecrets:
         real, original = testing.resolve_suite, testing.run_paired
 
         def spy(*args, secrets=None, **kwargs):
+            assert secrets is not None
             modes.append(stat.S_IMODE(secrets.stat().st_mode))
             return real(*args, secrets=secrets, **kwargs)
 
@@ -865,17 +906,17 @@ class TestSuiteSecrets:
 
         assert "p4ssword-value" not in str(exc.value) and "[redacted]" in str(exc.value)
 
-    def test_a_plan_leaves_out_a_vault_value_under_any_name(self, forwarded):
+    def test_a_plan_leaves_out_a_vault_value_under_any_name_however_short(self, forwarded):
         _machinery(
             forwarded["commit_tree"],
             secret_names=["es-user"],
             bind_secrets={"ELASTIC_USER_NAME": "es-user"},
         )
-        forwarded["vault"] = {"es-user": "vault-held-user"}
+        forwarded["vault"] = {"es-user": "elastic"}
 
         plan = testing.plan_suite("partition")
 
-        assert plan.variables["ELASTIC_USER_NAME"] == "vault-held-user"
+        assert plan.variables["ELASTIC_USER_NAME"] == "elastic"
         assert plan.shown["ELASTIC_USER_NAME"] == "[redacted]" and plan.vault_secrets == 1
 
     def test_an_inspector_hears_the_vault_values_it_must_leave_out(self, forwarded):
@@ -1037,7 +1078,7 @@ class TestDryRun:
 
         image = f"ghcr.io/acme/partition-acceptance@{PAIR}"
         assert [cmd for cmd, _ in cluster["commands"] if cmd[0] == "docker"] == []
-        assert plan.variables == {"HOST": "https://gw", "TOKEN": "a=b"}
+        assert plan.variables == {"HOST": "https://gw", "TOKEN": "a=b-opaque"}
         assert plan.shown == {"HOST": "https://gw", "TOKEN": "[redacted]"}
         assert plan.command[plan.command.index("--env-file") + 1] == "ide.env"
         assert plan.command[plan.command.index(image) + 1 :] == ("verify",)
@@ -1154,7 +1195,7 @@ class TestDryRunCommand:
         assert result.exit_code == 0, result.output
         assert "https://gw" in result.output and "[redacted]" in result.output
         assert "a=b" not in result.output
-        assert testing.read_env_file(path) == {"HOST": "https://gw", "TOKEN": "a=b"}
+        assert testing.read_env_file(path) == {"HOST": "https://gw", "TOKEN": "a=b-opaque"}
 
     def test_json_names_the_plan_without_its_credentials(self, guarded):
         result = CliRunner().invoke(cli.app, ["test", "partition", "--dry-run", "--json"])
@@ -1230,7 +1271,7 @@ class TestReport:
 
         assert seen["reports"] == ["TEST-a.xml"]
         # The bearers and what the env file holds under a credential's name; never HOST.
-        assert seen["secrets"] == {"t", "m", "a=b"}
+        assert seen["secrets"] == {"deploy-bearer", "member-bearer", "a=b-opaque"}
         assert not seen["where"].exists()
         assert result.report == {"totals": {"tests": 11}}
         assert testing.run_suite("partition").report is None

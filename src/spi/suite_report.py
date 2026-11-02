@@ -37,7 +37,7 @@ REPORT_PREFIX = "spi-test-"
 REPORT_MAX_AGE_DAYS = 7
 DETAIL_LINES = 40
 LINE_WIDTH = 300
-# Shorter values are words a report also uses for something else.
+# A shorter value under a credential's name is a word a report also uses for something else.
 SECRET_LENGTH = 8
 
 _TYPE = re.compile(r"(?:^|\s)(class|interface|enum|record)\s+([A-Za-z_$][\w$]*)")
@@ -350,9 +350,14 @@ class Sources:
 
 
 def secret_values(*sources: Mapping[str, str]) -> tuple[str, ...]:
-    """Values a run carried under a name that reads as a credential."""
+    """Values a run carried under a name that reads as a credential, long enough to be one."""
 
-    return tuple(value for source in sources for name, value in source.items() if secret_name(name))
+    return tuple(
+        value
+        for source in sources
+        for name, value in source.items()
+        if secret_name(name) and len(value) >= SECRET_LENGTH
+    )
 
 
 def secret_name(name: str) -> bool:
@@ -360,11 +365,9 @@ def secret_name(name: str) -> bool:
 
 
 def redactor(secrets: Iterable[str] = (), *, named: bool = True) -> Callable[[str], str]:
-    """Remove the run's credentials, and with ``named`` any value a credential's name holds."""
+    """Remove each of ``secrets`` as given, and with ``named`` any value a credential's name holds."""
 
-    known = sorted(
-        {secret for secret in secrets if len(secret) >= SECRET_LENGTH}, key=len, reverse=True
-    )
+    known = sorted({secret for secret in secrets if secret}, key=len, reverse=True)
 
     def redact(text: str) -> str:
         for secret in known:

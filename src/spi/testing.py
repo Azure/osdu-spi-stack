@@ -34,11 +34,12 @@ import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from typing import Callable, Collection, Iterable, Mapping, Sequence
 
 from rich.markup import escape
 
@@ -88,8 +89,9 @@ ENGINES = ("docker", "podman")
 # Where a container reaches the host's loopback when its engine runs in a VM.
 HOST_ALIASES = {"docker": "host.docker.internal", "podman": "host.containers.internal"}
 _HOST_NETWORK = sys.platform.startswith("linux")
-# The first resolver that takes --forward-host.
-FORWARD_HOST_ENGINE = (1, 3, 0)
+# The first template whose resolver takes --forward-host and whose trust store script
+# takes CONTAINER_ENGINE and --host-jdk.
+FORWARD_ENGINE = (1, 3, 0)
 FORWARD_READY_SECONDS = 30
 FORWARD_REOPEN_SECONDS = 2
 BEARERS = (
@@ -691,7 +693,7 @@ def _start_forward(command: list[str], log: Path) -> subprocess.Popen:
 
 
 @contextmanager
-def forwarding(targets: Sequence[Mapping], work: Path) -> Iterator[None]:
+def forwarding(targets: Sequence[Mapping], work: Path) -> Generator[None, None, None]:
     """Hold a ``kubectl port-forward`` to each target, reopened if it drops, for the block."""
 
     stopped = threading.Event()
@@ -760,7 +762,8 @@ def trust_store(root: Path, image: str, ports: Sequence[int], into: Path, engine
     """
 
     script = root / TRUSTSTORE_PATH
-    out = into / "trust"
+    # Physical, as the script mounts it: a VM engine may share /private and not /tmp.
+    out = (into / "trust").resolve()
     built = run_process(
         ["bash", str(script), image or "--host-jdk", str(out), *map(str, ports)],
         env={**os.environ, "CONTAINER_ENGINE": engine},
@@ -1128,14 +1131,25 @@ def _bind(
                 "on Windows yet; the lane runs it",
             )
         host = forward_host(engine, paired)
-        if host != "localhost" and _engine_version(needs) < FORWARD_HOST_ENGINE:
-            raise SuiteNotRun(
-                "resolver_outdated",
-                f"suite {suite} reaches a forwarded service, but this commit's resolver "
-                f"(engine {needs.get('engine_version') or 'unknown'}) binds it only on localhost, "
-                f"which a {engine} container on this host cannot reach; sync the fork's "
-                "template, or run it with --source on the host's Maven",
-            )
+        if _engine_version(needs) < FORWARD_ENGINE:
+            if host != "localhost":
+                lacks = (
+                    "binds it only on localhost, which a "
+                    f"{engine} container on this host cannot reach"
+                )
+            elif not paired:
+                lacks = "builds its trust store only from a suite image, not the host JDK"
+            elif engine != "docker":
+                lacks = f"builds its trust store with docker, not {engine}"
+            else:
+                lacks = ""
+            if lacks:
+                raise SuiteNotRun(
+                    "resolver_outdated",
+                    f"suite {suite} reaches a forwarded service, but this commit's machinery "
+                    f"(engine {needs.get('engine_version') or 'unknown'}) {lacks}; "
+                    "sync the fork's template",
+                )
         if target is not None and paired:
             fetch_machinery(target.source_repo, commit, root, (TRUSTSTORE_PATH,))
         elif not (root / TRUSTSTORE_PATH).is_file():
