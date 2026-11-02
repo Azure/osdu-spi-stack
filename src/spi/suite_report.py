@@ -52,7 +52,7 @@ _CASE = re.compile(r"^([A-Za-z_$][\w$]*)(?:[({]([^)}]*)[)}])?(?:\[.*)?$", re.S)
 
 _SECRET_WORDS = r"token|secret|password|passwd|credential|api[_-]?key"
 _SECRET_NAME = re.compile(f"(?i){_SECRET_WORDS}")
-_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
+_BEARER = re.compile(r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{8,})")
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*")
 _NAMED_SECRET = re.compile(
     rf"(?i)\b([\w.-]*(?:{_SECRET_WORDS})[\w.-]*)" r"(\"?\s*[:=]\s*\"?)([^\s\"'&,;]{6,})"
@@ -367,17 +367,33 @@ def secret_name(name: str) -> bool:
 def redactor(secrets: Iterable[str] = (), *, named: bool = True) -> Callable[[str], str]:
     """Remove each of ``secrets`` as given, and with ``named`` any value a credential's name holds."""
 
-    known = sorted({secret for secret in secrets if secret}, key=len, reverse=True)
+    known = {secret for secret in secrets if secret}
 
     def redact(text: str) -> str:
-        # Patterns first: a known value inside a credential's name would otherwise unmake it.
-        text = _BEARER.sub("Bearer [redacted]", text)
-        text = _JWT.sub("[redacted]", text)
+        # Every match is found in the original text and the spans merged, so a value that
+        # overlaps a credential's name or runs past a pattern's value is still whole.
+        spans = [m.span(1) for m in _BEARER.finditer(text)]
+        spans += [m.span() for m in _JWT.finditer(text)]
         if named:
-            text = _NAMED_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", text)
+            spans += [m.span(3) for m in _NAMED_SECRET.finditer(text)]
         for secret in known:
-            text = text.replace(secret, "[redacted]")
-        return text
+            start = text.find(secret)
+            while start != -1:
+                spans.append((start, start + len(secret)))
+                start = text.find(secret, start + 1)
+        if not spans:
+            return text
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        out, last = [], 0
+        for start, end in merged:
+            out += [text[last:start], "[redacted]"]
+            last = end
+        return "".join(out) + text[last:]
 
     return redact
 

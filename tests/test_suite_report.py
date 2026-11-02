@@ -203,6 +203,14 @@ class TestCollect:
 
         assert "hunter2hunter2" not in test["detail"] and "[redacted]" in test["detail"]
 
+    def test_a_known_value_that_runs_past_a_credential_patterns_reach_is_whole(self, suite):
+        body = _case("login", "<failure>password=vaultprefix&amp;confidentialsuffix sent</failure>")
+        _reports(suite, f"<testsuite>{body}</testsuite>")
+
+        [test] = collect(suite, secrets=["vaultprefix&confidentialsuffix"])["classes"][0]["tests"]
+
+        assert test["detail"] == "password=[redacted] sent"
+
     def test_a_comment_in_the_source_is_redacted_like_the_reports_text(self, suite):
         source = (
             "package org.example.api;\npublic class TestNote {\n"
