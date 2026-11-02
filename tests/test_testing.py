@@ -582,7 +582,8 @@ def forwarded(cluster, monkeypatch, tmp_path):
             cluster["forwards"].append(self)
             self.command, self.ended = command, False
             if cluster["forward_opens"]:
-                log.write_text(f"Forwarding from 127.0.0.1:{command[-1].split(':')[0]} -> 9200\n")
+                with log.open("a") as handle:
+                    handle.write(f"Forwarding from 127.0.0.1:{command[-1].split(':')[0]} -> 9200\n")
 
         def poll(self):
             return 0 if self.ended else None
@@ -765,6 +766,27 @@ class TestForwardedRun:
         assert exc.value.code == "forward_failed" and "platform/es-0:9200" in str(exc.value)
         assert not _commands(forwarded, ["docker", "run"]) and forwarded["trust"] == []
         assert all(forward.ended for forward in forwarded["forwards"])
+
+    def test_a_forward_that_opened_and_exited_is_not_ready(self, forwarded, monkeypatch):
+        monkeypatch.setattr(testing, "FORWARD_READY_SECONDS", 1)
+        monkeypatch.setattr(testing, "FORWARD_REOPEN_SECONDS", 0)
+        opened = testing._start_forward
+
+        def exits_after_binding(command, log):
+            forward = opened(command, log)
+            # The first attempt binds and dies; the reopened one never binds, yet the port answers.
+            if len(forwarded["forwards"]) == 1:
+                forward.terminate()
+            forwarded["forward_opens"] = False
+            return forward
+
+        monkeypatch.setattr(testing, "_start_forward", exits_after_binding)
+
+        with pytest.raises(SuiteNotRun) as exc:
+            testing.run_suite("partition")
+
+        assert exc.value.code == "forward_failed"
+        assert len(forwarded["forwards"]) >= 2 and not _commands(forwarded, ["docker", "run"])
 
     def test_a_dropped_forward_is_reopened(self, forwarded, monkeypatch):
         monkeypatch.setattr(testing, "FORWARD_REOPEN_SECONDS", 0)

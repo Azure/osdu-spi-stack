@@ -195,6 +195,14 @@ class TestCollect:
 
         assert test["detail"] == "as [redacted] from the vault"
 
+    def test_a_known_value_inside_a_credentials_name_does_not_unmake_the_name(self, suite):
+        body = _case("login", "<failure>client_secret=hunter2hunter2 for secret</failure>")
+        _reports(suite, f"<testsuite>{body}</testsuite>")
+
+        [test] = collect(suite, secrets=["secret"])["classes"][0]["tests"]
+
+        assert "hunter2hunter2" not in test["detail"] and "[redacted]" in test["detail"]
+
     def test_a_comment_in_the_source_is_redacted_like_the_reports_text(self, suite):
         source = (
             "package org.example.api;\npublic class TestNote {\n"

@@ -697,13 +697,15 @@ def forwarding(targets: Sequence[Mapping], work: Path) -> Generator[None, None, 
     """Hold a ``kubectl port-forward`` to each target, reopened if it drops, for the block."""
 
     stopped = threading.Event()
-    running: dict[str, subprocess.Popen] = {}
+    # The live attempt for each target, with where its own output starts in the log.
+    running: dict[str, tuple[subprocess.Popen, int]] = {}
     threads = []
 
     def hold(name: str, command: list[str], log: Path) -> None:
         while not stopped.is_set():
+            offset = log.stat().st_size
             proc = _start_forward(command, log)
-            running[name] = proc
+            running[name] = (proc, offset)
             while proc.poll() is None and not stopped.wait(0.5):
                 pass
             if stopped.is_set():
@@ -727,10 +729,17 @@ def forwarding(targets: Sequence[Mapping], work: Path) -> Generator[None, None, 
             thread.start()
             threads.append(thread)
             deadline = time.monotonic() + FORWARD_READY_SECONDS
-            # Ready only once this forward owns the IPv4 listener, never another process on the port.
-            marker = f"Forwarding from 127.0.0.1:{port} "
+            # Ready only while the live attempt owns the IPv4 listener: its own output holds the
+            # bind line and the port answers; an exited attempt or another process never counts.
+            marker = f"Forwarding from 127.0.0.1:{port} ".encode()
             while time.monotonic() < deadline:
-                if marker in log.read_text(errors="replace") and _listening(port):
+                attempt = running.get(name)
+                if (
+                    attempt is not None
+                    and attempt[0].poll() is None
+                    and marker in log.read_bytes()[attempt[1] :]
+                    and _listening(port)
+                ):
                     break
                 time.sleep(0.5)
             else:
@@ -746,7 +755,7 @@ def forwarding(targets: Sequence[Mapping], work: Path) -> Generator[None, None, 
         # Joined first, so no thread reopens a forward after it is ended.
         for thread in threads:
             thread.join(timeout=5)
-        for proc in running.values():
+        for proc, _ in running.values():
             if proc.poll() is None:
                 proc.terminate()
                 try:

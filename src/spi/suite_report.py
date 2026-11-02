@@ -370,12 +370,13 @@ def redactor(secrets: Iterable[str] = (), *, named: bool = True) -> Callable[[st
     known = sorted({secret for secret in secrets if secret}, key=len, reverse=True)
 
     def redact(text: str) -> str:
-        for secret in known:
-            text = text.replace(secret, "[redacted]")
+        # Patterns first: a known value inside a credential's name would otherwise unmake it.
         text = _BEARER.sub("Bearer [redacted]", text)
         text = _JWT.sub("[redacted]", text)
         if named:
             text = _NAMED_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", text)
+        for secret in known:
+            text = text.replace(secret, "[redacted]")
         return text
 
     return redact
