@@ -1597,6 +1597,7 @@ def _plan_suites(
                 "command": list(plan.command),
                 "timeout_minutes": plan.timeout_minutes,
                 "expires": plan.expires or None,
+                "forwards": list(plan.forwards),
                 "variables": plan.shown,
             }
             for plan in plans
@@ -1669,6 +1670,8 @@ def _print_suite_plan(plan: Any, written: Optional[Path]) -> None:
     facts += [(where, plan.directory), ("Command", shlex.join(plan.command))]
     if plan.timeout_minutes:
         facts.append(("Timeout", f"{plan.timeout_minutes} minutes"))
+    for forward in plan.forwards:
+        facts.append(("Forward", f"{forward} (opened, with its CA trusted, when the suite runs)"))
     console.print(
         Panel(
             Group(grid(facts), Text(""), grid(list(plan.shown.items()))),
@@ -1682,6 +1685,11 @@ def _print_suite_plan(plan: Any, written: Optional[Path]) -> None:
         console.print(
             Text(f"  Variables written to {written} with their credentials, valid{lasts}.")
         )
+        if plan.vault_secrets:
+            console.print(
+                "  [warning]The file also holds vault secrets, which do not expire with "
+                "the bearers.[/warning]"
+            )
         console.print("  [warning]Keep that file out of version control.[/warning]")
     elif plan.shown != plan.variables:
         console.print(

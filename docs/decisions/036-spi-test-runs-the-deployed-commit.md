@@ -83,11 +83,41 @@ Maven, checkout and report options do not apply to that target.
   profile variables; the env file is
   parsed as `NAME=VALUE` data and never sourced. The container receives the
   env file and `SUITE_DIR`, set to the report's `test_dir`, which is how the
-  image's entrypoint selects a baked suite; nothing else.
+  image's entrypoint selects a baked suite, and for a forwarded suite the
+  trust store mount and `JAVA_TOOL_OPTIONS`; nothing else.
 - **The lane's callers.** The CLI mints the deploy, member, and no-access
   bearers through the path `spi token` uses, for `azure.token_audience`. An
   identity the environment does not provision leaves its variable unset, and
   only a suite that binds it fails as env-not-ready, as in the lane.
+- **Secrets, as the lane reads them.** A contract-only pass of the resolver
+  names the suite's Key Vault secrets. The CLI reads each with
+  `az keyvault secret show` from the vault `spi info` publishes as
+  `azure.keyvault`, into an owner-only file the resolver takes through
+  `--secrets` and the CLI deletes once the suite is bound. The values join
+  the credentials every message leaves out.
+- **Forwarded services.** For each target a suite declares in `forwards`,
+  the CLI holds a `kubectl port-forward` to the pod `spi info` publishes,
+  reopened if it drops, from just before the suite until it ends, and builds
+  the suite JVM's trust store with the commit's `forward-truststore.sh`
+  (template ADR-041): from the paired image's JDK, mounted read-only at
+  `/spi-trust`, or with `--host-jdk` from the JDK Maven uses in checkout
+  mode. `JAVA_TOOL_OPTIONS` points the JVM at it. On Linux a paired
+  container shares the host network and the forward answers on `localhost`,
+  as in the lane. Docker Desktop and Podman run containers in a VM that
+  does not share the host's loopback, so the CLI passes the engine's host
+  alias (`host.docker.internal`, `host.containers.internal`) as the
+  resolver's `--forward-host`. `SPI_FORWARD_HOST` names the host instead,
+  for an engine whose host network is not the host's own, such as rootless
+  Docker. A commit whose template predates engine 1.3.0 binds a forward
+  only on `localhost`, runs its trust store script only with Docker, and
+  builds the store only from an image, so a host alias, Podman, or checkout
+  mode refuses it with `resolver_outdated`; a paired Docker run on Linux
+  still runs it. A forward that does not open or a CA that cannot be added
+  runs no suite, and Windows refuses forwarded suites until the trust store
+  script is proven there.
+- **The container engine.** `SPI_CONTAINER_ENGINE` names `docker` or
+  `podman`; unset, the first of the two on `PATH` pulls, runs, copies out
+  of, and removes the suite container.
 - **Guards before, verdict after.** The run refuses while `spi status`
   reports the environment not deployable (ADR-030), and refuses with
   `service_borrowed`, naming the run id, while an ephemeral pin holds the
@@ -105,8 +135,8 @@ Maven, checkout and report options do not apply to that target.
   run or discarded because the environment is not deployable, a binding is
   not published yet, the service is borrowed, or the target changed during
   the run; 1 not run for any other reason (descriptor rejected, no pair,
-  pair pruned, commit mismatch, facts contradiction, Docker or Maven
-  missing). `--json` prints the `{outcome, code, detail}` envelope other
+  pair pruned, commit mismatch, facts contradiction, a secret or forward
+  that cannot be had, the container engine or Maven missing). `--json` prints the `{outcome, code, detail}` envelope other
   service commands print, with the suite, mode, image or commit, provenance
   label, and test counts beside it. A command that ran several suites prints
   each suite's outcome, image, and commit under `suites`, and an `image` and
@@ -170,7 +200,8 @@ needs its own log and cleanup handling.
   verdict script, from the repository the environment trusts for that
   service, at the deployed commit. The same repository's image already runs
   in the cluster under the environment's workload identity.
-- Each paired run reads GitHub: one commit lookup and three file fetches.
+- Each paired run reads GitHub: one commit lookup and three file fetches,
+  four for a forwarded suite.
   Without `gh` authentication or `GH_TOKEN`, the anonymous limit is 60
   requests an hour.
 - The template's retention job ages a package version from its first push,
@@ -198,5 +229,9 @@ needs its own log and cleanup handling.
   and in paired mode. The lane knows its image by the digest it pushed in
   that run; paired mode knows it by the digest resolution recorded, so both
   rest on what the registry reported at one moment for that commit's tag.
-- Paired mode needs Docker and checkout mode needs a JDK 17 and Maven on the
-  host; neither is part of `spi check`.
+- Paired mode needs Docker or Podman and checkout mode needs a JDK 17 and
+  Maven on the host; neither is part of `spi check`. A forwarded suite also
+  needs `bash`, `openssl`, and `kubectl`, and a suite that names secrets
+  needs `az`. The developer's own kubeconfig opens the forward and their
+  own Azure sign-in reads the vault, so each needs the access the lane's
+  deploy identity holds.

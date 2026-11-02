@@ -37,7 +37,7 @@ REPORT_PREFIX = "spi-test-"
 REPORT_MAX_AGE_DAYS = 7
 DETAIL_LINES = 40
 LINE_WIDTH = 300
-# Shorter values are words a report also uses for something else.
+# A shorter value under a credential's name is a word a report also uses for something else.
 SECRET_LENGTH = 8
 
 _TYPE = re.compile(r"(?:^|\s)(class|interface|enum|record)\s+([A-Za-z_$][\w$]*)")
@@ -52,7 +52,7 @@ _CASE = re.compile(r"^([A-Za-z_$][\w$]*)(?:[({]([^)}]*)[)}])?(?:\[.*)?$", re.S)
 
 _SECRET_WORDS = r"token|secret|password|passwd|credential|api[_-]?key"
 _SECRET_NAME = re.compile(f"(?i){_SECRET_WORDS}")
-_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
+_BEARER = re.compile(r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{8,})")
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*")
 _NAMED_SECRET = re.compile(
     rf"(?i)\b([\w.-]*(?:{_SECRET_WORDS})[\w.-]*)" r"(\"?\s*[:=]\s*\"?)([^\s\"'&,;]{6,})"
@@ -350,9 +350,14 @@ class Sources:
 
 
 def secret_values(*sources: Mapping[str, str]) -> tuple[str, ...]:
-    """Values a run carried under a name that reads as a credential."""
+    """Values a run carried under a name that reads as a credential, long enough to be one."""
 
-    return tuple(value for source in sources for name, value in source.items() if secret_name(name))
+    return tuple(
+        value
+        for source in sources
+        for name, value in source.items()
+        if secret_name(name) and len(value) >= SECRET_LENGTH
+    )
 
 
 def secret_name(name: str) -> bool:
@@ -360,20 +365,35 @@ def secret_name(name: str) -> bool:
 
 
 def redactor(secrets: Iterable[str] = (), *, named: bool = True) -> Callable[[str], str]:
-    """Remove the run's credentials, and with ``named`` any value a credential's name holds."""
+    """Remove each of ``secrets`` as given, and with ``named`` any value a credential's name holds."""
 
-    known = sorted(
-        {secret for secret in secrets if len(secret) >= SECRET_LENGTH}, key=len, reverse=True
-    )
+    known = {secret for secret in secrets if secret}
 
     def redact(text: str) -> str:
-        for secret in known:
-            text = text.replace(secret, "[redacted]")
-        text = _BEARER.sub("Bearer [redacted]", text)
-        text = _JWT.sub("[redacted]", text)
+        # Every match is found in the original text and the spans merged, so a value that
+        # overlaps a credential's name or runs past a pattern's value is still whole.
+        spans = [m.span(1) for m in _BEARER.finditer(text)]
+        spans += [m.span() for m in _JWT.finditer(text)]
         if named:
-            text = _NAMED_SECRET.sub(lambda m: f"{m.group(1)}{m.group(2)}[redacted]", text)
-        return text
+            spans += [m.span(3) for m in _NAMED_SECRET.finditer(text)]
+        for secret in known:
+            start = text.find(secret)
+            while start != -1:
+                spans.append((start, start + len(secret)))
+                start = text.find(secret, start + 1)
+        if not spans:
+            return text
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        out, last = [], 0
+        for start, end in merged:
+            out += [text[last:start], "[redacted]"]
+            last = end
+        return "".join(out) + text[last:]
 
     return redact
 
