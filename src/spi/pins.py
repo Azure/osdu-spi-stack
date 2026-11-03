@@ -586,13 +586,13 @@ def reconcile_consumers(services: list[str]) -> None:
 def require_deployable() -> None:
     """Enforce the deployable rule on pin writes and suite runs, fail-closed.
 
-    Refuses unless every Kustomization is Ready, no entitlements-members Job
-    has failed, the deploy record is present, and ``maintenance`` is unset:
-    the same `deployable` rule
-    `spi status` reports, computed from the same
-    ``collect_kustomization_readiness`` predicate so the CLI and the JSON
-    contract cannot disagree on Flux convergence. Deferred import: status.py
-    imports from this module, so a module-level import here would cycle.
+    Refuses while a Kustomization has failed or waits on one that has, an
+    entitlements-members Job has failed, the deploy record is absent, or
+    ``maintenance`` is set: the same `deployable` rule `spi status` reports,
+    computed from the same ``collect_kustomization_readiness`` predicate so
+    the CLI and the JSON contract cannot disagree. Another borrower's write
+    still converging does not refuse. Deferred import: status.py imports from
+    this module, so a module-level import here would cycle.
     """
 
     from .status import StatusError, collect_bootstrap_blocker, collect_kustomization_readiness
@@ -601,10 +601,8 @@ def require_deployable() -> None:
         readiness = collect_kustomization_readiness()
     except StatusError as exc:
         raise PinError(str(exc)) from exc
-    if not readiness.ready:
-        detail = (
-            readiness.reason.message if readiness.reason else "not all Kustomizations are Ready"
-        )
+    if readiness.blocker is not None:
+        detail = readiness.blocker.message
         raise PinError(
             f"Environment is not ready ({detail}); retry once 'spi status' reports deployable."
         )

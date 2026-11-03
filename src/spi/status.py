@@ -111,12 +111,17 @@ class KustomizationReadiness:
 
     `spi status` and the pin guard both derive their Ready
     answer from this, rather than each re-reading Kustomizations.
+
+    ``ready`` is full convergence. ``blocker`` is narrower: the first gating
+    Kustomization that failed, or waits on one that failed, so a lock write
+    still converging through Flux never reads as a broken environment.
     """
 
     items: tuple[dict, ...]
     states: tuple[KustomizationState, ...]
     ready: bool
     reason: StatusReason | None
+    blocker: StatusReason | None
 
 
 @dataclass(frozen=True)
@@ -269,6 +274,73 @@ def _ready_condition(item: dict) -> dict:
     return next((condition for condition in conditions if condition.get("type") == "Ready"), {})
 
 
+def _dependency_graph(items: Sequence[dict]) -> dict[str, list[str]]:
+    """Each Kustomization's dependsOn names; qualified names never match a listed state."""
+    return {
+        item.get("metadata", {}).get("name", ""): [
+            f"{dep.get('namespace', 'osdu-flux')}/{dep.get('name', '')}".removeprefix("osdu-flux/")
+            for dep in item.get("spec", {}).get("dependsOn") or []
+        ]
+        for item in items
+    }
+
+
+def _converging_names(
+    states: Sequence[KustomizationState], depends: dict[str, list[str]]
+) -> set[str]:
+    """Kustomizations that are Ready, reconciling, or waiting only on ones that are.
+
+    ProgressingWithRetry follows a failed attempt, so only plain Progressing
+    counts. A dependency outside the listed set, or a cycle, does not converge.
+    """
+
+    by_name = {state.name: state for state in states}
+    memo: dict[str, bool] = {}
+
+    def converges(name: str, trail: frozenset[str]) -> bool:
+        if name in memo:
+            return memo[name]
+        state = by_name.get(name)
+        if state is None or name in trail:
+            result = False
+        elif state.ready or state.reason == "Progressing":
+            result = True
+        elif state.reason == "DependencyNotReady":
+            result = all(converges(dep, trail | {name}) for dep in depends.get(name, []))
+        else:
+            result = False
+        memo[name] = result
+        return result
+
+    return {state.name for state in states if converges(state.name, frozenset())}
+
+
+def _failure_behind(
+    stuck: KustomizationState,
+    states: Sequence[KustomizationState],
+    depends: dict[str, list[str]],
+    converging: set[str],
+) -> KustomizationState:
+    """The failed Kustomization ``stuck`` waits on through dependsOn, else ``stuck`` itself.
+
+    A missing dependency has no state to name, so the dependent's own message stands.
+    """
+
+    by_name = {state.name: state for state in states}
+    seen: set[str] = set()
+    pending = [stuck.name]
+    while pending:
+        name = pending.pop(0)
+        state = by_name.get(name)
+        if state is None or name in seen or name in converging:
+            continue
+        seen.add(name)
+        if state.reason != "DependencyNotReady":
+            return state
+        pending.extend(depends.get(name, []))
+    return stuck
+
+
 def collect_kustomization_readiness() -> KustomizationReadiness:
     """Read Flux Kustomizations and derive Ready convergence and its blocker.
 
@@ -316,9 +388,18 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
     gating = tuple(state for state in states if state.gating)
     ready = bool(gating) and all(state.ready for state in gating)
 
+    def describe(state: KustomizationState, code: str) -> StatusReason:
+        detail = state.message or state.reason or "not Ready"
+        return StatusReason(
+            code=code,
+            message=f"{state.name}: {detail}",
+            resource=f"kustomization/osdu-flux/{state.name}",
+        )
+
     reason: StatusReason | None = None
+    blocker: StatusReason | None = None
     if not gating:
-        reason = StatusReason(
+        reason = blocker = StatusReason(
             code="no_kustomizations",
             message="No gating Flux Kustomizations are visible.",
             resource="kustomizations/osdu-flux",
@@ -326,14 +407,18 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
     else:
         first_not_ready = next((state for state in gating if not state.ready), None)
         if first_not_ready is not None:
-            detail = first_not_ready.message or first_not_ready.reason or "not Ready"
-            reason = StatusReason(
-                code="kustomization_not_ready",
-                message=f"{first_not_ready.name}: {detail}",
-                resource=f"kustomization/osdu-flux/{first_not_ready.name}",
-            )
+            depends = _dependency_graph(items)
+            converging = _converging_names(states, depends)
+            stuck = next((state for state in gating if state.name not in converging), None)
+            if stuck is not None:
+                root = _failure_behind(stuck, states, depends, converging)
+                reason = blocker = describe(root, "kustomization_not_ready")
+            else:
+                reason = describe(first_not_ready, "kustomization_converging")
 
-    return KustomizationReadiness(items=items, states=states, ready=ready, reason=reason)
+    return KustomizationReadiness(
+        items=items, states=states, ready=ready, reason=reason, blocker=blocker
+    )
 
 
 def _read_members_jobs() -> list[dict]:
@@ -515,7 +600,7 @@ def _build_snapshot(results: Sequence[Any]) -> StatusSnapshot:
     items = kustomization_readiness.items
     states = kustomization_readiness.states
     ready = kustomization_readiness.ready
-    reason = kustomization_readiness.reason
+    blocker = kustomization_readiness.blocker
 
     suspended = bool(git_repository.get("spec", {}).get("suspend", False))
 
@@ -537,25 +622,31 @@ def _build_snapshot(results: Sequence[Any]) -> StatusSnapshot:
 
     maintenance = record.maintenance if record else False
     bootstrap = bootstrap_blocker(members_jobs, expected_jobs, _read_job_termination_message)
-    deployable = ready and record is not None and not maintenance and bootstrap is None
+    # Converging is not a blocker: borrowers' lock writes keep some Kustomization
+    # reconciling, and each borrower verifies its own rollout after the pin.
+    deployable = blocker is None and record is not None and not maintenance and bootstrap is None
 
-    # A readiness blocker takes precedence; maintenance, a missing record,
-    # and a failed bootstrap Job only matter once Flux has converged.
-    if reason is None:
-        if maintenance:
-            reason = StatusReason(
-                code="maintenance",
-                message="The environment is in maintenance.",
-                resource="configmap/osdu-flux/spi-deploy-record",
-            )
-        elif record is None:
-            reason = StatusReason(
-                code="missing_deploy_record",
-                message="The environment has no deploy record; rerun spi up.",
-                resource="configmap/osdu-flux/spi-deploy-record",
-            )
-        elif bootstrap is not None:
-            reason = bootstrap
+    # A failed Kustomization outranks maintenance, a missing record, and a
+    # failed bootstrap Job; a converging one is reported only when nothing blocks.
+    reason: StatusReason | None
+    if blocker is not None:
+        reason = blocker
+    elif maintenance:
+        reason = StatusReason(
+            code="maintenance",
+            message="The environment is in maintenance.",
+            resource="configmap/osdu-flux/spi-deploy-record",
+        )
+    elif record is None:
+        reason = StatusReason(
+            code="missing_deploy_record",
+            message="The environment has no deploy record; rerun spi up.",
+            resource="configmap/osdu-flux/spi-deploy-record",
+        )
+    elif bootstrap is not None:
+        reason = bootstrap
+    else:
+        reason = kustomization_readiness.reason
 
     return StatusSnapshot(
         ready=ready,
@@ -1098,6 +1189,9 @@ def get_summary(snapshot: StatusSnapshot) -> Panel:
     # reading the dashboard and a fork job reading --json cannot disagree.
     if snapshot.deployable:
         body.append("Deployable", style="ready")
+        if snapshot.reason is not None:
+            body.append(", converging: ", style="notready")
+            body.append(snapshot.reason.message)
     else:
         body.append("Not deployable: ", style="failed")
         # Appended, not interpolated: a Flux condition message carries paths

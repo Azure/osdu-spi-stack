@@ -18,9 +18,11 @@ end of `spi up` records how the environment was last provisioned.
 
 - Envelope: `apiVersion: spi.osdu.dev/v1`, `ready`, `deployable`, a typed
   `reason` naming the first deployability blocker when `deployable` is false
-  (a non-ready Kustomization, the `maintenance` flag, a missing deploy
+  (a failed Kustomization, the `maintenance` flag, a missing deploy
   record, a failed `entitlements-members` Job as `bootstrap_failed`, or
-  the current one not yet Complete as `bootstrap_pending`),
+  the current one not yet Complete as `bootstrap_pending`) and the first
+  converging Kustomization as `kustomization_converging` when the
+  environment is deployable but not `ready`,
   `suspended`, `maintenance`, Kustomization counts with a not-ready
   list, `environment` (name, stack version, resolved commit, profile,
   deploy timestamp, CLI version), `images` (branch, resolved-at, count,
@@ -64,13 +66,23 @@ end of `spi up` records how the environment was last provisioned.
   Kustomization, gating or not, so `ready` is not
   `kustomizations.ready == kustomizations.total`; read the boolean.
   `ready` is false when no gating Kustomization is visible at all, which
-  reports `no_kustomizations` rather than vacuous success. `deployable` is `ready` with
-  `maintenance` unset, a deploy record present, and the
-  `entitlements-members` Job the live init values name Complete for every
-  partition; `spi service pin` (ADR-031) enforces the same rule itself,
-  refusing while `maintenance` is set, the record is absent, or the
-  members bootstrap has failed or not finished. Values written before the
-  CLI listed members name no Job, so older environments are not gated.
+  reports `no_kustomizations` rather than vacuous success.
+- `deployable` does not wait for `ready`. A gating Kustomization blocks
+  it only when it has failed, or waits through `dependsOn` on one that
+  has, as `kustomization_not_ready` naming the failure rather than its
+  dependents. `Progressing`, and `DependencyNotReady` behind Kustomizations
+  that are themselves Ready or converging, is convergence, not a blocker;
+  `ProgressingWithRetry` follows a failed attempt and blocks. Every image
+  lock write re-reconciles the lock's consumers and their dependents, so
+  on an environment several lanes borrow, some Kustomization is nearly
+  always converging, and each borrower verifies its own rollout after the
+  pin (ADR-031). Beyond that, `deployable` needs `maintenance` unset, a
+  deploy record present, and the `entitlements-members` Job the live init
+  values name Complete for every partition; `spi service pin` (ADR-031)
+  enforces the same rule itself, refusing while a Kustomization has
+  failed, `maintenance` is set, the record is absent, or the members
+  bootstrap has failed or not finished. Values written before the CLI
+  listed members name no Job, so older environments are not gated.
 - Exit codes: 0 deployable, 2 not deployable with the typed `reason`, 1
   unreachable or guard failure. Fork CI gates on the exit code alone. The
   lifecycle workflows, which run while `maintenance` is set, read `ready`
@@ -147,6 +159,16 @@ external repositories.
 Rejected: fold `maintenance` into `ready`. One field for consumers, but the
 ops workflows need the convergence answer while `maintenance` is set, and
 collapsing the two would take it from them.
+
+Rejected: `deployable` waits for every gating Kustomization to be Ready.
+Stricter, but each borrower's write takes the tree out of Ready for longer
+than the write itself, so concurrent lanes starve each other of an idle
+window instead of queueing.
+
+Rejected: a lease that serializes borrowers. Lock writes are compare-and-swap
+and each lane verifies its own digest, so concurrent borrows of different
+services are already safe; a lease would trade a false refusal for queueing
+behind every other lane's whole test run.
 
 ## Consequences
 
