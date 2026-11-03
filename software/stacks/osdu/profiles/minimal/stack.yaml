@@ -70,7 +70,7 @@ spec:
   path: ./software/components/cert-manager
   prune: true
   wait: true
-  timeout: 10m
+  timeout: 20m
 
 ---
 # Layer 1a2: trust-manager
@@ -91,7 +91,7 @@ spec:
   path: ./software/components/trust-manager
   prune: true
   wait: true
-  timeout: 10m
+  timeout: 20m
 
 ---
 # Layer 1b: ECK operator
@@ -112,7 +112,7 @@ spec:
   path: ./software/components/operators/eck
   prune: true
   wait: true
-  timeout: 10m
+  timeout: 20m
 
 ---
 # Layer 1c: CNPG operator
@@ -133,7 +133,7 @@ spec:
   path: ./software/components/operators/cnpg
   prune: true
   wait: true
-  timeout: 10m
+  timeout: 20m
 
 ---
 # Gateway ownership handoff: reconciles an empty inventory with pruning
@@ -244,7 +244,7 @@ spec:
   # once without the bitnami HelmRepository in its inventory.
   prune: false
   wait: true
-  timeout: 10m
+  timeout: 20m
 
 ---
 # Layer 2c: PostgreSQL (Airflow metadata)

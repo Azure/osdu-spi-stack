@@ -309,6 +309,66 @@ def test_init_release_timeouts_outlast_the_job_deadline(component, deadline_key)
     assert _minutes(item["spec"]["timeout"]) * 60 > max(helm)
 
 
+# helm-controller's defaults when a HelmRelease sets neither field.
+FLUX_HELM_TIMEOUT = "5m"
+HELM_PHASES = ("install", "upgrade")
+
+
+def _helm_releases(item: dict):
+    """Yield every HelmRelease a Flux Kustomization applies."""
+    directory = REPO_ROOT / item["spec"]["path"].removeprefix("./")
+    for _path, doc in _built_resources(directory):
+        if doc.get("kind") == "HelmRelease":
+            yield doc
+
+
+def _helm_timeout_minutes(release: dict, phase: str) -> int:
+    spec = release["spec"]
+    return _minutes(
+        (spec.get(phase) or {}).get("timeout") or spec.get("timeout", FLUX_HELM_TIMEOUT)
+    )
+
+
+class TestHelmReleaseRemediation:
+    """Flux's default of zero retries turns one install that outlasts a node
+    scale-up into a Stalled release that never retries."""
+
+    @pytest.mark.parametrize("pair", PAIRS, ids=PAIR_IDS)
+    def test_every_release_retries_install_and_upgrade(self, pair):
+        profile, mode = pair
+        for tree in (PROFILES_DIR / profile.value, _ingress_tree(profile, mode)):
+            for item in _flux_kustomizations(tree):
+                for release in _helm_releases(item):
+                    name = release["metadata"]["name"]
+                    for phase in HELM_PHASES:
+                        remediation = (release["spec"].get(phase) or {}).get("remediation", {})
+                        assert remediation.get("retries", 0) >= 3, (
+                            f"HelmRelease {name} sets fewer than 3 {phase}.remediation.retries"
+                        )
+
+    @pytest.mark.parametrize(
+        ("tree", "name"),
+        [
+            (PROFILES_DIR / Profile.MINIMAL.value, "spi-cert-manager"),
+            (PROFILES_DIR / Profile.MINIMAL.value, "spi-trust-manager"),
+            (PROFILES_DIR / Profile.MINIMAL.value, "spi-eck-operator"),
+            (PROFILES_DIR / Profile.MINIMAL.value, "spi-cnpg-operator"),
+            (PROFILES_DIR / Profile.MINIMAL.value, "spi-redis"),
+            (PROFILES_DIR / Profile.MINIMAL.value, "spi-airflow"),
+            (INGRESS_DIR / IngressMode.DNS.value, "spi-external-dns-release"),
+        ],
+        ids=lambda value: value if isinstance(value, str) else None,
+    )
+    def test_middleware_attempt_covers_a_scale_up_and_the_layer_outlasts_it(self, tree, name):
+        item = _kustomization(tree, name)
+        releases = list(_helm_releases(item))
+        assert releases, f"{name} applies no HelmRelease"
+        for release in releases:
+            helm = [_helm_timeout_minutes(release, phase) for phase in HELM_PHASES]
+            assert min(helm) >= 10, f"{release['metadata']['name']} attempt is under 10m"
+            assert _minutes(item["spec"]["timeout"]) > max(helm)
+
+
 class TestSchemaLoadDeadline:
     def test_flux_timeout_exceeds_job_deadline(self):
         item = _kustomization(PROFILES_DIR / Profile.CORE.value, "spi-osdu-schema-load")

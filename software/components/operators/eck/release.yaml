@@ -6,6 +6,14 @@ metadata:
 spec:
   targetNamespace: foundation
   interval: 30m
+  install:
+    timeout: 15m
+    remediation:
+      retries: 3
+  upgrade:
+    timeout: 15m
+    remediation:
+      retries: 3
   chart:
     spec:
       chart: eck-operator
