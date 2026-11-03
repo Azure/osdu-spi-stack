@@ -43,9 +43,10 @@ Outside-repository PRs do not enter the credentialed lane.
    tag. Branch-based or unrecorded versions keep the latest release; the job
    does not read a hardcoded shared-environment declaration.
 3. **Gate.** The job polls `spi status --json` every 20 seconds for up to ten
-   minutes until `deployable` is true. On timeout it reports the status reason,
-   including maintenance or convergence failures. It then reads environment
-   facts with `spi info --json`.
+   minutes until `deployable` is true. Another lane's borrow or restore still
+   converging does not hold the gate; a failed Kustomization does. On timeout
+   it reports the status reason, including maintenance or convergence failures.
+   It then reads environment facts with `spi info --json`.
 4. **Borrow.** `spi service pin` writes the published service image by digest
    with `--ephemeral`, the workflow run id, and source provenance. Flux
    reconciles the image-lock change. The same write marks the rolled pod

@@ -107,21 +107,26 @@ def _image_pin(**overrides) -> ServicePin:
     return ServicePin(**fields)
 
 
-def _readiness(ready=True, blocker: str | None = None) -> KustomizationReadiness:
+def _readiness(
+    ready=True, blocker: str | None = None, converging: bool = False
+) -> KustomizationReadiness:
     """A `collect_kustomization_readiness` result, Ready by default.
 
-    ``blocker`` names the not-Ready Kustomization for the refusal-path
-    tests, mirroring the `kustomization_not_ready` reason `spi status` emits.
+    ``blocker`` names the failed Kustomization for the refusal-path tests,
+    mirroring the `kustomization_not_ready` reason `spi status` emits;
+    ``converging`` leaves it not Ready with nothing blocking.
     """
     reason = None
     if not ready:
         name = blocker or "spi-osdu-services"
         reason = StatusReason(
-            code="kustomization_not_ready",
-            message=f"{name}: Progressing",
+            code="kustomization_converging" if converging else "kustomization_not_ready",
+            message=f"{name}: {'Progressing' if converging else 'HealthCheckFailed'}",
             resource=f"kustomization/osdu-flux/{name}",
         )
-    return KustomizationReadiness(items=(), states=(), ready=ready, reason=reason)
+    return KustomizationReadiness(
+        items=(), states=(), ready=ready, reason=reason, blocker=None if converging else reason
+    )
 
 
 def _deploy_record(maintenance=False) -> DeployRecord:
@@ -337,8 +342,18 @@ class TestRequireDeployable:
             lambda: _readiness(ready=False, blocker="spi-osdu-services"),
         )
 
-        with pytest.raises(PinError, match="spi-osdu-services: Progressing"):
+        with pytest.raises(PinError, match="spi-osdu-services: HealthCheckFailed"):
             pins.require_deployable()
+
+    def test_another_borrowers_write_still_converging_does_not_refuse(self, monkeypatch):
+        self._wire(monkeypatch)
+        monkeypatch.setattr(
+            status,
+            "collect_kustomization_readiness",
+            lambda: _readiness(ready=False, converging=True),
+        )
+
+        pins.require_deployable()
 
     def test_readiness_check_failure_becomes_pin_error(self, monkeypatch):
         self._wire(monkeypatch)

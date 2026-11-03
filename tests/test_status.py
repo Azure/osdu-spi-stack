@@ -31,8 +31,8 @@ def _kustomizations(ready: bool = True) -> dict:
     condition = {
         "type": "Ready",
         "status": "True" if ready else "False",
-        "reason": "ReconciliationSucceeded" if ready else "Progressing",
-        "message": "Applied revision" if ready else "Waiting for HelmRelease",
+        "reason": "ReconciliationSucceeded" if ready else "HealthCheckFailed",
+        "message": "Applied revision" if ready else "HelmRelease osdu-flux/storage not ready",
     }
     return {
         "items": [
@@ -279,6 +279,138 @@ def test_failed_dag_registration_is_visible_at_layer_six_without_blocking_deploy
     output.print(status.get_kustomization_table(tuple(items)))
     text = output.export_text()
     assert "spi-osdu-dag-registration" in text and "L6" in text
+
+
+def _chain(**conditions: tuple[str, str]) -> list[dict]:
+    """The lock-consumer chain as Flux lists it, Ready unless a name is overridden.
+
+    Each override is ``(reason, message)``; the condition status follows Flux:
+    Unknown while Progressing, False for anything else.
+    """
+    depends = {
+        "spi-bootstrap": [],
+        "spi-osdu-services": ["spi-bootstrap"],
+        "spi-osdu-init": ["spi-osdu-services"],
+        "spi-osdu-schema-load": ["spi-osdu-init"],
+        "spi-osdu-reference": ["spi-osdu-services", "spi-osdu-schema-load"],
+        "spi-osdu-legal": ["spi-osdu-init"],
+    }
+    items = []
+    for name, deps in depends.items():
+        key = name.removeprefix("spi-").replace("-", "_")
+        reason, message = conditions.get(key, ("ReconciliationSucceeded", "Applied revision"))
+        labels = {"spi-stack.layer": "4" if name == "spi-bootstrap" else "5"}
+        if name == "spi-osdu-legal":
+            labels["spi-stack.gating"] = "false"
+        status_value = {"ReconciliationSucceeded": "True", "Progressing": "Unknown"}
+        items.append(
+            {
+                "metadata": {"name": name, "labels": labels},
+                "spec": {"dependsOn": [{"name": dep} for dep in deps]},
+                "status": {
+                    "conditions": [
+                        {
+                            "type": "Ready",
+                            "status": status_value.get(reason, "False"),
+                            "reason": reason,
+                            "message": message,
+                        }
+                    ]
+                },
+            }
+        )
+    return items
+
+
+def _wire_chain(monkeypatch, items: list[dict], **kwargs) -> None:
+    _wire(monkeypatch, **kwargs)
+    monkeypatch.setattr(
+        status,
+        "_required_kubectl_json",
+        lambda args, _: (
+            {"items": items} if "kustomizations" in args else {"spec": {"suspend": True}}
+        ),
+    )
+
+
+_WAITING = ("DependencyNotReady", "dependency 'osdu-flux/spi-osdu-services' is not ready")
+
+
+def test_a_lock_write_still_converging_stays_deployable(monkeypatch):
+    """Another borrower's pin re-reconciles the lock consumers and their
+    dependents report DependencyNotReady; none of that is a broken environment,
+    so a lane polling for deployable must not be starved by it."""
+    _wire_chain(
+        monkeypatch,
+        _chain(
+            osdu_services=("Progressing", "Reconciliation in progress"),
+            osdu_init=_WAITING,
+            osdu_schema_load=("DependencyNotReady", "dependency 'osdu-flux/spi-osdu-init'"),
+            osdu_reference=_WAITING,
+        ),
+    )
+
+    snapshot = status.collect_status()
+
+    assert snapshot.ready is False
+    assert snapshot.deployable is True
+    assert status.status_exit_code(snapshot) == 0
+    assert snapshot.reason is not None
+    assert snapshot.reason.code == "kustomization_converging"
+    output = Console(record=True, width=200)
+    output.print(status.get_summary(snapshot))
+    assert "Deployable, converging: spi-osdu-init" in output.export_text()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ("HealthCheckFailed", "HelmRelease osdu-flux/partition not ready"),
+        ("ProgressingWithRetry", "retrying after a failed reconciliation"),
+    ],
+)
+def test_a_failed_kustomization_blocks_and_is_named_over_its_dependents(monkeypatch, failure):
+    _wire_chain(
+        monkeypatch,
+        _chain(osdu_services=failure, osdu_init=_WAITING, osdu_reference=_WAITING),
+    )
+
+    snapshot = status.collect_status()
+
+    assert snapshot.deployable is False
+    assert snapshot.reason is not None
+    assert snapshot.reason.code == "kustomization_not_ready"
+    assert snapshot.reason.message == f"spi-osdu-services: {failure[1]}"
+
+
+def test_waiting_on_a_failed_non_gating_kustomization_blocks(monkeypatch):
+    items = _chain(
+        osdu_legal=("HealthCheckFailed", "Job legal-seed failed"),
+        osdu_init=("DependencyNotReady", "dependency 'osdu-flux/spi-osdu-legal' is not ready"),
+    )
+    init = next(item for item in items if item["metadata"]["name"] == "spi-osdu-init")
+    init["spec"]["dependsOn"] = [{"name": "spi-osdu-legal"}]
+    _wire_chain(monkeypatch, items)
+
+    snapshot = status.collect_status()
+
+    assert snapshot.deployable is False
+    assert snapshot.reason is not None
+    assert snapshot.reason.message == "spi-osdu-legal: Job legal-seed failed"
+
+
+def test_maintenance_outranks_a_converging_kustomization(monkeypatch):
+    _wire_chain(
+        monkeypatch,
+        _chain(osdu_services=("Progressing", "Reconciliation in progress")),
+        record=_record(maintenance=True),
+    )
+
+    snapshot = status.collect_status()
+
+    assert snapshot.deployable is False
+    assert snapshot.reason is not None
+    assert snapshot.reason.code == "maintenance"
 
 
 def test_non_ready_kustomization_precedes_maintenance(monkeypatch):
