@@ -77,6 +77,15 @@ def test_core_changes_one_existing_flux_owner_not_the_release_identity():
     assert "valuesFrom" not in release(CORE)["spec"]
 
 
+@pytest.mark.parametrize("directory", [MINIMAL, CORE], ids=["minimal", "core"])
+def test_rendered_release_retries_each_install_and_upgrade_attempt(directory):
+    spec = release(directory)["spec"]
+    for phase in ("install", "upgrade"):
+        assert spec[phase]["remediation"]["retries"] >= 3
+        timeout = spec[phase].get("timeout", spec["timeout"])
+        assert timeout.endswith("m") and int(timeout[:-1]) >= 10
+
+
 def test_core_executor_identity_and_fixed_parallelism():
     values = release(CORE)["spec"]["values"]
     assert values["executor"] == "LocalExecutor"

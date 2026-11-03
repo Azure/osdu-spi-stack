@@ -77,7 +77,7 @@ spec:
   path: ./software/components/external-dns
   prune: true
   wait: true
-  timeout: 10m
+  timeout: 20m
   postBuild:
     substituteFrom:
       - kind: ConfigMap

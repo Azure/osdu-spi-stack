@@ -158,6 +158,14 @@ Deployment recovers on its own, but the retries are already spent. The
 structural failure is that a transient capacity shortage outlasting four
 install attempts converts into a permanent stall.
 
+helm-controller's defaults are zero remediation retries and a 5-minute
+timeout, so a release that sets neither stalls after one attempt, and a
+Karpenter node scale-up on a cold cluster can outlast it. Every
+`HelmRelease` under `software/` therefore sets `install.remediation.retries`
+and `upgrade.remediation.retries` to 3. The operator, Redis, ExternalDNS, and
+OSDU service releases give each attempt 15 minutes, Airflow 10, and each
+middleware Kustomization's `timeout` outlasts one attempt.
+
 `RetriesExceeded` is not the only stall. helm-controller also sets
 `Stalled=True` for terminal causes, an invalid CEL health-check expression or
 a chart reference it may not read, where the release needs a change and
