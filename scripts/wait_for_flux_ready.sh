@@ -81,32 +81,8 @@ print_banner() {
 
 START=$SECONDS
 LAST_STATUS=0
-LAST_FED_REFRESH=0
 SEEN_KUSTOMIZATIONS=0
 declare -A LAYER_DONE
-
-# The GitHub OIDC JWT azure/login writes lives 5 minutes; an az token refresh
-# past that fails with AADSTS700024 and kills kubectl mid-wait. Rewriting the
-# assertion file every 60s keeps a valid JWT ready for the next exchange.
-refresh_federated_assertion() {
-    if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] \
-       || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] \
-       || [ -z "${AZURE_FEDERATED_TOKEN_FILE:-}" ]; then
-        return 0
-    fi
-    local url="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange"
-    local tmp="${AZURE_FEDERATED_TOKEN_FILE}.new"
-    if curl -fsSL -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "$url" 2>/dev/null \
-        | jq -r '.value // empty' > "$tmp" 2>/dev/null; then
-        if [ -s "$tmp" ]; then
-            mv -f "$tmp" "$AZURE_FEDERATED_TOKEN_FILE"
-        else
-            rm -f "$tmp"
-        fi
-    else
-        rm -f "$tmp" 2>/dev/null || true
-    fi
-}
 
 BANNER="wait_for_flux_ready · timeout $(fmt_mmss "$TIMEOUT") · heartbeat ${HEARTBEAT}s · spi status every ${STATUS_INTERVAL}s"
 if [ -n "$EXPECT_REVISION" ]; then
@@ -116,11 +92,6 @@ print_banner "$BANNER"
 
 while :; do
     elapsed=$(( SECONDS - START ))
-
-    if [ $(( elapsed - LAST_FED_REFRESH )) -ge 60 ]; then
-        refresh_federated_assertion
-        LAST_FED_REFRESH=$elapsed
-    fi
 
     if [ "$elapsed" -ge "$TIMEOUT" ]; then
         echo

@@ -98,8 +98,10 @@ against fork jobs in other repositories: coordination with the fleet is the
 in-flight ones; ADR-029). The
 workflows run under a GitHub environment `azure-shared` on the same app
 registration as the smoke pipeline, reusing its job shape: one fresh OIDC
-login per job, token pre-caching, `scripts/capture_diagnostics.sh` on
-failure ([ci-smoke.md](ci-smoke.md)). The sweeper cannot touch the shared
+login per job, token pre-caching, a renewable federated login for kubectl
+across the Flux wait and a second `azure/login` after it,
+`scripts/capture_diagnostics.sh` on failure
+([ci-smoke.md](ci-smoke.md#authentication-over-a-long-deployment)). The sweeper cannot touch the shared
 RG: it selects on the `spi-stack-ci-*` name pattern and the sweep-eligibility
 tag, and the shared RG carries neither.
 
@@ -418,5 +420,5 @@ gh run watch
   `.github/workflows/env-reset.yml`
 - `scripts/export_environment.py`, `scripts/wait_for_flux_ready.sh`,
   `scripts/probe_gateway.sh`, `scripts/capture_diagnostics.sh`,
-  `scripts/drain_ephemeral_pins.sh`
+  `scripts/drain_ephemeral_pins.sh`, `scripts/refresh_federated_token.sh`
 - `.release-please-config.json`, `docs/tag-ruleset.json`

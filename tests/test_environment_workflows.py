@@ -1641,3 +1641,222 @@ class TestDrainScript:
         result, _ = self._run(tmp_path, [(0, self._sweep(), 2, self._state({}))], *args)
 
         assert result.returncode == 2
+
+
+SMOKE = REPO_ROOT / ".github" / "workflows" / "smoke.yml"
+REFRESH_TOKEN_SCRIPT = REPO_ROOT / "scripts" / "refresh_federated_token.sh"
+WAIT_STEP = "Wait for Flux Kustomizations to be Ready"
+KEEP_STEP = "Keep kubectl on a renewable federated login"
+LONG_WAIT_JOBS = [
+    (SMOKE, "verify"),
+    (ENV_UPGRADE, "verify"),
+    (ENV_REFRESH, "refresh"),
+    (ENV_RESET, "verify"),
+]
+LONG_WAIT_IDS = ["smoke", "upgrade", "refresh", "reset"]
+# A run line that calls az or spi: `spi load`, `$(spi status --json)`, `az group ...`.
+AZ_OR_SPI_CALL = re.compile(r"(^|[\s($])(az|spi) ", re.MULTILINE)
+
+
+class TestRenewableAzureLogin:
+    """azure/login hands az a one-shot assertion that expires in 5 minutes,
+    and the Flux wait runs up to 230. kubectl must exchange an assertion that
+    stays fresh for the whole job, and az must log in again after the wait."""
+
+    def test_every_job_running_the_flux_wait_is_covered(self):
+        found = []
+        for path in (SMOKE, *LIFECYCLE):
+            for name, job in _workflow(path)["jobs"].items():
+                runs = [step.get("run", "") for step in job.get("steps", [])]
+                if any("wait_for_flux_ready.sh" in run for run in runs):
+                    found.append((path, name))
+
+        assert sorted(found) == sorted(LONG_WAIT_JOBS)
+
+    @pytest.mark.parametrize(("path", "job_name"), LONG_WAIT_JOBS, ids=LONG_WAIT_IDS)
+    def test_kubectl_exchanges_a_token_file_refreshed_for_the_whole_job(self, path, job_name):
+        steps = _workflow(path)["jobs"][job_name]["steps"]
+        names = [step.get("name") for step in steps]
+        keep = steps[names.index(KEEP_STEP)]
+        run = keep["run"]
+
+        assert keep["env"] == {
+            "AZURE_CLIENT_ID": "${{ secrets.AZURE_CLIENT_ID }}",
+            "AZURE_TENANT_ID": "${{ secrets.AZURE_TENANT_ID }}",
+            # kubelogin's workloadidentity login refuses an empty authority host.
+            "AZURE_AUTHORITY_HOST": "https://login.microsoftonline.com/",
+        }
+        assert 'export AZURE_FEDERATED_TOKEN_FILE="$RUNNER_TEMP/azure-federated-token"' in run
+        exported = re.search(
+            r"for var in ([A-Z_ ]+); do\n\s*echo \"\$var=\$\{!var\}\" >> \"\$GITHUB_ENV\"", run
+        )
+        assert exported, "the token file, client, tenant, and authority must reach later steps"
+        assert set(exported.group(1).split()) == {
+            "AZURE_FEDERATED_TOKEN_FILE",
+            "AZURE_CLIENT_ID",
+            "AZURE_TENANT_ID",
+            "AZURE_AUTHORITY_HOST",
+        }
+        # The first write runs in the foreground, so a failed one fails the step.
+        assert "\nbash scripts/refresh_federated_token.sh\n" in run
+        background = re.search(
+            r"nohup bash scripts/refresh_federated_token.sh --every (\d+) \\\n"
+            r"\s*< /dev/null > \"\$RUNNER_TEMP/[\w.-]+\" 2>&1 &\n",
+            run,
+        )
+        assert background, "the refresher must keep running in the background, detached"
+        assert int(background.group(1)) < 300 - 60, "a rewrite must land well inside 5 minutes"
+        assert "kubelogin convert-kubeconfig -l workloadidentity" in run
+        assert "kubectl get --raw /version" in run
+
+    @pytest.mark.parametrize(("path", "job_name"), LONG_WAIT_JOBS, ids=LONG_WAIT_IDS)
+    def test_the_conversion_follows_every_kubeconfig_writer_and_precedes_the_wait(
+        self, path, job_name
+    ):
+        steps = _workflow(path)["jobs"][job_name]["steps"]
+        names = [step.get("name") for step in steps]
+        keep = names.index(KEEP_STEP)
+        # `spi connect` and `spi up` rewrite the kubeconfig to `-l azurecli`.
+        writers = [
+            index
+            for index, step in enumerate(steps)
+            if index != keep
+            and re.search(
+                r"spi connect|spi up|get-credentials|convert-kubeconfig", step.get("run", "")
+            )
+        ]
+
+        assert writers and max(writers) < keep < names.index(WAIT_STEP)
+        run_text = "\n".join(step.get("run", "") for step in steps)
+        assert "-l azurecli" not in run_text
+
+    @pytest.mark.parametrize(("path", "job_name"), LONG_WAIT_JOBS, ids=LONG_WAIT_IDS)
+    def test_az_and_spi_calls_after_the_wait_follow_a_fresh_login(self, path, job_name):
+        steps = _workflow(path)["jobs"][job_name]["steps"]
+        names = [step.get("name") for step in steps]
+        wait = names.index(WAIT_STEP)
+        # Failure-only steps read through kubectl, which the token file keeps working.
+        callers = [
+            index
+            for index, step in enumerate(steps)
+            if index > wait
+            and step.get("if") != "failure()"
+            and AZ_OR_SPI_CALL.search(step.get("run", ""))
+        ]
+        logins = [
+            index
+            for index, step in enumerate(steps)
+            if step.get("uses", "").startswith("azure/login@")
+        ]
+
+        if path != SMOKE:
+            assert callers, f"{path.name}:{job_name} reads status and clears maintenance"
+        if not callers:
+            return
+        renewals = [index for index in logins if index > wait]
+        assert renewals and renewals[0] < min(callers)
+        first, renewal = steps[logins[0]], steps[renewals[0]]
+        assert renewal["uses"] == first["uses"]
+        assert renewal["with"] == first["with"]
+
+    def test_the_background_refresher_is_the_token_files_only_writer(self):
+        wait = (REPO_ROOT / "scripts" / "wait_for_flux_ready.sh").read_text(encoding="utf-8")
+
+        assert "AZURE_FEDERATED_TOKEN_FILE" not in wait
+
+
+class TestRefreshFederatedTokenScript:
+    """scripts/refresh_federated_token.sh against a stub `curl` that answers the
+    GitHub OIDC request with a numbered assertion per call."""
+
+    REQUEST_URL = "https://token.actions.example/id?api-version=2.0"
+
+    def _env(self, tmp_path: Path) -> dict[str, str]:
+        stub = tmp_path / "curl"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'n=$(( $(cat "{tmp_path}/curl.calls" 2>/dev/null || echo 0) + 1 ))\n'
+            f'echo "$n" > "{tmp_path}/curl.calls"\n'
+            f'printf "%s\\n" "$@" > "{tmp_path}/curl.args"\n'
+            f'[ -f "{tmp_path}/curl.fail" ] && exit 22\n'
+            f'if [ -f "{tmp_path}/curl.body" ]; then cat "{tmp_path}/curl.body"; exit 0; fi\n'
+            'printf \'{"count": 1, "value": "jwt-%s"}\' "$n"\n',
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        return {
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "ACTIONS_ID_TOKEN_REQUEST_URL": self.REQUEST_URL,
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-token",
+            "AZURE_FEDERATED_TOKEN_FILE": str(tmp_path / "token"),
+        }
+
+    def _run(self, env: dict[str, str], *args: str, prefix: tuple[str, ...] = ()):
+        return run_process(
+            [*prefix, "bash", str(REFRESH_TOKEN_SCRIPT), *args],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_writes_the_assertion_for_the_entra_exchange(self, tmp_path):
+        result = self._run(self._env(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+        # No trailing newline: kubelogin sends the file's bytes as the assertion.
+        assert (tmp_path / "token").read_text(encoding="utf-8") == "jwt-1"
+        args = (tmp_path / "curl.args").read_text(encoding="utf-8").splitlines()
+        assert "Authorization: bearer request-token" in args
+        assert f"{self.REQUEST_URL}&audience=api://AzureADTokenExchange" in args
+
+    @pytest.mark.parametrize("failure", ["request", "no-value"])
+    def test_a_failed_request_keeps_the_previous_assertion(self, tmp_path, failure):
+        env = self._env(tmp_path)
+        (tmp_path / "token").write_text("jwt-previous", encoding="utf-8")
+        if failure == "request":
+            (tmp_path / "curl.fail").write_text("", encoding="utf-8")
+        else:
+            (tmp_path / "curl.body").write_text('{"count": 0}', encoding="utf-8")
+
+        result = self._run(env)
+
+        assert result.returncode == 1
+        assert "could not get a GitHub OIDC assertion" in result.stderr
+        assert (tmp_path / "token").read_text(encoding="utf-8") == "jwt-previous"
+        assert sorted(path.name for path in tmp_path.glob("token*")) == ["token"]
+
+    @pytest.mark.parametrize(
+        "missing",
+        [
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+            "AZURE_FEDERATED_TOKEN_FILE",
+        ],
+    )
+    def test_a_missing_variable_exits_2(self, tmp_path, missing):
+        env = self._env(tmp_path)
+        del env[missing]
+
+        result = self._run(env)
+
+        assert result.returncode == 2
+        assert f"{missing} is not set" in result.stderr
+
+    @pytest.mark.parametrize(
+        "args", [["--every", "0"], ["--every", "1m"], ["--every"], ["--bogus"]]
+    )
+    def test_bad_arguments_exit_2(self, tmp_path, args):
+        result = self._run(self._env(tmp_path), *args)
+
+        assert result.returncode == 2
+
+    @pytest.mark.skipif(not GNU_TIMEOUT, reason="needs GNU timeout")
+    def test_every_keeps_rewriting_the_assertion(self, tmp_path):
+        env = self._env(tmp_path)
+
+        result = self._run(env, "--every", "1", prefix=(str(GNU_TIMEOUT), "3.5"))
+
+        assert result.returncode == 124
+        calls = int((tmp_path / "curl.calls").read_text(encoding="utf-8"))
+        assert calls >= 3
+        assert (tmp_path / "token").read_text(encoding="utf-8") == f"jwt-{calls}"

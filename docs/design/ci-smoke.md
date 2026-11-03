@@ -39,14 +39,28 @@ accommodates core schema loading; it is not an expected duration for `bare`.
 
 ## Authentication over a long deployment
 
-GitHub's OIDC assertion is short-lived. Azure access tokens obtained with that
-assertion can last longer, but a later token exchange or refresh can fail once
-the original assertion has expired.
+GitHub's OIDC assertion is valid for 5 minutes. `azure/login` hands it to
+`az login` once, so `az` cannot mint a new access token after its cached ones
+expire; a later exchange fails with `AADSTS700024`.
 
 Each job starts with `azure/login`. Provisioning also pre-caches tokens for
 ARM, Microsoft Graph, AKS, and Key Vault while the assertion is fresh, and
-resolves the deployer object ID before the long AKS deployment. The verify job
-pre-caches its ARM and AKS tokens.
+resolves the deployer object ID before the long AKS deployment.
+
+A job that waits on Flux keeps kubectl off the `az` cache. Its "Keep kubectl
+on a renewable federated login" step writes an assertion to
+`$RUNNER_TEMP/azure-federated-token` with
+[`scripts/refresh_federated_token.sh`](../../scripts/refresh_federated_token.sh),
+starts the same script in the background to rewrite the file every 60 seconds
+until the job ends, and converts the kubeconfig with `kubelogin
+convert-kubeconfig -l workloadidentity`. Each kubectl token exchange then
+reads the current file, so `kubectl`, `flux`, and `spi` reads keep working for
+the full 230-minute wait. The step runs after the last command that writes the
+kubeconfig (`az aks get-credentials` or `spi connect`), because both convert
+it back to the `az` cache. The lifecycle jobs in
+[environment-lifecycle.md](environment-lifecycle.md) also re-run `azure/login`
+after the wait, so the `az` and `spi` steps that follow start from a fresh
+assertion. The smoke verify job runs no `az` step after its wait.
 
 Separate jobs give teardown a fresh login attempt; they do not guarantee
 authentication or deletion will succeed. Provisioning estimates are maintained
@@ -130,6 +144,7 @@ the cleanup logs rather than assuming the next sweep will resolve the failure.
 
 - [CI setup](../CI_SETUP.md): repository environment, identity, and permissions.
 - [Deployment lifecycle](deployment-lifecycle.md): the deployment exercised by smoke.
-- [Smoke workflow](../../.github/workflows/smoke.yml): job conditions, token caching, and timeouts.
+- [Smoke workflow](../../.github/workflows/smoke.yml): job conditions, token caching, the renewable kubectl login, and timeouts.
 - [Sweeper workflow](../../.github/workflows/sweeper.yml) and [script](../../scripts/sweep_orphan_rgs.sh): schedule and selection rules.
 - [Readiness wait](../../scripts/wait_for_flux_ready.sh) and [diagnostic capture](../../scripts/capture_diagnostics.sh): verification and failure artifacts.
+- [Federated token refresher](../../scripts/refresh_federated_token.sh): the assertion file kubectl exchanges during long waits.
