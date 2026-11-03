@@ -399,6 +399,23 @@ def test_waiting_on_a_failed_non_gating_kustomization_blocks(monkeypatch):
     assert snapshot.reason.message == "spi-osdu-legal: Job legal-seed failed"
 
 
+def test_a_missing_dependency_is_reported_by_its_dependent_not_an_unrelated_failure(monkeypatch):
+    missing = "dependency 'osdu-flux/spi-missing' is not ready"
+    items = _chain(
+        osdu_legal=("HealthCheckFailed", "Job legal-seed failed"),
+        osdu_services=("DependencyNotReady", missing),
+    )
+    services = next(item for item in items if item["metadata"]["name"] == "spi-osdu-services")
+    services["spec"]["dependsOn"].append({"name": "spi-missing"})
+    _wire_chain(monkeypatch, items)
+
+    snapshot = status.collect_status()
+
+    assert snapshot.deployable is False
+    assert snapshot.reason is not None
+    assert snapshot.reason.message == f"spi-osdu-services: {missing}"
+
+
 def test_maintenance_outranks_a_converging_kustomization(monkeypatch):
     _wire_chain(
         monkeypatch,

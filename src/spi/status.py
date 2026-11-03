@@ -274,7 +274,20 @@ def _ready_condition(item: dict) -> dict:
     return next((condition for condition in conditions if condition.get("type") == "Ready"), {})
 
 
-def _converging_names(items: Sequence[dict], states: Sequence[KustomizationState]) -> set[str]:
+def _dependency_graph(items: Sequence[dict]) -> dict[str, list[str]]:
+    """Each Kustomization's dependsOn names; qualified names never match a listed state."""
+    return {
+        item.get("metadata", {}).get("name", ""): [
+            f"{dep.get('namespace', 'osdu-flux')}/{dep.get('name', '')}".removeprefix("osdu-flux/")
+            for dep in item.get("spec", {}).get("dependsOn") or []
+        ]
+        for item in items
+    }
+
+
+def _converging_names(
+    states: Sequence[KustomizationState], depends: dict[str, list[str]]
+) -> set[str]:
     """Kustomizations that are Ready, reconciling, or waiting only on ones that are.
 
     ProgressingWithRetry follows a failed attempt, so only plain Progressing
@@ -282,14 +295,6 @@ def _converging_names(items: Sequence[dict], states: Sequence[KustomizationState
     """
 
     by_name = {state.name: state for state in states}
-    # Qualified names never match a listed state, so a foreign dependency blocks.
-    depends = {
-        item.get("metadata", {}).get("name", ""): [
-            f"{dep.get('namespace', 'osdu-flux')}/{dep.get('name', '')}".removeprefix("osdu-flux/")
-            for dep in item.get("spec", {}).get("dependsOn") or []
-        ]
-        for item in items
-    }
     memo: dict[str, bool] = {}
 
     def converges(name: str, trail: frozenset[str]) -> bool:
@@ -308,6 +313,32 @@ def _converging_names(items: Sequence[dict], states: Sequence[KustomizationState
         return result
 
     return {state.name for state in states if converges(state.name, frozenset())}
+
+
+def _failure_behind(
+    stuck: KustomizationState,
+    states: Sequence[KustomizationState],
+    depends: dict[str, list[str]],
+    converging: set[str],
+) -> KustomizationState:
+    """The failed Kustomization ``stuck`` waits on through dependsOn, else ``stuck`` itself.
+
+    A missing dependency has no state to name, so the dependent's own message stands.
+    """
+
+    by_name = {state.name: state for state in states}
+    seen: set[str] = set()
+    pending = [stuck.name]
+    while pending:
+        name = pending.pop(0)
+        state = by_name.get(name)
+        if state is None or name in seen or name in converging:
+            continue
+        seen.add(name)
+        if state.reason != "DependencyNotReady":
+            return state
+        pending.extend(depends.get(name, []))
+    return stuck
 
 
 def collect_kustomization_readiness() -> KustomizationReadiness:
@@ -376,12 +407,11 @@ def collect_kustomization_readiness() -> KustomizationReadiness:
     else:
         first_not_ready = next((state for state in gating if not state.ready), None)
         if first_not_ready is not None:
-            converging = _converging_names(items, states)
-            stuck = [state for state in gating if state.name not in converging]
-            if stuck:
-                # Name the failure itself rather than a dependent waiting on it.
-                failed = (s for s in (*stuck, *states) if s.name not in converging)
-                root = next((s for s in failed if s.reason != "DependencyNotReady"), stuck[0])
+            depends = _dependency_graph(items)
+            converging = _converging_names(states, depends)
+            stuck = next((state for state in gating if state.name not in converging), None)
+            if stuck is not None:
+                root = _failure_behind(stuck, states, depends, converging)
                 reason = blocker = describe(root, "kustomization_not_ready")
             else:
                 reason = describe(first_not_ready, "kustomization_converging")
