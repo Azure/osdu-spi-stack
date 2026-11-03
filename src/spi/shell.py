@@ -278,6 +278,44 @@ def run_command(
     return result
 
 
+def is_transient_kubectl_error(output: str) -> bool:
+    lowered = output.lower()
+    return any(marker in lowered for marker in TRANSIENT_KUBECTL_ERRORS)
+
+
+def retry_transient_kubectl(
+    call: Callable[[], subprocess.CompletedProcess],
+    description: Optional[str] = None,
+    retries: int = 4,
+    base_delay: int = 2,
+) -> subprocess.CompletedProcess:
+    """Run a kubectl ``call``, repeating it with backoff while it fails transiently.
+
+    Returns the first success, the first non-transient failure, or the last
+    transient one; the caller decides what a failure means. A ``description``
+    announces each retry; without one the retry is silent, for reads that
+    back ``--json`` output.
+    """
+    delay = base_delay
+    attempt = 1
+    proc = call()
+    while (
+        proc.returncode != 0
+        and attempt < retries
+        and is_transient_kubectl_error(proc.stderr or proc.stdout or "")
+    ):
+        if description:
+            console.print(
+                f"  [warning]{description} hit a transient Kubernetes API error; "
+                f"retrying in {delay}s (attempt {attempt}/{retries})[/warning]"
+            )
+        time.sleep(delay)
+        delay *= 2
+        attempt += 1
+        proc = call()
+    return proc
+
+
 def kubectl_apply_yaml(
     yaml_content: str,
     description: str,
@@ -285,32 +323,21 @@ def kubectl_apply_yaml(
     base_delay: int = 2,
 ) -> subprocess.CompletedProcess:
     """Apply YAML via kubectl with retry/backoff for transient API failures."""
-    delay = base_delay
-    for attempt in range(1, retries + 1):
-        proc = run_process(
+    proc = retry_transient_kubectl(
+        lambda: run_process(
             ["kubectl", "apply", "-f", "-"],
             input=yaml_content,
             capture_output=True,
             text=True,
-        )
-        if proc.returncode == 0:
-            return proc
-
-        stderr = (proc.stderr or proc.stdout or "").strip()
-        lowered = stderr.lower()
-        is_transient = any(marker in lowered for marker in TRANSIENT_KUBECTL_ERRORS)
-        if is_transient and attempt < retries:
-            console.print(
-                f"  [warning]{description} hit a transient Kubernetes API error; "
-                f"retrying in {delay}s (attempt {attempt}/{retries})[/warning]"
-            )
-            time.sleep(delay)
-            delay *= 2
-            continue
-
-        console.print(f"  [error]Failed to {description}: {stderr or 'unknown error'}[/error]")
-        raise typer.Exit(code=1)
-
+        ),
+        description,
+        retries,
+        base_delay,
+    )
+    if proc.returncode == 0:
+        return proc
+    stderr = (proc.stderr or proc.stdout or "").strip()
+    console.print(f"  [error]Failed to {description}: {stderr or 'unknown error'}[/error]")
     raise typer.Exit(code=1)
 
 

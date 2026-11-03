@@ -6,6 +6,7 @@
 
 import json
 import re
+import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -925,6 +926,65 @@ def test_deploy_record_failure_outranks_a_later_read_failure(monkeypatch):
 
     with pytest.raises(status.StatusError, match="deploy record is corrupt"):
         status.collect_status()
+
+
+_GUARD_TIMEOUT = (
+    'Error from server (InternalError): an error on the server ("Internal Server Error: '
+    '\\"/api/v1/namespaces/osdu-flux/configmaps/spi-init-values\\": Post '
+    '\\"https://guard.0123.svc.cluster.local:443/subjectaccessreviews?timeout=3s\\": '
+    'context deadline exceeded") has prevented the request from succeeding'
+)
+
+
+def _guard_timeout_then(stdout: str):
+    """A run_process stand-in that fails once on the AKS guard webhook, then answers."""
+    results = iter(
+        [
+            subprocess.CompletedProcess(["kubectl"], 1, "", _GUARD_TIMEOUT),
+            subprocess.CompletedProcess(["kubectl"], 0, stdout, ""),
+        ]
+    )
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        return next(results)
+
+    return run, calls
+
+
+def test_optional_configmap_retries_a_guard_authorization_timeout(monkeypatch):
+    """One AKS guard webhook timeout must not fail `spi status --json`."""
+    configmap = {"metadata": {"name": "spi-init-values"}, "data": {}}
+    run, calls = _guard_timeout_then(json.dumps(configmap))
+    monkeypatch.setattr(status, "run_process", run)
+    monkeypatch.setattr(status.time, "sleep", lambda _seconds: None)
+
+    assert status._optional_configmap("spi-init-values", "osdu-flux") == configmap
+    assert len(calls) == 2
+
+
+def test_required_kubectl_json_retries_a_guard_authorization_timeout(monkeypatch):
+    run, calls = _guard_timeout_then(json.dumps({"items": []}))
+    monkeypatch.setattr(status, "run_process", run)
+    monkeypatch.setattr(status.time, "sleep", lambda _seconds: None)
+
+    assert status._required_kubectl_json(["get", "kustomizations"], "read") == {"items": []}
+    assert len(calls) == 2
+
+
+def test_optional_configmap_does_not_retry_a_genuine_failure(monkeypatch):
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(["kubectl"], 1, "", "Forbidden: not authorized")
+
+    monkeypatch.setattr(status, "run_process", run)
+
+    with pytest.raises(status.StatusError, match="Forbidden"):
+        status._optional_configmap("spi-init-values", "osdu-flux")
+    assert len(calls) == 1
 
 
 def _helmrelease(name: str, *, stalled: bool, reason: str = "RetriesExceeded") -> dict:
