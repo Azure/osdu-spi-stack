@@ -156,6 +156,43 @@ def test_patch_record_still_raises_on_a_genuine_failure(monkeypatch):
         deploy_record._patch_record(_object(resource_version="7"), record)
 
 
+_GUARD_TIMEOUT = (
+    'Error from server (InternalError): an error on the server ("Internal Server Error: '
+    '\\"/api/v1/namespaces/osdu-flux/configmaps/spi-deploy-record?fieldManager=kubectl-patch'
+    '\\": Post \\"https://guard.0123.svc.cluster.local:443/subjectaccessreviews?timeout=3s'
+    '\\": context deadline exceeded")'
+)
+
+
+def test_patch_record_retries_a_guard_authorization_timeout(monkeypatch):
+    """One AKS guard webhook timeout must not fail `spi maintenance set`."""
+    results = iter([_completed(returncode=1, stderr=_GUARD_TIMEOUT), _completed()])
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return next(results)
+
+    monkeypatch.setattr(deploy_record, "run_command", run)
+    monkeypatch.setattr(deploy_record.time, "sleep", lambda _seconds: None)
+    record = deploy_record._decode_record(_object())
+
+    assert deploy_record._patch_record(_object(resource_version="7"), record) is True
+    assert len(calls) == 2
+
+
+def test_read_deploy_record_retries_a_guard_authorization_timeout(monkeypatch):
+    results = iter(
+        [_completed(returncode=1, stderr=_GUARD_TIMEOUT), _completed(stdout=json.dumps(_object()))]
+    )
+    monkeypatch.setattr(deploy_record, "run_process", lambda *args, **kwargs: next(results))
+    monkeypatch.setattr(deploy_record.time, "sleep", lambda _seconds: None)
+
+    record = deploy_record.read_deploy_record()
+
+    assert record is not None and record.maintenance is True
+
+
 def test_set_maintenance_retries_conflict(monkeypatch):
     objects = iter([_object(resource_version="7"), _object(resource_version="8")])
     monkeypatch.setattr(

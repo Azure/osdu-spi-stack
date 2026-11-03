@@ -44,7 +44,7 @@ from .pins import (
     refresh_due_message,
     refresh_due_services,
 )
-from .shell import gather_reads, kubectl_json, run_process
+from .shell import gather_reads, kubectl_json, retry_transient_kubectl, run_process
 from .stack_version import (
     STACK_VERSION_CONFIGMAP,
     STACK_VERSION_NAMESPACE,
@@ -196,12 +196,14 @@ class StatusSnapshot:
 
 
 def _required_kubectl_json(args: list[str], description: str) -> dict:
-    result = run_process(
-        ["kubectl", *args, "-o", "json"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+    result = retry_transient_kubectl(
+        lambda: run_process(
+            ["kubectl", *args, "-o", "json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip() or "kubectl failed"
@@ -216,22 +218,24 @@ def _required_kubectl_json(args: list[str], description: str) -> dict:
 
 
 def _optional_configmap(name: str, namespace: str) -> dict | None:
-    result = run_process(
-        [
-            "kubectl",
-            "get",
-            "configmap",
-            name,
-            "-n",
-            namespace,
-            "--ignore-not-found",
-            "-o",
-            "json",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+    result = retry_transient_kubectl(
+        lambda: run_process(
+            [
+                "kubectl",
+                "get",
+                "configmap",
+                name,
+                "-n",
+                namespace,
+                "--ignore-not-found",
+                "-o",
+                "json",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip() or "kubectl failed"

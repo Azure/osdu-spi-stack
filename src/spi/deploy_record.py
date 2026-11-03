@@ -11,7 +11,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from .console import display_yaml
-from .shell import run_command, run_process
+from .shell import retry_transient_kubectl, run_command, run_process
 from .stack_version import RunningVersion
 
 DEPLOY_RECORD_CONFIGMAP = "spi-deploy-record"
@@ -118,22 +118,24 @@ def describe_last_up(facts: dict) -> str:
 
 
 def _read_record_object(required: bool = False) -> dict | None:
-    result = run_process(
-        [
-            "kubectl",
-            "get",
-            "configmap",
-            DEPLOY_RECORD_CONFIGMAP,
-            "-n",
-            DEPLOY_RECORD_NAMESPACE,
-            "--ignore-not-found",
-            "-o",
-            "json",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+    result = retry_transient_kubectl(
+        lambda: run_process(
+            [
+                "kubectl",
+                "get",
+                "configmap",
+                DEPLOY_RECORD_CONFIGMAP,
+                "-n",
+                DEPLOY_RECORD_NAMESPACE,
+                "--ignore-not-found",
+                "-o",
+                "json",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip() or "kubectl failed"
@@ -224,20 +226,25 @@ def _patch_record(obj: dict, record: DeployRecord) -> bool:
         },
         {"op": operation, "path": "/data", "value": record.to_data()},
     ]
-    result = run_command(
-        [
-            "kubectl",
-            "patch",
-            "configmap",
-            DEPLOY_RECORD_CONFIGMAP,
-            "-n",
-            DEPLOY_RECORD_NAMESPACE,
-            "--type=json",
-            "-p",
-            json.dumps(patch),
-        ],
-        description=f"Update {DEPLOY_RECORD_CONFIGMAP}",
-        check=False,
+    description = f"Update {DEPLOY_RECORD_CONFIGMAP}"
+    # Safe to resend: the resourceVersion `test` turns a duplicate into a conflict.
+    result = retry_transient_kubectl(
+        lambda: run_command(
+            [
+                "kubectl",
+                "patch",
+                "configmap",
+                DEPLOY_RECORD_CONFIGMAP,
+                "-n",
+                DEPLOY_RECORD_NAMESPACE,
+                "--type=json",
+                "-p",
+                json.dumps(patch),
+            ],
+            description=description,
+            check=False,
+        ),
+        description,
     )
     if result.returncode == 0:
         return True
