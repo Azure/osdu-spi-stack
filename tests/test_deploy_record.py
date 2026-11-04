@@ -10,7 +10,7 @@ import subprocess
 import pytest
 from typer.testing import CliRunner
 
-from spi import cli, deploy_record
+from spi import cli, deploy_record, shell
 from spi.deploy_record import DeployRecordError
 from spi.stack_version import RunningVersion
 
@@ -31,6 +31,26 @@ def _object(*, maintenance: str = "true", resource_version: str = "7") -> dict:
 
 def _completed(returncode: int = 0, stdout: str = "", stderr: str = ""):
     return subprocess.CompletedProcess(["kubectl"], returncode, stdout, stderr)
+
+
+# What kubectl prints when the API server rejects a JSON Patch whose `test`
+# failed (HTTP 422 Invalid); a malformed patch prints the same words.
+_KUBECTL_INVALID = (
+    "The request is invalid: the server rejected our request due to an error in our request"
+)
+
+
+def _wire_reread(monkeypatch, obj: dict) -> list:
+    """Serve the lost-race re-read of the record from ``obj``; returns the reads."""
+    reads = []
+
+    def run(cmd, **kwargs):
+        assert cmd[:4] == ["kubectl", "get", "configmap", deploy_record.DEPLOY_RECORD_CONFIGMAP]
+        reads.append(cmd)
+        return _completed(stdout=json.dumps(obj))
+
+    monkeypatch.setattr(shell, "run_process", run)
+    return reads
 
 
 def test_read_deploy_record_rejects_invalid_maintenance(monkeypatch):
@@ -150,10 +170,65 @@ def test_patch_record_still_raises_on_a_genuine_failure(monkeypatch):
         "run_command",
         lambda *args, **kwargs: _completed(returncode=1, stderr="Forbidden: not authorized"),
     )
+    _wire_reread(monkeypatch, _object(resource_version="7"))
     record = deploy_record._decode_record(_object())
 
     with pytest.raises(DeployRecordError, match="Forbidden"):
         deploy_record._patch_record(_object(resource_version="7"), record)
+
+
+def _upsert():
+    return deploy_record.upsert_deploy_record(
+        ref="v0.7.0",
+        resolved_commit="b" * 40,
+        deployed_at="2026-08-28T18:00:00Z",
+        cli_version="0.7.0",
+        profile="core",
+        initial_maintenance=False,
+    )
+
+
+def test_upsert_retries_a_lost_race_kubectl_reports_as_invalid(monkeypatch):
+    """A failed `test` reaches kubectl as a bare 422; a newer resourceVersion
+    on the re-read marks it as a lost race, so the write retries."""
+    objects = iter([_object(resource_version="7"), _object(resource_version="8")])
+    monkeypatch.setattr(deploy_record, "_read_record_object", lambda required=False: next(objects))
+    results = iter([_completed(returncode=1, stderr=_KUBECTL_INVALID), _completed()])
+    patches = []
+
+    def run(command, **kwargs):
+        patches.append(json.loads(command[-1])[0]["value"])
+        return next(results)
+
+    monkeypatch.setattr(deploy_record, "run_command", run)
+    reads = _wire_reread(monkeypatch, _object(resource_version="8"))
+    monkeypatch.setattr(deploy_record.time, "sleep", lambda _seconds: None)
+
+    record = _upsert()
+
+    assert record.ref == "v0.7.0"
+    assert patches == ["7", "8"]
+    assert len(reads) == 1
+
+
+def test_upsert_raises_an_invalid_patch_on_the_first_attempt(monkeypatch):
+    """The same 422 with an unchanged resourceVersion is a real invalid patch."""
+    monkeypatch.setattr(
+        deploy_record, "_read_record_object", lambda required=False: _object(resource_version="7")
+    )
+    patches = []
+
+    def run(command, **kwargs):
+        patches.append(command)
+        return _completed(returncode=1, stderr=_KUBECTL_INVALID)
+
+    monkeypatch.setattr(deploy_record, "run_command", run)
+    _wire_reread(monkeypatch, _object(resource_version="7"))
+    monkeypatch.setattr(deploy_record.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(DeployRecordError, match="The request is invalid"):
+        _upsert()
+    assert len(patches) == 1
 
 
 _GUARD_TIMEOUT = (
