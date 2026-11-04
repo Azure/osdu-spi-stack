@@ -1066,7 +1066,8 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
     schema pin may have paired the loader under the same run, so ``if_run``
     releases that loader with it and leaves a loader owned by anything else
     standing; the restore converges through the lock's watch label rather
-    than an explicit reconciliation.
+    than an explicit reconciliation. A restored schema releases its paired
+    loader in a second write, only once the canonical schema pod serves.
     """
 
     if service not in IMAGE_REGISTRY:
@@ -1079,6 +1080,9 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
 
     restored: list[str] = []
     refresh_required: list[str] = []
+    # Set when schema's canonical must be serving before its paired loader is released.
+    deferred_loader: ServicePin | None = None
+    schema_image = ""
 
     def compute(lock: dict | None) -> dict:
         if lock is None:
@@ -1086,8 +1090,15 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
                 f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE}; "
                 "is this a core-profile cluster?"
             )
-        nonlocal restored, refresh_required
+        nonlocal restored, refresh_required, deferred_loader, schema_image
         pins = decode_pins(lock)
+        if (
+            service == SCHEMA_SERVICE_NAME
+            and not if_run
+            and SCHEMA_SERVICE_NAME not in pins
+            and SCHEMA_LOAD_SERVICE_NAME in pins
+        ):
+            raise _OrphanedLoader(lock)
         targets = [name for name in targets_all if name in pins]
         if not targets:
             if if_run:
@@ -1115,39 +1126,155 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
                 )
             targets = [name for name in targets if name == service or pins[name].run_id == if_run]
 
-        data = dict(lock.get("data") or {})
-        restored = []
-        refresh_required = []
-        for name in targets:
-            pin = pins.pop(name)
-            if not pin.canonical_repository or not pin.canonical_tag:
-                data[do_not_disrupt_key(name)] = "false"
-                refresh_required.append(name)
-                continue
-            data.update(
-                _lock_entry_patch(
-                    name,
-                    pin.canonical_repository,
-                    pin.canonical_tag,
-                    pin.canonical_created_at,
-                    pin.canonical_digest,
-                )
+        deferred_loader = None
+        schema_image = ""
+        schema_pin = pins.get(SCHEMA_SERVICE_NAME)
+        if (
+            SCHEMA_SERVICE_NAME in targets
+            and SCHEMA_LOAD_SERVICE_NAME in targets
+            and schema_pin is not None
+            and schema_pin.canonical_repository
+            and schema_pin.canonical_tag
+        ):
+            targets.remove(SCHEMA_LOAD_SERVICE_NAME)
+            deferred_loader = pins[SCHEMA_LOAD_SERVICE_NAME]
+            schema_image = image_ref(
+                schema_pin.canonical_repository,
+                schema_pin.canonical_tag,
+                schema_pin.canonical_digest,
             )
-            restored.append(name)
 
-        annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
-        if pins:
-            annotations[PINS_ANNOTATION] = encode_pins(pins)
-        else:
-            annotations.pop(PINS_ANNOTATION, None)
-        return {"data": data, "metadata": {"annotations": annotations}}
+        desired, restored, refresh_required = _release_to_canonical(lock, pins, targets)
+        return desired
 
-    mutate_lock(compute, f"Reset {service}")
+    try:
+        mutate_lock(compute, f"Reset {service}")
+    except _OrphanedLoader as orphan:
+        return _reset_orphaned_loader(orphan.lock)
+    if deferred_loader is not None:
+        loader_restored, loader_refresh = _reset_paired_loader(schema_image, deferred_loader)
+        restored += loader_restored
+        refresh_required += loader_refresh
     # The run-conditional restore runs under the fork deploy role, which
     # cannot patch Kustomizations; the watch label converges it.
     if restored and not if_run:
         reconcile_consumers(restored)
     return ResetResult(tuple(restored), tuple(refresh_required))
+
+
+def _release_to_canonical(
+    lock: dict, pins: dict[str, ServicePin], targets: list[str]
+) -> tuple[dict, list[str], list[str]]:
+    """Drop the targets' pins from ``pins`` and restore each recorded canonical.
+
+    Returns the desired lock, the names restored, and the names left for a
+    refresh because their pin recorded no canonical.
+    """
+
+    data = dict(lock.get("data") or {})
+    restored: list[str] = []
+    refresh_required: list[str] = []
+    for name in targets:
+        pin = pins.pop(name)
+        if not pin.canonical_repository or not pin.canonical_tag:
+            data[do_not_disrupt_key(name)] = "false"
+            refresh_required.append(name)
+            continue
+        data.update(
+            _lock_entry_patch(
+                name,
+                pin.canonical_repository,
+                pin.canonical_tag,
+                pin.canonical_created_at,
+                pin.canonical_digest,
+            )
+        )
+        restored.append(name)
+
+    annotations = dict((lock.get("metadata") or {}).get("annotations") or {})
+    if pins:
+        annotations[PINS_ANNOTATION] = encode_pins(pins)
+    else:
+        annotations.pop(PINS_ANNOTATION, None)
+    return {"data": data, "metadata": {"annotations": annotations}}, restored, refresh_required
+
+
+class _OrphanedLoader(Exception):
+    """Schema is unpinned but its loader is not; carries the lock that showed it."""
+
+    def __init__(self, lock: dict):
+        super().__init__()
+        self.lock = lock
+
+
+def _reset_orphaned_loader(lock: dict) -> ResetResult:
+    """Release a loader whose schema is already unpinned, gated on the live schema ref.
+
+    A failed rollout wait, or an overlapping reset that restored schema first,
+    leaves only the loader pinned, with no schema pin left to wait behind.
+    """
+
+    loader = decode_pins(lock)[SCHEMA_LOAD_SERVICE_NAME]
+    data = lock.get("data") or {}
+    schema_image = data.get(f"{image_lock_key(SCHEMA_SERVICE_NAME)}_IMAGE_REF", "")
+    restored, refresh_required = _reset_paired_loader(schema_image, loader)
+    if restored:
+        reconcile_consumers(restored)
+    return ResetResult(tuple(restored), tuple(refresh_required))
+
+
+class _LoaderRepinned(Exception):
+    """The paired loader no longer holds the pin the reset found; never leaves
+    `_reset_paired_loader`."""
+
+
+def _reset_paired_loader(schema_image: str, expected: ServicePin) -> tuple[list[str], list[str]]:
+    """Release schema's paired loader once the canonical schema pod serves.
+
+    The loader Job's entrypoint waits only for the schema URL to answer, and
+    the outgoing pod still answers mid-rollout, so a loader released in the
+    same write as schema can run against the borrowed image and fail with
+    nothing to retry it. The loader is released only while it still holds
+    the pin the schema write found, which keeps ``--if-run`` to the same run.
+    """
+
+    loader = SCHEMA_LOAD_SERVICE_NAME
+    reason = ""
+    if "@" not in schema_image:
+        reason = "its canonical records no digest to verify the rollout against"
+    else:
+        try:
+            await_service_image(SCHEMA_SERVICE_NAME, schema_image)
+        except PinError as exc:
+            reason = f"its canonical rollout could not be confirmed ({exc})"
+    if reason:
+        raise PinError(
+            f"{SCHEMA_SERVICE_NAME} was restored to {schema_image}, but {loader} was not "
+            f"restored and stays pinned: {reason}. Run 'spi service reset {loader}' once "
+            f"{SCHEMA_SERVICE_NAME} serves its canonical image."
+        )
+
+    restored: list[str] = []
+    refresh_required: list[str] = []
+
+    def compute(lock: dict | None) -> dict:
+        if lock is None:
+            raise PinError(
+                f"ConfigMap {IMAGE_LOCK_CONFIGMAP} not found in {IMAGE_LOCK_NAMESPACE} "
+                f"while restoring {loader}."
+            )
+        nonlocal restored, refresh_required
+        pins = decode_pins(lock)
+        if pins.get(loader) != expected:
+            raise _LoaderRepinned
+        desired, restored, refresh_required = _release_to_canonical(lock, pins, [loader])
+        return desired
+
+    try:
+        mutate_lock(compute, f"Reset {loader}")
+    except _LoaderRepinned:
+        return [], []
+    return restored, refresh_required
 
 
 def refresh_services(services: list[str]) -> RefreshResult:
