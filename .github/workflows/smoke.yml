@@ -213,18 +213,36 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Cache Azure tokens and get AKS credentials
+      - name: Get AKS credentials
         run: |
           set -euo pipefail
-          # Warm the audiences kubectl reaches during the wait while the OIDC JWT is alive.
-          az account get-access-token --resource https://management.azure.com -o none
-          az account get-access-token --resource 6dae42f8-4368-4678-94ff-3960e28e3630 -o none
           az aks get-credentials \
             --resource-group "${{ needs.provision.outputs.rg }}" \
             --name "${{ needs.provision.outputs.rg }}" \
             --overwrite-existing \
             --only-show-errors
-          kubelogin convert-kubeconfig -l azurecli
+
+      - name: Keep kubectl on a renewable federated login
+        # azure/login gives az a one-shot assertion that expires in 5 minutes, so
+        # az cannot mint kubectl a new token once its cached one expires.
+        # kubelogin's workloadidentity login exchanges this file on every call
+        # instead, and the background refresher rewrites it every 60s until the
+        # job ends.
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_AUTHORITY_HOST: https://login.microsoftonline.com/
+        run: |
+          set -euo pipefail
+          export AZURE_FEDERATED_TOKEN_FILE="$RUNNER_TEMP/azure-federated-token"
+          for var in AZURE_FEDERATED_TOKEN_FILE AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_AUTHORITY_HOST; do
+            echo "$var=${!var}" >> "$GITHUB_ENV"
+          done
+          bash scripts/refresh_federated_token.sh
+          nohup bash scripts/refresh_federated_token.sh --every 60 \
+            < /dev/null > "$RUNNER_TEMP/refresh-federated-token.log" 2>&1 &
+          kubelogin convert-kubeconfig -l workloadidentity
+          kubectl get --raw /version > /dev/null
 
       - name: Wait for Flux Kustomizations to be Ready
         # 230 min; the job budget above explains the figure.

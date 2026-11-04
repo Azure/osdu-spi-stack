@@ -193,6 +193,28 @@ jobs:
       - name: spi connect
         run: spi connect --resource-group "spi-stack-${ENV_NAME}" --cluster "spi-stack-${ENV_NAME}"
 
+      - name: Keep kubectl on a renewable federated login
+        # azure/login gives az a one-shot assertion that expires in 5 minutes, so
+        # az cannot mint kubectl a new token once its cached one expires.
+        # kubelogin's workloadidentity login exchanges this file on every call
+        # instead, and the background refresher rewrites it every 60s until the
+        # job ends.
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_AUTHORITY_HOST: https://login.microsoftonline.com/
+        run: |
+          set -euo pipefail
+          export AZURE_FEDERATED_TOKEN_FILE="$RUNNER_TEMP/azure-federated-token"
+          for var in AZURE_FEDERATED_TOKEN_FILE AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_AUTHORITY_HOST; do
+            echo "$var=${!var}" >> "$GITHUB_ENV"
+          done
+          bash scripts/refresh_federated_token.sh
+          nohup bash scripts/refresh_federated_token.sh --every 60 \
+            < /dev/null > "$RUNNER_TEMP/refresh-federated-token.log" 2>&1 &
+          kubelogin convert-kubeconfig -l workloadidentity
+          kubectl get --raw /version > /dev/null
+
       - name: Require an initialized deployment
         # A provision that died before writing the deploy record leaves AKS
         # without one; refresh has no provision job to recover with.
@@ -247,6 +269,15 @@ jobs:
 
       - name: Wait for Flux Kustomizations to be Ready
         run: bash scripts/wait_for_flux_ready.sh --timeout 13800
+
+      - name: Renew Azure login (OIDC)
+        # The wait can outlast az's cached tokens, so the az and spi calls after
+        # it start from a fresh assertion.
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Acceptance probe (gateway reachable)
         if: needs.declare.outputs.profile != 'bare'
