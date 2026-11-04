@@ -741,6 +741,38 @@ class TestResetService:
         assert [sorted(written) for _, written in calls["writes"]] == [["schema-load"], []]
         assert calls["reconciled"] == ["schema-load"]
 
+    def test_an_overlapping_reset_that_restored_schema_first_still_gates_the_loader(
+        self, monkeypatch
+    ):
+        lock = _lock(pins_annotation=encode_pins({"schema": _pin(), "schema-load": _pin()}))
+        stale = json.loads(json.dumps(lock))
+        calls = _wire_lock(monkeypatch, lock)
+
+        def pending_wait(service, image):
+            raise VerifyError("rollout_incomplete", "rollout is not complete")
+
+        monkeypatch.setattr(pins, "await_service_image", pending_wait)
+        with pytest.raises(PinError):
+            reset_service("schema")
+
+        # This reset read the lock before the other one restored schema.
+        reads = iter([stale])
+        live_read = pins.read_lock
+        monkeypatch.setattr(
+            pins, "read_lock", lambda required=True: next(reads, None) or live_read(required)
+        )
+        awaited: list = []
+        monkeypatch.setattr(
+            pins,
+            "await_service_image",
+            lambda s, i: awaited.append((s, i, len(calls["writes"]))),
+        )
+        result = reset_service("schema")
+
+        assert awaited == [("schema", "registry/schema-service-master@sha256:abc", 1)]
+        assert result == ResetResult(restored=("schema-load",), refresh_required=())
+        assert [sorted(written) for _, written in calls["writes"]] == [["schema-load"], []]
+
     def test_loader_repinned_during_the_wait_stands(self, monkeypatch):
         lock = _lock(pins_annotation=encode_pins({"schema": _pin(), "schema-load": _pin()}))
         calls = _wire_lock(monkeypatch, lock)
