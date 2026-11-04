@@ -717,6 +717,30 @@ class TestResetService:
         _, saved = calls["patch"]
         assert saved == {"schema-load": loader}
 
+    def test_retry_after_a_failed_rollout_waits_on_the_live_schema_ref(self, monkeypatch):
+        loader = _pin()
+        lock = _lock(pins_annotation=encode_pins({"schema": _pin(), "schema-load": loader}))
+        calls = _wire_lock(monkeypatch, lock)
+
+        def failed_wait(service, image):
+            raise VerifyError("rollout_incomplete", "rollout is not complete")
+
+        monkeypatch.setattr(pins, "await_service_image", failed_wait)
+        for _ in range(2):
+            with pytest.raises(PinError, match="schema-load was not restored"):
+                reset_service("schema")
+        assert len(calls["writes"]) == 1
+        assert decode_pins(calls["box"][0]) == {"schema-load": loader}
+
+        awaited: list = []
+        monkeypatch.setattr(pins, "await_service_image", lambda s, i: awaited.append((s, i)))
+        result = reset_service("schema")
+
+        assert awaited == [("schema", "registry/schema-service-master@sha256:abc")]
+        assert result == ResetResult(restored=("schema-load",), refresh_required=())
+        assert [sorted(written) for _, written in calls["writes"]] == [["schema-load"], []]
+        assert calls["reconciled"] == ["schema-load"]
+
     def test_loader_repinned_during_the_wait_stands(self, monkeypatch):
         lock = _lock(pins_annotation=encode_pins({"schema": _pin(), "schema-load": _pin()}))
         calls = _wire_lock(monkeypatch, lock)

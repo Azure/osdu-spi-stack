@@ -1077,6 +1077,10 @@ def reset_service(service: str, if_run: str = "") -> ResetResult:
     targets_all = [service]
     if service == SCHEMA_SERVICE_NAME:
         targets_all.append(SCHEMA_LOAD_SERVICE_NAME)
+        if not if_run:
+            retried = _reset_orphaned_loader()
+            if retried is not None:
+                return retried
 
     restored: list[str] = []
     refresh_required: list[str] = []
@@ -1187,6 +1191,28 @@ def _release_to_canonical(
     else:
         annotations.pop(PINS_ANNOTATION, None)
     return {"data": data, "metadata": {"annotations": annotations}}, restored, refresh_required
+
+
+def _reset_orphaned_loader() -> ResetResult | None:
+    """Release a loader whose schema is already unpinned, gated on the live schema ref.
+
+    A schema reset whose rollout wait failed leaves only the loader pinned, so a
+    retry finds no schema pin to wait behind. Returns ``None`` when schema is
+    still pinned or no loader pin stands, leaving the reset to the paired path.
+    """
+
+    lock = read_lock(required=True)
+    assert lock is not None  # required=True raises PinError instead of returning None
+    live = decode_pins(lock)
+    loader = live.get(SCHEMA_LOAD_SERVICE_NAME)
+    if SCHEMA_SERVICE_NAME in live or loader is None:
+        return None
+    data = lock.get("data") or {}
+    schema_image = data.get(f"{image_lock_key(SCHEMA_SERVICE_NAME)}_IMAGE_REF", "")
+    restored, refresh_required = _reset_paired_loader(schema_image, loader)
+    if restored:
+        reconcile_consumers(restored)
+    return ResetResult(tuple(restored), tuple(refresh_required))
 
 
 class _LoaderRepinned(Exception):

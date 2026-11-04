@@ -174,8 +174,9 @@ paired loader writes the lock twice: schema first, then the loader once
 pod on the canonical digest, since the loader's entrypoint only waits for
 the schema URL to answer and the outgoing borrowed pod still answers. A
 rollout that does not complete within 10 minutes leaves the loader pinned
-and fails the reset; the stale sweep later releases a loader whose lane has
-ended. The `schema-load` Job passes
+and fails the reset; rerunning `spi service reset schema` waits on the
+schema ref the lock now records before releasing it, and the stale sweep
+later releases a loader whose lane has ended. The `schema-load` Job passes
 `SCHEMA_URL`, `WAIT_SECONDS`, and the workload identity to the loader
 image's own entrypoint.
 
