@@ -106,9 +106,10 @@ RG: it selects on the `spi-stack-ci-*` name pattern and the sweep-eligibility
 tag, and the shared RG carries neither.
 
 **Refresh** (`env-refresh.yml`, implemented) proves the environment is
-serving: set the `maintenance` flag in a named quiesce step, run plain `spi
-reconcile` (preserving the version-pinned source and the current image
-lock), run `spi onboard --reconcile --write` to restore declared fork trust
+serving: set the `maintenance` flag in a named quiesce step, sweep stale
+ephemeral pins with `spi service reset --ephemeral --stale-only` (ADR-031),
+run plain `spi reconcile` (preserving the version-pinned source and the
+current image lock), run `spi onboard --reconcile --write` to restore declared fork trust
 and source policy, run `spi service refresh --forks` to advance every
 canonical (ADR-033), gate on `scripts/wait_for_flux_ready.sh` plus the gateway probes
 shared with `smoke.yml` via `scripts/probe_gateway.sh`, assert the deployed
@@ -122,10 +123,10 @@ canonical moves to its repository's weekend build before retention deletes
 the image that build replaced. A failed step leaves the flag set (ADR-029), so a red
 04:00 UTC run blocks the day's fork deploys with a reason instead of letting
 them race a sick environment. The stale-pin sweep
-([fork-deployment.md](fork-deployment.md)) and the drain insert between the
-quiesce step and the reconcile, without changing the workflow's shape; reset
-runs both through `scripts/drain_ephemeral_pins.sh`, and refresh does not
-yet.
+([fork-deployment.md](fork-deployment.md)) runs once between the quiesce step
+and the reconcile, so a pin whose owning run ended without its restore stands
+at most until the next weekday refresh. Refresh does not drain; reset runs the sweep
+and the drain through `scripts/drain_ephemeral_pins.sh`.
 
 **Upgrade** (`env-upgrade.yml`, implemented) is `spi up --env shared --tag
 <new> --refresh-images` re-run on the standing environment. For an existing
@@ -377,8 +378,8 @@ gh run watch
    implemented; `shared` stands up at the release tag via `env-upgrade`.
 3. **Ops workflows** (mostly built): `env-refresh`, `env-upgrade`,
    `env-reset` with its stale-pin sweep and drain, and the bump-PR job are
-   implemented, as is the test-identity ensure step. Still unbuilt:
-   `env-teardown`, and the sweep and drain steps in `env-refresh`.
+   implemented, as is the test-identity ensure step and the stale-pin sweep
+   in `env-refresh`. Still unbuilt: `env-teardown`.
 4. **Onboarding** (in progress): the deploy identity and two Roles in `spi up`,
    identity and RG-tag retention in `spi down` (ADR-034), and the trust path
    of `spi onboard` (repository protection, the five values, the federated

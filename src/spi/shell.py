@@ -316,6 +316,52 @@ def retry_transient_kubectl(
     return proc
 
 
+# Wordings kubectl prints for a patch that lost a resourceVersion race. A failed
+# JSON Patch `test` usually arrives as a bare 422 "The request is invalid", which
+# every malformed patch shares, so that case is settled by re-reading the object.
+LOST_RACE_MARKERS = (
+    "object has been modified",
+    "test operation",
+    "testing value",
+    "test failed",
+    "unprocessable entity",
+    "conflict",
+)
+
+
+def configmap_patch_lost_race(output: str, name: str, namespace: str, tested_version: str) -> bool:
+    """Whether a failed ConfigMap patch that tested ``tested_version`` lost a race.
+
+    A known conflict wording settles it. Otherwise the ConfigMap is read again
+    silently: a resourceVersion other than the tested one means another writer
+    landed first. An unchanged version or a failed read is not a race, and the
+    caller reports the original error.
+    """
+    lowered = output.lower()
+    if any(marker in lowered for marker in LOST_RACE_MARKERS):
+        return True
+    try:
+        result = run_process(
+            ["kubectl", "get", "configmap", name, "-n", namespace, "-o", "json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        current = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(current, dict):
+        return False
+    version = str((current.get("metadata") or {}).get("resourceVersion") or "")
+    return bool(version) and version != tested_version
+
+
 def kubectl_apply_yaml(
     yaml_content: str,
     description: str,

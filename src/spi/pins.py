@@ -75,7 +75,7 @@ from .images import (
     resolve_images,
     runs_fork_package,
 )
-from .shell import run_command, run_process
+from .shell import configmap_patch_lost_race, run_command, run_process
 
 PINS_ANNOTATION = "spi-stack.osdu.dev/pins"
 # Service to trusted repository, projected from the deploy identity's
@@ -125,14 +125,6 @@ _FILE_KUSTOMIZATIONS = {
 
 LOCK_MUTATION_MAX_ATTEMPTS = 5
 _LOCK_MUTATION_BASE_DELAY_SECONDS = 1.0
-_CONFLICT_MARKERS = (
-    "the object has been modified",
-    "test operation",
-    "test failed",
-    "unprocessable entity",
-    "conflict",
-    "already exists",
-)
 
 
 class PinError(RuntimeError):
@@ -426,11 +418,6 @@ def _resource_version(lock: dict) -> str:
     return str((lock.get("metadata") or {}).get("resourceVersion", ""))
 
 
-def _is_conflict(stderr: str) -> bool:
-    lowered = stderr.lower()
-    return any(marker in lowered for marker in _CONFLICT_MARKERS)
-
-
 def mutate_lock(
     mutator: Callable[[dict | None], dict],
     description: str,
@@ -445,8 +432,9 @@ def mutate_lock(
 
     Updates go through a JSON Patch with a ``test`` on
     ``metadata.resourceVersion``, keeping the verb compatible with
-    patch-only RBAC. Only a failed test or a lost create race is retried;
-    any other failure raises immediately.
+    patch-only RBAC. Only a lost race is retried: a failed test, which
+    ``configmap_patch_lost_race`` recognizes, or a lost create race. Any
+    other failure raises immediately.
     """
 
     delay = _LOCK_MUTATION_BASE_DELAY_SECONDS
@@ -529,7 +517,9 @@ def mutate_lock(
         if result.returncode == 0:
             return json.loads(result.stdout) if result.stdout.strip() else lock
         stderr = (result.stderr or result.stdout or "").strip()
-        if _is_conflict(stderr):
+        if configmap_patch_lost_race(
+            stderr, IMAGE_LOCK_CONFIGMAP, IMAGE_LOCK_NAMESPACE, _resource_version(lock)
+        ):
             if attempt < max_attempts:
                 console.print(
                     f"  [warning]{description}: concurrent write detected, retrying "

@@ -20,6 +20,7 @@ functions. The end-to-end proof through a real cmd.exe lives in
 test_shell_windows.py.
 """
 
+import json
 import os
 import subprocess
 import threading
@@ -28,10 +29,12 @@ from unittest import mock
 
 import pytest
 
+from spi import shell
 from spi.shell import (
     _MAX_PARALLEL_READS,
     BatchArgumentError,
     build_batch_command_line,
+    configmap_patch_lost_race,
     escape_batch_argument,
     gather_reads,
     prepare_command,
@@ -272,3 +275,59 @@ def test_gather_reads_runs_a_lone_call_without_a_pool():
 def test_gather_reads_passes_no_arguments_to_its_calls():
     """Callers bind their arguments up front, so a read takes none."""
     assert gather_reads([partial(len, "abcd"), partial(len, "ab")]) == [4, 2]
+
+
+_KUBECTL_INVALID = (
+    "The request is invalid: the server rejected our request due to an error in our request"
+)
+
+
+def _reread(monkeypatch, result):
+    reads = []
+
+    def run(cmd, **kwargs):
+        reads.append(cmd)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(shell, "run_process", run)
+    return reads
+
+
+def _configmap(resource_version: str) -> subprocess.CompletedProcess:
+    body = json.dumps({"metadata": {"resourceVersion": resource_version}})
+    return subprocess.CompletedProcess([], 0, stdout=body, stderr="")
+
+
+def test_a_conflict_wording_is_a_lost_race_without_a_reread(monkeypatch):
+    reads = _reread(monkeypatch, AssertionError("no re-read expected"))
+
+    assert configmap_patch_lost_race(
+        "Operation cannot be fulfilled: the object has been modified", "cm", "ns", "7"
+    )
+    assert reads == []
+
+
+def test_a_newer_resource_version_on_reread_is_a_lost_race(monkeypatch):
+    reads = _reread(monkeypatch, _configmap("8"))
+
+    assert configmap_patch_lost_race(_KUBECTL_INVALID, "cm", "ns", "7")
+    assert reads == [["kubectl", "get", "configmap", "cm", "-n", "ns", "-o", "json"]]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        _configmap("7"),
+        _configmap(""),
+        subprocess.CompletedProcess([], 1, stdout="", stderr="NotFound"),
+        subprocess.CompletedProcess([], 0, stdout="not json", stderr=""),
+        FileNotFoundError("kubectl"),
+    ],
+    ids=["unchanged", "no-version", "read-failed", "unparseable", "no-kubectl"],
+)
+def test_an_unproven_race_is_not_a_lost_race(monkeypatch, result):
+    _reread(monkeypatch, result)
+
+    assert not configmap_patch_lost_race(_KUBECTL_INVALID, "cm", "ns", "7")

@@ -293,6 +293,18 @@ class TestMaintenanceOrdering:
             "maintenance must never be cleared from an if: always() failure path"
         )
 
+    def test_env_refresh_sweeps_stale_ephemeral_pins_after_quiesce(self):
+        steps = _steps(_workflow(ENV_REFRESH)["jobs"]["refresh"])
+        names = list(steps)
+
+        assert names.index("Sweep stale ephemeral pins") == (
+            names.index("Quiesce (set maintenance)") + 1
+        )
+        sweep = steps["Sweep stale ephemeral pins"]
+        assert sweep["run"].strip() == "spi service reset --ephemeral --stale-only"
+        # The sweep reads each pin's owning run.
+        assert sweep["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+
     def test_env_refresh_requires_deploy_record_before_setting_maintenance(self):
         # A provision can die after creating AKS but before writing the deploy
         # record; refresh has no provision job to recover with, so it must

@@ -11,7 +11,12 @@ import time
 from dataclasses import asdict, dataclass
 
 from .console import display_yaml
-from .shell import retry_transient_kubectl, run_command, run_process
+from .shell import (
+    configmap_patch_lost_race,
+    retry_transient_kubectl,
+    run_command,
+    run_process,
+)
 from .stack_version import RunningVersion
 
 DEPLOY_RECORD_CONFIGMAP = "spi-deploy-record"
@@ -195,24 +200,6 @@ def read_deploy_record(required: bool = False) -> DeployRecord | None:
     return _decode_record(obj) if obj is not None else None
 
 
-# The API server words a JSON Patch `test` mismatch several ways; missing one
-# turns a retryable race into a hard error. Same set as pins.mutate_lock.
-_CONFLICT_MARKERS = (
-    "the object has been modified",
-    "object has been modified",
-    "test operation",
-    "testing value",
-    "test failed",
-    "unprocessable entity",
-    "conflict",
-)
-
-
-def _is_conflict(output: str) -> bool:
-    lowered = output.lower()
-    return any(marker in lowered for marker in _CONFLICT_MARKERS)
-
-
 def _patch_record(obj: dict, record: DeployRecord) -> bool:
     resource_version = (obj.get("metadata") or {}).get("resourceVersion", "")
     if not resource_version:
@@ -249,7 +236,9 @@ def _patch_record(obj: dict, record: DeployRecord) -> bool:
     if result.returncode == 0:
         return True
     detail = (result.stderr or result.stdout or "").strip()
-    if _is_conflict(detail):
+    if configmap_patch_lost_race(
+        detail, DEPLOY_RECORD_CONFIGMAP, DEPLOY_RECORD_NAMESPACE, resource_version
+    ):
         return False
     raise DeployRecordError(
         f"Could not update {DEPLOY_RECORD_CONFIGMAP}: {detail or 'kubectl failed'}"

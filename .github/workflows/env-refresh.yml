@@ -230,6 +230,12 @@ jobs:
       - name: Quiesce (set maintenance)
         run: spi maintenance set
 
+      - name: Sweep stale ephemeral pins
+        # The weekday backstop (ADR-031): restores pins whose owning run has ended.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: spi service reset --ephemeral --stale-only
+
       - name: spi reconcile
         # No --refresh-images: the pinned source and current image lock stand.
         run: |

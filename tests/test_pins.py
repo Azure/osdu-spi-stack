@@ -25,7 +25,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from spi import cli, pins, status
+from spi import cli, pins, shell, status
 from spi.build import BuildError, BuiltImage, Registry
 from spi.deploy_record import DeployRecord, DeployRecordError
 from spi.images import (
@@ -186,13 +186,21 @@ def _pinned_data(service: str, pin: ServicePin) -> dict:
     }
 
 
-def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
+# What kubectl prints when the API server rejects a JSON Patch whose `test`
+# failed (HTTP 422 Invalid); a malformed patch prints the same words.
+_KUBECTL_INVALID = (
+    "The request is invalid: the server rejected our request due to an error in our request"
+)
+
+
+def _wire_lock(monkeypatch, lock, conflicts: int = 0, conflict_stderr=_KUBECTL_INVALID) -> dict:
     """Wire pins.read_lock/run_command to an in-memory ConfigMap so the real
     ``mutate_lock`` compare-and-retry loop runs against a fake cluster.
 
     ``conflicts`` is how many concurrent writers land a change (an unrelated
     pin plus a bumped resourceVersion) between the read and the patch,
-    forcing that many JSON Patch ``test`` failures first.
+    forcing that many JSON Patch ``test`` failures first. Each fails with
+    ``conflict_stderr``, and the lost-race re-read sees the in-memory object.
 
     Returns ``patch`` (the final ``(data, pins)`` pair), ``reconciled`` (the
     services passed to ``reconcile_consumers``), and ``attempts``.
@@ -238,14 +246,10 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
                 },
                 "data": dict(box[0].get("data") or {}),
             }
-            return subprocess.CompletedProcess(
-                cmd, 1, stdout="", stderr="the object has been modified; please try again"
-            )
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=conflict_stderr)
 
         if test_op["value"] != current_rv:
-            return subprocess.CompletedProcess(
-                cmd, 1, stdout="", stderr="the object has been modified; please try again"
-            )
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=conflict_stderr)
 
         new_lock = {
             "metadata": {
@@ -263,6 +267,7 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
 
     monkeypatch.setattr(pins, "read_lock", fake_read_lock)
     monkeypatch.setattr(pins, "run_command", fake_run_command)
+    _wire_lock_reread(monkeypatch, box)
     monkeypatch.setattr(pins.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(
         pins, "reconcile_consumers", lambda names: calls.__setitem__("reconciled", names)
@@ -271,6 +276,19 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0) -> dict:
     monkeypatch.setattr(status, "collect_kustomization_readiness", lambda: _readiness())
     monkeypatch.setattr(status, "collect_bootstrap_blocker", lambda: None)
     return calls
+
+
+def _wire_lock_reread(monkeypatch, box: list) -> None:
+    """Serve the lost-race re-read of the lock from ``box[0]``."""
+
+    original = shell.run_process
+
+    def fake_run_process(cmd, **kwargs):
+        if cmd[:4] == ["kubectl", "get", "configmap", pins.IMAGE_LOCK_CONFIGMAP]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(box[0]), stderr="")
+        return original(cmd, **kwargs)
+
+    monkeypatch.setattr(shell, "run_process", fake_run_process)
 
 
 class TestPinCodec:
@@ -901,9 +919,15 @@ class TestApplyImageLock:
 class TestLockMutationConflicts:
     """Bounded resourceVersion compare-and-retry under concurrent writers."""
 
-    def test_reset_service_retries_and_preserves_concurrent_pin(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "conflict_stderr",
+        [_KUBECTL_INVALID, "the object has been modified; please apply your changes"],
+    )
+    def test_reset_service_retries_and_preserves_concurrent_pin(self, monkeypatch, conflict_stderr):
+        """kubectl's bare 422 is a lost race once the re-read shows a newer
+        resourceVersion; a conflict wording needs no re-read."""
         lock = _lock(pins_annotation=encode_pins({"storage": _pin()}))
-        calls = _wire_lock(monkeypatch, lock, conflicts=1)
+        calls = _wire_lock(monkeypatch, lock, conflicts=1, conflict_stderr=conflict_stderr)
 
         result = reset_service("storage")
 
@@ -920,7 +944,12 @@ class TestLockMutationConflicts:
             reset_service("storage")
         assert calls["patch"] is None
 
-    def test_terminal_failure_is_not_retried(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "stderr", ["Forbidden: user cannot patch configmaps", _KUBECTL_INVALID]
+    )
+    def test_terminal_failure_is_not_retried(self, monkeypatch, stderr):
+        """A failure the re-read shows no other writer behind, including an
+        invalid patch, raises on the first attempt."""
         lock = _lock(pins_annotation=encode_pins({"storage": _pin()}))
         attempts = {"n": 0}
 
@@ -929,16 +958,17 @@ class TestLockMutationConflicts:
 
         def fake_run_command(cmd, description=None, check=True, **kwargs):
             attempts["n"] += 1
-            return subprocess.CompletedProcess(
-                cmd, 1, stdout="", stderr="Forbidden: user cannot patch configmaps"
-            )
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=stderr)
 
         monkeypatch.setattr(pins, "read_lock", fake_read_lock)
         monkeypatch.setattr(pins, "run_command", fake_run_command)
+        _wire_lock_reread(monkeypatch, [lock])
         monkeypatch.setattr(pins, "reconcile_consumers", lambda names: None)
 
-        with pytest.raises(PinError, match="Forbidden"):
+        with pytest.raises(PinError, match="could not update") as raised:
             reset_service("storage")
+        assert not isinstance(raised.value, LockConflictError)
+        assert stderr in str(raised.value)
         assert attempts["n"] == 1
 
     def test_reconciles_in_dependency_order_and_blocks(self, monkeypatch):
