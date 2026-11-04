@@ -72,8 +72,8 @@ write_assertion() {
     if curl -fsS --max-time 30 \
             -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
-        | jq -ej '.value' > "$tmp" && [ -s "$tmp" ]; then
-        mv -f "$tmp" "$AZURE_FEDERATED_TOKEN_FILE"
+        | jq -ej '.value' > "$tmp" && [ -s "$tmp" ] \
+        && mv -f "$tmp" "$AZURE_FEDERATED_TOKEN_FILE"; then
         return 0
     fi
     rm -f "$tmp"

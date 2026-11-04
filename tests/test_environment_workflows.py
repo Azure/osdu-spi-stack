@@ -1809,14 +1809,18 @@ class TestRefreshFederatedTokenScript:
         assert "Authorization: bearer request-token" in args
         assert f"{self.REQUEST_URL}&audience=api://AzureADTokenExchange" in args
 
-    @pytest.mark.parametrize("failure", ["request", "no-value"])
+    @pytest.mark.parametrize("failure", ["request", "no-value", "rename"])
     def test_a_failed_request_keeps_the_previous_assertion(self, tmp_path, failure):
         env = self._env(tmp_path)
         (tmp_path / "token").write_text("jwt-previous", encoding="utf-8")
         if failure == "request":
             (tmp_path / "curl.fail").write_text("", encoding="utf-8")
-        else:
+        elif failure == "no-value":
             (tmp_path / "curl.body").write_text('{"count": 0}', encoding="utf-8")
+        else:
+            mv = tmp_path / "mv"
+            mv.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+            mv.chmod(0o755)
 
         result = self._run(env)
 
