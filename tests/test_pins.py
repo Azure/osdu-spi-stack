@@ -202,8 +202,10 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0, conflict_stderr=_KUBECTL_I
     forcing that many JSON Patch ``test`` failures first. Each fails with
     ``conflict_stderr``, and the lost-race re-read sees the in-memory object.
 
-    Returns ``patch`` (the final ``(data, pins)`` pair), ``reconciled`` (the
-    services passed to ``reconcile_consumers``), and ``attempts``.
+    Returns ``patch`` (the final ``(data, pins)`` pair), ``writes`` (every
+    landed write's pair, in order), ``reconciled`` (the services passed to
+    ``reconcile_consumers``), ``awaited`` (each ``await_service_image`` call
+    with the writes landed before it), and ``attempts``.
     """
 
     box = [lock]
@@ -211,8 +213,10 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0, conflict_stderr=_KUBECTL_I
     conflicts_left = conflicts
     calls: dict = {
         "patch": None,
+        "writes": [],
         "labels": None,
         "reconciled": None,
+        "awaited": [],
         "attempts": 0,
         "description": None,
         "box": box,
@@ -261,6 +265,7 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0, conflict_stderr=_KUBECTL_I
         }
         box[0] = new_lock
         calls["patch"] = (dict(data_op["value"]), decode_pins(new_lock))
+        calls["writes"].append(calls["patch"])
         calls["labels"] = dict(labels_op["value"])
         calls["attempts"] = attempts
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(new_lock), stderr="")
@@ -271,6 +276,11 @@ def _wire_lock(monkeypatch, lock, conflicts: int = 0, conflict_stderr=_KUBECTL_I
     monkeypatch.setattr(pins.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(
         pins, "reconcile_consumers", lambda names: calls.__setitem__("reconciled", names)
+    )
+    monkeypatch.setattr(
+        pins,
+        "await_service_image",
+        lambda service, image: calls["awaited"].append((service, image, len(calls["writes"]))),
     )
     monkeypatch.setattr(pins, "read_deploy_record", lambda required=False: _deploy_record())
     monkeypatch.setattr(status, "collect_kustomization_readiness", lambda: _readiness())
@@ -645,6 +655,87 @@ class TestResetService:
         )
         _data, saved = calls["patch"]
         assert saved == {}
+        # The loader is released in its own write, after the canonical schema rolled out.
+        assert [sorted(written) for _, written in calls["writes"]] == [["schema-load"], []]
+        assert calls["awaited"] == [("schema", "registry/schema-service-master@sha256:abc", 1)]
+        assert calls["reconciled"] == ["schema", "schema-load"]
+
+    def test_schema_reset_without_a_loader_pin_writes_once(self, monkeypatch):
+        lock = _lock(pins_annotation=encode_pins({"schema": _pin()}))
+        calls = _wire_lock(monkeypatch, lock)
+
+        result = reset_service("schema")
+
+        assert result == ResetResult(restored=("schema",), refresh_required=())
+        assert len(calls["writes"]) == 1
+        assert calls["awaited"] == []
+
+    def test_schema_without_canonical_releases_the_loader_in_one_write(self, monkeypatch):
+        schema = _pin(canonical_repository="", canonical_tag="")
+        lock = _lock(pins_annotation=encode_pins({"schema": schema, "schema-load": _pin()}))
+        calls = _wire_lock(monkeypatch, lock)
+
+        result = reset_service("schema")
+
+        assert result == ResetResult(restored=("schema-load",), refresh_required=("schema",))
+        assert len(calls["writes"]) == 1
+        assert calls["awaited"] == []
+
+    def test_failed_schema_rollout_leaves_the_loader_pinned(self, monkeypatch):
+        loader = _pin()
+        lock = _lock(pins_annotation=encode_pins({"schema": _pin(), "schema-load": loader}))
+        calls = _wire_lock(monkeypatch, lock)
+
+        def failed_wait(service, image):
+            raise VerifyError("rollout_incomplete", "rollout is not complete")
+
+        monkeypatch.setattr(pins, "await_service_image", failed_wait)
+
+        with pytest.raises(PinError, match="schema-load was not restored") as excinfo:
+            reset_service("schema")
+
+        assert "rollout is not complete" in str(excinfo.value)
+        assert len(calls["writes"]) == 1
+        data, saved = calls["patch"]
+        assert saved == {"schema-load": loader}
+        assert data["SCHEMA_IMAGE_REPOSITORY"] == "registry/schema-service-master"
+        assert calls["reconciled"] is None
+
+    def test_schema_canonical_without_digest_leaves_the_loader_pinned(self, monkeypatch):
+        loader = _pin()
+        lock = _lock(
+            pins_annotation=encode_pins(
+                {"schema": _pin(canonical_digest=""), "schema-load": loader}
+            )
+        )
+        calls = _wire_lock(monkeypatch, lock)
+
+        with pytest.raises(PinError, match="records no digest"):
+            reset_service("schema")
+
+        assert calls["awaited"] == []
+        _, saved = calls["patch"]
+        assert saved == {"schema-load": loader}
+
+    def test_loader_repinned_during_the_wait_stands(self, monkeypatch):
+        lock = _lock(pins_annotation=encode_pins({"schema": _pin(), "schema-load": _pin()}))
+        calls = _wire_lock(monkeypatch, lock)
+        newer = _pin(mr="900")
+
+        def repin_during_wait(service, image):
+            current = calls["box"][0]
+            current_pins = decode_pins(current)
+            current_pins["schema-load"] = newer
+            current["metadata"]["annotations"][pins.PINS_ANNOTATION] = encode_pins(current_pins)
+
+        monkeypatch.setattr(pins, "await_service_image", repin_during_wait)
+
+        result = reset_service("schema")
+
+        assert result == ResetResult(restored=("schema",), refresh_required=())
+        assert len(calls["writes"]) == 1
+        assert decode_pins(calls["box"][0]) == {"schema-load": newer}
+        assert calls["reconciled"] == ["schema"]
 
     def test_schema_reset_drops_invalid_loader_pin_for_refresh(self, monkeypatch):
         loader = _pin(canonical_repository="", canonical_tag="")
@@ -1924,6 +2015,8 @@ class TestResetIfRun:
         assert result == ResetResult(restored=("schema",), refresh_required=())
         _, saved = calls["patch"]
         assert saved == {"schema-load": loader}
+        assert len(calls["writes"]) == 1
+        assert calls["awaited"] == []
 
     def test_schema_if_run_reset_releases_the_loader_the_run_paired(self, monkeypatch):
         lock = _lock(
@@ -1948,6 +2041,65 @@ class TestResetIfRun:
         assert data["SCHEMA_LOAD_IMAGE_REPOSITORY"] == "repo/schema-load-master"
         assert data["SCHEMA_LOAD_IMAGE_TAG"] == "c" * 40
         assert calls["reconciled"] is None
+        # Schema is restored first; the loader write lands only after the rollout wait.
+        first_data, first_saved = calls["writes"][0]
+        assert list(first_saved) == ["schema-load"]
+        assert first_data["SCHEMA_IMAGE_REPOSITORY"] == "repo/storage-master"
+        assert "SCHEMA_LOAD_IMAGE_REPOSITORY" not in first_data
+        assert len(calls["writes"]) == 2
+        assert calls["awaited"] == [("schema", "repo/storage-master@sha256:old", 1)]
+
+    def test_schema_if_run_failed_rollout_leaves_the_paired_loader_pinned(self, monkeypatch):
+        loader = _image_pin(repository="ghcr.io/azure/schema-load", run_id="55")
+        lock = _lock(
+            pins_annotation=encode_pins(
+                {
+                    "schema": _image_pin(repository="ghcr.io/azure/schema", run_id="55"),
+                    "schema-load": loader,
+                }
+            )
+        )
+        calls = _wire_lock(monkeypatch, lock)
+
+        def timed_out(service, image):
+            raise VerifyError("pod_mismatch", "No running pod carries the digest")
+
+        monkeypatch.setattr(pins, "await_service_image", timed_out)
+
+        with pytest.raises(PinError, match="schema-load was not restored") as excinfo:
+            reset_service("schema", if_run="55")
+
+        assert not isinstance(excinfo.value, ResetRefusedError)
+        assert "No running pod carries the digest" in str(excinfo.value)
+        assert len(calls["writes"]) == 1
+        _, saved = calls["patch"]
+        assert saved == {"schema-load": loader}
+
+    def test_schema_if_run_loader_taken_by_another_run_during_the_wait_stands(self, monkeypatch):
+        lock = _lock(
+            pins_annotation=encode_pins(
+                {
+                    "schema": _image_pin(repository="ghcr.io/azure/schema", run_id="55"),
+                    "schema-load": _image_pin(repository="ghcr.io/azure/schema-load", run_id="55"),
+                }
+            )
+        )
+        calls = _wire_lock(monkeypatch, lock)
+        other = _image_pin(repository="ghcr.io/azure/schema-load", run_id="77")
+
+        def repin_during_wait(service, image):
+            current = calls["box"][0]
+            current_pins = decode_pins(current)
+            current_pins["schema-load"] = other
+            current["metadata"]["annotations"][pins.PINS_ANNOTATION] = encode_pins(current_pins)
+
+        monkeypatch.setattr(pins, "await_service_image", repin_during_wait)
+
+        result = reset_service("schema", if_run="55")
+
+        assert result == ResetResult(restored=("schema",), refresh_required=())
+        assert len(calls["writes"]) == 1
+        assert decode_pins(calls["box"][0]) == {"schema-load": other}
 
     def test_schema_if_run_reset_leaves_another_runs_loader_alone(self, monkeypatch):
         other = _image_pin(repository="ghcr.io/azure/schema-load", run_id="77")

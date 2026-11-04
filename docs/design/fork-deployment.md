@@ -168,7 +168,14 @@ the same run id. A fork that published no loader for that commit keeps the
 canonical loader, and a loader left pinned by an earlier pin or run is
 released to its canonical entry so no mismatched pair runs. `spi service
 reset schema --if-run <id>` releases the loader the run paired and leaves a
-loader owned by anything else standing. The `schema-load` Job passes
+loader owned by anything else standing. Every schema reset that restores a
+paired loader writes the lock twice: schema first, then the loader once
+`await_service_image` sees the schema Deployment rolled out with a running
+pod on the canonical digest, since the loader's entrypoint only waits for
+the schema URL to answer and the outgoing borrowed pod still answers. A
+rollout that does not complete within 10 minutes leaves the loader pinned
+and fails the reset; the stale sweep later releases a loader whose lane has
+ended. The `schema-load` Job passes
 `SCHEMA_URL`, `WAIT_SECONDS`, and the workload identity to the loader
 image's own entrypoint.
 
