@@ -930,7 +930,8 @@ def pin_service_image(
                     f"{repository}:{commit_tag} points at {tagged or 'no image'}, not the "
                     f"pinned {digest[:19]}; the loader is paired by that tag, so the schema "
                     "image must be the build it names. A rebuild of the same commit moved "
-                    "the tag; re-run the lane."
+                    "the tag; re-run all jobs in the workflow run, not only the failed ones, "
+                    "so the image is rebuilt and the pinned digest matches the tag again."
                 )
             loader = resolve_fork_loader(repository, source_sha)
             # docker-push publishes the service image before the loader, so a
@@ -939,7 +940,9 @@ def pin_service_image(
             if loader is not None and resolve_ghcr_tag_digest(repository, commit_tag) != digest:
                 raise PinError(
                     f"{repository}:{commit_tag} moved while the loader was being resolved; "
-                    "a rebuild of the same commit is in progress. Re-run the lane."
+                    "a rebuild of the same commit is in progress. Wait for that build to "
+                    "finish, then re-run all jobs in the workflow run, not only the failed "
+                    "ones, so the image is rebuilt and the pinned digest matches the tag again."
                 )
         except ImageResolutionError as exc:
             raise PinError(str(exc)) from exc

@@ -1564,7 +1564,9 @@ class TestPinServiceImage:
         calls = self._wire(monkeypatch, lock, loader=("ghcr.io/azure/schema-load", _GHCR_DIGEST))
         calls["tagged"] = "sha256:" + "d" * 64
 
-        with pytest.raises(PinError, match="points at sha256:ddd.*re-run the lane"):
+        with pytest.raises(
+            PinError, match="points at sha256:ddd.*re-run all jobs in the workflow run"
+        ) as refused:
             pin_service_image(
                 "schema",
                 f"ghcr.io/azure/schema@{_GHCR_DIGEST}",
@@ -1574,6 +1576,7 @@ class TestPinServiceImage:
                 source_sha="b" * 40,
             )
 
+        assert "re-run the lane" not in str(refused.value).lower()
         assert calls["loader_lookups"] == []
         assert calls["patch"] is None
 
@@ -1587,7 +1590,11 @@ class TestPinServiceImage:
         answers = iter([_GHCR_DIGEST, "sha256:" + "d" * 64])
         monkeypatch.setattr(pins, "resolve_ghcr_tag_digest", lambda repository, tag: next(answers))
 
-        with pytest.raises(PinError, match="moved while the loader was being resolved"):
+        with pytest.raises(
+            PinError,
+            match="moved while the loader was being resolved.*Wait for that build to finish, "
+            "then re-run all jobs in the workflow run",
+        ) as refused:
             pin_service_image(
                 "schema",
                 f"ghcr.io/azure/schema@{_GHCR_DIGEST}",
@@ -1596,6 +1603,7 @@ class TestPinServiceImage:
                 source_repo="Azure/osdu-spi-schema",
                 source_sha="b" * 40,
             )
+        assert "re-run the lane" not in str(refused.value).lower()
         assert calls["patch"] is None
 
     def test_schema_ephemeral_pin_refuses_when_the_commit_tag_is_gone(self, monkeypatch):
