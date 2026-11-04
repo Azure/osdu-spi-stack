@@ -1881,6 +1881,9 @@ class TestDeclaredEnvironment:
         [
             "(ResourceGroupNotFound) Resource group 'spi-stack-dev1' could not be found.",
             "(ResourceNotFound) The Resource 'spi-stack-dev1-deployer' was not found.",
+            "(ParentResourceNotFound) Failed to perform 'read' on resource(s) of type "
+            "'userAssignedIdentities/federatedIdentityCredentials', because the parent "
+            "resource 'spi-stack-dev1-deployer' could not be found.",
         ],
     )
     def test_a_first_provision_reads_an_absent_identity_as_no_credentials(

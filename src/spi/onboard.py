@@ -480,7 +480,9 @@ def read_roster(target: Target, *, missing_ok: bool = False) -> tuple[Credential
             f"federated credentials on {target.identity_name}",
         )
     except OnboardError as exc:
-        if missing_ok and re.search(r"\(Resource(Group)?NotFound\)", str(exc)):
+        if missing_ok and re.search(
+            r"\((ResourceGroupNotFound|ResourceNotFound|ParentResourceNotFound)\)", str(exc)
+        ):
             return ()
         raise
     roster = [
