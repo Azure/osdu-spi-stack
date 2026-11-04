@@ -1628,10 +1628,9 @@ class TestDrainScript:
         """The set reads empty only after slow reads past the window; the poll
         that would confirm the quiescence is cut at window + quiescence + two
         call timeouts instead of running its calls to their full limit."""
-        for name in ("sweep-1", "status-1", "sweep-2", "status-2"):
+        for name in ("sweep-0", "status-0", "sweep-1", "status-1"):
             (tmp_path / f"{name}.sleep").write_text("2.5", encoding="utf-8")
         polls = [
-            (0, self._sweep(), 2, self._state({"search": self.PIN})),
             (0, self._sweep(), 2, self._state({})),
             (0, self._sweep(), 2, self._state({})),
         ]
