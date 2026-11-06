@@ -71,6 +71,8 @@ spec:
         value: http://partition/api/partition/v1
       - name: ENTITLEMENT_URL
         value: http://entitlements/api/entitlements/v2
+      - name: SEARCH_API
+        value: http://search/api/search/v2
     # Downloads the catalog from the same immutable source revision when the
     # pod starts and verifies it before making it visible to the service.
     initContainers:
