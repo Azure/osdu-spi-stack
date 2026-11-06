@@ -268,10 +268,11 @@ class TestTask:
         )
         build_step, push_step = document["steps"]
         assert build_step["env"] == ["DOCKER_BUILDKIT=1"]
-        assert "-f build/Dockerfile" in build_step["build"]
-        assert "--build-arg JAR_FILE=provider/x/app.jar" in build_step["build"]
-        assert "--build-arg JAVA_VERSION=25" in build_step["build"]
-        assert "--platform linux/amd64" in build_step["build"]
+        assert build_step["cmd"].startswith("docker build ")
+        assert "-f build/Dockerfile" in build_step["cmd"]
+        assert "--build-arg JAR_FILE=provider/x/app.jar" in build_step["cmd"]
+        assert "--build-arg JAVA_VERSION=25" in build_step["cmd"]
+        assert "--platform linux/amd64" in build_step["cmd"]
         assert push_step == {"push": ["$Registry/local/partition:sha-abc"]}
 
     def test_a_staging_tag_is_built_and_pushed_beside_the_image(self):
@@ -279,10 +280,28 @@ class TestTask:
             task_document("local/partition:sha-abc", "app.jar", "17", "local/partition:sha-abc-1f")
         )
         build_step, push_step = document["steps"]
-        assert build_step["build"].startswith(
-            "-t $Registry/local/partition:sha-abc -t $Registry/local/partition:sha-abc-1f "
+        assert build_step["cmd"].startswith(
+            "docker build -t $Registry/local/partition:sha-abc "
+            "-t $Registry/local/partition:sha-abc-1f "
         )
         assert push_step["push"][1] == "$Registry/local/partition:sha-abc-1f"
+
+    def test_a_platform_qualified_from_is_built_outside_the_dependency_scan(self, tmp_path):
+        # ACR scans every build: step's Dockerfile and cannot parse FROM --platform.
+        root = _checkout(tmp_path)
+        (root / "build/Dockerfile").write_text(
+            "FROM --platform=$BUILDPLATFORM mcr.microsoft.com/openjdk/jdk:17-azurelinux AS agent\n"
+            + _DOCKERFILE,
+            encoding="utf-8",
+        )
+        context = tmp_path / "context"
+        context.mkdir()
+
+        stage_context(root, resolve_jar(root, "partition"), "17", "local/partition:x", context)
+
+        document = yaml.safe_load((context / "acr-task.yaml").read_text("utf-8"))
+        assert not [step for step in document["steps"] if "build" in step]
+        assert document["steps"][0]["cmd"].startswith("docker build ")
 
     def test_the_context_holds_only_what_the_dockerfile_reads(self, tmp_path):
         root = _checkout(tmp_path)
@@ -470,7 +489,7 @@ class TestBuildImage:
 
         build_image("partition", root)
 
-        assert "--build-arg JAVA_VERSION=25" in staged["task"]["steps"][0]["build"]
+        assert "--build-arg JAVA_VERSION=25" in staged["task"]["steps"][0]["cmd"]
 
     def test_an_unresolved_release_builds_and_pushes_nothing(self, monkeypatch, tmp_path):
         commands, _ = self._wire(monkeypatch)

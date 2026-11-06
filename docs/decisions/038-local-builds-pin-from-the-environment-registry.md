@@ -30,7 +30,10 @@ origin is `local`.
   `resolve-jar.sh` searches, and stages a context holding `build/` and the JAR.
   `az acr run` executes a two-step task with `DOCKER_BUILDKIT=1`, because the
   `az acr build` quick build runs the classic builder and rejects the
-  Dockerfile's `ADD --checksum`. The platform is `linux/amd64`.
+  Dockerfile's `ADD --checksum`. The first step is a `cmd` step running
+  `docker build`, not a `build` step: ACR scans a `build` step's Dockerfile
+  for dependencies first, and that scanner rejects the agent stage's
+  `FROM --platform=$BUILDPLATFORM`. The platform is `linux/amd64`.
 - **The image runs the release the checkout compiles for.** The task passes
   `JAVA_VERSION` beside `JAR_FILE`, resolved from the root pom as the
   template's `java-release` resolver does: `maven.compiler.release`, then
