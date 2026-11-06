@@ -373,19 +373,20 @@ def task_document(image: str, jar: str, release: str, staging: str = "") -> str:
     """The ACR task: a BuildKit build of the checkout's Dockerfile, then the push.
 
     ``az acr build`` runs the classic builder, which rejects the Dockerfile's
-    ``ADD --checksum`` and ``COPY --chmod``.
+    ``ADD --checksum`` and ``COPY --chmod``. A ``build`` step's dependency scan
+    rejects ``FROM --platform=$BUILDPLATFORM``, so a ``cmd`` step runs the build.
     """
 
     images = [f"$Registry/{name}" for name in (image, staging) if name]
     build = (
-        f"{' '.join(f'-t {name}' for name in images)} -f {DOCKERFILE_PATH} "
+        f"docker build {' '.join(f'-t {name}' for name in images)} -f {DOCKERFILE_PATH} "
         f"--platform {BUILD_PLATFORM} --build-arg JAR_FILE={jar} "
         f"--build-arg JAVA_VERSION={release} ."
     )
     document = {
         "version": "v1.1.0",
         "steps": [
-            {"build": build, "env": ["DOCKER_BUILDKIT=1"]},
+            {"cmd": build, "env": ["DOCKER_BUILDKIT=1"]},
             {"push": images},
         ],
     }
