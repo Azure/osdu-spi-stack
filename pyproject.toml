@@ -17,7 +17,7 @@ requires-python = ">=3.11"
 dependencies = [
     "rich>=15.0.0",
     "typer>=0.27.3",
-    "pydantic>=2.14.1",
+    "pydantic>=2.14.2",
     "pyyaml>=6.0",
     "packaging>=26.3",
 ]
@@ -75,11 +75,11 @@ ty = { index = "microsoft-pypi-proxy" }
 [dependency-groups]
 dev = [
     "pre-commit>=4.7.0",
-    "pytest>=9.1.1",
+    "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
     "pyyaml>=6.0.3",
-    "ruff>=0.17.2",
-    "ty>=0.0.92",
+    "ruff>=0.17.3",
+    "ty>=0.0.95",
 ]
 
 [tool.ruff]
