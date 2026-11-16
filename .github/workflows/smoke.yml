@@ -33,17 +33,18 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # centralus rejects new AKS Automatic clusters for lack of API Server VNet
-  # Integration capacity; westus3 is the CLI default and hosts the live envs.
-  AZURE_LOCATION: westus3
+  # Tried in order; spi_up_regions.sh moves on only when AKS has no capacity
+  # for API Server VNet Integration, which has hit centralus and westus3.
+  AZURE_LOCATIONS: westus2 eastus
 
 jobs:
   provision:
     environment: azure-smoke
     runs-on: ubuntu-latest
     # AKS Automatic alone takes ~29 min; with PaaS Bicep, the Flux extension
-    # and tooling, spi up runs ~45-50 min. 60 leaves headroom.
-    timeout-minutes: 60
+    # and tooling, spi up runs ~45-50 min. 75 also covers a region fallback,
+    # which deletes and recreates the resource group first.
+    timeout-minutes: 75
     outputs:
       rg: ${{ steps.env.outputs.rg }}
       suffix: ${{ steps.env.outputs.suffix }}
@@ -112,11 +113,7 @@ jobs:
         # with AADSTS700024, so every one spi up reaches is warmed here.
         run: |
           set -euo pipefail
-          # ARM, az ad, the AKS AAD server app (kubelogin), Key Vault.
-          az account get-access-token --resource https://management.azure.com -o none
-          az account get-access-token --resource https://graph.microsoft.com -o none
-          az account get-access-token --resource 6dae42f8-4368-4678-94ff-3960e28e3630 -o none
-          az account get-access-token --resource https://vault.azure.net -o none
+          bash scripts/warm_azure_tokens.sh
           # `az ad signed-in-user show` is delegated-only and fails for a service principal.
           OID=$(az ad sp show --id "${{ secrets.AZURE_CLIENT_ID }}" --query id -o tsv)
           if [ -z "$OID" ]; then
@@ -157,7 +154,7 @@ jobs:
           set -euo pipefail
           az group create \
             --name "${{ steps.env.outputs.rg }}" \
-            --location "$AZURE_LOCATION" \
+            --location "${AZURE_LOCATIONS%% *}" \
             --tags \
               spi-ci-sweep-eligible=true \
               "spi-created-utc=${{ steps.env.outputs.created }}" \
@@ -170,10 +167,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           uv sync --frozen
-          uv run spi up \
-            --env "ci-${{ steps.env.outputs.suffix }}" \
-            --profile "$PROFILE" \
-            --location "$AZURE_LOCATION"
+          # AZURE_LOCATIONS is unquoted so each region is its own argument.
+          bash scripts/spi_up_regions.sh "${{ steps.env.outputs.rg }}" \
+            "ci-${{ steps.env.outputs.suffix }}" "$PROFILE" $AZURE_LOCATIONS
 
   verify:
     needs: provision
