@@ -42,8 +42,9 @@ jobs:
     environment: azure-smoke
     runs-on: ubuntu-latest
     # AKS Automatic alone takes ~29 min; with PaaS Bicep, the Flux extension
-    # and tooling, spi up runs ~45-50 min. 60 leaves headroom.
-    timeout-minutes: 60
+    # and tooling, spi up runs ~45-50 min. 75 also covers a region fallback,
+    # which deletes and recreates the resource group first.
+    timeout-minutes: 75
     outputs:
       rg: ${{ steps.env.outputs.rg }}
       suffix: ${{ steps.env.outputs.suffix }}
@@ -171,7 +172,8 @@ jobs:
         run: |
           uv sync --frozen
           # AZURE_LOCATIONS is unquoted so each region is its own argument.
-          bash scripts/spi_up_regions.sh "ci-${{ steps.env.outputs.suffix }}" "$PROFILE" $AZURE_LOCATIONS
+          bash scripts/spi_up_regions.sh "${{ steps.env.outputs.rg }}" \
+            "ci-${{ steps.env.outputs.suffix }}" "$PROFILE" $AZURE_LOCATIONS
 
   verify:
     needs: provision

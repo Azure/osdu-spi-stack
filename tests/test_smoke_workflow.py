@@ -280,7 +280,7 @@ Deployment failed:"""
 
 _UV_STUB = f"""#!/usr/bin/env bash
 region="${{@: -1}}"
-echo "$region" >> "$STUB_CALLS"
+echo "spi up $region" >> "$STUB_CALLS"
 outcome=$(printf '%s\\n' $STUB_OUTCOMES | sed -n "s/^$region=//p")
 case "$outcome" in
     ok) echo "spi up complete"; exit 0 ;;
@@ -293,15 +293,24 @@ esac
 exit 99
 """
 
+_AZ_STUB = """#!/usr/bin/env bash
+echo "az $*" >> "$STUB_CALLS"
+if [ "$1 $2" = "group show" ]; then
+    echo '{"spi-ci-sweep-eligible": "true", "spi-created-utc": "2026-11-16T08:28:34Z"}'
+fi
+exit 0
+"""
+
 
 def _run_spi_up_regions(
     tmp_path: Path, outcomes: dict[str, str], regions: list[str]
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir(exist_ok=True)
-    stub = stub_dir / "uv"
-    stub.write_text(_UV_STUB, encoding="utf-8")
-    stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    for name, body in (("uv", _UV_STUB), ("az", _AZ_STUB)):
+        stub = stub_dir / name
+        stub.write_text(body, encoding="utf-8")
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     calls = tmp_path / "calls"
     calls.touch()
 
@@ -311,31 +320,42 @@ def _run_spi_up_regions(
     env["STUB_OUTCOMES"] = " ".join(f"{r}={o}" for r, o in outcomes.items())
 
     result = run_process(
-        ["bash", str(SPI_UP_REGIONS_SCRIPT), "ci-abc123", "bare", *regions],
+        ["bash", str(SPI_UP_REGIONS_SCRIPT), "spi-stack-ci-abc123", "ci-abc123", "bare", *regions],
         env=env,
         capture_output=True,
         text=True,
     )
-    return result, calls.read_text(encoding="utf-8").split()
+    return result, calls.read_text(encoding="utf-8").splitlines()
 
 
-def test_capacity_rejection_falls_back_to_the_next_region(tmp_path: Path):
+def test_capacity_rejection_retries_in_a_fresh_group_in_the_next_region(tmp_path: Path):
+    """aks.bicep creates the VNet and cluster identity before AKS rejects the
+    cluster, and their locations are immutable, so the retry needs the group
+    deleted and recreated in the next region with its sweeper tags intact.
+    """
     result, calls = _run_spi_up_regions(
         tmp_path, {"westus2": "capacity", "eastus": "ok"}, ["westus2", "eastus"]
     )
 
     assert result.returncode == 0
-    assert calls == ["westus2", "eastus"]
     assert "::warning::AKS has no capacity for AKS Automatic in westus2" in result.stdout
+    assert calls == [
+        "spi up westus2",
+        "az group show --name spi-stack-ci-abc123 --query tags -o json",
+        "az group delete --name spi-stack-ci-abc123 --yes",
+        "az group create --name spi-stack-ci-abc123 --location eastus --tags "
+        "spi-ci-sweep-eligible=true spi-created-utc=2026-11-16T08:28:34Z -o none",
+        "spi up eastus",
+    ]
 
 
-def test_any_other_failure_stops_without_trying_another_region(tmp_path: Path):
+def test_any_other_failure_stops_without_touching_the_group(tmp_path: Path):
     result, calls = _run_spi_up_regions(
         tmp_path, {"westus2": "other", "eastus": "ok"}, ["westus2", "eastus"]
     )
 
     assert result.returncode == 1
-    assert calls == ["westus2"]
+    assert calls == ["spi up westus2"]
 
 
 def test_no_region_with_capacity_fails_the_provision(tmp_path: Path):
@@ -344,7 +364,7 @@ def test_no_region_with_capacity_fails_the_provision(tmp_path: Path):
     )
 
     assert result.returncode == 1
-    assert calls == ["westus2", "eastus"]
+    assert [c for c in calls if c.startswith("spi up")] == ["spi up westus2", "spi up eastus"]
     assert "::error::No region had AKS Automatic capacity: westus2 eastus" in result.stdout
 
 
@@ -356,6 +376,6 @@ def test_provision_runs_spi_up_through_the_region_fallback():
     assert len(regions) >= 2
     assert '--location "${AZURE_LOCATIONS%% *}"' in steps["Pre-create RG with sweeper tags"]["run"]
     spi_up = steps["spi up"]["run"]
-    assert "bash scripts/spi_up_regions.sh" in spi_up
+    assert 'bash scripts/spi_up_regions.sh "${{ steps.env.outputs.rg }}"' in spi_up
     assert "$AZURE_LOCATIONS" in spi_up
     assert "uv run spi up" not in spi_up
