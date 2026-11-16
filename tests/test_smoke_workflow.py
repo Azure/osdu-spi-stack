@@ -266,3 +266,96 @@ def test_smoke_environment_is_reviewer_free_and_protected_branch_only():
     assert '"protected_branches": true' in environment_setup
     assert '"custom_branch_policies": false' in environment_setup
     assert '"deployment_branch_policy": null' not in environment_setup
+
+
+SPI_UP_REGIONS_SCRIPT = REPO_ROOT / "scripts" / "spi_up_regions.sh"
+
+# Rich wraps its error panel at the terminal width, which here splits the code.
+_CAPACITY_PANEL = r"""╭──────────────────────────────── Error Output ────────────────────────────────╮
+│ k-ci-504653","message":"{\r\n  \"code\": \"AKSCapacity                         │
+│ HeavyUsage\",\r\n  \"details\": null,\r\n  \"message\": \"API Server VNet     │
+│ Integration is currently unavailable in region REGION due to high demand.    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+Deployment failed:"""
+
+_UV_STUB = f"""#!/usr/bin/env bash
+region="${{@: -1}}"
+echo "$region" >> "$STUB_CALLS"
+outcome=$(printf '%s\\n' $STUB_OUTCOMES | sed -n "s/^$region=//p")
+case "$outcome" in
+    ok) echo "spi up complete"; exit 0 ;;
+    capacity) cat <<'EOF'
+{_CAPACITY_PANEL}
+EOF
+        exit 1 ;;
+    other) echo "QuotaExceeded: cores"; exit 1 ;;
+esac
+exit 99
+"""
+
+
+def _run_spi_up_regions(
+    tmp_path: Path, outcomes: dict[str, str], regions: list[str]
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir(exist_ok=True)
+    stub = stub_dir / "uv"
+    stub.write_text(_UV_STUB, encoding="utf-8")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    calls = tmp_path / "calls"
+    calls.touch()
+
+    env = dict(os.environ)
+    env["PATH"] = f"{stub_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["STUB_CALLS"] = str(calls)
+    env["STUB_OUTCOMES"] = " ".join(f"{r}={o}" for r, o in outcomes.items())
+
+    result = run_process(
+        ["bash", str(SPI_UP_REGIONS_SCRIPT), "ci-abc123", "bare", *regions],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    return result, calls.read_text(encoding="utf-8").split()
+
+
+def test_capacity_rejection_falls_back_to_the_next_region(tmp_path: Path):
+    result, calls = _run_spi_up_regions(
+        tmp_path, {"westus2": "capacity", "eastus": "ok"}, ["westus2", "eastus"]
+    )
+
+    assert result.returncode == 0
+    assert calls == ["westus2", "eastus"]
+    assert "::warning::AKS has no capacity for AKS Automatic in westus2" in result.stdout
+
+
+def test_any_other_failure_stops_without_trying_another_region(tmp_path: Path):
+    result, calls = _run_spi_up_regions(
+        tmp_path, {"westus2": "other", "eastus": "ok"}, ["westus2", "eastus"]
+    )
+
+    assert result.returncode == 1
+    assert calls == ["westus2"]
+
+
+def test_no_region_with_capacity_fails_the_provision(tmp_path: Path):
+    result, calls = _run_spi_up_regions(
+        tmp_path, {"westus2": "capacity", "eastus": "capacity"}, ["westus2", "eastus"]
+    )
+
+    assert result.returncode == 1
+    assert calls == ["westus2", "eastus"]
+    assert "::error::No region had AKS Automatic capacity: westus2 eastus" in result.stdout
+
+
+def test_provision_runs_spi_up_through_the_region_fallback():
+    provision = _workflow()["jobs"]["provision"]
+    regions = _workflow()["env"]["AZURE_LOCATIONS"].split()
+    steps = _steps(provision)
+
+    assert len(regions) >= 2
+    assert '--location "${AZURE_LOCATIONS%% *}"' in steps["Pre-create RG with sweeper tags"]["run"]
+    spi_up = steps["spi up"]["run"]
+    assert "bash scripts/spi_up_regions.sh" in spi_up
+    assert "$AZURE_LOCATIONS" in spi_up
+    assert "uv run spi up" not in spi_up
