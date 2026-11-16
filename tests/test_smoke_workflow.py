@@ -295,19 +295,31 @@ exit 99
 
 _AZ_STUB = """#!/usr/bin/env bash
 echo "az $*" >> "$STUB_CALLS"
-if [ "$1 $2" = "group show" ]; then
-    echo '{"spi-ci-sweep-eligible": "true", "spi-created-utc": "2026-11-16T08:28:34Z"}'
-fi
+case "$1 $2" in
+    "group show") printf '%s\\n' "${STUB_TAGS-}" ;;
+    "account show") printf 'client-id\\ntenant-id\\nsub-id\\n' ;;
+esac
 exit 0
 """
 
+_CURL_STUB = """#!/usr/bin/env bash
+echo '{"value": "fresh-assertion"}'
+"""
+
+_SMOKE_TAGS = '{"spi-ci-sweep-eligible": "true", "spi-created-utc": "2026-11-16T08:28:34Z"}'
+
 
 def _run_spi_up_regions(
-    tmp_path: Path, outcomes: dict[str, str], regions: list[str]
+    tmp_path: Path,
+    outcomes: dict[str, str],
+    regions: list[str],
+    *,
+    tags: str = _SMOKE_TAGS,
+    on_actions: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir(exist_ok=True)
-    for name, body in (("uv", _UV_STUB), ("az", _AZ_STUB)):
+    for name, body in (("uv", _UV_STUB), ("az", _AZ_STUB), ("curl", _CURL_STUB)):
         stub = stub_dir / name
         stub.write_text(body, encoding="utf-8")
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
@@ -318,6 +330,12 @@ def _run_spi_up_regions(
     env["PATH"] = f"{stub_dir}{os.pathsep}{env.get('PATH', '')}"
     env["STUB_CALLS"] = str(calls)
     env["STUB_OUTCOMES"] = " ".join(f"{r}={o}" for r, o in outcomes.items())
+    env["STUB_TAGS"] = tags
+    for var in ("ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"):
+        env.pop(var, None)
+    if on_actions:
+        env["ACTIONS_ID_TOKEN_REQUEST_URL"] = "https://token.invalid/?api-version=2.0"
+        env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = "request-token"
 
     result = run_process(
         ["bash", str(SPI_UP_REGIONS_SCRIPT), "spi-stack-ci-abc123", "ci-abc123", "bare", *regions],
@@ -368,6 +386,43 @@ def test_no_region_with_capacity_fails_the_provision(tmp_path: Path):
     assert "::error::No region had AKS Automatic capacity: westus2 eastus" in result.stdout
 
 
+def test_unreadable_tags_leave_the_group_alone(tmp_path: Path):
+    """Deleting before the tags are in hand would recreate the group without
+    the sweeper's eligibility or spi's naming suffix.
+    """
+    result, calls = _run_spi_up_regions(
+        tmp_path, {"westus2": "capacity", "eastus": "ok"}, ["westus2", "eastus"], tags="not json"
+    )
+
+    assert result.returncode == 1
+    assert "::error::Could not move spi-stack-ci-abc123 to eastus." in result.stdout
+    assert not any(c.startswith("az group delete") for c in calls)
+    assert "spi up eastus" not in calls
+
+
+def test_fallback_on_actions_logs_in_again_before_the_retry(tmp_path: Path):
+    """The first login rests on a 5-minute assertion and tokens warmed at job
+    start, so the retry gets a fresh login and freshly warmed tokens.
+    """
+    result, calls = _run_spi_up_regions(
+        tmp_path, {"westus2": "capacity", "eastus": "ok"}, ["westus2", "eastus"], on_actions=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    after_recreate = calls[calls.index("spi up westus2") + 4 :]
+    assert after_recreate == [
+        "az account show --query [user.name, tenantId, id] -o tsv",
+        "az login --service-principal --username client-id --tenant tenant-id "
+        "--federated-token fresh-assertion -o none",
+        "az account set --subscription sub-id",
+        "az account get-access-token --resource https://management.azure.com -o none",
+        "az account get-access-token --resource https://graph.microsoft.com -o none",
+        "az account get-access-token --resource 6dae42f8-4368-4678-94ff-3960e28e3630 -o none",
+        "az account get-access-token --resource https://vault.azure.net -o none",
+        "spi up eastus",
+    ]
+
+
 def test_provision_runs_spi_up_through_the_region_fallback():
     provision = _workflow()["jobs"]["provision"]
     regions = _workflow()["env"]["AZURE_LOCATIONS"].split()
@@ -379,3 +434,7 @@ def test_provision_runs_spi_up_through_the_region_fallback():
     assert 'bash scripts/spi_up_regions.sh "${{ steps.env.outputs.rg }}"' in spi_up
     assert "$AZURE_LOCATIONS" in spi_up
     assert "uv run spi up" not in spi_up
+    assert (
+        "bash scripts/warm_azure_tokens.sh"
+        in steps["Pre-cache Azure tokens and resolve deployer OID"]["run"]
+    )

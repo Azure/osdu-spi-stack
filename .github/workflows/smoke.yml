@@ -113,11 +113,7 @@ jobs:
         # with AADSTS700024, so every one spi up reaches is warmed here.
         run: |
           set -euo pipefail
-          # ARM, az ad, the AKS AAD server app (kubelogin), Key Vault.
-          az account get-access-token --resource https://management.azure.com -o none
-          az account get-access-token --resource https://graph.microsoft.com -o none
-          az account get-access-token --resource 6dae42f8-4368-4678-94ff-3960e28e3630 -o none
-          az account get-access-token --resource https://vault.azure.net -o none
+          bash scripts/warm_azure_tokens.sh
           # `az ad signed-in-user show` is delegated-only and fails for a service principal.
           OID=$(az ad sp show --id "${{ secrets.AZURE_CLIENT_ID }}" --query id -o tsv)
           if [ -z "$OID" ]; then
