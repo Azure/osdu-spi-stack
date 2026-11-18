@@ -129,7 +129,7 @@ jobs:
           SUFFIX=$(echo "$ENV_SUFFIX" | tr -cd '[:alnum:]')
           # 24-char storage name limit minus 'osdu', 'ci', 'opendes' and the
           # 5-char name suffix leaves 6; the trailing run_id digits stay unique.
-          SUFFIX="${SUFFIX: -6}"
+          SUFFIX="${SUFFIX:$(( ${#SUFFIX} > 6 ? ${#SUFFIX} - 6 : 0 ))}"
           RG="spi-stack-ci-${SUFFIX}"
           CREATED_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo "rg=$RG" >> "$GITHUB_OUTPUT"

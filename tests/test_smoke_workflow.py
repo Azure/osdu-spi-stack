@@ -53,6 +53,25 @@ def test_selected_profile_is_exported_to_verify():
     assert 'echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"' in resolve
 
 
+def _resolve_env_name(tmp_path: Path, env_suffix: str) -> dict[str, str]:
+    script = _steps(_workflow()["jobs"]["provision"])["Resolve env name"]["run"]
+    output = tmp_path / "github_output"
+    env = {**os.environ, "ENV_SUFFIX": env_suffix, "PROFILE": "core", "GITHUB_OUTPUT": str(output)}
+    subprocess.run(["bash", "-c", script], env=env, check=True, capture_output=True)
+    return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+
+def test_env_suffix_keeps_its_last_six_alphanumerics(tmp_path: Path):
+    assert _resolve_env_name(tmp_path, "run-44362158168")["suffix"] == "158168"
+
+
+def test_short_env_suffix_is_kept_whole(tmp_path: Path):
+    outputs = _resolve_env_name(tmp_path, "core2")
+
+    assert outputs["suffix"] == "core2"
+    assert outputs["rg"] == "spi-stack-ci-core2"
+
+
 def test_bare_still_waits_for_flux_but_skips_ingress_probes():
     verify_steps = _steps(_workflow()["jobs"]["verify"])
 
