@@ -1,11 +1,9 @@
 name: PR Title
 
 # The PR title becomes the squash commit subject release-please versions from.
-# pull_request_target runs the base-branch definition so a PR cannot lint
-# itself green; safe only while the job never checks out PR code.
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, edited, synchronize, reopened]
 
 permissions:
