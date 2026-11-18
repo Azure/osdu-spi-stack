@@ -2,10 +2,11 @@
 
 The smoke workflow creates a real Azure environment, waits for Flux readiness,
 and requests resource-group deletion. It runs on a daily schedule or manual
-dispatch, not on pull requests. Its default profile is `bare`, so a scheduled
-pass establishes infrastructure and empty-GitOps readiness, not middleware
-or OSDU readiness. Each job logs into Azure independently so
-cleanup does not depend on the provisioning job's credential lifetime.
+dispatch, not on pull requests. Its default profile is `core`, so a scheduled
+pass establishes that a fresh environment built from `main` converges through
+middleware, OSDU services, schema load, and reference data. Each job logs
+into Azure independently so cleanup does not depend on the provisioning
+job's credential lifetime.
 
 This is a deployment smoke test, not an end-to-end OSDU acceptance test.
 
@@ -35,7 +36,7 @@ up to 20 times and is skipped when no HTTPS listener exists.
 
 Both ingress probes are skipped for `bare`. A green non-bare run establishes
 the probed TLS path, not authenticated API acceptance. The long verify timeout
-accommodates core schema loading; it is not an expected duration for `bare`.
+accommodates core schema loading.
 
 ## Authentication over a long deployment
 
@@ -104,15 +105,14 @@ gh run list --workflow smoke.yml --limit 5
 gh run watch <run-id>
 ```
 
-For a named run, pass `-f env_suffix=trial1`. To exercise middleware rather
-than the default workload-free trees, choose `minimal`:
+For a named run, pass `-f env_suffix=trial1`. For a shorter run, choose
+`minimal` (middleware only) or `bare` (infrastructure and empty GitOps trees):
 
 ```bash
 gh workflow run smoke.yml --ref main -f profile=minimal
 ```
 
-Choose `core` to include OSDU services and initialization. `full` is not a
-supported profile.
+`full` is not a supported profile.
 
 To inspect a failed run:
 

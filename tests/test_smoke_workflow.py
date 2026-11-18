@@ -4,8 +4,9 @@
 
 """Contract tests for the scheduled Azure smoke workflow.
 
-The unattended path begins at the bare profile, and bare validates AKS plus
-Flux without requiring an ingress substrate it does not deploy.
+The unattended path deploys the core profile so a green run proves a fresh
+environment converges. Bare stays a manual choice and skips the ingress probes
+for the substrate it does not deploy.
 """
 
 import os
@@ -35,13 +36,13 @@ def _steps(job: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {step["name"]: step for step in job["steps"] if "name" in step}
 
 
-def test_bare_is_the_default_and_a_manual_choice():
+def test_core_is_the_default_and_bare_a_manual_choice():
     workflow = _workflow()
     profile = workflow["on"]["workflow_dispatch"]["inputs"]["profile"]
 
-    assert profile["default"] == "bare"
+    assert profile["default"] == "core"
     assert profile["options"] == ["bare", "core", "minimal"]
-    assert workflow["jobs"]["provision"]["env"]["PROFILE"] == "${{ inputs.profile || 'bare' }}"
+    assert workflow["jobs"]["provision"]["env"]["PROFILE"] == "${{ inputs.profile || 'core' }}"
 
 
 def test_selected_profile_is_exported_to_verify():
@@ -50,6 +51,25 @@ def test_selected_profile_is_exported_to_verify():
     assert provision["outputs"]["profile"] == "${{ steps.env.outputs.profile }}"
     resolve = _steps(provision)["Resolve env name"]["run"]
     assert 'echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"' in resolve
+
+
+def _resolve_env_name(tmp_path: Path, env_suffix: str) -> dict[str, str]:
+    script = _steps(_workflow()["jobs"]["provision"])["Resolve env name"]["run"]
+    output = tmp_path / "github_output"
+    env = {**os.environ, "ENV_SUFFIX": env_suffix, "PROFILE": "core", "GITHUB_OUTPUT": str(output)}
+    subprocess.run(["bash", "-c", script], env=env, check=True, capture_output=True)
+    return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+
+def test_env_suffix_keeps_its_last_six_alphanumerics(tmp_path: Path):
+    assert _resolve_env_name(tmp_path, "run-44362158168")["suffix"] == "158168"
+
+
+def test_short_env_suffix_is_kept_whole(tmp_path: Path):
+    outputs = _resolve_env_name(tmp_path, "core2")
+
+    assert outputs["suffix"] == "core2"
+    assert outputs["rg"] == "spi-stack-ci-core2"
 
 
 def test_bare_still_waits_for_flux_but_skips_ingress_probes():

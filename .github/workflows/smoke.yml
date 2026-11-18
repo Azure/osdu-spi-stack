@@ -22,7 +22,7 @@ on:
           - bare
           - core
           - minimal
-        default: bare
+        default: core
 
 permissions:
   contents: read
@@ -52,8 +52,8 @@ jobs:
       profile: ${{ steps.env.outputs.profile }}
     env:
       ENV_SUFFIX: ${{ inputs.env_suffix || format('run{0}', github.run_id) }}
-      # The scheduled run measures the infra and empty-GitOps rung.
-      PROFILE: ${{ inputs.profile || 'bare' }}
+      # Scheduled runs prove a fresh core environment converges, not just AKS and Flux.
+      PROFILE: ${{ inputs.profile || 'core' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -129,7 +129,7 @@ jobs:
           SUFFIX=$(echo "$ENV_SUFFIX" | tr -cd '[:alnum:]')
           # 24-char storage name limit minus 'osdu', 'ci', 'opendes' and the
           # 5-char name suffix leaves 6; the trailing run_id digits stay unique.
-          SUFFIX="${SUFFIX: -6}"
+          SUFFIX="${SUFFIX:$(( ${#SUFFIX} > 6 ? ${#SUFFIX} - 6 : 0 ))}"
           RG="spi-stack-ci-${SUFFIX}"
           CREATED_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo "rg=$RG" >> "$GITHUB_OUTPUT"
