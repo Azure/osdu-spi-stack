@@ -21,6 +21,36 @@ spec:
       sourceRef:
         kind: HelmRepository
         name: cnpg
+  # AKS policy aks-managed-require-webhook-protected-namespace-exclusion denies any mutating
+  # webhook without this condition; the expression must equal the policy's string exactly.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: MutatingWebhookConfiguration
+              name: cnpg-mutating-webhook-configuration
+            patch: |-
+              apiVersion: admissionregistration.k8s.io/v1
+              kind: MutatingWebhookConfiguration
+              metadata:
+                name: cnpg-mutating-webhook-configuration
+              webhooks:
+                - name: mbackup.cnpg.io
+                  matchConditions:
+                    - name: aks-managed-exclude-system-namespaces
+                      expression: '!(has(request.namespace) && request.namespace in ["kube-system", "aks-istio-system", "aks-static-egress-gateway", "azuresecuritylinuxagent", "aks-istio-egress", "aks-istio-ingress", "fleet-system", "acstor", "azappconfig-system", "azure-extensions-usage-system", "dataprotection-microsoft", "gatekeeper-system", "sc-system"])'
+                - name: mcluster.cnpg.io
+                  matchConditions:
+                    - name: aks-managed-exclude-system-namespaces
+                      expression: '!(has(request.namespace) && request.namespace in ["kube-system", "aks-istio-system", "aks-static-egress-gateway", "azuresecuritylinuxagent", "aks-istio-egress", "aks-istio-ingress", "fleet-system", "acstor", "azappconfig-system", "azure-extensions-usage-system", "dataprotection-microsoft", "gatekeeper-system", "sc-system"])'
+                - name: mdatabase.cnpg.io
+                  matchConditions:
+                    - name: aks-managed-exclude-system-namespaces
+                      expression: '!(has(request.namespace) && request.namespace in ["kube-system", "aks-istio-system", "aks-static-egress-gateway", "azuresecuritylinuxagent", "aks-istio-egress", "aks-istio-ingress", "fleet-system", "acstor", "azappconfig-system", "azure-extensions-usage-system", "dataprotection-microsoft", "gatekeeper-system", "sc-system"])'
+                - name: mscheduledbackup.cnpg.io
+                  matchConditions:
+                    - name: aks-managed-exclude-system-namespaces
+                      expression: '!(has(request.namespace) && request.namespace in ["kube-system", "aks-istio-system", "aks-static-egress-gateway", "azuresecuritylinuxagent", "aks-istio-egress", "aks-istio-ingress", "fleet-system", "acstor", "azappconfig-system", "azure-extensions-usage-system", "dataprotection-microsoft", "gatekeeper-system", "sc-system"])'
   values:
     containerSecurityContext:
       allowPrivilegeEscalation: false

@@ -21,6 +21,24 @@ spec:
       sourceRef:
         kind: HelmRepository
         name: jetstack
+  # AKS policy aks-managed-require-webhook-protected-namespace-exclusion denies any mutating
+  # webhook without this condition; the expression must equal the policy's string exactly.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: MutatingWebhookConfiguration
+              name: foundation-cert-manager-webhook
+            patch: |-
+              apiVersion: admissionregistration.k8s.io/v1
+              kind: MutatingWebhookConfiguration
+              metadata:
+                name: foundation-cert-manager-webhook
+              webhooks:
+                - name: webhook.cert-manager.io
+                  matchConditions:
+                    - name: aks-managed-exclude-system-namespaces
+                      expression: '!(has(request.namespace) && request.namespace in ["kube-system", "aks-istio-system", "aks-static-egress-gateway", "azuresecuritylinuxagent", "aks-istio-egress", "aks-istio-ingress", "fleet-system", "acstor", "azappconfig-system", "azure-extensions-usage-system", "dataprotection-microsoft", "gatekeeper-system", "sc-system"])'
   values:
     crds:
       enabled: true
