@@ -22,7 +22,7 @@ on:
           - bare
           - core
           - minimal
-        default: bare
+        default: core
 
 permissions:
   contents: read
@@ -52,8 +52,8 @@ jobs:
       profile: ${{ steps.env.outputs.profile }}
     env:
       ENV_SUFFIX: ${{ inputs.env_suffix || format('run{0}', github.run_id) }}
-      # The scheduled run measures the infra and empty-GitOps rung.
-      PROFILE: ${{ inputs.profile || 'bare' }}
+      # Scheduled runs prove a fresh core environment converges, not just AKS and Flux.
+      PROFILE: ${{ inputs.profile || 'core' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

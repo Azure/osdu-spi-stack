@@ -45,9 +45,9 @@ substrate, and only that rebuild clears both cluster and PaaS state.
   and the probes follow under the still-set `maintenance` flag.
 - **No partial reset exists.** The weekly delete-and-rebuild at the pinned
   tag sheds accreted state in both layers and keeps the rebuild path
-  continuously proven at the `core` profile, which the nightly smoke (default
-  `bare`) does not exercise. Saturday puts the outage where the merge gate is
-  idle.
+  continuously proven at the `core` profile on the environment itself; the
+  nightly smoke proves a fresh `core` build from `main`. Saturday puts the
+  outage where the merge gate is idle.
 - **Refresh is composition, not a command.** The reconcile trigger, the
   readiness wait, and the probes each exist; the ops workflow
   (`docs/design/environment-lifecycle.md`) sequences them. Refresh also runs

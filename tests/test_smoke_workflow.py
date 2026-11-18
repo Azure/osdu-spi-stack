@@ -4,8 +4,9 @@
 
 """Contract tests for the scheduled Azure smoke workflow.
 
-The unattended path begins at the bare profile, and bare validates AKS plus
-Flux without requiring an ingress substrate it does not deploy.
+The unattended path deploys the core profile so a green run proves a fresh
+environment converges. Bare stays a manual choice and skips the ingress probes
+for the substrate it does not deploy.
 """
 
 import os
@@ -35,13 +36,13 @@ def _steps(job: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {step["name"]: step for step in job["steps"] if "name" in step}
 
 
-def test_bare_is_the_default_and_a_manual_choice():
+def test_core_is_the_default_and_bare_a_manual_choice():
     workflow = _workflow()
     profile = workflow["on"]["workflow_dispatch"]["inputs"]["profile"]
 
-    assert profile["default"] == "bare"
+    assert profile["default"] == "core"
     assert profile["options"] == ["bare", "core", "minimal"]
-    assert workflow["jobs"]["provision"]["env"]["PROFILE"] == "${{ inputs.profile || 'bare' }}"
+    assert workflow["jobs"]["provision"]["env"]["PROFILE"] == "${{ inputs.profile || 'core' }}"
 
 
 def test_selected_profile_is_exported_to_verify():
