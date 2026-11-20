@@ -242,7 +242,9 @@ jobs:
 
       - name: Wait for Flux Kustomizations to be Ready
         # 230 min; the job budget above explains the figure.
-        run: bash scripts/wait_for_flux_ready.sh --timeout 13800
+        run: |
+          bash scripts/wait_for_flux_ready.sh --timeout 13800 \
+            --fail-fast "diagnostics/smoke-${{ github.run_id }}"
 
       - name: Acceptance probe (gateway reachable)
         if: ${{ needs.provision.outputs.profile != 'bare' }}

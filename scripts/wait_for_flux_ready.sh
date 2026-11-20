@@ -18,11 +18,15 @@
 # `spi up` returns, so the CRDs may not exist yet when this starts. An upgrade
 # leaves every Kustomization Ready for the previous revision, so
 # --expect-revision also requires status.lastAppliedRevision to name the commit.
+# --fail-fast DIR stops as soon as a gating Kustomization is stalled on a Job
+# that failed or a HelmRelease out of retries, and saves that Job's pod logs to
+# DIR while they still exist: Karpenter reclaims the emptied node within minutes.
 #
 # Exit codes:
 #   0  every gating Kustomization is Ready
 #   1  --timeout elapsed, or --grace elapsed before any Kustomization appeared
 #   2  prerequisite missing (kubectl, jq)
+#   3  --fail-fast found a Job or HelmRelease that will not recover
 
 set -u
 set -o pipefail
@@ -32,12 +36,13 @@ HEARTBEAT=30
 STATUS_INTERVAL=180
 GRACE=600
 EXPECT_REVISION=""
+FAIL_FAST_DIR=""
 
 usage() {
     cat <<'EOF'
 Usage: wait_for_flux_ready.sh [--timeout SECONDS] [--heartbeat SECONDS]
                               [--status-interval SECONDS] [--grace SECONDS]
-                              [--expect-revision COMMIT]
+                              [--expect-revision COMMIT] [--fail-fast DIR]
 EOF
 }
 
@@ -48,6 +53,7 @@ while [ $# -gt 0 ]; do
         --status-interval) STATUS_INTERVAL="$2"; shift 2 ;;
         --grace) GRACE="$2"; shift 2 ;;
         --expect-revision) EXPECT_REVISION="$2"; shift 2 ;;
+        --fail-fast) FAIL_FAST_DIR="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -71,6 +77,56 @@ dump_status() {
     else
         kubectl get kustomizations -A 2>&1 || true
     fi
+}
+
+# Kind<TAB>namespace<TAB>name for each Job or HelmRelease that Flux's health
+# check reports as Failed on a gating Kustomization.
+stalled_refs() {
+    jq -r '
+        .items[]
+        | select((.metadata.labels["spi-stack.gating"] // "true") != "false")
+        | (.status.conditions // [])[]
+        | select(.type == "Ready" and .status == "False")
+        | (.message // "")
+        | select(contains("stalled resources"))
+        | scan("(Job|HelmRelease)/([^/ ]+)/([^ ]+) status: .Failed.")
+        | @tsv
+    ' <<<"$1" | sort -u
+}
+
+# Confirms on the object itself, so a stale Kustomization message never ends the wait.
+is_terminal() {
+    local condition
+    case "$1" in
+        Job) condition=Failed ;;
+        HelmRelease) condition=Stalled ;;
+        *) return 1 ;;
+    esac
+    kubectl get "$1" -n "$2" "$3" -o json 2>/dev/null \
+        | jq -e --arg c "$condition" \
+            '(.status.conditions // []) | any(.type == $c and .status == "True")' >/dev/null
+}
+
+redact() { sed -E 's/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/<redacted-jwt>/g'; }
+
+capture_failure() {
+    local kind="$1" ns="$2" name="$3" base pods pod
+    base="$FAIL_FAST_DIR/$(tr '[:upper:]' '[:lower:]' <<<"$kind")-$ns-$name"
+    kubectl describe "$kind" -n "$ns" "$name" > "$base-describe.txt" 2>&1 || true
+    [ "$kind" = "Job" ] || return 0
+
+    pods=$(kubectl get pods -n "$ns" -l "batch.kubernetes.io/job-name=$name" -o name 2>/dev/null)
+    if [ -z "$pods" ]; then
+        echo "No pods left for Job/$ns/$name; see $base-describe.txt"
+        return 0
+    fi
+    for pod in $pods; do
+        pod="${pod#pod/}"
+        kubectl describe pod -n "$ns" "$pod" > "$base-$pod-describe.txt" 2>&1 || true
+        kubectl logs -n "$ns" "$pod" --all-containers 2>&1 | redact > "$base-$pod.log"
+        print_banner "Job/$ns/$name pod $pod, last 40 log lines"
+        tail -n 40 "$base-$pod.log"
+    done
 }
 
 print_banner() {
@@ -166,6 +222,26 @@ while :; do
         printf '[%s / %s] %s/%s Ready · %s\n' \
             "$(fmt_mmss "$elapsed")" "$(fmt_mmss "$TIMEOUT")" \
             "$ready_total" "$all_total" "$compact"
+
+        if [ -n "$FAIL_FAST_DIR" ]; then
+            failed=()
+            while IFS=$'\t' read -r kind ns name; do
+                [ -n "$kind" ] && is_terminal "$kind" "$ns" "$name" \
+                    && failed+=("$kind/$ns/$name")
+            done < <(stalled_refs "$ksts_json")
+            if [ "${#failed[@]}" -gt 0 ]; then
+                echo
+                echo "ERROR: failed and will not recover at $(fmt_mmss "$elapsed"): ${failed[*]}" >&2
+                mkdir -p "$FAIL_FAST_DIR"
+                for ref in "${failed[@]}"; do
+                    IFS=/ read -r kind ns name <<<"$ref"
+                    capture_failure "$kind" "$ns" "$name"
+                done
+                echo "Final status:" >&2
+                dump_status >&2
+                exit 3
+            fi
+        fi
 
         if [ "$ready_total" = "$all_total" ] && [ "$all_total" -gt 0 ]; then
             print_banner "✓ all $all_total Kustomizations Ready at $(fmt_mmss "$elapsed")"
