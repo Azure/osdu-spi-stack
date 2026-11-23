@@ -108,7 +108,9 @@ tag, and the shared RG carries neither.
 **Refresh** (`env-refresh.yml`, implemented) proves the environment is
 serving: set the `maintenance` flag in a named quiesce step, sweep stale
 ephemeral pins with `spi service reset --ephemeral --stale-only` (ADR-031),
-run plain `spi reconcile` (preserving the version-pinned source and the
+re-suspend the Git source if the AKS `FluxConfig` controller dropped the
+suspension on a restart (only while the source still serves the declared tag's
+recorded commit; otherwise fail), run plain `spi reconcile` (preserving the version-pinned source and the
 current image lock), run `spi onboard --reconcile --write` to restore declared fork trust
 and source policy, run `spi service refresh --forks` to advance every
 canonical (ADR-033), gate on `scripts/wait_for_flux_ready.sh` plus the gateway probes
