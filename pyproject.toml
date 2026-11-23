@@ -16,7 +16,7 @@ requires-python = ">=3.11"
 # enforces that for both this runtime set and the dev group.
 dependencies = [
     "rich>=15.0.0",
-    "typer>=0.28.0",
+    "typer>=0.29.1",
     "pydantic>=2.14.3",
     "pyyaml>=6.0",
     "packaging>=26.3",
@@ -78,8 +78,8 @@ dev = [
     "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
     "pyyaml>=6.0.3",
-    "ruff>=0.17.4",
-    "ty>=0.0.99",
+    "ruff>=0.17.5",
+    "ty>=0.0.104",
 ]
 
 [tool.ruff]
