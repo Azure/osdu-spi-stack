@@ -236,6 +236,29 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: spi service reset --ephemeral --stale-only
 
+      - name: Restore source suspension
+        # The AKS FluxConfig owns the GitRepository, and its controller rewrites
+        # the spec on an extension upgrade, dropping the suspend spi patched in. Restore
+        # it only while the source still serves the declared tag's recorded commit.
+        run: |
+          set -euo pipefail
+          SOURCE=$(kubectl get gitrepository osdu-spi-stack-system -n osdu-flux -o json)
+          if [ "$(jq -r '.spec.suspend // false' <<<"$SOURCE")" = "true" ]; then
+            echo "GitRepository is suspended"
+            exit 0
+          fi
+          REF_TAG=$(jq -r '.spec.ref.tag // empty' <<<"$SOURCE")
+          REVISION=$(jq -r '.status.artifact.revision // empty' <<<"$SOURCE")
+          RECORDED=$(kubectl get configmap spi-deploy-record -n osdu-flux \
+            -o jsonpath='{.data.resolvedCommit}')
+          if [ "$REF_TAG" != "$STACK_VERSION" ] || [ -z "$RECORDED" ] \
+            || [ "$REVISION" != "${STACK_VERSION}@sha1:${RECORDED}" ]; then
+            echo "::error::GitRepository is resumed and does not serve the recorded $STACK_VERSION commit (ref tag '$REF_TAG', revision '$REVISION', recorded '$RECORDED'); refusing to re-suspend"
+            exit 1
+          fi
+          echo "::warning::GitRepository was resumed outside spi (likely an AKS Flux extension upgrade re-applying the FluxConfig); re-suspending at $REVISION"
+          spi reconcile --suspend
+
       - name: spi reconcile
         # No --refresh-images: the pinned source and current image lock stand.
         run: |

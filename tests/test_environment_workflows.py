@@ -305,6 +305,22 @@ class TestMaintenanceOrdering:
         # The sweep reads each pin's owning run.
         assert sweep["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
 
+    def test_env_refresh_restores_source_suspension_only_on_the_recorded_commit(self):
+        steps = _steps(_workflow(ENV_REFRESH)["jobs"]["refresh"])
+        names = list(steps)
+
+        restore_idx = names.index("Restore source suspension")
+        assert names.index("Sweep stale ephemeral pins") < restore_idx
+        assert restore_idx < names.index("spi reconcile")
+
+        run = steps["Restore source suspension"]["run"]
+        assert ".spec.ref.tag" in run
+        assert "resolvedCommit" in run
+        assert '"${STACK_VERSION}@sha1:${RECORDED}"' in run
+        # The mismatch branch fails before the re-suspend is reached.
+        assert run.index("refusing to re-suspend") < run.index("spi reconcile --suspend")
+        assert "--resume" not in run
+
     def test_env_refresh_requires_deploy_record_before_setting_maintenance(self):
         # A provision can die after creating AKS but before writing the deploy
         # record; refresh has no provision job to recover with, so it must
