@@ -840,7 +840,7 @@ class TestReferenceCatalogDownloads:
 
         assert (
             container["image"] == "mcr.microsoft.com/openjdk/jdk:25-azurelinux"
-            "@sha256:61002c0b9ccdd84295342d305e4cf6f956d205cf1cd2eabc2f9e376aff1e70f6"
+            "@sha256:23fd23f07f78a7044404a5700cdfd85d7e07700faf59d6ef4a3f30e57c63a1b2"
         )
         assert source_revision in script
         assert payload_sha256 in script

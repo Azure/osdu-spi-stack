@@ -76,7 +76,7 @@ spec:
     # Same JDK base as the app image, so its layers are already on the node.
     initContainers:
       - name: download-catalog
-        image: mcr.microsoft.com/openjdk/jdk:25-azurelinux@sha256:61002c0b9ccdd84295342d305e4cf6f956d205cf1cd2eabc2f9e376aff1e70f6
+        image: mcr.microsoft.com/openjdk/jdk:25-azurelinux@sha256:23fd23f07f78a7044404a5700cdfd85d7e07700faf59d6ef4a3f30e57c63a1b2
         command:
           - sh
           - -c
