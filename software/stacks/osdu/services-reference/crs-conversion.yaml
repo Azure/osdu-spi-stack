@@ -83,10 +83,7 @@ spec:
         value: http://entitlements/api/entitlements/v2
       - name: STORAGE_URL
         value: http://storage/api/storage/v2
-    # Downloads SIS_DATA from an immutable source revision when the pod starts
-    # and verifies it before making it visible to the service. The image is the
-    # JDK base the crs-conversion app is built on, so its layers are already on
-    # the node, and unlike azurelinux/base/core it ships the full CA bundle.
+    # Same JDK base as the app image, so its layers are already on the node.
     initContainers:
       - name: download-sis-data
         image: mcr.microsoft.com/openjdk/jdk:25-azurelinux@sha256:61002c0b9ccdd84295342d305e4cf6f956d205cf1cd2eabc2f9e376aff1e70f6
