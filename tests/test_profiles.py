@@ -809,28 +809,40 @@ class TestAutomatedGatewayDeployment:
 class TestReferenceCatalogDownloads:
     """Reference catalogs are immutable, verified, and fetched without root."""
 
+    ALPINE = (
+        "docker.io/library/alpine:3.22"
+        "@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8"
+    )
+    JDK25_AZURELINUX = (
+        "mcr.microsoft.com/openjdk/jdk:25-azurelinux"
+        "@sha256:61002c0b9ccdd84295342d305e4cf6f956d205cf1cd2eabc2f9e376aff1e70f6"
+    )
+
     @pytest.mark.parametrize(
-        ("manifest", "source_revision", "payload_sha256"),
+        ("manifest", "image", "source_revision", "payload_sha256"),
         [
             (
                 "unit.yaml",
+                ALPINE,
                 "9b9364977352ec22f358ec592934c3a60e679b4e",
                 "f703457c42de2f61b17adb3b1626f9d8c3416763aef8d7c9df221219cf91938d",
             ),
             (
                 "crs-catalog.yaml",
+                ALPINE,
                 "1520fcfe1126ac5b28e6f4ccf9ec268b526ddedc",
                 "0166cf95dc237152ba688d59cd7f921f00812704a464987df48fbf1813fb6ab1",
             ),
             (
                 "crs-conversion.yaml",
+                JDK25_AZURELINUX,
                 "7d90a9b36b521119057494d7f38b123271608f42",
                 "bf18888423797b80798804fe092e23c0d3dbd1379ca5ea92a80d8d6057fd8dcd",
             ),
         ],
     )
     def test_catalog_init_container_is_immutable_verified_and_non_root(
-        self, manifest, source_revision, payload_sha256
+        self, manifest, image, source_revision, payload_sha256
     ):
         release = yaml.safe_load(
             (STACKS / "services-reference" / manifest).read_text(encoding="utf-8")
@@ -838,14 +850,12 @@ class TestReferenceCatalogDownloads:
         container = release["spec"]["values"]["initContainers"][0]
         script = container["command"][-1]
 
-        assert (
-            container["image"] == "docker.io/library/alpine:3.22"
-            "@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8"
-        )
+        assert container["image"] == image
         assert source_revision in script
         assert payload_sha256 in script
         assert "sha256sum -c -" in script
         assert "/raw/master/" not in script
+        assert "/archive/master/" not in script
         assert " install " not in script
         assert "wget -q" not in script
         assert container["securityContext"] == {
