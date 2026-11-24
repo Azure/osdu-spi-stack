@@ -73,18 +73,17 @@ spec:
         value: http://entitlements/api/entitlements/v2
       - name: SEARCH_API
         value: http://search/api/search/v2
-    # Downloads the catalog from the same immutable source revision when the
-    # pod starts and verifies it before making it visible to the service.
+    # Same JDK base as the app image, so its layers are already on the node.
     initContainers:
       - name: download-catalog
-        image: docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+        image: mcr.microsoft.com/openjdk/jdk:25-azurelinux@sha256:61002c0b9ccdd84295342d305e4cf6f956d205cf1cd2eabc2f9e376aff1e70f6
         command:
           - sh
           - -c
           - |
             set -eu
             file=/data/crs_catalog_v2.json.download
-            wget -O "$file" https://community.opengroup.org/osdu/platform/system/reference/crs-catalog-service/-/raw/1520fcfe1126ac5b28e6f4ccf9ec268b526ddedc/data/crs_catalog_v2.json
+            curl -fsSL --retry 3 -o "$file" https://community.opengroup.org/osdu/platform/system/reference/crs-catalog-service/-/raw/1520fcfe1126ac5b28e6f4ccf9ec268b526ddedc/data/crs_catalog_v2.json
             echo "0166cf95dc237152ba688d59cd7f921f00812704a464987df48fbf1813fb6ab1  $file" | sha256sum -c -
             mv "$file" /data/crs_catalog_v2.json
         volumeMounts:
