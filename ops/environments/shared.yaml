@@ -1,5 +1,5 @@
 env: shared
-stackVersion: v0.35.8
+stackVersion: v0.35.9
 profile: core
 location: westus3
 ingressMode: azure
