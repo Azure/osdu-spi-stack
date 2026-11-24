@@ -822,6 +822,11 @@ class TestReferenceCatalogDownloads:
                 "1520fcfe1126ac5b28e6f4ccf9ec268b526ddedc",
                 "0166cf95dc237152ba688d59cd7f921f00812704a464987df48fbf1813fb6ab1",
             ),
+            (
+                "crs-conversion.yaml",
+                "7d90a9b36b521119057494d7f38b123271608f42",
+                "bf18888423797b80798804fe092e23c0d3dbd1379ca5ea92a80d8d6057fd8dcd",
+            ),
         ],
     )
     def test_catalog_init_container_is_immutable_verified_and_non_root(

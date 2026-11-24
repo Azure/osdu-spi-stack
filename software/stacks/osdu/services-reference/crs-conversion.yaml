@@ -83,19 +83,27 @@ spec:
         value: http://entitlements/api/entitlements/v2
       - name: STORAGE_URL
         value: http://storage/api/storage/v2
-    # Downloads SIS reference data; root so tdnf can install, every capability dropped.
+    # Downloads SIS_DATA from an immutable source revision when the pod starts
+    # and verifies it before making it visible to the service.
     initContainers:
       - name: download-sis-data
-        image: mcr.microsoft.com/azurelinux/base/core:3.0
+        image: docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
         command:
           - sh
           - -c
           - |
-            set -e
-            tdnf install -y curl tar gzip ca-certificates
-            mkdir -p /data/sis-data
-            curl -fsSL -o /tmp/sis.tar.gz "https://community.opengroup.org/osdu/platform/system/reference/crs-conversion-service/-/archive/master/crs-conversion-service-master.tar.gz?path=apachesis_setup/SIS_DATA"
-            tar xzf /tmp/sis.tar.gz -C /data/sis-data --strip-components=3
+            set -eu
+            archive=/data/sis-data.tar
+            rm -rf "$archive" "$archive.gz" /data/sis-data.download
+            wget -O "$archive.gz" "https://community.opengroup.org/osdu/platform/system/reference/crs-conversion-service/-/archive/7d90a9b36b521119057494d7f38b123271608f42/crs-conversion-service-7d90a9b36b521119057494d7f38b123271608f42.tar.gz?path=apachesis_setup/SIS_DATA"
+            gzip -d "$archive.gz"
+            # Hash the tar, not the .gz: GitLab regenerates archives and does not promise stable gzip bytes.
+            echo "bf18888423797b80798804fe092e23c0d3dbd1379ca5ea92a80d8d6057fd8dcd  $archive" | sha256sum -c -
+            mkdir /data/sis-data.download
+            tar xf "$archive" -C /data/sis-data.download --strip-components=3
+            rm "$archive"
+            rm -rf /data/sis-data
+            mv /data/sis-data.download /data/sis-data
         volumeMounts:
           - name: sis-data
             mountPath: /data
@@ -107,8 +115,9 @@ spec:
             cpu: 500m
             memory: 1Gi
         securityContext:
-          runAsUser: 0
-          runAsNonRoot: false
+          runAsUser: 1000
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
           capabilities:
             drop:
