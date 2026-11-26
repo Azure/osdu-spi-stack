@@ -34,6 +34,7 @@ from typing import Sequence
 import yaml
 
 from .bootstrap import ClusterConfigError, read_cluster_config
+from .console import console
 from .images import IMAGE_REGISTRY, SCHEMA_LOAD_SERVICE_NAME
 from .shell import run_command, run_process
 
@@ -44,6 +45,7 @@ DOCKERFILE_PATH = f"{BUILD_DIRECTORY}/Dockerfile"
 DESCRIPTOR_PATH = ".spi/service.yaml"
 SETTINGS_PATH = ".mvn/community-maven.settings.xml"
 TASK_FILE = "acr-task.yaml"
+IMAGE_NOTICES = ("LICENSE", "NOTICE", "NOTICE-OSDU-SPI")
 # The profiles and goals the fork template's build runs, without its tests.
 MAVEN_ARGUMENTS = ("clean", "install", "-P", "core,azure", "-DskipTests")
 PULL_ROLE = "AcrPull"
@@ -393,11 +395,22 @@ def task_document(image: str, jar: str, release: str, staging: str = "") -> str:
     return yaml.safe_dump(document, sort_keys=False)
 
 
+def _image_notices(checkout: Path) -> tuple[Path, ...]:
+    notices = tuple(checkout / name for name in IMAGE_NOTICES)
+    for path in notices:
+        if path.is_symlink():
+            raise BuildError(f"Image attribution {path.name} is a symbolic link; replace it.")
+        if not path.is_file():
+            raise BuildError(f"Required image attribution {path.name} is missing from {checkout}.")
+    return notices
+
+
 def stage_context(
     checkout: Path, jar: str, release: str, image: str, into: Path, staging: str = ""
 ) -> Path:
-    """Copy what the Dockerfile reads into ``into``: its own directory and the JAR."""
+    """Copy the Dockerfile, JAR and required attribution into ``into``."""
 
+    notices = _image_notices(checkout)
     source = checkout / BUILD_DIRECTORY
     # copytree follows links, and the context is uploaded to the registry.
     links = sorted(path for path in (source, *source.rglob("*")) if path.is_symlink())
@@ -408,6 +421,8 @@ def stage_context(
     target = into / jar
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(checkout / jar, target)
+    for path in notices:
+        shutil.copy2(path, into / path.name)
     (into / TASK_FILE).write_text(task_document(image, jar, release, staging), encoding="utf-8")
     return into
 
@@ -431,6 +446,7 @@ def require_buildable(service: str, checkout: Path) -> None:
             f"{checkout} builds {declared!r}, not {service!r}; point --source at the fork "
             "that builds it."
         )
+    _image_notices(checkout)
 
 
 def build_image(
@@ -478,8 +494,9 @@ def build_image(
     # A tag of this run alone: a concurrent build of the same commit moves the shared one.
     staging = f"{image}-{secrets.token_hex(4)}"
     scope = ["--subscription", registry.subscription] if registry.subscription else []
-    with tempfile.TemporaryDirectory(prefix="spi-build-") as scratch:
-        context = stage_context(checkout, jar_path, release, image, Path(scratch), staging)
+    scratch = tempfile.TemporaryDirectory(prefix="spi-build-")
+    try:
+        context = stage_context(checkout, jar_path, release, image, Path(scratch.name), staging)
         ran = run_command(
             ["az", "acr", "run", "--registry", registry.name, "--platform", BUILD_PLATFORM]
             + ["--file", TASK_FILE, *scope, "."],
@@ -488,6 +505,15 @@ def build_image(
             check=False,
             cwd=str(context),
         )
+    finally:
+        try:
+            scratch.cleanup()
+        except PermissionError as exc:
+            console.print(
+                f"Warning: could not remove build context {scratch.name}: {exc}",
+                style="yellow",
+                markup=False,
+            )
     if ran.returncode != 0:
         raise BuildError(f"The ACR task exited {ran.returncode}; {image} was not pushed.")
 

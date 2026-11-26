@@ -72,6 +72,8 @@ def _checkout(tmp_path: Path, service: str = "partition", module: str | None = N
     (root / "build").mkdir()
     (root / "build/Dockerfile").write_text(_DOCKERFILE, encoding="utf-8")
     (root / "build/docker-entrypoint.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    for name in ("LICENSE", "NOTICE", "NOTICE-OSDU-SPI"):
+        (root / name).write_bytes(f"test attribution: {name}".encode())
     _jar(root, module or f"{service}-azure")
     return root
 
@@ -97,6 +99,23 @@ def _completed(stdout: str = "", returncode: int = 0, stderr: str = ""):
 
 
 class TestRequireBuildable:
+    @pytest.mark.parametrize("name", ["LICENSE", "NOTICE", "NOTICE-OSDU-SPI"])
+    def test_missing_image_attribution_is_refused_before_build(self, tmp_path, name):
+        root = _checkout(tmp_path)
+        (root / name).unlink()
+        with pytest.raises(BuildError, match=name):
+            require_buildable("partition", root)
+
+    @pytest.mark.parametrize("name", ["LICENSE", "NOTICE", "NOTICE-OSDU-SPI"])
+    def test_a_linked_image_attribution_is_not_uploaded(self, tmp_path, name):
+        root = _checkout(tmp_path)
+        target = tmp_path / "outside"
+        target.write_text("outside checkout", encoding="utf-8")
+        (root / name).unlink()
+        (root / name).symlink_to(target)
+        with pytest.raises(BuildError, match="symbolic link"):
+            require_buildable("partition", root)
+
     def test_a_matching_checkout_passes(self, tmp_path):
         require_buildable("partition", _checkout(tmp_path))
 
@@ -316,7 +335,17 @@ class TestTask:
         staged = sorted(
             p.relative_to(context).as_posix() for p in context.rglob("*") if p.is_file()
         )
-        assert staged == ["acr-task.yaml", "build/Dockerfile", "build/docker-entrypoint.sh", jar]
+        assert staged == [
+            "LICENSE",
+            "NOTICE",
+            "NOTICE-OSDU-SPI",
+            "acr-task.yaml",
+            "build/Dockerfile",
+            "build/docker-entrypoint.sh",
+            jar,
+        ]
+        for name in ("LICENSE", "NOTICE", "NOTICE-OSDU-SPI"):
+            assert (context / name).read_bytes() == (root / name).read_bytes()
 
     def test_a_link_under_build_is_not_followed_into_the_context(self, tmp_path):
         root = _checkout(tmp_path)
@@ -426,6 +455,33 @@ class TestRegistryChecks:
 
 
 class TestBuildImage:
+    @pytest.mark.parametrize("task", [0, 1])
+    def test_cleanup_lock_does_not_mask_the_image_build_result(
+        self, monkeypatch, tmp_path, capsys, task
+    ):
+        self._wire(monkeypatch, task=task)
+        temporary_directory = build.tempfile.TemporaryDirectory
+
+        def locked_context(**kwargs):
+            directory = temporary_directory(**kwargs)
+            cleanup = directory.cleanup
+
+            def locked_cleanup():
+                cleanup()
+                raise PermissionError("locked build directory")
+
+            monkeypatch.setattr(directory, "cleanup", locked_cleanup)
+            return directory
+
+        monkeypatch.setattr(build.tempfile, "TemporaryDirectory", locked_context)
+        root = _checkout(tmp_path)
+        if task:
+            with pytest.raises(BuildError, match="was not pushed"):
+                build_image("partition", root)
+        else:
+            assert build_image("partition", root).digest == _DIGEST
+        assert "locked build directory" in capsys.readouterr().out
+
     def _wire(
         self,
         monkeypatch,

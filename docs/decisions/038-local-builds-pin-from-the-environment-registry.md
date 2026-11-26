@@ -30,7 +30,10 @@ origin is `local`.
   `resolve-jar.sh` searches, and stages a context holding `build/` and the JAR.
   `az acr run` executes a two-step task with `DOCKER_BUILDKIT=1`, because the
   `az acr build` quick build runs the classic builder and rejects the
-  Dockerfile's `ADD --checksum`. The first step is a `cmd` step running
+  Dockerfile's `ADD --checksum`. The context includes the canonical
+  Dockerfile's root `LICENSE`, `NOTICE` and `NOTICE-OSDU-SPI` files
+  byte-for-byte; missing or linked attribution refuses before Maven runs.
+  The first step is a `cmd` step running
   `docker build`, not a `build` step: ACR scans a `build` step's Dockerfile
   for dependencies first, and that scanner rejects the agent stage's
   `FROM --platform=$BUILDPLATFORM`. The platform is `linux/amd64`.
@@ -60,6 +63,11 @@ origin is `local`.
   until its restore. Reset, refresh, and the stale sweep treat a local pin as
   any operator pin: reset restores the captured canonical, refresh skips the
   service, and the sweep ignores it.
+- **Schema bootstrap recovery.** `spi service pin schema --source <checkout>
+  --recover-bootstrap <environment>` uses the same local build, digest and
+  restore record while maintenance stays enabled. ADR-031 defines the
+  admission checks and the operator's exclusive-window requirement. The
+  default readiness gate is unchanged for other local pins.
 - **`spi test --source` labels against the build.** A checkout at the pinned
   commit with a clean tree is `matched`; a dirty or prebuilt build is
   `unmatched` for every checkout.
@@ -95,6 +103,10 @@ any public GHCR digest (ADR-031), and a personal environment is declared too.
 - Unit tests do not run in the default build, and the profiles are fixed at
   `core,azure`. Arguments after `--` on `spi build` replace the Maven
   arguments; `spi service pin --source` takes none.
+- A Windows process can hold the temporary context directory after the ACR
+  step exits. A cleanup permission error reports the directory and error as
+  a warning without replacing the ACR outcome; a failed task still fails
+  the build, and a successful task still needs a resolved manifest digest.
 - Nothing prunes `local/` repositories. A dirty rebuild moves its tag and
   leaves the earlier manifest untagged in a Basic registry.
 - The build needs registry write access and a kube context, which the fork

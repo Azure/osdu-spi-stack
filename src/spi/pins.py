@@ -46,7 +46,12 @@ from .build import (
     require_local_manifest,
 )
 from .console import console, display_yaml
-from .deploy_record import DEPLOY_RECORD_CONFIGMAP, DeployRecordError, read_deploy_record
+from .deploy_record import (
+    DEPLOY_RECORD_CONFIGMAP,
+    DeployRecord,
+    DeployRecordError,
+    read_deploy_record,
+)
 from .images import (
     GHCR_HOST,
     IMAGE_LOCK_CONFIGMAP,
@@ -624,7 +629,102 @@ def require_deployable() -> None:
         )
 
 
-def _post_write_maintenance_check() -> str | None:
+def _require_recovery_ownership(current: Mapping[str, ServicePin]) -> None:
+    blocked = sorted(
+        name for name, pin in current.items() if pin.ephemeral or name == SCHEMA_LOAD_SERVICE_NAME
+    )
+    if blocked:
+        raise PinError(
+            "Bootstrap recovery refuses active borrows or a pinned schema loader: "
+            + ", ".join(blocked)
+        )
+
+
+def require_schema_bootstrap_recovery(service: str, environment: str) -> DeployRecord:
+    """Admit an operator's local Schema repair without reopening normal deploys."""
+    from .loads import read_schema_job
+    from .status import StatusError, collect_bootstrap_blocker, collect_kustomization_readiness
+
+    if service != SCHEMA_SERVICE_NAME:
+        raise PinError("Bootstrap recovery is restricted to schema.")
+    try:
+        record = read_deploy_record(required=True)
+        if (
+            record is None
+            or not environment
+            or record.env != environment
+            or record.profile != "core"
+            or not record.maintenance
+        ):
+            raise PinError(
+                "Bootstrap recovery requires the exact recorded core environment name "
+                "and maintenance must remain enabled."
+            )
+        readiness = collect_kustomization_readiness()
+        bootstrap = collect_bootstrap_blocker()
+        job = read_schema_job()
+    except (DeployRecordError, StatusError) as exc:
+        raise PinError(str(exc)) from exc
+    if bootstrap is not None:
+        raise PinError(
+            f"Bootstrap recovery requires completed member initialization: {bootstrap.message}"
+        )
+    job_status = (job or {}).get("status") or {}
+    if (
+        job_status.get("active")
+        or job_status.get("terminating")
+        or not any(
+            condition.get("type") == "Failed" and condition.get("status") == "True"
+            for condition in job_status.get("conditions", [])
+        )
+    ):
+        raise PinError("Bootstrap recovery requires a confirmed failed, inactive schema-load Job.")
+
+    states = {state.name: state for state in readiness.states}
+    for name in ("spi-osdu-services", "spi-osdu-init", "spi-osdu-members"):
+        if name not in states or not states[name].ready:
+            raise PinError(f"Bootstrap recovery requires {name} to be ready.")
+    failed = states.get("spi-osdu-schema-load")
+    if (
+        failed is None
+        or failed.ready
+        or failed.reason != "HealthCheckFailed"
+        or "Job/osdu/schema-load" not in failed.message
+        or "Failed" not in failed.message
+    ):
+        raise PinError("Bootstrap recovery requires the schema-load Job to have failed.")
+    permitted = {
+        "spi-osdu-schema-load": {"HealthCheckFailed"},
+        "spi-osdu-reference": {"DependencyNotReady"},
+        "osdu-spi-stack-system-stack": {"Progressing", "HealthCheckFailed"},
+    }
+    for state in readiness.states:
+        if state.ready or not state.gating:
+            continue
+        if state.reason not in permitted.get(state.name, set()):
+            raise PinError(
+                f"Bootstrap recovery refuses unrelated failure: "
+                f"{state.name} ({state.reason}: {state.message})."
+            )
+        if state.name == "spi-osdu-reference" and "spi-osdu-schema-load" not in state.message:
+            raise PinError(
+                "Reference initialization is blocked by something other than schema-load."
+            )
+        if state.name == "osdu-spi-stack-system-stack" and state.reason == "HealthCheckFailed":
+            resources = re.findall(r"([A-Za-z]+)/([^/\s]+)/([a-z0-9-]+)\s+status:", state.message)
+            allowed = {
+                ("Kustomization", "osdu-flux", "spi-osdu-schema-load"),
+                ("Kustomization", "osdu-flux", "spi-osdu-reference"),
+            }
+            if not resources or not set(resources).issubset(allowed):
+                raise PinError(
+                    "Parent health check is not limited to schema bootstrap dependencies."
+                )
+    _require_recovery_ownership(live_pins())
+    return record
+
+
+def _post_write_maintenance_check(recovery_record: DeployRecord | None = None) -> str | None:
     """Return why a lifecycle run intervened during the write, or None.
 
     A lifecycle run can set `maintenance` between the pre-check and the CAS
@@ -636,6 +736,8 @@ def _post_write_maintenance_check() -> str | None:
     next and carries the affected Kustomization through a not-Ready cycle,
     so readiness right after the write signals nothing. Only `maintenance`,
     which only a lifecycle run sets, distinguishes an intervention.
+    A bootstrap recovery instead requires the captured maintenance record
+    to remain unchanged; it never clears the flag.
     """
 
     try:
@@ -644,6 +746,8 @@ def _post_write_maintenance_check() -> str | None:
         return f"the post-write deployability recheck failed ({exc})"
     if record is None:
         return "the deploy record disappeared"
+    if recovery_record is not None:
+        return "the bootstrap recovery deploy record changed" if record != recovery_record else None
     if record.maintenance:
         return "a lifecycle run started maintenance"
     return None
@@ -757,10 +861,16 @@ def _captured_canonical(
     return repository, tag, created_at, digest
 
 
-def _abort_if_maintenance_intervened(mutation: _LockMutation, service: str) -> None:
+def _abort_if_maintenance_intervened(
+    mutation: _LockMutation, service: str, recovery_record: DeployRecord | None = None
+) -> None:
     """Roll this call's lock write back if a lifecycle run intervened."""
 
-    blocker = _post_write_maintenance_check()
+    blocker = (
+        _post_write_maintenance_check(recovery_record)
+        if recovery_record is not None
+        else _post_write_maintenance_check()
+    )
     if not blocker:
         return
     names = ", ".join(sorted(mutation.written))
@@ -809,13 +919,16 @@ def _borrowed(service: str, pin: ServicePin | None) -> PinError | None:
     )
 
 
-def require_local_pinnable(service: str) -> None:
+def require_local_pinnable(service: str, *, recovery_environment: str = "") -> None:
     """Refuse a local pin the environment would not take, before anything is built."""
 
     if service not in IMAGE_REGISTRY or service == SCHEMA_LOAD_SERVICE_NAME:
         known = ", ".join(sorted(n for n in IMAGE_REGISTRY if n != SCHEMA_LOAD_SERVICE_NAME))
         raise PinError(f"Unknown service {service!r}. Known services: {known}")
-    require_deployable()
+    if recovery_environment:
+        require_schema_bootstrap_recovery(service, recovery_environment)
+    else:
+        require_deployable()
     borrowed = _borrowed(service, live_pins().get(service))
     if borrowed:
         raise borrowed
@@ -847,6 +960,7 @@ def pin_service_image(
     source_repo: str = "",
     source_sha: str = "",
     source_run_url: str = "",
+    recovery_environment: str = "",
 ) -> list[tuple[str, ServicePin]]:
     """Pin a service to a fork-built GHCR image, or a local build, by manifest digest.
 
@@ -907,7 +1021,15 @@ def pin_service_image(
                 f"{' or '.join(expected)}, got {repository!r}."
             )
 
-    require_deployable()
+    recovery_record = None
+    if recovery_environment:
+        if not local or ephemeral or run_id or source_repo or source_run_url:
+            raise PinError(
+                "Bootstrap recovery accepts only an environment-local Schema operator pin."
+            )
+        recovery_record = require_schema_bootstrap_recovery(service, recovery_environment)
+    else:
+        require_deployable()
     try:
         if local:
             _require_local_image(service, repository, digest)
@@ -969,6 +1091,8 @@ def pin_service_image(
             _require_trusted_source(lock, service, source_repo)
         lock_data = lock.get("data") or {}
         pins = decode_pins(lock)
+        if recovery_environment:
+            _require_recovery_ownership(pins)
         borrowed = _borrowed(service, pins.get(service)) if local else None
         if borrowed:
             raise borrowed
@@ -1050,7 +1174,7 @@ def pin_service_image(
     written: dict[str, ServicePin | None] = dict(written_pins)
     written.update({name: None for name in released})
     mutation = _LockMutation(written=written, prior_pins=prior_pins, prior_entries=prior_entries)
-    _abort_if_maintenance_intervened(mutation, service)
+    _abort_if_maintenance_intervened(mutation, service, recovery_record)
 
     # The fork deploy role cannot patch Kustomizations; a run-owned pin
     # converges through the lock's watch label and verify gates the deploy.

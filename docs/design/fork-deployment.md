@@ -546,6 +546,40 @@ The pin refuses while a workflow run borrows the service, and on an
 environment whose kubelet identity holds no AcrPull on the registry: one
 provisioned before that grant needs `spi up` once. The build needs Maven, a
 JDK, `git`, and `az` on the host, and write access to the registry.
+The checkout must also contain the canonical image's `LICENSE`, `NOTICE`
+and `NOTICE-OSDU-SPI`. The context carries their exact bytes and rejects
+links instead of reading outside the checkout. A temporary-context cleanup
+permission error is reported without replacing the image build result.
+
+## Schema bootstrap recovery
+
+A failed `schema-load` Job blocks ordinary pins, including the candidate
+needed to repair it. The operator recovery path admits only a local Schema
+candidate while the named environment stays in maintenance:
+
+```bash
+spi service pin schema --source ../schema --recover-bootstrap dev1
+spi load --dataset schemas --force
+```
+
+The name must match the deploy record. Core services, partition and member
+initialization must be ready, the actual schema Job must be failed and
+inactive, and other gating failures refuse recovery. An active ephemeral
+pin or any pinned schema loader also refuses it. An explicit local digest
+can replace `--source`; GHCR candidates and ephemeral recovery pins are
+rejected. The canonical loader stays unchanged.
+
+The operator must own an exclusive maintenance window with no concurrent
+lifecycle operation. The deploy-record comparison detects a changed or
+missing record after the lock write and restores the captured image, but
+does not detect an idempotent operation that leaves the record unchanged.
+`spi service reset schema` restores the canonical even while maintenance
+remains enabled. Neither path writes the Deployment or disables its Flux
+owner.
+
+After schema loading, verify native readiness and gateway probes before
+clearing maintenance. Reference-data loads and ingestion tests retain their
+normal deployability gates; the recovery option does not admit them early.
 
 Inspect what a stranded pin belongs to:
 

@@ -38,6 +38,18 @@ annotation schema live in `docs/design/fork-deployment.md`.
   refuses while the environment is not deployable (ADR-030), and after
   writing it re-reads `maintenance`, rolling its own write back if the flag
   appeared in the window (ADR-029).
+- **Named bootstrap recovery.** An operator can pin only a local Schema
+  candidate with `--recover-bootstrap <environment>` while that named
+  environment remains in maintenance and only schema loading and its
+  dependants are unready. Core APIs and partition/member initialization
+  must be ready. Active ephemeral pins and a pinned loader refuse recovery,
+  including inside the compare-and-set transaction. The post-write check
+  restores the prior lock entry if the deploy record changes or disappears.
+  The operator owns an exclusive maintenance window; the flag does not
+  acquire a lifecycle lock or detect an idempotent concurrent maintenance
+  operation that leaves the record unchanged. Recovery does not enable
+  tests, reference loads or ordinary pins before their normal readiness
+  gates pass.
 - **A lock write is the whole deploy.** The lock carries the
   `reconcile.fluxcd.io/watch: Enabled` label, so Flux reconciles the
   consuming Kustomizations when the ConfigMap changes; fork CI mutates

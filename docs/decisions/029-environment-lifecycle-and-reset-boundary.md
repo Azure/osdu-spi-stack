@@ -58,6 +58,12 @@ substrate, and only that rebuild clears both cluster and PaaS state.
   operator. A freshly provisioned shared environment starts with it set, and
   a missing deploy record reads as not deployable, so fork deploys fail
   closed instead of racing a half-built environment.
+- An operator repairing a failed schema bootstrap keeps maintenance set.
+  The named, local-Schema-only recovery pin in ADR-031 admits that repair
+  under an exclusive operator window. It does not clear maintenance,
+  authorize a workflow borrow, or replace lifecycle serialization. A
+  changed deploy record rolls the pin back; an idempotent concurrent
+  lifecycle operation that leaves the record unchanged is not detected.
 - **Setting the flag stops new deploys; a drain covers the in-flight ones.**
   GitHub concurrency groups are repository-scoped, so nothing in Actions can
   serialize this repo's lifecycle runs against eight forks' deploy jobs.

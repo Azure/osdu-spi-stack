@@ -2431,6 +2431,12 @@ def service_pin(
         "--jar",
         help="With --source: the Spring Boot JAR to package, relative to the checkout.",
     ),
+    recover_bootstrap: str = typer.Option(
+        "",
+        "--recover-bootstrap",
+        help="Repair failed schema bootstrap with a local Schema candidate; name the exact "
+        "environment, which must stay in maintenance under exclusive operator control.",
+    ),
     ephemeral: bool = typer.Option(
         False,
         "--ephemeral",
@@ -2452,6 +2458,11 @@ def service_pin(
         console.print("[error]Provide exactly one of --image or --source.[/error]")
         raise typer.Exit(code=1)
     provenance = run_id or source_repo or source_sha or source_run_url
+    if recover_bootstrap and (service != "schema" or ephemeral or provenance):
+        console.print(
+            "[error]--recover-bootstrap accepts only a local Schema operator pin.[/error]"
+        )
+        raise typer.Exit(code=1)
     if image is None and (ephemeral or provenance):
         console.print(
             "[error]--ephemeral and --run-id/--source-* apply only to --image pins.[/error]"
@@ -2471,7 +2482,10 @@ def service_pin(
     if checkout is not None:
         # Refused before Maven runs, so a pin the environment would not take costs no build.
         try:
-            require_local_pinnable(service)
+            if recover_bootstrap:
+                require_local_pinnable(service, recovery_environment=recover_bootstrap)
+            else:
+                require_local_pinnable(service)
             built = build_image(service, checkout, skip_maven=skip_maven, jar=jar)
         except (PinError, BuildError) as exc:
             console.print(f"[error]{exc}[/error]")
@@ -2488,11 +2502,16 @@ def service_pin(
             source_repo=source_repo,
             source_sha=source_sha,
             source_run_url=source_run_url,
+            recovery_environment=recover_bootstrap,
         )
     except (PinError, ImageResolutionError) as exc:
         console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1)
     pin = dict(applied)[service]
+    if recover_bootstrap:
+        console.print(
+            "[warning]Bootstrap recovery pin applied; maintenance remains enabled.[/warning]"
+        )
     marker = f" (ephemeral, run {pin.run_id})" if pin.ephemeral else ""
     if pin.origin == LOCAL_ORIGIN:
         marker = f" ({local_build(pin)})"
