@@ -480,7 +480,7 @@ class TestBuildImage:
                 build_image("partition", root)
         else:
             assert build_image("partition", root).digest == _DIGEST
-        assert "locked build directory" in capsys.readouterr().out
+        assert "locked build directory" in " ".join(capsys.readouterr().out.split())
 
     def _wire(
         self,
