@@ -62,7 +62,7 @@ _REGISTRY = Registry(
 
 
 def _checkout(tmp_path: Path, service: str = "partition", module: str | None = None) -> Path:
-    """A fork checkout with a descriptor, the canonical Dockerfile, and one built JAR."""
+    """A fork checkout with a descriptor, the canonical Dockerfile, its notices, one built JAR."""
 
     root = tmp_path / "fork"
     (root / ".spi").mkdir(parents=True)
@@ -72,6 +72,8 @@ def _checkout(tmp_path: Path, service: str = "partition", module: str | None = N
     (root / "build").mkdir()
     (root / "build/Dockerfile").write_text(_DOCKERFILE, encoding="utf-8")
     (root / "build/docker-entrypoint.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    for name in ("LICENSE", "NOTICE", "NOTICE-OSDU-SPI"):
+        (root / name).write_text(f"{name} text\n", encoding="utf-8")
     _jar(root, module or f"{service}-azure")
     return root
 
@@ -122,6 +124,19 @@ class TestRequireBuildable:
         root = _checkout(tmp_path)
         (root / ".spi/service.yaml").unlink()
         with pytest.raises(BuildError, match="service.yaml"):
+            require_buildable("partition", root)
+
+    def test_a_checkout_without_an_attribution_file_is_refused(self, tmp_path):
+        root = _checkout(tmp_path)
+        (root / "NOTICE-OSDU-SPI").unlink()
+        with pytest.raises(BuildError, match="has no NOTICE-OSDU-SPI; build/Dockerfile copies"):
+            require_buildable("partition", root)
+
+    def test_a_linked_attribution_file_is_refused(self, tmp_path):
+        root = _checkout(tmp_path)
+        (root / "NOTICE").unlink()
+        (root / "NOTICE").symlink_to(tmp_path / "elsewhere")
+        with pytest.raises(BuildError, match="NOTICE in .* is a symbolic link"):
             require_buildable("partition", root)
 
 
@@ -316,7 +331,17 @@ class TestTask:
         staged = sorted(
             p.relative_to(context).as_posix() for p in context.rglob("*") if p.is_file()
         )
-        assert staged == ["acr-task.yaml", "build/Dockerfile", "build/docker-entrypoint.sh", jar]
+        assert staged == [
+            "LICENSE",
+            "NOTICE",
+            "NOTICE-OSDU-SPI",
+            "acr-task.yaml",
+            "build/Dockerfile",
+            "build/docker-entrypoint.sh",
+            jar,
+        ]
+        for name in ("LICENSE", "NOTICE", "NOTICE-OSDU-SPI"):
+            assert (context / name).read_bytes() == (root / name).read_bytes()
 
     def test_a_link_under_build_is_not_followed_into_the_context(self, tmp_path):
         root = _checkout(tmp_path)
@@ -329,6 +354,29 @@ class TestTask:
         with pytest.raises(BuildError, match="symbolic links .*leak"):
             stage_context(root, resolve_jar(root, "partition"), "17", "local/partition:x", context)
         assert not (context / "build").exists()
+
+    def test_a_missing_attribution_file_is_not_staged_around(self, tmp_path):
+        root = _checkout(tmp_path)
+        (root / "LICENSE").unlink()
+        context = tmp_path / "context"
+        context.mkdir()
+
+        with pytest.raises(BuildError, match="has no LICENSE; build/Dockerfile copies it"):
+            stage_context(root, resolve_jar(root, "partition"), "17", "local/partition:x", context)
+        assert not list(context.iterdir())
+
+    def test_a_linked_attribution_file_is_not_followed_into_the_context(self, tmp_path):
+        root = _checkout(tmp_path)
+        secret = tmp_path / "secret"
+        secret.write_text("token", encoding="utf-8")
+        (root / "LICENSE").unlink()
+        (root / "LICENSE").symlink_to(secret)
+        context = tmp_path / "context"
+        context.mkdir()
+
+        with pytest.raises(BuildError, match="LICENSE in .* is a symbolic link"):
+            stage_context(root, resolve_jar(root, "partition"), "17", "local/partition:x", context)
+        assert not list(context.iterdir())
 
     def test_maven_uses_the_checkouts_settings_and_the_template_profiles(self, tmp_path):
         root = _checkout(tmp_path)
