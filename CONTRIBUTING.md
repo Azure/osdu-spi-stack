@@ -98,6 +98,52 @@ which puts a PyPI URL in the lock and fails `uv lock` outright on a network that
 blocks `pythonhosted.org`. Dependabot runs the `uv` ecosystem, so its bumps
 arrive with `uv.lock` already regenerated.
 
+## Where a Change Belongs
+
+The stack deploys OSDU services; it doesn't change them. Each service is built
+in its own `Azure/osdu-spi-<service>` fork, and that fork's `CONTRIBUTING.md`
+says which paths belong to the fork, which to the fork template, and which to
+the OSDU community. Shared service code goes to
+[OSDU GitLab](https://community.opengroup.org/osdu/platform) first; the fork
+ports it with the `port` label once it merges there. This repository owns
+deployment, middleware, Azure infrastructure, and the `spi` CLI.
+
+A merge to a fork's `main` publishes that service's canonical image, and
+environments take it on the next refresh, or right away with
+`spi service refresh <service>`
+([canonical image source](docs/decisions/033-explicit-canonical-image-source-policy.md)).
+The stack doesn't add commands, gate exceptions, or workarounds to deliver a
+service change that hasn't merged. To run one on your own environment, make a
+mirror whose `main` has built the service's canonical source, then refresh it:
+
+```bash
+spi onboard <service> --repo <owner>/<repo> --canonical-source fork --write
+spi service refresh <service>
+```
+
+Without `--write`, `spi onboard` only prints its plan, and the running image
+changes on the refresh, not the onboard.
+[Fork repository configuration](docs/design/fork-deployment.md#fork-repository-configuration)
+covers the prerequisites, including schema's paired loader. Once `spi status`
+reports the environment deployable, `spi service pin <service> --source
+<checkout>` also pins a local build
+([local builds](docs/decisions/038-local-builds-pin-from-the-environment-registry.md)).
+
+## Open an Issue First
+
+Open an issue, and agree on the approach there, before a pull request that:
+
+- rewrites a record in `docs/decisions/`;
+- adds a CLI command or option; or
+- depends on a service change that hasn't merged upstream.
+
+The issue states the problem with evidence a reader can check (a run link,
+the error text, the file and line) and the change it proposes. A bug with an
+obvious fix can go straight to a pull request.
+
+Keep one concern per pull request. A pull request that bundles an unrelated
+fix gets split, and the fix lands on its own.
+
 ## Making Changes
 
 ### Branch Naming
