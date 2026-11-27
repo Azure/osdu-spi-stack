@@ -27,7 +27,8 @@ origin is `local`.
 - **The host builds the JAR; an ACR task builds the image.** `src/spi/build.py`
   runs Maven with the template's profiles (`clean install -P core,azure
   -DskipTests`), finds the Spring Boot JAR in the order the template's
-  `resolve-jar.sh` searches, and stages a context holding `build/` and the JAR.
+  `resolve-jar.sh` searches, and stages a context holding `build/`, the root
+  attribution files (`LICENSE`, `NOTICE`, `NOTICE-OSDU-SPI`), and the JAR.
   `az acr run` executes a two-step task with `DOCKER_BUILDKIT=1`, because the
   `az acr build` quick build runs the classic builder and rejects the
   Dockerfile's `ADD --checksum`. The first step is a `cmd` step running

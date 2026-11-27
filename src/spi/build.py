@@ -44,6 +44,8 @@ DOCKERFILE_PATH = f"{BUILD_DIRECTORY}/Dockerfile"
 DESCRIPTOR_PATH = ".spi/service.yaml"
 SETTINGS_PATH = ".mvn/community-maven.settings.xml"
 TASK_FILE = "acr-task.yaml"
+# The fork template's Dockerfile copies these from the checkout root into /licenses/.
+ATTRIBUTION_FILES = ("LICENSE", "NOTICE", "NOTICE-OSDU-SPI")
 # The profiles and goals the fork template's build runs, without its tests.
 MAVEN_ARGUMENTS = ("clean", "install", "-P", "core,azure", "-DskipTests")
 PULL_ROLE = "AcrPull"
@@ -396,7 +398,7 @@ def task_document(image: str, jar: str, release: str, staging: str = "") -> str:
 def stage_context(
     checkout: Path, jar: str, release: str, image: str, into: Path, staging: str = ""
 ) -> Path:
-    """Copy what the Dockerfile reads into ``into``: its own directory and the JAR."""
+    """Copy what the Dockerfile reads into ``into``: ``build/``, the attribution files, the JAR."""
 
     source = checkout / BUILD_DIRECTORY
     # copytree follows links, and the context is uploaded to the registry.
@@ -404,12 +406,29 @@ def stage_context(
     if links:
         found = ", ".join(str(path.relative_to(checkout)) for path in links)
         raise BuildError(f"{BUILD_DIRECTORY}/ holds symbolic links ({found}); replace them.")
+    require_attribution(checkout)
     shutil.copytree(source, into / BUILD_DIRECTORY)
+    for name in ATTRIBUTION_FILES:
+        shutil.copy2(checkout / name, into / name)
     target = into / jar
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(checkout / jar, target)
     (into / TASK_FILE).write_text(task_document(image, jar, release, staging), encoding="utf-8")
     return into
+
+
+def require_attribution(checkout: Path) -> None:
+    """Refuse a checkout whose root lacks an attribution file, or holds one as a link."""
+
+    for name in ATTRIBUTION_FILES:
+        path = checkout / name
+        # copy2 follows links, and the context is uploaded to the registry.
+        if path.is_symlink():
+            raise BuildError(f"{name} in {checkout} is a symbolic link; replace it with the file.")
+        if not path.is_file():
+            raise BuildError(
+                f"{checkout} has no {name}; {DOCKERFILE_PATH} copies it into the image."
+            )
 
 
 def _require_tool(name: str) -> None:
@@ -425,6 +444,7 @@ def require_buildable(service: str, checkout: Path) -> None:
         raise BuildError(f"Unknown service {service!r}. Known services: {known}")
     if not (checkout / DOCKERFILE_PATH).is_file():
         raise BuildError(f"{checkout} has no {DOCKERFILE_PATH}; is it a synced fork?")
+    require_attribution(checkout)
     declared = descriptor_service(checkout)
     if declared != service:
         raise BuildError(
