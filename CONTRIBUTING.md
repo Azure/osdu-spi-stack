@@ -113,10 +113,20 @@ environments take it on the next refresh, or right away with
 `spi service refresh <service>`
 ([canonical image source](docs/decisions/033-explicit-canonical-image-source-policy.md)).
 The stack doesn't add commands, gate exceptions, or workarounds to deliver a
-service change that hasn't merged. To run one on your own environment, point
-the service at a trusted mirror with `spi onboard --canonical-source fork`, or
-pin a local build with `spi service pin <service> --source <checkout>` once
-`spi status` reports the environment deployable
+service change that hasn't merged. To run one on your own environment, make a
+mirror whose `main` has built the service's canonical source, then refresh it:
+
+```bash
+spi onboard <service> --repo <owner>/<repo> --canonical-source fork --write
+spi service refresh <service>
+```
+
+Without `--write`, `spi onboard` only prints its plan, and the running image
+changes on the refresh, not the onboard.
+[Fork repository configuration](docs/design/fork-deployment.md#fork-repository-configuration)
+covers the prerequisites, including schema's paired loader. Once `spi status`
+reports the environment deployable, `spi service pin <service> --source
+<checkout>` also pins a local build
 ([local builds](docs/decisions/038-local-builds-pin-from-the-environment-registry.md)).
 
 ## Open an Issue First
